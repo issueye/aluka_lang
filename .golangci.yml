@@ -1,0 +1,56 @@
+# Aluka 项目 golangci-lint 配置。
+# 详见 https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck          # 检查未处理的错误
+    - gosimple          # 简化代码
+    - govet             # go vet
+    - ineffassign       # 检测无效赋值
+    - staticcheck       # 综合静态分析
+    - typecheck         # 类型检查
+    - unused            # 未使用代码
+    - gofmt             # 格式化
+    - goimports         # import 顺序
+    - misspell          # 拼写检查
+    - revive            # 替代 golint 的代码风格
+    - unconvert         # 多余的类型转换
+    - unparam           # 未使用的函数参数
+    - gocritic          # 通用代码改进建议
+    - dupl              # 重复代码检测（仅警告）
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false
+    check-blank: false
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+  revive:
+    min-confidence: 0.8
+  dupl:
+    threshold: 200
+
+issues:
+  exclude-rules:
+    # 允许 main 包省略错误检查
+    - path: cmd/aluka/main.go
+      linters:
+        - errcheck
+    # 测试代码放宽
+    - path: _test\.go
+      linters:
+        - errcheck
+        - dupl
+        - gocritic
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  fix: false

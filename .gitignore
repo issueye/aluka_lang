@@ -1,0 +1,30 @@
+# Go 构建产物
+/bin/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+aluka
+aluka.exe
+
+# 测试与覆盖率
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# 编辑器/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 项目缓存
+.aluka-cache/
+node_modules/
