@@ -69,6 +69,8 @@ type Object interface {
 	Set(key string, value Value) error
 	// Keys 返回所有可枚举自有属性名（顺序：插入顺序）。
 	Keys() []string
+	// Delete 删除自有属性，返回是否成功（属性不存在也返回 true）。
+	Delete(key string) bool
 }
 
 // Function 是 JS 函数对象的抽象。
@@ -122,4 +124,5 @@ var (
 	ErrTypeError      = errors.New("aluka: type error")
 	ErrSyntaxError    = errors.New("aluka: syntax error")
 	ErrReferenceError = errors.New("aluka: reference error")
+	ErrRangeError     = errors.New("aluka: range error")
 )

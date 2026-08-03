@@ -1,0 +1,559 @@
+// Package ast defines JavaScript abstract syntax tree node types.
+package ast
+
+import "github.com/aluka-lang/aluka/internal/engine/lexer"
+
+// Pos represents a source position.
+type Pos struct {
+	Line int
+	Col  int
+}
+
+// Node is the common interface for all AST nodes.
+type Node interface {
+	Pos() Pos
+	node()
+}
+
+// Statement is a statement node.
+type Statement interface {
+	Node
+	stmtNode()
+}
+
+// Expression is an expression node.
+type Expression interface {
+	Node
+	exprNode()
+}
+
+type Program struct {
+	Body       []Statement
+	SourceFile string
+	Loc        Pos
+}
+
+func (p *Program) Pos() Pos { return p.Loc }
+func (p *Program) node()    {}
+
+type VarDecl struct {
+	Kind  string
+	Decls []VarDeclarator
+	Loc   Pos
+}
+
+type VarDeclarator struct {
+	Name    *Identifier // simple name (nil if Pattern is set)
+	Pattern Pattern     // destructuring pattern (nil if Name is set)
+	Init    Expression
+}
+
+func (d *VarDecl) Pos() Pos  { return d.Loc }
+func (d *VarDecl) stmtNode() {}
+func (d *VarDecl) node()     {}
+
+type FunctionDecl struct {
+	Name        *Identifier
+	Params      []*Identifier
+	Defaults    []Expression // ES2015 default values; nil entry = no default. len == len(Params)
+	RestParam   *Identifier  // ES2015 rest param (`...rest`); nil if none
+	Body        *BlockStmt
+	IsAsync     bool
+	IsGenerator bool
+	Loc         Pos
+}
+
+func (f *FunctionDecl) Pos() Pos  { return f.Loc }
+func (f *FunctionDecl) stmtNode() {}
+func (f *FunctionDecl) node()     {}
+
+type BlockStmt struct {
+	Body []Statement
+	Loc  Pos
+}
+
+func (b *BlockStmt) Pos() Pos  { return b.Loc }
+func (b *BlockStmt) stmtNode() {}
+func (b *BlockStmt) node()     {}
+
+type ExprStmt struct {
+	Expr Expression
+	Loc  Pos
+}
+
+func (e *ExprStmt) Pos() Pos  { return e.Loc }
+func (e *ExprStmt) stmtNode() {}
+func (e *ExprStmt) node()     {}
+
+type EmptyStmt struct{ Loc Pos }
+
+func (e *EmptyStmt) Pos() Pos  { return e.Loc }
+func (e *EmptyStmt) stmtNode() {}
+func (e *EmptyStmt) node()     {}
+
+type IfStmt struct {
+	Test       Expression
+	Consequent Statement
+	Alternate  Statement
+	Loc        Pos
+}
+
+func (i *IfStmt) Pos() Pos  { return i.Loc }
+func (i *IfStmt) stmtNode() {}
+func (i *IfStmt) node()     {}
+
+type WhileStmt struct {
+	Test Expression
+	Body Statement
+	Loc  Pos
+}
+
+func (w *WhileStmt) Pos() Pos  { return w.Loc }
+func (w *WhileStmt) stmtNode() {}
+func (w *WhileStmt) node()     {}
+
+type DoWhileStmt struct {
+	Body Statement
+	Test Expression
+	Loc  Pos
+}
+
+func (d *DoWhileStmt) Pos() Pos  { return d.Loc }
+func (d *DoWhileStmt) stmtNode() {}
+func (d *DoWhileStmt) node()     {}
+
+type ForStmt struct {
+	Init   Node
+	Test   Expression
+	Update Expression
+	Body   Statement
+	Loc    Pos
+}
+
+func (f *ForStmt) Pos() Pos  { return f.Loc }
+func (f *ForStmt) stmtNode() {}
+func (f *ForStmt) node()     {}
+
+type ForInStmt struct {
+	Left  Node
+	Right Expression
+	Body  Statement
+	Loc   Pos
+}
+
+func (f *ForInStmt) Pos() Pos  { return f.Loc }
+func (f *ForInStmt) stmtNode() {}
+func (f *ForInStmt) node()     {}
+
+type ForOfStmt struct {
+	Left    Node
+	Right   Expression
+	Body    Statement
+	IsAwait bool
+	Loc     Pos
+}
+
+func (f *ForOfStmt) Pos() Pos  { return f.Loc }
+func (f *ForOfStmt) stmtNode() {}
+func (f *ForOfStmt) node()     {}
+
+type ReturnStmt struct {
+	Arg Expression
+	Loc Pos
+}
+
+func (r *ReturnStmt) Pos() Pos  { return r.Loc }
+func (r *ReturnStmt) stmtNode() {}
+func (r *ReturnStmt) node()     {}
+
+type BreakStmt struct {
+	Label string
+	Loc   Pos
+}
+
+func (b *BreakStmt) Pos() Pos  { return b.Loc }
+func (b *BreakStmt) stmtNode() {}
+func (b *BreakStmt) node()     {}
+
+type ContinueStmt struct {
+	Label string
+	Loc   Pos
+}
+
+func (c *ContinueStmt) Pos() Pos  { return c.Loc }
+func (c *ContinueStmt) stmtNode() {}
+func (c *ContinueStmt) node()     {}
+
+type ThrowStmt struct {
+	Arg Expression
+	Loc Pos
+}
+
+func (t *ThrowStmt) Pos() Pos  { return t.Loc }
+func (t *ThrowStmt) stmtNode() {}
+func (t *ThrowStmt) node()     {}
+
+type TryStmt struct {
+	Block   *BlockStmt
+	Handler *CatchHandler
+	Finally *BlockStmt
+	Loc     Pos
+}
+
+type CatchHandler struct {
+	Param *Identifier
+	Body  *BlockStmt
+	Loc   Pos
+}
+
+func (t *TryStmt) Pos() Pos  { return t.Loc }
+func (t *TryStmt) stmtNode() {}
+func (t *TryStmt) node()     {}
+
+type SwitchStmt struct {
+	Disc  Expression
+	Cases []SwitchCase
+	Loc   Pos
+}
+
+type SwitchCase struct {
+	Test       Expression
+	Consequent []Statement
+	Loc        Pos
+}
+
+func (s *SwitchStmt) Pos() Pos  { return s.Loc }
+func (s *SwitchStmt) stmtNode() {}
+func (s *SwitchStmt) node()     {}
+
+type LabeledStmt struct {
+	Label string
+	Body  Statement
+	Loc   Pos
+}
+
+func (l *LabeledStmt) Pos() Pos  { return l.Loc }
+func (l *LabeledStmt) stmtNode() {}
+func (l *LabeledStmt) node()     {}
+
+type Identifier struct {
+	Name string
+	Loc  Pos
+}
+
+func (i *Identifier) Pos() Pos     { return i.Loc }
+func (i *Identifier) exprNode()    {}
+func (i *Identifier) stmtNode()    {}
+func (i *Identifier) patternNode() {}
+func (i *Identifier) node()        {}
+
+type NumberLit struct {
+	Value float64
+	Raw   string
+	Loc   Pos
+}
+
+func (n *NumberLit) Pos() Pos  { return n.Loc }
+func (n *NumberLit) exprNode() {}
+func (n *NumberLit) node()     {}
+
+type StringLit struct {
+	Value string
+	Loc   Pos
+}
+
+func (s *StringLit) Pos() Pos  { return s.Loc }
+func (s *StringLit) exprNode() {}
+func (s *StringLit) node()     {}
+
+type BoolLit struct {
+	Value bool
+	Loc   Pos
+}
+
+func (b *BoolLit) Pos() Pos  { return b.Loc }
+func (b *BoolLit) exprNode() {}
+func (b *BoolLit) node()     {}
+
+type NullLit struct{ Loc Pos }
+
+func (n *NullLit) Pos() Pos  { return n.Loc }
+func (n *NullLit) exprNode() {}
+func (n *NullLit) node()     {}
+
+type UndefinedLit struct{ Loc Pos }
+
+func (u *UndefinedLit) Pos() Pos  { return u.Loc }
+func (u *UndefinedLit) exprNode() {}
+func (u *UndefinedLit) node()     {}
+
+type RegexLit struct {
+	Pattern string
+	Flags   string
+	Loc     Pos
+}
+
+func (r *RegexLit) Pos() Pos  { return r.Loc }
+func (r *RegexLit) exprNode() {}
+func (r *RegexLit) node()     {}
+
+type TemplateLit struct {
+	// Quasis are the literal string segments between interpolations.
+	// len(Quasis) == len(Expressions) + 1.
+	Quasis []string
+	// Expressions are the interpolated ${...} expressions.
+	Expressions []Expression
+	Loc         Pos
+}
+
+func (t *TemplateLit) Pos() Pos  { return t.Loc }
+func (t *TemplateLit) exprNode() {}
+func (t *TemplateLit) node()     {}
+
+type ArrayLit struct {
+	Elements []Expression
+	Loc      Pos
+}
+
+func (a *ArrayLit) Pos() Pos  { return a.Loc }
+func (a *ArrayLit) exprNode() {}
+func (a *ArrayLit) node()     {}
+
+type ObjectLit struct {
+	Properties []Property
+	Loc        Pos
+}
+
+type Property struct {
+	Key      Expression
+	Value    Expression
+	Kind     PropertyKind
+	Computed bool
+	Loc      Pos
+}
+
+type PropertyKind int
+
+const (
+	PropertyInit PropertyKind = iota
+	PropertyGet
+	PropertySet
+	PropertyMethod
+	PropertySpread
+)
+
+func (o *ObjectLit) Pos() Pos  { return o.Loc }
+func (o *ObjectLit) exprNode() {}
+func (o *ObjectLit) node()     {}
+
+type ThisExpr struct{ Loc Pos }
+
+func (t *ThisExpr) Pos() Pos  { return t.Loc }
+func (t *ThisExpr) exprNode() {}
+func (t *ThisExpr) node()     {}
+
+type SuperExpr struct{ Loc Pos }
+
+func (s *SuperExpr) Pos() Pos  { return s.Loc }
+func (s *SuperExpr) exprNode() {}
+func (s *SuperExpr) node()     {}
+
+type MemberExpr struct {
+	Object   Expression
+	Property Expression
+	Computed bool
+	Optional bool
+	Loc      Pos
+}
+
+func (m *MemberExpr) Pos() Pos  { return m.Loc }
+func (m *MemberExpr) exprNode() {}
+func (m *MemberExpr) node()     {}
+
+type CallExpr struct {
+	Callee    Expression
+	Arguments []Expression
+	Optional  bool
+	Loc       Pos
+}
+
+func (c *CallExpr) Pos() Pos  { return c.Loc }
+func (c *CallExpr) exprNode() {}
+func (c *CallExpr) node()     {}
+
+type NewExpr struct {
+	Callee    Expression
+	Arguments []Expression
+	Loc       Pos
+}
+
+func (n *NewExpr) Pos() Pos  { return n.Loc }
+func (n *NewExpr) exprNode() {}
+func (n *NewExpr) node()     {}
+
+type UnaryExpr struct {
+	Op  string
+	Arg Expression
+	Loc Pos
+}
+
+func (u *UnaryExpr) Pos() Pos  { return u.Loc }
+func (u *UnaryExpr) exprNode() {}
+func (u *UnaryExpr) node()     {}
+
+type UpdateExpr struct {
+	Op     string
+	Arg    Expression
+	Prefix bool
+	Loc    Pos
+}
+
+func (u *UpdateExpr) Pos() Pos  { return u.Loc }
+func (u *UpdateExpr) exprNode() {}
+func (u *UpdateExpr) node()     {}
+
+type BinaryExpr struct {
+	Op    string
+	Left  Expression
+	Right Expression
+	Loc   Pos
+}
+
+func (b *BinaryExpr) Pos() Pos  { return b.Loc }
+func (b *BinaryExpr) exprNode() {}
+func (b *BinaryExpr) node()     {}
+
+type LogicalExpr struct {
+	Op    string
+	Left  Expression
+	Right Expression
+	Loc   Pos
+}
+
+func (l *LogicalExpr) Pos() Pos  { return l.Loc }
+func (l *LogicalExpr) exprNode() {}
+func (l *LogicalExpr) node()     {}
+
+type AssignExpr struct {
+	Op    string
+	Left  Expression
+	Right Expression
+	Loc   Pos
+}
+
+func (a *AssignExpr) Pos() Pos  { return a.Loc }
+func (a *AssignExpr) exprNode() {}
+func (a *AssignExpr) node()     {}
+
+type ConditionalExpr struct {
+	Test       Expression
+	Consequent Expression
+	Alternate  Expression
+	Loc        Pos
+}
+
+func (c *ConditionalExpr) Pos() Pos  { return c.Loc }
+func (c *ConditionalExpr) exprNode() {}
+func (c *ConditionalExpr) node()     {}
+
+type SequenceExpr struct {
+	Expressions []Expression
+	Loc         Pos
+}
+
+func (s *SequenceExpr) Pos() Pos  { return s.Loc }
+func (s *SequenceExpr) exprNode() {}
+func (s *SequenceExpr) node()     {}
+
+type SpreadElement struct {
+	Arg Expression
+	Loc Pos
+}
+
+func (s *SpreadElement) Pos() Pos  { return s.Loc }
+func (s *SpreadElement) exprNode() {}
+func (s *SpreadElement) node()     {}
+
+type FunctionExpr struct {
+	Name        *Identifier
+	Params      []*Identifier
+	Defaults    []Expression // ES2015 default values; nil entry = no default. len == len(Params)
+	RestParam   *Identifier  // ES2015 rest param (`...rest`); nil if none
+	Body        *BlockStmt
+	IsAsync     bool
+	IsGenerator bool
+	Loc         Pos
+}
+
+func (f *FunctionExpr) Pos() Pos  { return f.Loc }
+func (f *FunctionExpr) exprNode() {}
+func (f *FunctionExpr) node()     {}
+
+type ArrowFunc struct {
+	Params    []*Identifier
+	Defaults  []Expression // ES2015 default values; nil entry = no default. len == len(Params)
+	RestParam *Identifier  // ES2015 rest param (`...rest`); nil if none
+	Body      Node
+	IsAsync   bool
+	Loc       Pos
+}
+
+func (a *ArrowFunc) Pos() Pos  { return a.Loc }
+func (a *ArrowFunc) exprNode() {}
+func (a *ArrowFunc) node()     {}
+
+type NewTargetExpr struct{ Loc Pos }
+
+func (n *NewTargetExpr) Pos() Pos  { return n.Loc }
+func (n *NewTargetExpr) exprNode() {}
+func (n *NewTargetExpr) node()     {}
+
+// === Destructuring patterns (ES2015) ======================================
+
+// Pattern is a binding pattern for destructuring declarations.
+type Pattern interface {
+	Node
+	patternNode()
+}
+
+// ArrayPatternElement represents one slot in an array destructuring pattern.
+// A nil Target indicates a hole (elision). IsRest marks a `...rest` binding.
+type ArrayPatternElement struct {
+	Target  Pattern    // nil = hole
+	Default Expression // nil = no default
+	IsRest  bool       // ...rest (must be last element)
+}
+
+// ArrayPattern: [a, b, , c, ...rest]
+type ArrayPattern struct {
+	Elements []ArrayPatternElement
+	Loc      Pos
+}
+
+func (a *ArrayPattern) Pos() Pos    { return a.Loc }
+func (a *ArrayPattern) patternNode() {}
+func (a *ArrayPattern) node()        {}
+
+// ObjectPatternProperty represents one binding in an object destructuring
+// pattern.
+type ObjectPatternProperty struct {
+	Key     Expression // Identifier/StringLit/NumberLit (property name)
+	Value   Pattern    // binding target
+	Default Expression // nil = no default
+	IsRest  bool       // ...rest (must be last)
+}
+
+// ObjectPattern: {a, b: c, ...rest}
+type ObjectPattern struct {
+	Properties []ObjectPatternProperty
+	Loc        Pos
+}
+
+func (o *ObjectPattern) Pos() Pos    { return o.Loc }
+func (o *ObjectPattern) patternNode() {}
+func (o *ObjectPattern) node()        {}
+
+// PosFromToken builds a Pos from a lexer.Token.
+func PosFromToken(t lexer.Token) Pos {
+	return Pos{Line: t.Line, Col: t.Col}
+}

@@ -1,0 +1,1641 @@
+// Package parser 实现 JavaScript 语法分析器。
+//
+// 将 lexer.Token 流转换为 ast.Program。
+// 采用递归下降 + Pratt 表达式优先级解析。
+//
+// Phase 1A 范围：ES5 子集 + ES2015 关键特性（let/const/arrow/spread/for-of）。
+package parser
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/aluka-lang/aluka/internal/engine/ast"
+	"github.com/aluka-lang/aluka/internal/engine/lexer"
+)
+
+// Parser 语法分析器。
+type Parser struct {
+	tokens []lexer.Token
+	pos    int
+	src    string
+}
+
+// New 创建解析器。
+func New(tokens []lexer.Token, src string) *Parser {
+	return &Parser{tokens: tokens, src: src}
+}
+
+// NewFromString lexes and creates a parser from a source string. Used for
+// parsing sub-expressions (e.g. template literal interpolations).
+func NewFromString(src string) (*Parser, error) {
+	l := lexer.New(src)
+	tokens, err := l.Tokens()
+	if err != nil {
+		return nil, err
+	}
+	return New(tokens, src), nil
+}
+
+// Parse 解析整个程序。
+func Parse(src string) (*ast.Program, error) {
+	l := lexer.New(src)
+	tokens, err := l.Tokens()
+	if err != nil {
+		return nil, err
+	}
+	p := New(tokens, src)
+	return p.parseProgram()
+}
+
+// === 内部辅助 ============================================================
+
+func (p *Parser) peek() lexer.Token {
+	if p.pos < len(p.tokens) {
+		return p.tokens[p.pos]
+	}
+	return lexer.Token{Type: lexer.TokenEOF}
+}
+
+func (p *Parser) peekAt(n int) lexer.Token {
+	idx := p.pos + n
+	if idx >= 0 && idx < len(p.tokens) {
+		return p.tokens[idx]
+	}
+	return lexer.Token{Type: lexer.TokenEOF}
+}
+
+func (p *Parser) next() lexer.Token {
+	t := p.peek()
+	if t.Type != lexer.TokenEOF {
+		p.pos++
+	}
+	return t
+}
+
+func (p *Parser) match(typ lexer.TokenType, val string) bool {
+	t := p.peek()
+	if t.Type == typ && (val == "" || t.Value == val) {
+		p.pos++
+		return true
+	}
+	return false
+}
+
+func (p *Parser) matchPunct(val string) bool   { return p.match(lexer.TokenPunct, val) }
+func (p *Parser) matchKeyword(val string) bool { return p.match(lexer.TokenKeyword, val) }
+
+func (p *Parser) expect(typ lexer.TokenType, val string) (lexer.Token, error) {
+	t := p.peek()
+	if t.Type != typ || (val != "" && t.Value != val) {
+		return t, p.errorf(t, "expected %q but got %q", val, t.Value)
+	}
+	p.pos++
+	return t, nil
+}
+
+func (p *Parser) expectPunct(val string) error {
+	_, err := p.expect(lexer.TokenPunct, val)
+	return err
+}
+
+func (p *Parser) errorf(t lexer.Token, format string, args ...interface{}) error {
+	return fmt.Errorf("aluka: syntax error at line %d:%d: %s",
+		t.Line, t.Col, fmt.Sprintf(format, args...))
+}
+
+func posOf(t lexer.Token) ast.Pos { return ast.Pos{Line: t.Line, Col: t.Col} }
+
+// consumeSemicolon 消费可选分号或应用 ASI。
+func (p *Parser) consumeSemicolon() error {
+	if p.matchPunct(";") {
+		return nil
+	}
+	// ASI: 行尾或 } 或 EOF 自动插入分号
+	t := p.peek()
+	if t.Type == lexer.TokenEOF || t.Type == lexer.TokenPunct && (t.Value == "}" || t.Value == ")") {
+		return nil
+	}
+	// 行号变化也算 ASI（简化）
+	if p.pos > 0 {
+		prev := p.tokens[p.pos-1]
+		if prev.Line != t.Line {
+			return nil
+		}
+	}
+	return p.errorf(t, "expected ';' but got %q", t.Value)
+}
+
+// === 程序入口 ============================================================
+
+func (p *Parser) parseProgram() (*ast.Program, error) {
+	prog := &ast.Program{SourceFile: "<input>"}
+	for p.peek().Type != lexer.TokenEOF {
+		// 跳过空语句
+		if p.matchPunct(";") {
+			continue
+		}
+		stmt, err := p.parseStatement()
+		if err != nil {
+			return nil, err
+		}
+		prog.Body = append(prog.Body, stmt)
+	}
+	return prog, nil
+}
+
+// === 语句解析 ============================================================
+
+func (p *Parser) parseStatement() (ast.Statement, error) {
+	t := p.peek()
+	switch t.Type {
+	case lexer.TokenPunct:
+		switch t.Value {
+		case "{":
+			return p.parseBlock()
+		case ";":
+			p.next()
+			return &ast.EmptyStmt{Loc: posOf(t)}, nil
+		}
+	case lexer.TokenKeyword:
+		switch t.Value {
+		case "var", "let", "const":
+			return p.parseVarDecl()
+		case "function":
+			return p.parseFunctionDecl(false)
+		case "if":
+			return p.parseIf()
+		case "while":
+			return p.parseWhile()
+		case "do":
+			return p.parseDoWhile()
+		case "for":
+			return p.parseFor()
+		case "return":
+			return p.parseReturn()
+		case "break":
+			return p.parseBreakContinue(true)
+		case "continue":
+			return p.parseBreakContinue(false)
+		case "throw":
+			return p.parseThrow()
+		case "try":
+			return p.parseTry()
+		case "switch":
+			return p.parseSwitch()
+		case "debugger":
+			p.next()
+			return &ast.EmptyStmt{Loc: posOf(t)}, nil
+		}
+	}
+	// 表达式语句
+	return p.parseExprStmt()
+}
+
+func (p *Parser) parseBlock() (*ast.BlockStmt, error) {
+	t := p.peek()
+	if _, err := p.expect(lexer.TokenPunct, "{"); err != nil {
+		return nil, err
+	}
+	block := &ast.BlockStmt{Loc: posOf(t)}
+	for !(p.peek().Type == lexer.TokenPunct && p.peek().Value == "}") {
+		if p.peek().Type == lexer.TokenEOF {
+			return nil, p.errorf(p.peek(), "unterminated block")
+		}
+		if p.matchPunct(";") {
+			continue
+		}
+		stmt, err := p.parseStatement()
+		if err != nil {
+			return nil, err
+		}
+		block.Body = append(block.Body, stmt)
+	}
+	if err := p.expectPunct("}"); err != nil {
+		return nil, err
+	}
+	return block, nil
+}
+
+func (p *Parser) parseVarDecl() (*ast.VarDecl, error) {
+	t := p.next() // var / let / const
+	decl := &ast.VarDecl{Kind: t.Value, Loc: posOf(t)}
+	for {
+		vd, err := p.parseVarDeclarator()
+		if err != nil {
+			return nil, err
+		}
+		decl.Decls = append(decl.Decls, vd)
+		if !p.matchPunct(",") {
+			break
+		}
+	}
+	if err := p.consumeSemicolon(); err != nil {
+		return nil, err
+	}
+	return decl, nil
+}
+
+// parseVarDeclarator parses a single variable declarator: a name or
+// destructuring pattern, optionally followed by `= init`.
+func (p *Parser) parseVarDeclarator() (ast.VarDeclarator, error) {
+	var vd ast.VarDeclarator
+	// Detect destructuring pattern: [ ... ] or { ... }
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "[" {
+		pat, err := p.parseArrayPattern()
+		if err != nil {
+			return vd, err
+		}
+		vd.Pattern = pat
+	} else if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
+		pat, err := p.parseObjectPattern()
+		if err != nil {
+			return vd, err
+		}
+		vd.Pattern = pat
+	} else {
+		nameTok, err := p.expect(lexer.TokenIdent, "")
+		if err != nil {
+			return vd, err
+		}
+		vd.Name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+	}
+	if p.matchPunct("=") {
+		expr, err := p.parseAssignment()
+		if err != nil {
+			return vd, err
+		}
+		vd.Init = expr
+	}
+	return vd, nil
+}
+
+func (p *Parser) parseFunctionDecl(isExpr bool) (*ast.FunctionDecl, error) {
+	t := p.next() // function
+	if isExpr {
+		// 函数表达式：可选名称
+	}
+	nameTok, err := p.expect(lexer.TokenIdent, "")
+	if err != nil {
+		return nil, err
+	}
+	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.FunctionDecl{
+		Name:      &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)},
+		Params:    params,
+		Defaults:  defaults,
+		RestParam: rest,
+		Body:      body,
+		Loc:       posOf(t),
+	}, nil
+}
+
+// parseFuncParamsAndBody parses `(params) { body }` and returns the regular
+// params, their default expressions (nil entries = no default), the optional
+// rest param (`...rest`), and the body block.
+func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Expression, *ast.Identifier, *ast.BlockStmt, error) {
+	if err := p.expectPunct("("); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	var params []*ast.Identifier
+	var defaults []ast.Expression
+	var rest *ast.Identifier
+	if !(p.peek().Type == lexer.TokenPunct && p.peek().Value == ")") {
+		for {
+			// ES2015 rest parameter: `...name`
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "..." {
+				p.next()
+				nameTok, err := p.expect(lexer.TokenIdent, "")
+				if err != nil {
+					return nil, nil, nil, nil, err
+				}
+				rest = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+				break // rest must be the last parameter
+			}
+			nameTok, err := p.expect(lexer.TokenIdent, "")
+			if err != nil {
+				return nil, nil, nil, nil, err
+			}
+			params = append(params, &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)})
+			// ES2015 default value: `name = expr`
+			if p.matchPunct("=") {
+				def, err := p.parseAssignment()
+				if err != nil {
+					return nil, nil, nil, nil, err
+				}
+				defaults = append(defaults, def)
+			} else {
+				defaults = append(defaults, nil)
+			}
+			if !p.matchPunct(",") {
+				break
+			}
+		}
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return params, defaults, rest, body, nil
+}
+
+func (p *Parser) parseIf() (*ast.IfStmt, error) {
+	t := p.next()
+	if err := p.expectPunct("("); err != nil {
+		return nil, err
+	}
+	test, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, err
+	}
+	cons, err := p.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	var alt ast.Statement
+	if p.matchKeyword("else") {
+		alt, err = p.parseStatement()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &ast.IfStmt{Test: test, Consequent: cons, Alternate: alt, Loc: posOf(t)}, nil
+}
+
+func (p *Parser) parseWhile() (*ast.WhileStmt, error) {
+	t := p.next()
+	if err := p.expectPunct("("); err != nil {
+		return nil, err
+	}
+	test, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, err
+	}
+	body, err := p.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.WhileStmt{Test: test, Body: body, Loc: posOf(t)}, nil
+}
+
+func (p *Parser) parseDoWhile() (*ast.DoWhileStmt, error) {
+	t := p.next()
+	body, err := p.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	if !p.matchKeyword("while") {
+		return nil, p.errorf(p.peek(), "expected 'while' after do-block")
+	}
+	if err := p.expectPunct("("); err != nil {
+		return nil, err
+	}
+	test, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, err
+	}
+	_ = p.matchPunct(";")
+	return &ast.DoWhileStmt{Body: body, Test: test, Loc: posOf(t)}, nil
+}
+
+func (p *Parser) parseFor() (ast.Statement, error) {
+	t := p.next()
+	if err := p.expectPunct("("); err != nil {
+		return nil, err
+	}
+
+	// 判断是否 for-in / for-of
+	// 形如：for (var x in obj) / for (let x of arr) / for (x in obj)
+	var leftNode ast.Node
+	var initIsVarDecl bool
+	var decl *ast.VarDecl
+
+	if p.matchPunct(";") {
+		// 普通 for：无 init
+	} else if p.peek().Type == lexer.TokenKeyword &&
+		(p.peek().Value == "var" || p.peek().Value == "let" || p.peek().Value == "const") {
+		// var/let/const 声明
+		kw := p.next()
+		decl = &ast.VarDecl{Kind: kw.Value, Loc: posOf(kw)}
+
+		// Detect destructuring pattern or simple identifier.
+		var vd ast.VarDeclarator
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "[" {
+			pat, err := p.parseArrayPattern()
+			if err != nil {
+				return nil, err
+			}
+			vd.Pattern = pat
+		} else if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
+			pat, err := p.parseObjectPattern()
+			if err != nil {
+				return nil, err
+			}
+			vd.Pattern = pat
+		} else {
+			nameTok, err := p.expect(lexer.TokenIdent, "")
+			if err != nil {
+				return nil, err
+			}
+			vd.Name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+		}
+		// 检查 for-in / for-of
+		if p.peek().Type == lexer.TokenKeyword && p.peek().Value == "in" {
+			p.next()
+			decl.Decls = append(decl.Decls, vd)
+			leftNode = decl
+			initIsVarDecl = true
+			return p.parseForIn(leftNode, initIsVarDecl, t)
+		}
+		if p.peek().Type == lexer.TokenKeyword && p.peek().Value == "of" {
+			p.next()
+			decl.Decls = append(decl.Decls, vd)
+			leftNode = decl
+			initIsVarDecl = true
+			return p.parseForOf(leftNode, t)
+		}
+		// 普通 for：var x = init, y = ...
+		if p.matchPunct("=") {
+			expr, err := p.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			vd.Init = expr
+		}
+		decl.Decls = append(decl.Decls, vd)
+		for p.matchPunct(",") {
+			vd2, err := p.parseVarDeclarator()
+			if err != nil {
+				return nil, err
+			}
+			decl.Decls = append(decl.Decls, vd2)
+		}
+		leftNode = decl
+		initIsVarDecl = true
+		if err := p.expectPunct(";"); err != nil {
+			return nil, err
+		}
+	} else {
+		// 表达式 init 或 for-in/of 左值
+		expr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		// for-in / for-of
+		if p.peek().Type == lexer.TokenKeyword && p.peek().Value == "in" {
+			p.next()
+			return p.parseForIn(expr, false, t)
+		}
+		if p.peek().Type == lexer.TokenKeyword && p.peek().Value == "of" {
+			p.next()
+			return p.parseForOf(expr, t)
+		}
+		leftNode = expr
+		if err := p.expectPunct(";"); err != nil {
+			return nil, err
+		}
+	}
+
+	// 普通 for：test ; update
+	var test ast.Expression
+	if !(p.peek().Type == lexer.TokenPunct && p.peek().Value == ";") {
+		var err error
+		test, err = p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := p.expectPunct(";"); err != nil {
+		return nil, err
+	}
+	var update ast.Expression
+	if !(p.peek().Type == lexer.TokenPunct && p.peek().Value == ")") {
+		var err error
+		update, err = p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, err
+	}
+	body, err := p.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ForStmt{Init: leftNode, Test: test, Update: update, Body: body, Loc: posOf(t)}, nil
+}
+
+func (p *Parser) parseForIn(left ast.Node, isVarDecl bool, forTok lexer.Token) (*ast.ForInStmt, error) {
+	right, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, err
+	}
+	body, err := p.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ForInStmt{Left: left, Right: right, Body: body, Loc: posOf(forTok)}, nil
+}
+
+func (p *Parser) parseForOf(left ast.Node, forTok lexer.Token) (*ast.ForOfStmt, error) {
+	right, err := p.parseAssignment()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, err
+	}
+	body, err := p.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ForOfStmt{Left: left, Right: right, Body: body, Loc: posOf(forTok)}, nil
+}
+
+func (p *Parser) parseReturn() (*ast.ReturnStmt, error) {
+	t := p.next()
+	var arg ast.Expression
+	// ASI：return 后若换行或 ; 或 } 则裸 return
+	if p.peek().Type == lexer.TokenPunct && (p.peek().Value == ";" || p.peek().Value == "}") {
+		_ = p.matchPunct(";")
+		return &ast.ReturnStmt{Loc: posOf(t)}, nil
+	}
+	if p.peek().Type == lexer.TokenEOF {
+		return &ast.ReturnStmt{Loc: posOf(t)}, nil
+	}
+	// 行号变化也视为裸 return
+	if p.peek().Line != t.Line {
+		return &ast.ReturnStmt{Loc: posOf(t)}, nil
+	}
+	expr, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	arg = expr
+	_ = p.consumeSemicolon()
+	return &ast.ReturnStmt{Arg: arg, Loc: posOf(t)}, nil
+}
+
+func (p *Parser) parseBreakContinue(isBreak bool) (ast.Statement, error) {
+	t := p.next()
+	// 可选 label
+	if p.peek().Type == lexer.TokenIdent && p.peek().Line == t.Line {
+		labelTok := p.next()
+		if isBreak {
+			return &ast.BreakStmt{Label: labelTok.Value, Loc: posOf(t)}, nil
+		}
+		return &ast.ContinueStmt{Label: labelTok.Value, Loc: posOf(t)}, nil
+	}
+	_ = p.consumeSemicolon()
+	if isBreak {
+		return &ast.BreakStmt{Loc: posOf(t)}, nil
+	}
+	return &ast.ContinueStmt{Loc: posOf(t)}, nil
+}
+
+func (p *Parser) parseThrow() (*ast.ThrowStmt, error) {
+	t := p.next()
+	if p.peek().Line != t.Line {
+		return nil, p.errorf(p.peek(), "Illegal newline after throw")
+	}
+	arg, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	_ = p.consumeSemicolon()
+	return &ast.ThrowStmt{Arg: arg, Loc: posOf(t)}, nil
+}
+
+func (p *Parser) parseTry() (*ast.TryStmt, error) {
+	t := p.next()
+	block, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	stmt := &ast.TryStmt{Block: block, Loc: posOf(t)}
+	if p.matchKeyword("catch") {
+		handler := &ast.CatchHandler{Loc: posOf(p.peek())}
+		if p.matchPunct("(") {
+			nameTok, err := p.expect(lexer.TokenIdent, "")
+			if err != nil {
+				return nil, err
+			}
+			handler.Param = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+			if err := p.expectPunct(")"); err != nil {
+				return nil, err
+			}
+		}
+		body, err := p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		handler.Body = body
+		stmt.Handler = handler
+	}
+	if p.matchKeyword("finally") {
+		body, err := p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Finally = body
+	}
+	return stmt, nil
+}
+
+func (p *Parser) parseSwitch() (*ast.SwitchStmt, error) {
+	t := p.next()
+	if err := p.expectPunct("("); err != nil {
+		return nil, err
+	}
+	disc, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, err
+	}
+	if err := p.expectPunct("{"); err != nil {
+		return nil, err
+	}
+	stmt := &ast.SwitchStmt{Disc: disc, Loc: posOf(t)}
+	for !(p.peek().Type == lexer.TokenPunct && p.peek().Value == "}") {
+		if p.peek().Type == lexer.TokenEOF {
+			return nil, p.errorf(p.peek(), "unterminated switch")
+		}
+		caseTok := p.peek()
+		var test ast.Expression
+		if p.matchKeyword("case") {
+			expr, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			test = expr
+		} else if p.matchKeyword("default") {
+			test = nil
+		} else {
+			return nil, p.errorf(caseTok, "expected 'case' or 'default'")
+		}
+		if err := p.expectPunct(":"); err != nil {
+			return nil, err
+		}
+		c := ast.SwitchCase{Test: test, Loc: posOf(caseTok)}
+		for !(p.peek().Type == lexer.TokenKeyword && (p.peek().Value == "case" || p.peek().Value == "default")) &&
+			!(p.peek().Type == lexer.TokenPunct && p.peek().Value == "}") {
+			if p.peek().Type == lexer.TokenEOF {
+				break
+			}
+			if p.matchPunct(";") {
+				continue
+			}
+			s, err := p.parseStatement()
+			if err != nil {
+				return nil, err
+			}
+			c.Consequent = append(c.Consequent, s)
+		}
+		stmt.Cases = append(stmt.Cases, c)
+	}
+	if err := p.expectPunct("}"); err != nil {
+		return nil, err
+	}
+	return stmt, nil
+}
+
+func (p *Parser) parseExprStmt() (*ast.ExprStmt, error) {
+	t := p.peek()
+	expr, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	_ = p.consumeSemicolon()
+	return &ast.ExprStmt{Expr: expr, Loc: posOf(t)}, nil
+}
+
+// === 表达式解析 ==========================================================
+
+// Pratt 运算符优先级表。
+var binaryPrec = map[string]int{
+	"||": 1, "??": 1, "&&": 2,
+	"|": 3, "^": 4, "&": 5,
+	"==": 6, "!=": 6, "===": 6, "!==": 6,
+	"<": 7, "<=": 7, ">": 7, ">=": 7, "in": 7, "instanceof": 7,
+	"<<": 8, ">>": 8, ">>>": 8,
+	"+": 9, "-": 9,
+	"*": 10, "/": 10, "%": 10,
+	"**": 11,
+}
+
+// 赋值运算符集合。
+var assignOps = map[string]bool{
+	"=": true, "+=": true, "-=": true, "*=": true, "/=": true, "%=": true,
+	"**=": true, "<<=": true, ">>=": true, ">>>=": true,
+	"&=": true, "|=": true, "^=": true,
+}
+
+func (p *Parser) parseExpression() (ast.Expression, error) {
+	// 顶层表达式：逗号序列
+	first, err := p.parseAssignment()
+	if err != nil {
+		return nil, err
+	}
+	if !p.matchPunct(",") {
+		return first, nil
+	}
+	seq := &ast.SequenceExpr{Expressions: []ast.Expression{first}, Loc: first.Pos()}
+	for {
+		next, err := p.parseAssignment()
+		if err != nil {
+			return nil, err
+		}
+		seq.Expressions = append(seq.Expressions, next)
+		if !p.matchPunct(",") {
+			break
+		}
+	}
+	return seq, nil
+}
+
+func (p *Parser) parseAssignment() (ast.Expression, error) {
+	// 检测箭头函数：x => ... 或 (x, y) => ...
+	if expr, ok, err := p.tryParseArrow(); ok {
+		return expr, err
+	}
+	left, err := p.parseConditional()
+	if err != nil {
+		return nil, err
+	}
+	t := p.peek()
+	if t.Type == lexer.TokenPunct && assignOps[t.Value] {
+		p.next()
+		right, err := p.parseAssignment()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.AssignExpr{Op: t.Value, Left: left, Right: right, Loc: posOf(t)}, nil
+	}
+	return left, nil
+}
+
+// tryParseArrow 尝试解析箭头函数。
+// 成功：返回 (expr, true, nil)。
+// 失败但非错误：返回 (nil, false, nil)，调用方继续其他解析。
+// 失败且为错误：返回 (nil, false, err)。
+func (p *Parser) tryParseArrow() (ast.Expression, bool, error) {
+	start := p.pos
+	t := p.peek()
+
+	// 单参数无括号：x => ...
+	if t.Type == lexer.TokenIdent {
+		next := p.peekAt(1)
+		if next.Type == lexer.TokenPunct && next.Value == "=>" {
+			p.next() // ident
+			p.next() // =>
+			return p.parseArrowBody([]*ast.Identifier{{Name: t.Value, Loc: posOf(t)}}, nil, nil)
+		}
+	}
+
+	// 多参数或空参数：(x, y) => ... 或 () => ...
+	if t.Type == lexer.TokenPunct && t.Value == "(" {
+		// 探测是否有匹配的 ) 后跟 =>
+		if endIdx, ok := p.findMatchingParen(p.pos); ok {
+			afterParen := p.peekAt(endIdx - p.pos + 1)
+			if afterParen.Type == lexer.TokenPunct && afterParen.Value == "=>" {
+				return p.parseArrowWithParens()
+			}
+		}
+	}
+	_ = start
+	return nil, false, nil
+}
+
+// findMatchingParen 找到匹配的右括号位置。
+func (p *Parser) findMatchingParen(openIdx int) (int, bool) {
+	depth := 0
+	for i := openIdx; i < len(p.tokens); i++ {
+		t := p.tokens[i]
+		if t.Type != lexer.TokenPunct {
+			continue
+		}
+		switch t.Value {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+			if depth < 0 {
+				return 0, false
+			}
+		}
+	}
+	return 0, false
+}
+
+func (p *Parser) parseArrowWithParens() (ast.Expression, bool, error) {
+	startTok := p.peek()
+	p.next() // (
+	var params []*ast.Identifier
+	var defaults []ast.Expression
+	var rest *ast.Identifier
+	if !(p.peek().Type == lexer.TokenPunct && p.peek().Value == ")") {
+		for {
+			// ES2015 rest parameter: `...name`
+			if p.matchPunct("...") {
+				nameTok, err := p.expect(lexer.TokenIdent, "")
+				if err != nil {
+					return nil, true, err
+				}
+				rest = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+				break // rest must be last
+			}
+			nameTok, err := p.expect(lexer.TokenIdent, "")
+			if err != nil {
+				return nil, true, err
+			}
+			params = append(params, &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)})
+			// ES2015 default value: `name = expr`
+			if p.matchPunct("=") {
+				def, err := p.parseAssignment()
+				if err != nil {
+					return nil, true, err
+				}
+				defaults = append(defaults, def)
+			} else {
+				defaults = append(defaults, nil)
+			}
+			if !p.matchPunct(",") {
+				break
+			}
+		}
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, true, err
+	}
+	if err := p.expectPunct("=>"); err != nil {
+		return nil, true, err
+	}
+	expr, ok, err := p.parseArrowBody(params, defaults, rest)
+	if err != nil {
+		return nil, true, err
+	}
+	_ = startTok
+	_ = ok
+	return expr, true, nil
+}
+
+func (p *Parser) parseArrowBody(params []*ast.Identifier, defaults []ast.Expression, rest *ast.Identifier) (ast.Expression, bool, error) {
+	t := p.peek()
+	// 简洁体：单个表达式
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
+		// 块体
+		block, err := p.parseBlock()
+		if err != nil {
+			return nil, true, err
+		}
+		return &ast.ArrowFunc{Params: params, Defaults: defaults, RestParam: rest, Body: block, Loc: posOf(t)}, true, nil
+	}
+	expr, err := p.parseAssignment()
+	if err != nil {
+		return nil, true, err
+	}
+	return &ast.ArrowFunc{Params: params, Defaults: defaults, RestParam: rest, Body: expr, Loc: posOf(t)}, true, nil
+}
+
+func (p *Parser) parseConditional() (ast.Expression, error) {
+	test, err := p.parseBinary(0)
+	if err != nil {
+		return nil, err
+	}
+	if !p.matchPunct("?") {
+		return test, nil
+	}
+	cons, err := p.parseAssignment()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expectPunct(":"); err != nil {
+		return nil, err
+	}
+	alt, err := p.parseAssignment()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ConditionalExpr{Test: test, Consequent: cons, Alternate: alt, Loc: test.Pos()}, nil
+}
+
+func (p *Parser) parseBinary(minPrec int) (ast.Expression, error) {
+	left, err := p.parseUnary()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		t := p.peek()
+		var op string
+		var isLogical bool
+		if t.Type == lexer.TokenPunct {
+			op = t.Value
+		} else if t.Type == lexer.TokenKeyword && (t.Value == "in" || t.Value == "instanceof") {
+			op = t.Value
+		} else {
+			break
+		}
+		prec, ok := binaryPrec[op]
+		if !ok || prec < minPrec {
+			break
+		}
+		p.next()
+		right, err := p.parseBinary(prec + 1)
+		if err != nil {
+			return nil, err
+		}
+		if op == "&&" || op == "||" || op == "??" {
+			left = &ast.LogicalExpr{Op: op, Left: left, Right: right, Loc: posOf(t)}
+			isLogical = true
+		} else {
+			left = &ast.BinaryExpr{Op: op, Left: left, Right: right, Loc: posOf(t)}
+		}
+		_ = isLogical
+	}
+	return left, nil
+}
+
+func (p *Parser) parseUnary() (ast.Expression, error) {
+	t := p.peek()
+	if t.Type == lexer.TokenPunct {
+		switch t.Value {
+		case "!", "+", "-":
+			p.next()
+			arg, err := p.parseUnary()
+			if err != nil {
+				return nil, err
+			}
+			return &ast.UnaryExpr{Op: t.Value, Arg: arg, Loc: posOf(t)}, nil
+		case "++", "--":
+			p.next()
+			arg, err := p.parseUnary()
+			if err != nil {
+				return nil, err
+			}
+			return &ast.UpdateExpr{Op: t.Value, Arg: arg, Prefix: true, Loc: posOf(t)}, nil
+		}
+	}
+	if t.Type == lexer.TokenKeyword {
+		switch t.Value {
+		case "typeof", "void", "delete":
+			p.next()
+			arg, err := p.parseUnary()
+			if err != nil {
+				return nil, err
+			}
+			return &ast.UnaryExpr{Op: t.Value, Arg: arg, Loc: posOf(t)}, nil
+		}
+	}
+	return p.parsePostfix()
+}
+
+func (p *Parser) parsePostfix() (ast.Expression, error) {
+	expr, err := p.parseCallMember()
+	if err != nil {
+		return nil, err
+	}
+	// 后缀 ++ --
+	t := p.peek()
+	if t.Type == lexer.TokenPunct && (t.Value == "++" || t.Value == "--") {
+		p.next()
+		return &ast.UpdateExpr{Op: t.Value, Arg: expr, Prefix: false, Loc: posOf(t)}, nil
+	}
+	return expr, nil
+}
+
+// parseMemberTail parses trailing .prop and [expr] accessors on an existing
+// expression. It stops at call parens "(" or any other non-member token.
+// Returns the (possibly extended) expression; if no accessors are consumed,
+// the input expression is returned unchanged.
+func (p *Parser) parseMemberTail(expr ast.Expression) (ast.Expression, error) {
+	for {
+		t := p.peek()
+		if t.Type != lexer.TokenPunct {
+			return expr, nil
+		}
+		switch t.Value {
+		case ".":
+			p.next()
+			propTok := p.next()
+			if propTok.Type != lexer.TokenIdent && propTok.Type != lexer.TokenKeyword {
+				return nil, p.errorf(propTok, "expected property name after '.'")
+			}
+			expr = &ast.MemberExpr{
+				Object:   expr,
+				Property: &ast.Identifier{Name: propTok.Value, Loc: posOf(propTok)},
+				Computed: false,
+				Loc:      posOf(t),
+			}
+		case "[":
+			p.next()
+			propExpr, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectPunct("]"); err != nil {
+				return nil, err
+			}
+			expr = &ast.MemberExpr{Object: expr, Property: propExpr, Computed: true, Loc: posOf(t)}
+		default:
+			return expr, nil
+		}
+	}
+}
+
+func (p *Parser) parseCallMember() (ast.Expression, error) {
+	expr, err := p.parsePrimary()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		t := p.peek()
+		if t.Type == lexer.TokenPunct && t.Value == "(" {
+			args, err := p.parseArgs()
+			if err != nil {
+				return nil, err
+			}
+			expr = &ast.CallExpr{Callee: expr, Arguments: args, Loc: posOf(t)}
+			continue
+		}
+		prev := expr
+		expr, err = p.parseMemberTail(expr)
+		if err != nil {
+			return nil, err
+		}
+		if expr == prev {
+			// No member access consumed and no call pending; stop.
+			return expr, nil
+		}
+	}
+}
+
+func (p *Parser) parseArgs() ([]ast.Expression, error) {
+	if err := p.expectPunct("("); err != nil {
+		return nil, err
+	}
+	var args []ast.Expression
+	if !(p.peek().Type == lexer.TokenPunct && p.peek().Value == ")") {
+		for {
+			if p.matchPunct("...") {
+				expr, err := p.parseAssignment()
+				if err != nil {
+					return nil, err
+				}
+				args = append(args, &ast.SpreadElement{Arg: expr, Loc: posOf(p.peek())})
+			} else {
+				expr, err := p.parseAssignment()
+				if err != nil {
+					return nil, err
+				}
+				args = append(args, expr)
+			}
+			if !p.matchPunct(",") {
+				break
+			}
+		}
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, err
+	}
+	return args, nil
+}
+
+// parseTemplateLit splits the raw template string (produced by the lexer,
+// which preserves ${...} segments verbatim) into alternating string quasis
+// and interpolated expressions.
+func (p *Parser) parseTemplateLit(raw string, loc ast.Pos) (*ast.TemplateLit, error) {
+	var quasis []string
+	var exprs []ast.Expression
+	var quasi strings.Builder
+
+	i := 0
+	for i < len(raw) {
+		// Detect ${...} interpolation.
+		if raw[i] == '$' && i+1 < len(raw) && raw[i+1] == '{' {
+			quasis = append(quasis, quasi.String())
+			quasi.Reset()
+			// Find the matching closing brace (the lexer already balanced them).
+			depth := 1
+			j := i + 2
+			for j < len(raw) && depth > 0 {
+				switch raw[j] {
+				case '{':
+					depth++
+				case '}':
+					depth--
+					if depth == 0 {
+						break
+					}
+				}
+				if depth == 0 {
+					break
+				}
+				j++
+			}
+			if depth != 0 {
+				return nil, fmt.Errorf("template literal: unbalanced ${ at line %d", loc.Line)
+			}
+			exprSrc := raw[i+2 : j]
+			// Re-parse the expression source using a fresh parser.
+			sub, err := NewFromString(exprSrc)
+			if err != nil {
+				return nil, err
+			}
+			expr, err := sub.parseExpression()
+			if err != nil {
+				return nil, fmt.Errorf("template literal expression %q: %w", exprSrc, err)
+			}
+			exprs = append(exprs, expr)
+			i = j + 1
+			continue
+		}
+		quasi.WriteByte(raw[i])
+		i++
+	}
+	quasis = append(quasis, quasi.String())
+	return &ast.TemplateLit{Quasis: quasis, Expressions: exprs, Loc: loc}, nil
+}
+
+func (p *Parser) parsePrimary() (ast.Expression, error) {
+	t := p.peek()
+	switch t.Type {
+	case lexer.TokenNumber:
+		p.next()
+		val, _ := parseNumberLiteral(t.Value)
+		return &ast.NumberLit{Value: val, Raw: t.Value, Loc: posOf(t)}, nil
+	case lexer.TokenString:
+		p.next()
+		return &ast.StringLit{Value: t.Value, Loc: posOf(t)}, nil
+	case lexer.TokenTemplate:
+		p.next()
+		return p.parseTemplateLit(t.Value, posOf(t))
+	case lexer.TokenRegex:
+		p.next()
+		return &ast.RegexLit{Pattern: t.Value, Flags: t.RegexFlags, Loc: posOf(t)}, nil
+	case lexer.TokenIdent:
+		p.next()
+		return &ast.Identifier{Name: t.Value, Loc: posOf(t)}, nil
+	case lexer.TokenKeyword:
+		switch t.Value {
+		case "true":
+			p.next()
+			return &ast.BoolLit{Value: true, Loc: posOf(t)}, nil
+		case "false":
+			p.next()
+			return &ast.BoolLit{Value: false, Loc: posOf(t)}, nil
+		case "null":
+			p.next()
+			return &ast.NullLit{Loc: posOf(t)}, nil
+		case "undefined":
+			p.next()
+			return &ast.UndefinedLit{Loc: posOf(t)}, nil
+		case "this":
+			p.next()
+			return &ast.ThisExpr{Loc: posOf(t)}, nil
+		case "super":
+			p.next()
+			return &ast.SuperExpr{Loc: posOf(t)}, nil
+		case "function":
+			return p.parseFunctionExpr()
+		case "new":
+			return p.parseNew()
+		}
+	case lexer.TokenPunct:
+		switch t.Value {
+		case "(":
+			return p.parseParenOrSequence()
+		case "[":
+			return p.parseArrayLit()
+		case "{":
+			return p.parseObjectLit()
+		}
+	}
+	return nil, p.errorf(t, "unexpected token %q", t.Value)
+}
+
+func (p *Parser) parseFunctionExpr() (ast.Expression, error) {
+	t := p.next() // function
+	var name *ast.Identifier
+	if p.peek().Type == lexer.TokenIdent {
+		nameTok := p.next()
+		name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+	}
+	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.FunctionExpr{Name: name, Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(t)}, nil
+}
+
+func (p *Parser) parseNew() (ast.Expression, error) {
+	t := p.next() // new
+	// new.target
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "." {
+		p.next()
+		if _, err := p.expect(lexer.TokenIdent, "target"); err != nil {
+			return nil, err
+		}
+		return &ast.NewTargetExpr{Loc: posOf(t)}, nil
+	}
+	// Parse the constructor callee: a primary expression followed by
+	// member access (`.prop` / `[expr]`). Call parens `(args)` are NOT
+	// consumed here — they belong to the NewExpr.Arguments below. This
+	// matches JS `new` precedence where `new Foo()` is a constructor call
+	// (not `new (Foo())`).
+	var callee ast.Expression
+	var err error
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+		// Parenthesized callee: new (expr)()
+		p.next()
+		callee, err = p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expectPunct(")"); err != nil {
+			return nil, err
+		}
+	} else {
+		callee, err = p.parsePrimary()
+		if err != nil {
+			return nil, err
+		}
+	}
+	callee, err = p.parseMemberTail(callee)
+	if err != nil {
+		return nil, err
+	}
+	var args []ast.Expression
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+		args, err = p.parseArgs()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &ast.NewExpr{Callee: callee, Arguments: args, Loc: posOf(t)}, nil
+}
+
+func (p *Parser) parseParenOrSequence() (ast.Expression, error) {
+	t := p.peek()
+	p.next() // (
+	expr, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, err
+	}
+	// 若是单表达式则直接返回，否则包为 SequenceExpr
+	if seq, ok := expr.(*ast.SequenceExpr); ok {
+		return seq, nil
+	}
+	_ = t
+	return expr, nil
+}
+
+func (p *Parser) parseArrayLit() (ast.Expression, error) {
+	t := p.peek()
+	p.next() // [
+	arr := &ast.ArrayLit{Loc: posOf(t)}
+	for !(p.peek().Type == lexer.TokenPunct && p.peek().Value == "]") {
+		if p.peek().Type == lexer.TokenEOF {
+			return nil, p.errorf(p.peek(), "unterminated array literal")
+		}
+		// hole
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "," {
+			arr.Elements = append(arr.Elements, nil)
+			p.next()
+			continue
+		}
+		if p.matchPunct("...") {
+			expr, err := p.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			arr.Elements = append(arr.Elements, &ast.SpreadElement{Arg: expr, Loc: posOf(p.peek())})
+		} else {
+			expr, err := p.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			arr.Elements = append(arr.Elements, expr)
+		}
+		if !p.matchPunct(",") {
+			break
+		}
+	}
+	if err := p.expectPunct("]"); err != nil {
+		return nil, err
+	}
+	return arr, nil
+}
+
+func (p *Parser) parseObjectLit() (ast.Expression, error) {
+	t := p.peek()
+	p.next() // {
+	obj := &ast.ObjectLit{Loc: posOf(t)}
+	for !(p.peek().Type == lexer.TokenPunct && p.peek().Value == "}") {
+		if p.peek().Type == lexer.TokenEOF {
+			return nil, p.errorf(p.peek(), "unterminated object literal")
+		}
+		// spread
+		if p.matchPunct("...") {
+			expr, err := p.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			obj.Properties = append(obj.Properties, ast.Property{Value: expr, Kind: ast.PropertySpread, Loc: posOf(t)})
+		} else {
+			propTok := p.peek()
+			var key ast.Expression
+			switch propTok.Type {
+			case lexer.TokenIdent, lexer.TokenKeyword:
+				p.next()
+				key = &ast.Identifier{Name: propTok.Value, Loc: posOf(propTok)}
+			case lexer.TokenString:
+				p.next()
+				key = &ast.StringLit{Value: propTok.Value, Loc: posOf(propTok)}
+			case lexer.TokenNumber:
+				p.next()
+				v, _ := parseNumberLiteral(propTok.Value)
+				key = &ast.NumberLit{Value: v, Raw: propTok.Value, Loc: posOf(propTok)}
+			case lexer.TokenPunct:
+				if propTok.Value == "[" {
+					p.next()
+					ce, err := p.parseAssignment()
+					if err != nil {
+						return nil, err
+					}
+					if err := p.expectPunct("]"); err != nil {
+						return nil, err
+					}
+					key = ce
+					_ = propTok
+				} else {
+					return nil, p.errorf(propTok, "invalid object key")
+				}
+			default:
+				return nil, p.errorf(propTok, "invalid object key")
+			}
+			// get / set / method shorthand
+			kind := ast.PropertyInit
+			if id, ok := key.(*ast.Identifier); ok {
+				if (id.Name == "get" || id.Name == "set") &&
+					p.peek().Type != lexer.TokenPunct {
+					// 实际是访问器：get prop() {}
+					methodTok := p.next()
+					var methodKey ast.Expression
+					if methodTok.Type == lexer.TokenIdent || methodTok.Type == lexer.TokenKeyword {
+						methodKey = &ast.Identifier{Name: methodTok.Value, Loc: posOf(methodTok)}
+					} else if methodTok.Type == lexer.TokenString {
+						methodKey = &ast.StringLit{Value: methodTok.Value, Loc: posOf(methodTok)}
+					} else {
+						return nil, p.errorf(methodTok, "invalid accessor name")
+					}
+					params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+				if err != nil {
+					return nil, err
+				}
+				fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(methodTok)}
+				if id.Name == "get" {
+						kind = ast.PropertyGet
+					} else {
+						kind = ast.PropertySet
+					}
+					obj.Properties = append(obj.Properties, ast.Property{Key: methodKey, Value: fn, Kind: kind, Loc: posOf(propTok)})
+					if !p.matchPunct(",") {
+						break
+					}
+					continue
+				}
+			}
+			// 普通 init 或 method shorthand
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+				// method shorthand
+			params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+			if err != nil {
+				return nil, err
+			}
+			fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(propTok)}
+				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: fn, Kind: ast.PropertyMethod, Loc: posOf(propTok)})
+			} else if p.matchPunct(":") {
+				val, err := p.parseAssignment()
+				if err != nil {
+					return nil, err
+				}
+				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: val, Kind: ast.PropertyInit, Loc: posOf(propTok)})
+			} else if id, ok := key.(*ast.Identifier); ok {
+				// shorthand: { x } → { x: x }
+				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: id, Kind: ast.PropertyInit, Loc: posOf(propTok)})
+			} else {
+				return nil, p.errorf(p.peek(), "expected ':' after object key")
+			}
+		}
+		if !p.matchPunct(",") {
+			break
+		}
+	}
+	if err := p.expectPunct("}"); err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
+// === Destructuring patterns ===============================================
+
+// parseArrayPattern parses `[a, b, , c, ...rest]`.
+func (p *Parser) parseArrayPattern() (*ast.ArrayPattern, error) {
+	t := p.peek()
+	p.next() // [
+	pat := &ast.ArrayPattern{Loc: posOf(t)}
+	for !(p.peek().Type == lexer.TokenPunct && p.peek().Value == "]") {
+		if p.peek().Type == lexer.TokenEOF {
+			return nil, p.errorf(p.peek(), "unterminated array pattern")
+		}
+		// hole (elision)
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "," {
+			pat.Elements = append(pat.Elements, ast.ArrayPatternElement{})
+			p.next()
+			continue
+		}
+		var el ast.ArrayPatternElement
+		// rest: ...rest
+		if p.matchPunct("...") {
+			target, err := p.parsePatternTarget()
+			if err != nil {
+				return nil, err
+			}
+			el.Target = target
+			el.IsRest = true
+			pat.Elements = append(pat.Elements, el)
+			break // rest must be last
+		}
+		target, err := p.parsePatternTarget()
+		if err != nil {
+			return nil, err
+		}
+		el.Target = target
+		if p.matchPunct("=") {
+			def, err := p.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			el.Default = def
+		}
+		pat.Elements = append(pat.Elements, el)
+		if !p.matchPunct(",") {
+			break
+		}
+	}
+	if err := p.expectPunct("]"); err != nil {
+		return nil, err
+	}
+	return pat, nil
+}
+
+// parseObjectPattern parses `{a, b: c, ...rest}`.
+func (p *Parser) parseObjectPattern() (*ast.ObjectPattern, error) {
+	t := p.peek()
+	p.next() // {
+	pat := &ast.ObjectPattern{Loc: posOf(t)}
+	for !(p.peek().Type == lexer.TokenPunct && p.peek().Value == "}") {
+		if p.peek().Type == lexer.TokenEOF {
+			return nil, p.errorf(p.peek(), "unterminated object pattern")
+		}
+		var prop ast.ObjectPatternProperty
+		// rest: ...rest
+		if p.matchPunct("...") {
+			target, err := p.parsePatternTarget()
+			if err != nil {
+				return nil, err
+			}
+			prop.Value = target
+			prop.IsRest = true
+			pat.Properties = append(pat.Properties, prop)
+			break // rest must be last
+		}
+		// key
+		keyTok := p.peek()
+		var key ast.Expression
+		switch keyTok.Type {
+		case lexer.TokenIdent, lexer.TokenKeyword:
+			p.next()
+			key = &ast.Identifier{Name: keyTok.Value, Loc: posOf(keyTok)}
+		case lexer.TokenString:
+			p.next()
+			key = &ast.StringLit{Value: keyTok.Value, Loc: posOf(keyTok)}
+		case lexer.TokenNumber:
+			p.next()
+			v, _ := parseNumberLiteral(keyTok.Value)
+			key = &ast.NumberLit{Value: v, Raw: keyTok.Value, Loc: posOf(keyTok)}
+		default:
+			return nil, p.errorf(keyTok, "invalid property name in object pattern")
+		}
+		prop.Key = key
+		if p.matchPunct(":") {
+			// renamed binding: key: target [= default]
+			target, err := p.parsePatternTarget()
+			if err != nil {
+				return nil, err
+			}
+			prop.Value = target
+			if p.matchPunct("=") {
+				def, err := p.parseAssignment()
+				if err != nil {
+					return nil, err
+				}
+				prop.Default = def
+			}
+		} else if p.matchPunct("=") {
+			// shorthand with default: name = default
+			prop.Value = &ast.Identifier{Name: keyTok.Value, Loc: posOf(keyTok)}
+			def, err := p.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			prop.Default = def
+		} else {
+			// shorthand: { x } → { x: x }
+			prop.Value = &ast.Identifier{Name: keyTok.Value, Loc: posOf(keyTok)}
+		}
+		pat.Properties = append(pat.Properties, prop)
+		if !p.matchPunct(",") {
+			break
+		}
+	}
+	if err := p.expectPunct("}"); err != nil {
+		return nil, err
+	}
+	return pat, nil
+}
+
+// parsePatternTarget parses the target of a binding: identifier or nested pattern.
+func (p *Parser) parsePatternTarget() (ast.Pattern, error) {
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "[" {
+		return p.parseArrayPattern()
+	}
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
+		return p.parseObjectPattern()
+	}
+	nameTok, err := p.expect(lexer.TokenIdent, "")
+	if err != nil {
+		return nil, err
+	}
+	return &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}, nil
+}
+
+// parseNumberLiteral 解析数字字面量字符串为 float64。
+// 支持：十进制、十六进制(0x)、八进制(0o)、二进制(0b)、科学计数法、数字分隔符。
+func parseNumberLiteral(s string) (float64, error) {
+	// 去除数字分隔符
+	clean := ""
+	for i := 0; i < len(s); i++ {
+		if s[i] != '_' {
+			clean += string(s[i])
+		}
+	}
+	// 十六进制
+	if len(clean) >= 2 && clean[0] == '0' && (clean[1] == 'x' || clean[1] == 'X') {
+		var n int64
+		_, err := fmt.Sscanf(clean[2:], "%x", &n)
+		return float64(n), err
+	}
+	// 八进制
+	if len(clean) >= 2 && clean[0] == '0' && (clean[1] == 'o' || clean[1] == 'O') {
+		var n int64
+		_, err := fmt.Sscanf(clean[2:], "%o", &n)
+		return float64(n), err
+	}
+	// 二进制
+	if len(clean) >= 2 && clean[0] == '0' && (clean[1] == 'b' || clean[1] == 'B') {
+		var n int64
+		_, err := fmt.Sscanf(clean[2:], "%b", &n)
+		return float64(n), err
+	}
+	var f float64
+	_, err := fmt.Sscanf(clean, "%g", &f)
+	return f, err
+}

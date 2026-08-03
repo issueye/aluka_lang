@@ -144,20 +144,21 @@ func (s stringValue) AsFunction() (Function, bool) { return nil, false }
 
 // --- object ----------------------------------------------------------------
 
-// objectValue 是 JS Object 的最小实现：map + 插入顺序。
+// objectValue is the minimal JS Object implementation: map + insertion order.
 type objectValue struct {
-	keys   []string         // 插入顺序
-	values map[string]Value // 属性表
+	keys   []string         // insertion order
+	values map[string]Value // property table
+	proto  Object           // [[Prototype]]
 }
 
-// NewObject 创建一个空 JS 对象。
+// NewObject creates an empty JS object.
 func NewObject() Object {
 	return &objectValue{
 		values: make(map[string]Value),
 	}
 }
 
-// NewObjectFrom 从 map 创建对象（顺序随机）。
+// NewObjectFrom creates an object from a map (random order).
 func NewObjectFrom(m map[string]Value) Object {
 	o := &objectValue{values: make(map[string]Value, len(m))}
 	for k, v := range m {
@@ -165,6 +166,45 @@ func NewObjectFrom(m map[string]Value) Object {
 		o.values[k] = v
 	}
 	return o
+}
+
+// Proto returns the [[Prototype]] of the object (may be nil).
+func (o *objectValue) Proto() Object { return o.proto }
+
+// SetProto sets the [[Prototype]] of the object.
+func (o *objectValue) SetProto(p Object) { o.proto = p }
+
+// SetProto sets the [[Prototype]] on any value whose concrete type supports it.
+func SetProto(obj Value, proto Object) {
+	if o, ok := obj.(*objectValue); ok {
+		o.proto = proto
+	} else if a, ok := obj.(*ArrayValue); ok {
+		if a.objectValue != nil {
+			a.objectValue.proto = proto
+		}
+	} else if f, ok := obj.(*functionValue); ok {
+		if f.objectValue != nil {
+			f.objectValue.proto = proto
+		}
+	}
+}
+
+// GetProto returns the [[Prototype]] of the value, or nil if not available.
+func GetProto(obj Value) Object {
+	if o, ok := obj.(*objectValue); ok {
+		return o.proto
+	}
+	if a, ok := obj.(*ArrayValue); ok {
+		if a.objectValue != nil {
+			return a.objectValue.proto
+		}
+	}
+	if f, ok := obj.(*functionValue); ok {
+		if f.objectValue != nil {
+			return f.objectValue.proto
+		}
+	}
+	return nil
 }
 
 func (o *objectValue) Type() ValueType { return TypeObject }
@@ -199,8 +239,17 @@ func (o *objectValue) AsObject() (Object, bool)     { return o, true }
 func (o *objectValue) AsFunction() (Function, bool) { return nil, false }
 
 func (o *objectValue) Get(key string) (Value, error) {
-	if v, ok := o.values[key]; ok {
-		return v, nil
+	// Walk own + prototype chain.
+	cur := o
+	for cur != nil {
+		if v, ok := cur.values[key]; ok {
+			return v, nil
+		}
+		if p, ok := cur.proto.(*objectValue); ok {
+			cur = p
+		} else {
+			break
+		}
 	}
 	return Undefined(), nil
 }
@@ -217,6 +266,23 @@ func (o *objectValue) Keys() []string {
 	out := make([]string, len(o.keys))
 	copy(out, o.keys)
 	return out
+}
+
+// Delete removes an own property. Returns true if the property was removed or
+// did not exist; false only if the property is non-configurable (not modelled
+// here, so always true).
+func (o *objectValue) Delete(key string) bool {
+	if _, exists := o.values[key]; !exists {
+		return true // property doesn't exist — delete returns true
+	}
+	delete(o.values, key)
+	for i, k := range o.keys {
+		if k == key {
+			o.keys = append(o.keys[:i], o.keys[i+1:]...)
+			break
+		}
+	}
+	return true
 }
 
 // --- array -----------------------------------------------------------------
@@ -313,6 +379,12 @@ func (a *ArrayValue) Keys() []string {
 
 // Elems 返回数组元素切片（只读视图）。
 func (a *ArrayValue) Elems() []Value { return a.elems }
+
+// Append appends a value to the array and updates the length property.
+func (a *ArrayValue) Append(v Value) {
+	a.elems = append(a.elems, v)
+	a.values["length"] = IntValue(len(a.elems))
+}
 
 // --- function --------------------------------------------------------------
 
