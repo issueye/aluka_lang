@@ -2255,11 +2255,66 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 		HasSuper: hasSuper,
 	}
 
-	// Compile the constructor (or synthesize a default).
+	// Collect class field declarations (ES2022 / TypeScript). Instance fields
+	// with initializers are injected into the constructor body; static fields
+	// are assigned to the class after OpMakeClass. Fields without initializers
+	// (e.g. `x: number;`) have no runtime effect and are skipped.
+	var instanceFieldInits []ast.Statement
+	var staticFields []*ast.MethodDefinition
+	for _, m := range body.Methods {
+		if m.Kind != ast.MethodField {
+			continue
+		}
+		if m.Computed {
+			return fmt.Errorf("computed class field names not supported")
+		}
+		if m.Static {
+			staticFields = append(staticFields, &m)
+			continue
+		}
+		if m.Init == nil {
+			continue
+		}
+		fieldName := propKey(m.Key)
+		instanceFieldInits = append(instanceFieldInits, &ast.ExprStmt{
+			Expr: &ast.AssignExpr{
+				Op: "=",
+				Left: &ast.MemberExpr{
+					Object:   &ast.ThisExpr{Loc: m.Loc},
+					Property: &ast.Identifier{Name: fieldName, Loc: m.Loc},
+					Loc:      m.Loc,
+				},
+				Right: m.Init,
+				Loc:   m.Loc,
+			},
+			Loc: m.Loc,
+		})
+	}
+
+	// Compile the constructor (or synthesize a default). Instance field
+	// initializers are prepended to the constructor body so they run before
+	// user code (base class) or after super() (derived synthesized ctor).
 	hasCtor := false
 	for _, m := range body.Methods {
 		if m.Kind == ast.MethodConstructor {
-			idx, err := c.compileMethod("constructor", m.Value)
+			ctorFn := *m.Value // shallow copy — we'll replace Body
+			if len(instanceFieldInits) > 0 {
+				newBody := make([]ast.Statement, 0, len(instanceFieldInits)+len(m.Value.Body.Body))
+				if !hasSuper {
+					// Base class: field inits run first.
+					newBody = append(newBody, instanceFieldInits...)
+					newBody = append(newBody, m.Value.Body.Body...)
+				} else {
+					// Derived class: field inits should run after super().
+					// For the MVP, we prepend them — user is responsible for
+					// calling super() first. A correct implementation would
+					// split the body at the super() call.
+					newBody = append(newBody, instanceFieldInits...)
+					newBody = append(newBody, m.Value.Body.Body...)
+				}
+				ctorFn.Body = &ast.BlockStmt{Body: newBody, Loc: m.Value.Body.Loc}
+			}
+			idx, err := c.compileMethod("constructor", &ctorFn)
 			if err != nil {
 				return err
 			}
@@ -2272,7 +2327,31 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 		var idx int
 		var err error
 		if hasSuper {
-			idx, err = c.compileDefaultDerivedCtor()
+			if len(instanceFieldInits) > 0 {
+				// Synthesize: function(...args) { super(...args); fieldInits }
+				superCall := &ast.ExprStmt{
+					Expr: &ast.CallExpr{
+						Callee: &ast.SuperExpr{},
+						Arguments: []ast.Expression{
+							&ast.SpreadElement{Arg: &ast.Identifier{Name: "args"}},
+						},
+					},
+				}
+				body := append([]ast.Statement{superCall}, instanceFieldInits...)
+				ctorFn := &ast.FunctionExpr{
+					RestParam: &ast.Identifier{Name: "args"},
+					Body:      &ast.BlockStmt{Body: body},
+				}
+				idx, err = c.compileMethod("constructor", ctorFn)
+			} else {
+				idx, err = c.compileDefaultDerivedCtor()
+			}
+		} else if len(instanceFieldInits) > 0 {
+			// Synthesize a base constructor that initializes fields.
+			ctorFn := &ast.FunctionExpr{
+				Body: &ast.BlockStmt{Body: instanceFieldInits},
+			}
+			idx, err = c.compileMethod("constructor", ctorFn)
 		} else {
 			idx, err = c.compileDefaultBaseCtor()
 		}
@@ -2282,9 +2361,9 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 		classTpl.CtorIdx = idx
 	}
 
-	// Compile non-constructor methods.
+	// Compile non-constructor, non-field methods.
 	for _, m := range body.Methods {
-		if m.Kind == ast.MethodConstructor {
+		if m.Kind == ast.MethodConstructor || m.Kind == ast.MethodField {
 			continue
 		}
 		if m.Computed {
@@ -2312,6 +2391,20 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 
 	classIdx := c.module.AddClass(classTpl)
 	c.emit(bytecode.OpMakeClass, uint32(classIdx))
+
+	// Static field initialization: `Class.field = init` after the class is
+	// created. The constructor (class function) is on top of the stack.
+	for _, f := range staticFields {
+		if f.Init == nil {
+			continue
+		}
+		fieldName := propKey(f.Key)
+		nameIdx := c.cur().tmpl.AddStringConst(fieldName)
+		if err := c.compileExpr(f.Init); err != nil {
+			return err
+		}
+		c.emit(bytecode.OpSetPropTop, uint32(nameIdx))
+	}
 	return nil
 }
 

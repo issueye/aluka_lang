@@ -161,6 +161,12 @@ func (p *Parser) parseProgram() (*ast.Program, error) {
 // === 语句解析 ============================================================
 
 func (p *Parser) parseStatement() (ast.Statement, error) {
+	// TypeScript: skip leading `@decorator` expressions on declarations.
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "@" {
+		if err := p.skipDecorators(); err != nil {
+			return nil, err
+		}
+	}
 	t := p.peek()
 	switch t.Type {
 	case lexer.TokenPunct:
@@ -214,6 +220,31 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 		case "debugger":
 			p.next()
 			return &ast.EmptyStmt{Loc: posOf(t)}, nil
+		}
+	case lexer.TokenIdent:
+		// TypeScript contextual-keyword declarations.
+		switch t.Value {
+		case "interface":
+			return p.parseInterfaceDecl()
+		case "enum":
+			return p.parseEnumDecl()
+		case "namespace":
+			return p.parseNamespaceDecl()
+		case "type":
+			// `type X = ...;` is a type alias. But `type` can also be a
+			// regular identifier (e.g. `type === 'foo'`). Only treat as a
+			// type alias when followed by an identifier and `=`.
+			next := p.peekAt(1)
+			if next.Type == lexer.TokenIdent {
+				after := p.peekAt(2)
+				if after.Type == lexer.TokenPunct && after.Value == "=" {
+					return p.parseTypeAliasDecl()
+				}
+				// `type X<T> = ...` (generic type alias)
+				if after.Type == lexer.TokenPunct && after.Value == "<" {
+					return p.parseTypeAliasDecl()
+				}
+			}
 		}
 	}
 	// 表达式语句
@@ -288,6 +319,10 @@ func (p *Parser) parseVarDeclarator() (ast.VarDeclarator, error) {
 		}
 		vd.Name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
 	}
+	// TypeScript: optional type annotation `: T`.
+	if err := p.parseTypeAnnotation(); err != nil {
+		return vd, err
+	}
 	if p.matchPunct("=") {
 		expr, err := p.parseAssignment()
 		if err != nil {
@@ -316,6 +351,10 @@ func (p *Parser) parseFunctionDecl(isExpr bool) (*ast.FunctionDecl, error) {
 		name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
 	} else if !isExpr {
 		return nil, p.errorf(p.peek(), "function declaration requires a name")
+	}
+	// TypeScript: skip generic type parameters `<T, U extends X, R = D>`.
+	if err := p.skipTypeParameters(); err != nil {
+		return nil, err
 	}
 	p.genStack = append(p.genStack, isGenerator)
 	p.asyncStack = append(p.asyncStack, isAsync)
@@ -357,6 +396,10 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Expression, 
 					return nil, nil, nil, nil, err
 				}
 				rest = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+				// TypeScript: rest param type annotation `: T[]`
+				if err := p.parseTypeAnnotation(); err != nil {
+					return nil, nil, nil, nil, err
+				}
 				break // rest must be the last parameter
 			}
 			nameTok, err := p.expect(lexer.TokenIdent, "")
@@ -364,6 +407,13 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Expression, 
 				return nil, nil, nil, nil, err
 			}
 			params = append(params, &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)})
+			// TypeScript: optional `?` marker (param?: T) and type annotation.
+			if p.matchPunct("?") {
+				// optional parameter marker — just consume
+			}
+			if err := p.parseTypeAnnotation(); err != nil {
+				return nil, nil, nil, nil, err
+			}
 			// ES2015 default value: `name = expr`
 			if p.matchPunct("=") {
 				def, err := p.parseAssignment()
@@ -380,6 +430,10 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Expression, 
 		}
 	}
 	if err := p.expectPunct(")"); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	// TypeScript: optional return type annotation `: T` before the body.
+	if err := p.parseTypeAnnotation(); err != nil {
 		return nil, nil, nil, nil, err
 	}
 	body, err := p.parseBlock()
@@ -1040,6 +1094,10 @@ func (p *Parser) parseArrowWithParens() (ast.Expression, bool, error) {
 					return nil, true, err
 				}
 				rest = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+				// TypeScript: rest param type annotation `: T[]`
+				if err := p.parseTypeAnnotation(); err != nil {
+					return nil, true, err
+				}
 				break // rest must be last
 			}
 			nameTok, err := p.expect(lexer.TokenIdent, "")
@@ -1047,6 +1105,13 @@ func (p *Parser) parseArrowWithParens() (ast.Expression, bool, error) {
 				return nil, true, err
 			}
 			params = append(params, &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)})
+			// TypeScript: optional `?` marker and type annotation.
+			if p.matchPunct("?") {
+				// optional parameter marker
+			}
+			if err := p.parseTypeAnnotation(); err != nil {
+				return nil, true, err
+			}
 			// ES2015 default value: `name = expr`
 			if p.matchPunct("=") {
 				def, err := p.parseAssignment()
@@ -1063,6 +1128,10 @@ func (p *Parser) parseArrowWithParens() (ast.Expression, bool, error) {
 		}
 	}
 	if err := p.expectPunct(")"); err != nil {
+		return nil, true, err
+	}
+	// TypeScript: optional return type annotation `: T` before `=>`.
+	if err := p.parseTypeAnnotation(); err != nil {
 		return nil, true, err
 	}
 	if err := p.expectPunct("=>"); err != nil {
@@ -1099,6 +1168,19 @@ func (p *Parser) parseConditional() (ast.Expression, error) {
 	test, err := p.parseBinary(0)
 	if err != nil {
 		return nil, err
+	}
+	// TypeScript: `expr as T` / `expr as const` / `expr satisfies T` — strip
+	// the type assertion, keeping only the expression.
+	for {
+		t := p.peek()
+		if t.Type == lexer.TokenIdent && (t.Value == "as" || t.Value == "satisfies") {
+			p.next()
+			if err := p.skipType(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		break
 	}
 	if !p.matchPunct("?") {
 		return test, nil
@@ -1251,6 +1333,10 @@ func (p *Parser) parseCallMember() (ast.Expression, error) {
 		return nil, err
 	}
 	for {
+		// TypeScript: skip generic type arguments before a call, e.g.
+		// `foo<T>(arg)` or `obj.method<T>(arg)`. Backtrack if the `<...>`
+		// isn't followed by `(` (it might be a less-than comparison).
+		p.trySkipTypeArgs()
 		t := p.peek()
 		if t.Type == lexer.TokenPunct && t.Value == "(" {
 			args, err := p.parseArgs()
@@ -1510,6 +1596,29 @@ func (p *Parser) parseFunctionExpr() (ast.Expression, error) {
 //	import x, * as ns from 'mod'
 func (p *Parser) parseImportDecl() (ast.Statement, error) {
 	t := p.next() // consume 'import'
+
+	// TypeScript: `import type ...` — the entire import is type-only and
+	// should be erased. Parse and discard it, returning an EmptyStmt.
+	if p.peek().Type == lexer.TokenIdent && p.peek().Value == "type" {
+		// `import type x from 'mod'` / `import type { a } from 'mod'` /
+		// `import type * as ns from 'mod'`
+		p.next() // consume 'type'
+		// Parse the rest as a normal import, then discard.
+		tmp, err := p.parseImportDeclRest(t)
+		if err != nil {
+			return nil, err
+		}
+		_ = tmp
+		return &ast.EmptyStmt{Loc: posOf(t)}, nil
+	}
+
+	return p.parseImportDeclRest(t)
+}
+
+// parseImportDeclRest parses the specifier list + `from 'mod'` part of an
+// import declaration (after the leading `import` [and optional `type`] has
+// been consumed).
+func (p *Parser) parseImportDeclRest(t lexer.Token) (*ast.ImportDecl, error) {
 	decl := &ast.ImportDecl{Loc: posOf(t)}
 
 	// Side-effect-only import: import 'mod'
@@ -1550,8 +1659,19 @@ func (p *Parser) parseImportDecl() (ast.Statement, error) {
 			})
 		} else if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
 			// Named imports: import {a, b as c} from 'mod'
+			// TypeScript: {type a, b, type c as d} — `type` prefix marks
+			// type-only specifiers which are erased.
 			p.next() // consume '{'
 			for {
+				// TypeScript: `type` prefix on individual specifiers.
+				isTypeSpec := false
+				if p.peek().Type == lexer.TokenIdent && p.peek().Value == "type" {
+					nx := p.peekAt(1)
+					if nx.Type == lexer.TokenIdent || nx.Type == lexer.TokenString {
+						isTypeSpec = true
+						p.next() // consume 'type'
+					}
+				}
 				nameTok, err := p.expect(lexer.TokenIdent, "")
 				if err != nil {
 					return nil, err
@@ -1565,7 +1685,10 @@ func (p *Parser) parseImportDecl() (ast.Statement, error) {
 					}
 					spec.Local = localTok.Value
 				}
-				decl.Specifiers = append(decl.Specifiers, spec)
+				// Type-only specifiers are dropped (erased).
+				if !isTypeSpec {
+					decl.Specifiers = append(decl.Specifiers, spec)
+				}
 				if !p.matchPunct(",") {
 					break
 				}
@@ -1626,6 +1749,49 @@ func (p *Parser) parseStringLiteral() (string, error) {
 func (p *Parser) parseExportDecl() (ast.Statement, error) {
 	t := p.next() // consume 'export'
 
+	// TypeScript: skip decorators between `export` and the declaration,
+	// e.g. `export @dec class C {}`.
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "@" {
+		if err := p.skipDecorators(); err != nil {
+			return nil, err
+		}
+	}
+
+	// TypeScript: `export type ...` — type-only export, erase it.
+	if p.peek().Type == lexer.TokenIdent && p.peek().Value == "type" {
+		p.next() // consume 'type'
+		// `export type { a, b as c } [from 'mod']` — parse and discard.
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
+			if err := p.skipBalanced("{", "}"); err != nil {
+				return nil, err
+			}
+			if p.matchIdent("from") {
+				if _, err := p.parseStringLiteral(); err != nil {
+					return nil, err
+				}
+			}
+			if err := p.consumeSemicolon(); err != nil {
+				return nil, err
+			}
+			return &ast.EmptyStmt{Loc: posOf(t)}, nil
+		}
+		// `export type * from 'mod'` (rare) — discard.
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "*" {
+			p.next()
+			if p.matchIdent("from") {
+				if _, err := p.parseStringLiteral(); err != nil {
+					return nil, err
+				}
+			}
+			if err := p.consumeSemicolon(); err != nil {
+				return nil, err
+			}
+			return &ast.EmptyStmt{Loc: posOf(t)}, nil
+		}
+		// Anything else after `export type` is invalid; fall through to error.
+		return nil, p.errorf(p.peek(), "unexpected token %q after 'export type'", p.peek().Value)
+	}
+
 	// export default ...
 	if p.matchKeyword("default") {
 		expr, err := p.parseAssignment()
@@ -1661,6 +1827,15 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 		p.next() // consume '{'
 		decl := &ast.ExportDecl{Loc: posOf(t)}
 		for {
+			// TypeScript: `type` prefix on individual specifiers — erase them.
+			isTypeSpec := false
+			if p.peek().Type == lexer.TokenIdent && p.peek().Value == "type" {
+				nx := p.peekAt(1)
+				if nx.Type == lexer.TokenIdent || nx.Type == lexer.TokenString {
+					isTypeSpec = true
+					p.next() // consume 'type'
+				}
+			}
 			nameTok, err := p.expect(lexer.TokenIdent, "")
 			if err != nil {
 				return nil, err
@@ -1673,7 +1848,10 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 				}
 				spec.Exported = exportedTok.Value
 			}
-			decl.Specifiers = append(decl.Specifiers, spec)
+			// Type-only specifiers are dropped (erased).
+			if !isTypeSpec {
+				decl.Specifiers = append(decl.Specifiers, spec)
+			}
 			if !p.matchPunct(",") {
 				break
 			}
@@ -1743,6 +1921,10 @@ func (p *Parser) parseClassDecl() (ast.Statement, error) {
 	} else {
 		return nil, p.errorf(p.peek(), "class declaration requires a name")
 	}
+	// TypeScript: skip generic type parameters `<T, U>`.
+	if err := p.skipTypeParameters(); err != nil {
+		return nil, err
+	}
 	super, body, err := p.parseClassTail()
 	if err != nil {
 		return nil, err
@@ -1757,6 +1939,10 @@ func (p *Parser) parseClassExpr() (ast.Expression, error) {
 	if p.peek().Type == lexer.TokenIdent {
 		nameTok := p.next()
 		name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+	}
+	// TypeScript: skip generic type parameters `<T, U>`.
+	if err := p.skipTypeParameters(); err != nil {
+		return nil, err
 	}
 	super, body, err := p.parseClassTail()
 	if err != nil {
@@ -1774,12 +1960,51 @@ func (p *Parser) parseClassTail() (ast.Expression, *ast.ClassBody, error) {
 			return nil, nil, err
 		}
 		super = s
+		// TypeScript: skip `implements I1, I2, ...` clauses.
+		if err := p.skipImplementsClause(); err != nil {
+			return nil, nil, err
+		}
+	} else {
+		// TypeScript: `implements` can appear without `extends`.
+		if err := p.skipImplementsClause(); err != nil {
+			return nil, nil, err
+		}
 	}
 	body, err := p.parseClassBody()
 	if err != nil {
 		return nil, nil, err
 	}
 	return super, body, nil
+}
+
+// skipImplementsClause skips a TypeScript `implements I1, I2, ...` clause.
+func (p *Parser) skipImplementsClause() error {
+	if p.peek().Type != lexer.TokenIdent || p.peek().Value != "implements" {
+		return nil
+	}
+	p.next() // consume 'implements'
+	for {
+		// Skip one type reference (with optional generic args).
+		if _, err := p.expect(lexer.TokenIdent, ""); err != nil {
+			return err
+		}
+		// Qualified name / generic args
+		for p.peek().Type == lexer.TokenPunct && p.peek().Value == "." {
+			p.next()
+			if _, err := p.expect(lexer.TokenIdent, ""); err != nil {
+				return err
+			}
+		}
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "<" {
+			if err := p.skipAngleBraces(); err != nil {
+				return err
+			}
+		}
+		if !p.matchPunct(",") {
+			break
+		}
+	}
+	return nil
 }
 
 // parseClassBody parses `{ members }` for a class.
@@ -1815,6 +2040,11 @@ func (p *Parser) parseClassBody() (*ast.ClassBody, error) {
 // parseClassMember parses a single class member: an optional `static` prefix,
 // then either a `get`/`set` accessor, a `constructor`, or a normal method.
 func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
+	// TypeScript: skip leading `@decorator` expressions (parsed and discarded).
+	if err := p.skipDecorators(); err != nil {
+		var def ast.MethodDefinition
+		return def, err
+	}
 	t := p.peek()
 	var def ast.MethodDefinition
 	def.Loc = posOf(t)
@@ -1896,6 +2126,37 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 		}
 	}
 
+	// TypeScript: optional `?` (optional member) or `!` (definite assignment)
+	// markers after the key, before `(` / `:` / `=` / `;`.
+	if p.peek().Type == lexer.TokenPunct && (p.peek().Value == "?" || p.peek().Value == "!") {
+		p.next() // consume ? or !
+	}
+
+	// Distinguish method (`(`) from field declaration (`:` / `=` / `;`).
+	if p.peek().Type != lexer.TokenPunct || p.peek().Value != "(" {
+		// Class field declaration: `[static] key [: T] [= init] ;`
+		// TypeScript: skip optional type annotation.
+		if err := p.parseTypeAnnotation(); err != nil {
+			return def, err
+		}
+		var initExpr ast.Expression
+		if p.matchPunct("=") {
+			init, err := p.parseAssignment()
+			if err != nil {
+				return def, err
+			}
+			initExpr = init
+		}
+		if err := p.consumeSemicolon(); err != nil {
+			return def, err
+		}
+		def.Key = key
+		def.Kind = ast.MethodField
+		def.Computed = computed
+		def.Init = initExpr
+		return def, nil
+	}
+
 	// Parse the method body using the standard function-params-and-body rule.
 	p.asyncStack = append(p.asyncStack, isAsync)
 	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
@@ -1955,6 +2216,8 @@ func (p *Parser) parseNew() (ast.Expression, error) {
 	if err != nil {
 		return nil, err
 	}
+	// TypeScript: skip generic type arguments on `new`, e.g. `new Box<T>(v)`.
+	p.trySkipTypeArgs()
 	var args []ast.Expression
 	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
 		args, err = p.parseArgs()
@@ -2331,4 +2594,797 @@ func parseNumberLiteral(s string) (float64, error) {
 	var f float64
 	_, err := fmt.Sscanf(clean, "%g", &f)
 	return f, err
+}
+
+// === TypeScript declarations (interface / type / enum / namespace) ========
+
+// parseInterfaceDecl skips a TypeScript `interface Name extends ... { members }`
+// declaration — interfaces are compile-time only and produce no runtime code.
+func (p *Parser) parseInterfaceDecl() (ast.Statement, error) {
+	t := p.next() // consume 'interface'
+	nameTok, err := p.expect(lexer.TokenIdent, "")
+	if err != nil {
+		return nil, err
+	}
+	_ = nameTok
+	// Optional generic type params: interface Foo<T> { ... }
+	if err := p.skipTypeParameters(); err != nil {
+		return nil, err
+	}
+	// Optional `extends A, B<...>` clause.
+	if p.peek().Type == lexer.TokenKeyword && p.peek().Value == "extends" {
+		p.next()
+		for {
+			if _, err := p.expect(lexer.TokenIdent, ""); err != nil {
+				return nil, err
+			}
+			// Qualified name / generic args
+			for p.peek().Type == lexer.TokenPunct && p.peek().Value == "." {
+				p.next()
+				if _, err := p.expect(lexer.TokenIdent, ""); err != nil {
+					return nil, err
+				}
+			}
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "<" {
+				if err := p.skipAngleBraces(); err != nil {
+					return nil, err
+				}
+			}
+			if !p.matchPunct(",") {
+				break
+			}
+		}
+	}
+	// Body: { members }
+	if err := p.skipBalanced("{", "}"); err != nil {
+		return nil, err
+	}
+	return &ast.EmptyStmt{Loc: posOf(t)}, nil
+}
+
+// parseTypeAliasDecl skips a TypeScript `type Name<T> = SomeType;` declaration
+// — type aliases are compile-time only and produce no runtime code.
+func (p *Parser) parseTypeAliasDecl() (ast.Statement, error) {
+	t := p.next() // consume 'type'
+	if _, err := p.expect(lexer.TokenIdent, ""); err != nil {
+		return nil, err
+	}
+	// Optional generic type params: type Foo<T> = ...
+	if err := p.skipTypeParameters(); err != nil {
+		return nil, err
+	}
+	if err := p.expectPunct("="); err != nil {
+		return nil, err
+	}
+	// Skip the type expression on the right-hand side.
+	if err := p.skipType(); err != nil {
+		return nil, err
+	}
+	if err := p.consumeSemicolon(); err != nil {
+		return nil, err
+	}
+	return &ast.EmptyStmt{Loc: posOf(t)}, nil
+}
+
+// parseEnumDecl parses a TypeScript `enum Name { members }` declaration and
+// lowers it to JavaScript: `var Name; (function(Name) { ... })(Name || (Name = {}));`
+//
+// Numeric members get both forward (Name.Member = N) and reverse (Name[N] = "Member")
+// mappings; string members get forward mapping only.
+func (p *Parser) parseEnumDecl() (ast.Statement, error) {
+	t := p.next() // consume 'enum'
+	// `const enum` — erase entirely (const enums are inlined at usage sites).
+	// Since we don't do inlining, treat const enums as regular enums (generate
+	// the object) to preserve runtime behavior.
+	_ = t
+
+	nameTok, err := p.expect(lexer.TokenIdent, "")
+	if err != nil {
+		return nil, err
+	}
+	enumName := nameTok.Value
+	if err := p.expectPunct("{"); err != nil {
+		return nil, err
+	}
+
+	// Parse members into (name, value) pairs. Values are nil for auto-incremented
+	// numeric members, or ast.Expression for explicit values.
+	type enumMember struct {
+		name  string
+		value ast.Expression // nil = auto-increment
+	}
+	var members []enumMember
+
+	for !(p.peek().Type == lexer.TokenPunct && p.peek().Value == "}") {
+		if p.peek().Type == lexer.TokenEOF {
+			return nil, p.errorf(p.peek(), "unterminated enum body")
+		}
+		// Member name: identifier or string literal
+		memberTok := p.peek()
+		var memberName string
+		if memberTok.Type == lexer.TokenString {
+			p.next()
+			memberName = memberTok.Value
+		} else if memberTok.Type == lexer.TokenIdent || memberTok.Type == lexer.TokenKeyword {
+			p.next()
+			memberName = memberTok.Value
+		} else {
+			return nil, p.errorf(memberTok, "expected enum member name but got %q", memberTok.Value)
+		}
+		// Optional type annotation: `Name: T` (TS 5.0+) — skip.
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == ":" {
+			if err := p.parseTypeAnnotation(); err != nil {
+				return nil, err
+			}
+		}
+		// Optional initializer: `Name = expr`
+		var val ast.Expression
+		if p.matchPunct("=") {
+			v, err := p.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			val = v
+		}
+		members = append(members, enumMember{name: memberName, value: val})
+		if !p.matchPunct(",") {
+			break
+		}
+	}
+	if err := p.expectPunct("}"); err != nil {
+		return nil, err
+	}
+
+	// Lower to JS: build an IIFE that sets properties on the enum object.
+	// var Name;
+	// (function(Name) { Name[Name["M"] = N] = "M"; ... })(Name || (Name = {}));
+	//
+	// For clarity we emit two assignments per numeric member:
+	//   Name["M"] = N; Name[N] = "M";
+	// and one per string member:
+	//   Name["M"] = "value";
+	enumIdent := &ast.Identifier{Name: enumName, Loc: posOf(nameTok)}
+
+	// Build the IIFE body: a block of expression statements.
+	iifeBody := &ast.BlockStmt{Loc: posOf(t)}
+	autoIdx := 0.0
+	for _, m := range members {
+		var valExpr ast.Expression
+		if m.value != nil {
+			valExpr = m.value
+			// Track auto-increment for numeric values.
+			if lit, ok := m.value.(*ast.NumberLit); ok {
+				autoIdx = lit.Value
+			}
+		} else {
+			valExpr = &ast.NumberLit{Value: autoIdx, Raw: fmt.Sprintf("%g", autoIdx), Loc: posOf(t)}
+		}
+
+		// Forward mapping: Name["Member"] = value
+		forwardAssign := &ast.AssignExpr{
+			Left: &ast.MemberExpr{
+				Object:   enumIdent,
+				Property: &ast.StringLit{Value: m.name, Loc: posOf(t)},
+				Computed: true,
+				Loc:      posOf(t),
+			},
+			Op:       "=",
+			Right:    valExpr,
+			Loc:      posOf(t),
+		}
+		iifeBody.Body = append(iifeBody.Body, &ast.ExprStmt{Expr: forwardAssign, Loc: posOf(t)})
+
+		// Reverse mapping only for numeric (auto or explicit number) members.
+		if _, isNum := valExpr.(*ast.NumberLit); isNum {
+			reverseAssign := &ast.AssignExpr{
+				Left: &ast.MemberExpr{
+					Object:   enumIdent,
+					Property: valExpr, // the number literal as key
+					Computed: true,
+					Loc:      posOf(t),
+				},
+				Op:    "=",
+				Right: &ast.StringLit{Value: m.name, Loc: posOf(t)},
+				Loc:      posOf(t),
+			}
+			iifeBody.Body = append(iifeBody.Body, &ast.ExprStmt{Expr: reverseAssign, Loc: posOf(t)})
+			autoIdx++
+		}
+	}
+
+	// Build: (function(Name) { body })(Name || (Name = {}))
+	fnExpr := &ast.FunctionExpr{
+		Params:  []*ast.Identifier{enumIdent},
+		Body:    iifeBody,
+		Loc:     posOf(t),
+	}
+	// Name || (Name = {})
+	innerAssign := &ast.AssignExpr{
+		Left:  enumIdent,
+		Op:    "=",
+		Right: &ast.ObjectLit{Loc: posOf(t)},
+		Loc:   posOf(t),
+	}
+	arg := &ast.LogicalExpr{
+		Op:    "||",
+		Left:  enumIdent,
+		Right: innerAssign,
+		Loc:   posOf(t),
+	}
+	call := &ast.CallExpr{
+		Callee:    fnExpr,
+		Arguments: []ast.Expression{arg},
+		Loc:       posOf(t),
+	}
+
+	// var Name;
+	varDecl := &ast.VarDecl{
+		Kind: "var",
+		Loc:  posOf(t),
+	}
+	varDecl.Decls = append(varDecl.Decls, ast.VarDeclarator{
+		Name: &ast.Identifier{Name: enumName, Loc: posOf(nameTok)},
+	})
+
+	// Wrap both statements in a block.
+	block := &ast.BlockStmt{Loc: posOf(t)}
+	block.Body = append(block.Body, varDecl)
+	block.Body = append(block.Body, &ast.ExprStmt{Expr: call, Loc: posOf(t)})
+	return block, nil
+}
+
+// parseNamespaceDecl parses a TypeScript `namespace Name { body }` declaration
+// and lowers it to: `var Name; (function(Name) { ...body... })(Name || (Name = {}));`
+//
+// Inside the body, `export`-prefixed declarations become assignments to the
+// namespace object (e.g. `export const x = 1` → `Name.x = 1`); non-exported
+// declarations remain local to the IIFE.
+func (p *Parser) parseNamespaceDecl() (ast.Statement, error) {
+	t := p.next() // consume 'namespace'
+	nameTok, err := p.expect(lexer.TokenIdent, "")
+	if err != nil {
+		return nil, err
+	}
+	nsName := nameTok.Value
+	// Parse the body as a block, but strip `export` modifiers.
+	if err := p.expectPunct("{"); err != nil {
+		return nil, err
+	}
+	nsIdent := &ast.Identifier{Name: nsName, Loc: posOf(nameTok)}
+	iifeBody := &ast.BlockStmt{Loc: posOf(t)}
+	for !(p.peek().Type == lexer.TokenPunct && p.peek().Value == "}") {
+		if p.peek().Type == lexer.TokenEOF {
+			return nil, p.errorf(p.peek(), "unterminated namespace body")
+		}
+		if p.matchPunct(";") {
+			continue
+		}
+		// Check for `export` prefix.
+		isExport := false
+		if (p.peek().Type == lexer.TokenIdent || p.peek().Type == lexer.TokenKeyword) && p.peek().Value == "export" {
+			p.next()
+			isExport = true
+		}
+		// Also handle `declare` (ambient declarations) — skip the entire
+		// declaration since it produces no runtime code.
+		if p.peek().Type == lexer.TokenIdent && p.peek().Value == "declare" {
+			p.next()
+			// `declare const x: T;` / `declare function f(): T;` / etc.
+			// Skip until `;` or `}`.
+			for !(p.peek().Type == lexer.TokenPunct && (p.peek().Value == ";" || p.peek().Value == "}")) {
+				if p.peek().Type == lexer.TokenEOF {
+					break
+				}
+				if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
+					if err := p.skipBalanced("{", "}"); err != nil {
+						return nil, err
+					}
+					break
+				}
+				p.next()
+			}
+			p.matchPunct(";")
+			continue
+		}
+
+		stmt, err := p.parseStatement()
+		if err != nil {
+			return nil, err
+		}
+		if isExport {
+			// Transform exported declarations into namespace assignments.
+			// For `export const x = v` → `ns.x = v`
+			// For `export function f() {}` → `ns.f = function f() {}`
+			// For `export class C {}` → `ns.C = class C {}`
+			transformed := p.transformExportedDecl(stmt, nsIdent)
+			if transformed != nil {
+				iifeBody.Body = append(iifeBody.Body, transformed...)
+			}
+		} else {
+			iifeBody.Body = append(iifeBody.Body, stmt)
+		}
+	}
+	if err := p.expectPunct("}"); err != nil {
+		return nil, err
+	}
+
+	// Build: (function(Name) { body })(Name || (Name = {}))
+	fnExpr := &ast.FunctionExpr{
+		Params:  []*ast.Identifier{nsIdent},
+		Body:    iifeBody,
+		Loc:     posOf(t),
+	}
+	innerAssign := &ast.AssignExpr{
+		Left:  nsIdent,
+		Op:    "=",
+		Right: &ast.ObjectLit{Loc: posOf(t)},
+		Loc:   posOf(t),
+	}
+	arg := &ast.LogicalExpr{
+		Op:    "||",
+		Left:  nsIdent,
+		Right: innerAssign,
+		Loc:   posOf(t),
+	}
+	call := &ast.CallExpr{
+		Callee:    fnExpr,
+		Arguments: []ast.Expression{arg},
+		Loc:       posOf(t),
+	}
+
+	// var Name;
+	varDecl := &ast.VarDecl{
+		Kind: "var",
+		Loc:  posOf(t),
+	}
+	varDecl.Decls = append(varDecl.Decls, ast.VarDeclarator{
+		Name: &ast.Identifier{Name: nsName, Loc: posOf(nameTok)},
+	})
+
+	block := &ast.BlockStmt{Loc: posOf(t)}
+	block.Body = append(block.Body, varDecl)
+	block.Body = append(block.Body, &ast.ExprStmt{Expr: call, Loc: posOf(t)})
+	return block, nil
+}
+
+// transformExportedDecl converts a namespace `export` declaration into
+// assignments on the namespace object. Returns a slice of statements.
+func (p *Parser) transformExportedDecl(stmt ast.Statement, nsIdent *ast.Identifier) []ast.Statement {
+	switch n := stmt.(type) {
+	case *ast.VarDecl:
+		var result []ast.Statement
+		for _, d := range n.Decls {
+			if d.Name == nil {
+				continue
+			}
+			// ns.Name = init
+			assign := &ast.AssignExpr{
+				Left: &ast.MemberExpr{
+					Object:   nsIdent,
+					Property: &ast.Identifier{Name: d.Name.Name, Loc: d.Name.Loc},
+					Loc:      d.Name.Loc,
+				},
+				Op:    "=",
+			Right: d.Init,
+			Loc:   d.Name.Loc,
+			}
+			result = append(result, &ast.ExprStmt{Expr: assign, Loc: d.Name.Loc})
+		}
+		return result
+	case *ast.FunctionDecl:
+		if n.Name == nil {
+			return nil
+		}
+		fnExpr := &ast.FunctionExpr{
+			Name:       n.Name,
+			Params:     n.Params,
+			Defaults:   n.Defaults,
+			RestParam:  n.RestParam,
+			Body:       n.Body,
+			IsAsync:    n.IsAsync,
+			IsGenerator: n.IsGenerator,
+			Loc:        n.Loc,
+		}
+		assign := &ast.AssignExpr{
+			Left: &ast.MemberExpr{
+				Object:   nsIdent,
+				Property: &ast.Identifier{Name: n.Name.Name, Loc: n.Name.Loc},
+				Loc:      n.Name.Loc,
+			},
+			Op:    "=",
+			Right: fnExpr,
+			Loc:   n.Loc,
+		}
+		return []ast.Statement{&ast.ExprStmt{Expr: assign, Loc: n.Loc}}
+	case *ast.ClassDecl:
+		if n.Name == nil {
+			return nil
+		}
+		classExpr := &ast.ClassExpr{
+			Name:      n.Name,
+			SuperClass: n.SuperClass,
+			Body:      n.Body,
+			Loc:       n.Loc,
+		}
+		assign := &ast.AssignExpr{
+			Left: &ast.MemberExpr{
+				Object:   nsIdent,
+				Property: &ast.Identifier{Name: n.Name.Name, Loc: n.Name.Loc},
+				Loc:      n.Name.Loc,
+			},
+			Op:    "=",
+			Right: classExpr,
+			Loc:   n.Loc,
+		}
+		return []ast.Statement{&ast.ExprStmt{Expr: assign, Loc: n.Loc}}
+	}
+	// For unsupported declaration types, keep as-is.
+	return []ast.Statement{stmt}
+}
+
+// === TypeScript type-stripping helpers ====================================
+//
+// These helpers skip over TypeScript type annotations without building AST
+// nodes — the types are erased at parse time, mirroring how tsc/swc/esbuild
+// emit JS by stripping types. The grammar handled here covers the common
+// surface of TS types: primitives, references, generics, unions/intersections,
+// object/tuple/function types, array postfix, conditional types, mapped types,
+// type predicates, keyof/typeof/infer, and `as` assertions inside types.
+//
+// Notes:
+//   - `<` / `>` are ambiguous with comparison operators in JS, but inside a
+//     type context they always introduce/close generic args. `>>` / `>>>` from
+//     nested generics (e.g. Foo<Array<T>>) are split by treating one `>` as
+//     the closer and rewriting the current token in place.
+//   - Boundary tokens (`,`, `)`, `}`, `]`, `;`, `=`, `{` (block start),
+//     `=>` (arrow body), and contextual keywords `extends`/`implements`/
+//     `return`/`throw`) terminate a type expression at the outer level; nested
+//     delimiters are consumed by skipBalanced/skipAngleBraces.
+
+// parseTypeAnnotation consumes an optional `: Type` and discards the type.
+// Used for variable declarators, parameters, return types, and class fields.
+func (p *Parser) parseTypeAnnotation() error {
+	if !p.matchPunct(":") {
+		return nil
+	}
+	return p.skipType()
+}
+
+// skipType skips one full type expression (union/intersection/conditional).
+// Returns whether the outermost atom was a parenthesised group (for function
+// type `=>` detection by the caller).
+func (p *Parser) skipType() error {
+	_, err := p.skipTypeInner()
+	return err
+}
+
+// skipTypeInner is the recursive worker for skipType; it returns whether the
+// outermost atom was `(...)`, which determines whether a following `=>` is a
+// function-type return (consumed) or an arrow body separator (left alone).
+func (p *Parser) skipTypeInner() (bool, error) {
+	if err := p.skipTypePrefix(); err != nil {
+		return false, err
+	}
+	wasParen, err := p.skipTypeAtom()
+	if err != nil {
+		return false, err
+	}
+	// Postfix array: T[]
+	for p.peek().Type == lexer.TokenPunct && p.peek().Value == "[" {
+		if err := p.skipBalanced("[", "]"); err != nil {
+			return false, err
+		}
+		wasParen = false
+	}
+	// Infix union/intersection/conditional/type-predicate/as-assertion.
+	for {
+		t := p.peek()
+		if t.Type == lexer.TokenPunct && (t.Value == "|" || t.Value == "&") {
+			p.next()
+			if _, err := p.skipTypeInner(); err != nil {
+				return false, err
+			}
+			wasParen = false
+			continue
+		}
+		if t.Type == lexer.TokenKeyword && t.Value == "extends" {
+			// Conditional type: T extends U ? X : Y  (also `extends` constraint
+			// inside generic params, but skipType handles either by recursing).
+			p.next()
+			if _, err := p.skipTypeInner(); err != nil {
+				return false, err
+			}
+			if p.matchPunct("?") {
+				if _, err := p.skipTypeInner(); err != nil {
+					return false, err
+				}
+				if !p.matchPunct(":") {
+					return false, p.errorf(p.peek(), "expected ':' in conditional type")
+				}
+				if _, err := p.skipTypeInner(); err != nil {
+					return false, err
+				}
+			}
+			wasParen = false
+			continue
+		}
+		if t.Type == lexer.TokenIdent && t.Value == "is" {
+			// Type predicate: x is T
+			p.next()
+			if _, err := p.skipTypeInner(); err != nil {
+				return false, err
+			}
+			wasParen = false
+			continue
+		}
+		break
+	}
+	// Function return type: only after `(...)` atom, e.g. `(a: T) => U`.
+	// This avoids consuming `=>` when it's an arrow body separator following
+	// a return-type annotation like `(): T => body`.
+	if wasParen && p.peek().Type == lexer.TokenPunct && p.peek().Value == "=>" {
+		p.next()
+		if _, err := p.skipTypeInner(); err != nil {
+			return false, err
+		}
+	}
+	return wasParen, nil
+}
+
+// skipTypePrefix consumes leading unary type operators: readonly, keyof,
+// typeof, infer, new, unique.
+func (p *Parser) skipTypePrefix() error {
+	for {
+		t := p.peek()
+		if t.Type == lexer.TokenIdent {
+			switch t.Value {
+			case "readonly", "keyof", "typeof", "infer", "unique":
+				p.next()
+				continue
+			}
+		}
+		if t.Type == lexer.TokenKeyword && t.Value == "new" {
+			p.next()
+			continue
+		}
+		break
+	}
+	return nil
+}
+
+// skipTypeAtom skips one type atom: primitive, reference, literal, object,
+// tuple, function, or parenthesised type. Returns whether it was a `(...)`.
+func (p *Parser) skipTypeAtom() (bool, error) {
+	t := p.peek()
+	switch t.Type {
+	case lexer.TokenString, lexer.TokenNumber:
+		p.next()
+	case lexer.TokenKeyword:
+		// true/false/null/undefined are value literals; other keywords
+		// (number/string/boolean/any/unknown/void/never/object/symbol/bigint/
+		// in/out/const/abstract) are type primitives.
+		p.next()
+	case lexer.TokenIdent:
+		p.next()
+		// Qualified name: Foo.Bar.Baz
+		for p.peek().Type == lexer.TokenPunct && p.peek().Value == "." {
+			p.next()
+			if _, err := p.expect(lexer.TokenIdent, ""); err != nil {
+				return false, err
+			}
+		}
+		// Generic type args: Foo<T, U>
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "<" {
+			if err := p.skipAngleBraces(); err != nil {
+				return false, err
+			}
+		}
+	case lexer.TokenPunct:
+		switch t.Value {
+		case "(":
+			// Function type (params) => ret OR parenthesised type.
+			if err := p.skipBalanced("(", ")"); err != nil {
+				return false, err
+			}
+			return true, nil
+		case "{":
+			// Object/mapped type.
+			if err := p.skipBalanced("{", "}"); err != nil {
+				return false, err
+			}
+		case "[":
+			// Tuple type [T, U] or index-access type T[K].
+			if err := p.skipBalanced("[", "]"); err != nil {
+				return false, err
+			}
+		case "<":
+			// Standalone generic type (rare at atom position).
+			if err := p.skipAngleBraces(); err != nil {
+				return false, err
+			}
+		case "-":
+			// `-` literal type (e.g. -1). Consume and expect a number.
+			p.next()
+			if p.peek().Type != lexer.TokenNumber {
+				return false, p.errorf(p.peek(), "expected number after '-' in type")
+			}
+			p.next()
+		default:
+			return false, p.errorf(t, "unexpected token %q in type", t.Value)
+		}
+	case lexer.TokenTemplate:
+		// Template literal type: `foo${T}bar`
+		p.next()
+	default:
+		return false, p.errorf(t, "unexpected token %q in type", t.Value)
+	}
+	return false, nil
+}
+
+// skipBalanced consumes tokens from `open` to the matching `close`, tracking
+// nesting of any of the bracket pairs ()/[]/{}. Used for object/tuple/
+// parenthesised types where the inner contents can be arbitrary.
+func (p *Parser) skipBalanced(open, close string) error {
+	t := p.peek()
+	if t.Type != lexer.TokenPunct || t.Value != open {
+		return p.errorf(t, "expected %q", open)
+	}
+	p.next() // consume open
+	depth := 1
+	for depth > 0 {
+		t := p.peek()
+		if t.Type == lexer.TokenEOF {
+			return p.errorf(t, "unterminated %q, expected %q", open, close)
+		}
+		if t.Type == lexer.TokenPunct {
+			switch t.Value {
+			case "(", "[", "{":
+				depth++
+			case ")", "]", "}":
+				// Only the matching close decrements depth at the top level;
+				// nested closes of other bracket kinds are tracked too.
+				depth--
+			}
+			if depth == 0 && t.Value == close {
+				p.next()
+				return nil
+			}
+		}
+		p.next()
+	}
+	return nil
+}
+
+// skipAngleBraces consumes a `<...>` generic argument list, handling `>>` /
+// `>>>` token splitting for nested generics (e.g. Foo<Array<T>>).
+func (p *Parser) skipAngleBraces() error {
+	t := p.peek()
+	if t.Type != lexer.TokenPunct || t.Value != "<" {
+		return p.errorf(t, "expected '<' in generic type")
+	}
+	p.next() // consume '<'
+	depth := 1
+	for depth > 0 {
+		t := p.peek()
+		if t.Type == lexer.TokenEOF {
+			return p.errorf(t, "unterminated generic type, expected '>'")
+		}
+		if t.Type == lexer.TokenPunct {
+			switch t.Value {
+			case "<":
+				depth++
+				p.next()
+			case ">":
+				depth--
+				p.next()
+			case ">>":
+				// Two closing angles: consume one, rewrite remaining as '>'.
+				depth--
+				if depth >= 1 {
+					depth--
+				}
+				if depth > 0 {
+					p.tokens[p.pos] = lexer.Token{
+						Type: lexer.TokenPunct, Value: ">", Line: t.Line, Col: t.Col,
+					}
+				} else {
+					p.next()
+				}
+			case ">>>":
+				depth--
+				if depth >= 1 {
+					depth--
+				}
+				if depth >= 1 {
+					depth--
+				}
+				if depth > 0 {
+					p.tokens[p.pos] = lexer.Token{
+						Type: lexer.TokenPunct, Value: ">>", Line: t.Line, Col: t.Col,
+					}
+				} else {
+					p.next()
+				}
+			case ">=":
+				// T >= U shouldn't appear in type position; treat as `>` then `=`.
+				depth--
+				p.tokens[p.pos] = lexer.Token{
+					Type: lexer.TokenPunct, Value: "=", Line: t.Line, Col: t.Col,
+				}
+			case ">>=":
+				depth--
+				if depth >= 1 {
+					depth--
+				}
+				p.tokens[p.pos] = lexer.Token{
+					Type: lexer.TokenPunct, Value: "=", Line: t.Line, Col: t.Col,
+				}
+			default:
+				p.next()
+			}
+		} else {
+			p.next()
+		}
+	}
+	return nil
+}
+
+// skipTypeParameters consumes an optional `<T, U extends X, R = D>` generic
+// parameter list before a function/class/arrow signature.
+func (p *Parser) skipTypeParameters() error {
+	if p.peek().Type != lexer.TokenPunct || p.peek().Value != "<" {
+		return nil
+	}
+	return p.skipAngleBraces()
+}
+
+// trySkipTypeArgs attempts to skip TypeScript generic type arguments
+// (`<T, U>`) before a call expression or `new`. It backtracks (restoring the
+// position) if the `<...>` is not followed by `(`, since `<` could also be a
+// less-than comparison. Returns true if type arguments were skipped.
+func (p *Parser) trySkipTypeArgs() bool {
+	if p.peek().Type != lexer.TokenPunct || p.peek().Value != "<" {
+		return false
+	}
+	savedPos := p.pos
+	if err := p.skipAngleBraces(); err != nil {
+		p.pos = savedPos
+		return false
+	}
+	// Only treat as type args if followed by `(` (a call).
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+		return true
+	}
+	p.pos = savedPos
+	return false
+}
+
+// skipDecorators consumes and discards TypeScript decorator expressions
+// (`@expr`, `@expr(args)`, `@foo.bar`). Decorators are parsed but not applied
+// — the runtime sees no decorator code. Multiple stacked decorators are
+// consumed: `@a @b class C {}`.
+func (p *Parser) skipDecorators() error {
+	for p.peek().Type == lexer.TokenPunct && p.peek().Value == "@" {
+		p.next() // consume '@'
+		// Decorator name: identifier (possibly qualified: foo.bar.baz).
+		nameTok, err := p.expect(lexer.TokenIdent, "")
+		if err != nil {
+			return err
+		}
+		_ = nameTok
+		// Qualified decorator: @foo.bar.baz
+		for p.peek().Type == lexer.TokenPunct && p.peek().Value == "." {
+			p.next()
+			if _, err := p.expect(lexer.TokenIdent, ""); err != nil {
+				return err
+			}
+		}
+		// Optional call arguments: @dec(arg1, arg2)
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+			if _, err := p.parseArgs(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

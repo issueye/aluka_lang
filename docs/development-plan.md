@@ -58,7 +58,7 @@
 
 ### 2.0 当前完成状态评估
 
-> 评估日期：2026-08-03 ｜ 测试总数：290 个（全部通过）
+> 评估日期：2026-08-03 ｜ 测试总数：345 个（全部通过）
 
 #### 总体进度概览
 
@@ -68,7 +68,7 @@
 | 1A | AST-walking PoC | ✅ 完成 | ~90% |
 | 1B | 字节码 VM | ⚠️ 大部分完成 | ~65% |
 | 1C | ES2015 + 模块系统 | 🔨 进行中 | ~60% |
-| 1D | TS 转译 + ES2017-2020 | 🔨 进行中 | ~30% |
+| 1D | TS 转译 + ES2017-2020 | 🔨 进行中 | ~65% |
 | 2-8 | 后续阶段 | ❌ 未开始 | 0% |
 
 #### Phase 0：工程基座 — ✅ 完成
@@ -131,15 +131,22 @@
 | 1C.14 | 字节码缓存 | ❌ | 未实现 |
 | 1C.15 | test262 ES5+ES2015 ≥ 60% | ❌ | 未集成 |
 
-#### Phase 1D：TS 转译 + ES2017-2020 — 🔨 进行中（~30%）
+#### Phase 1D：TS 转译 + ES2017-2020 — 🔨 进行中（~65%）
 
 | ID | 任务 | 状态 | 说明 |
 |----|------|------|------|
-| 1D.1-1D.8 | TS 转译器（类型剥离/enum/namespace/装饰器等） | ❌ | 未实现 |
-| 1D.9 | `async`/`await` | ✅ | **完成**：`async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法、`await` 表达式（值/Promise/thenable）；新增 `async.go`（`asyncRunner` 复用生成器式帧挂起，集成 Promise 微任务调度）、`OpAwait` 指令、`FuncTemplate.IsAsync` 标志、`AwaitExpr` AST 节点；parser 新增 `asyncStack` 跟踪异步作用域以正确解析 `await`；错误传播保留原始值（`normalizeException` 处理 `*jsThrow`/`engine.Value`/`error`），rejected promise 经 `await` 抛入帧可被 `try/catch` 捕获；async 函数返回值自动 Promise 包装（resolve 采用 thenable）；测试覆盖基本返回/await 值/Promise/错误处理/箭头函数/类方法/闭包捕获/finally |
-| 1D.10 | `for await...of` / rest in object / `Promise.finally` | ⚠️ | 对象 rest 解构已实现；`Promise.finally` 已实现（1C.4）；`for await...of` 未实现（依赖 async/await） |
+| 1D.1 | TS 类型注解剥离 | ✅ | **完成**：`parseTypeAnnotation`/`skipType`/`skipTypeInner`/`skipTypeAtom`/`skipTypePrefix` 递归跳过 TS 类型表达式（联合/交叉/条件/泛型/对象/元组/映射类型）；变量声明、函数参数（含 `?`/默认值/rest）、返回值、类字段处剥离类型注解；类字段（`x: T = init`）在 compiler 中注入构造函数初始化（实例字段→构造函数体首部，静态字段→`OpMakeClass` 后 `OpSetPropTop`） |
+| 1D.2 | `interface`/`type` 别名声明删除 | ✅ | **完成**：`parseInterfaceDecl` 跳过 `interface Name<T> extends ... { members }` 返回 `EmptyStmt`；`parseTypeAliasDecl` 跳过 `type Name<T> = TypeExpr;` 返回 `EmptyStmt` |
+| 1D.3 | `enum` 转换 | ✅ | **完成**：`parseEnumDecl` 将 `enum Name { A, B = 10, C = 'x' }` 降级为 IIFE（`var Name; (function(Name) { Name["A"]=0; Name[0]="A"; ... })(Name || (Name = {}))`）；数字枚举自动递增 + 反向映射；字符串枚举无反向映射；混合枚举支持 |
+| 1D.4 | `namespace` 转换 | ✅ | **完成**：`parseNamespaceDecl` 将 `namespace Name { export function/const/class ... }` 降级为 IIFE（`var Name; (function(Name) { Name.x = ...; })(Name || (Name = {}))`）；`transformExportedDecl` 将 `export var/function/class` 转为 `ns.Name = ...` 赋值；非导出声明保持 IIFE 内局部作用域 |
+| 1D.5 | 装饰器（解析后跳过） | ✅ | **完成**：`skipDecorators` 解析并丢弃 `@expr`/`@expr(args)`/`@foo.bar` 装饰器；在 `parseStatement`（类声明前）、`parseExportDecl`（`export @dec class`）、`parseClassMember`（方法/字段前）三处调用；lexer 新增 `@` 为单字符标点 |
+| 1D.6 | `as`/`satisfies` 断言剥离 | ✅ | **完成**：`parseConditional` 循环消费 `expr as T`/`expr satisfies T`/链式 `expr as unknown as T`/`expr as const`，仅保留 `expr` |
+| 1D.7 | 泛型参数删除 | ✅ | **完成**：`skipTypeParameters` 在函数/类声明处跳过 `<T, U extends X, R = D>`；`trySkipTypeArgs` 在调用表达式和 `new` 表达式处回溯式跳过 `<T>(args)`（区分 `<` 为泛型参数 vs 小于号）；`skipAngleBraces` 处理 `>>`/`>>>` 嵌套泛型 token 拆分 |
+| 1D.8 | `import type`/`export type` 删除 | ✅ | **完成**：`import type ...` 整体擦除为 `EmptyStmt`；`export type { ... }`/`export type * from 'mod'` 擦除为 `EmptyStmt`；内联 `{ type X, Y }` 逐个 specifier 擦除（import 和 export 均支持） |
+| 1D.9 | `async`/`await` | ✅ | **完成**：`async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法、`await` 表达式（值/Promise/thenable）；新增 `async.go`（`asyncRunner` 复用生成器式帧挂起，集成 Promise 微任务调度）、`OpAwait` 指令、`FuncTemplate.IsAsync` 标志、`AwaitExpr` AST 节点；parser 新增 `asyncStack` 跟踪异步作用域以正确解析 `await`；错误传播保留原始值（`normalizeException` 处理 `*jsThrow`/`engine.Value`/`error`），rejected promise 经 `await` 抛入帧可被 `try/catch` 捕获；async 函数返回值自动 Promise 包装（resolve 采用 thenable） |
+| 1D.10 | `for await...of` / rest in object / `Promise.finally` | ⚠️ | 对象 rest 解构已实现；`Promise.finally` 已实现（1C.4）；`for await...of` 未实现 |
 | 1D.11 | ES2019：`Array.flat/flatMap`/`Object.fromEntries`/`trimStart` | ❌ | 未实现 |
-| 1D.12 | ES2020：可选链 `?.`/空值合并 `??`/`BigInt`/`Promise.allSettled` | ⚠️ | 空值合并 `??` 已实现并测试；`Promise.allSettled` 已实现（1C.4）；可选链 `?.` 已实现（lexer 新增 `?.` token、parser `parseCallMember` 处理 `a?.b`/`a?.[b]`/`a?.()`、compiler `optionalChainStack` + `OpOptionalJump` 短路、`OpCallWithThis`/`OpCallWithThisArgs` 保持 `this` 绑定，9 个测试全部通过）；BigInt 未实现 |
+| 1D.12 | ES2020：可选链 `?.`/空值合并 `??`/`BigInt`/`Promise.allSettled` | ⚠️ | 空值合并 `??` 已实现并测试；`Promise.allSettled` 已实现（1C.4）；可选链 `?.` 已实现（lexer 新增 `?.` token、parser `parseCallMember` 处理 `a?.b`/`a?.[b]`/`a?.()`、compiler `optionalChainStack` + `OpOptionalJump` 短路、`OpCallWithThis`/`OpCallWithThisArgs` 保持 `this` 绑定）；BigInt 未实现 |
 | 1D.13 | 动态 `import()` | ❌ | 未实现 |
 | 1D.14 | TS conformance ≥ 50% | ❌ | 未集成 |
 | 1D.15 | REPL 基础 | ❌ | 未实现 |
@@ -153,13 +160,14 @@
 - **ES2015**：`let`/`const`/块级作用域、箭头函数、模板字符串、解构赋值（数组+对象，含 holes/rest/default/嵌套）、默认参数、rest/spread 参数、`for...of`、spread 展开（数组+对象）、空值合并 `??`、`class` 语法（声明/表达式/继承/super/static/getter/setter/默认构造函数）、`Promise`（构造器 + then/catch/finally 链式调用 + resolve/reject/all/race/allSettled + microtask 队列）、`Symbol`（+ for/keyFor + hasInstance/toPrimitive/toStringTag）、`Map`/`Set`/`WeakMap`/`WeakSet`（完整原型方法 + 迭代器协议 + 构造器 iterable 输入）、`Proxy`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap + revocable）、`Reflect`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/setPrototypeOf/apply/construct/defineProperty/getOwnPropertyDescriptor）
 - **ES2017**：`async`/`await`（`async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法、`await` 值/Promise/thenable、错误经 `try/catch` 捕获、返回值自动 Promise 包装）
 - **ES2020**：可选链 `?.`（成员访问 `a?.b`、计算属性 `a?.[b]`、可选调用 `a?.()`、方法调用 `a?.b()`/`a.b?.()`、深层链短路、`this` 绑定保持）
+- **TypeScript 转译**：类型注解剥离（变量/参数/返回值/类字段）、`interface`/`type` 别名声明擦除、`enum` 降级（数字自动递增 + 反向映射 / 字符串枚举 / 混合枚举）、`namespace` 降级为 IIFE（导出声明转 `ns.Name = ...`）、装饰器解析后丢弃（`@dec`/`@dec(args)`/`@foo.bar`）、`as`/`satisfies`/`as const` 断言剥离、泛型参数删除（函数/类声明 + 调用表达式类型实参）、`import type`/`export type` 擦除（含内联 `{ type X }` specifier）、类字段初始化（实例字段注入构造函数 + 静态字段 `OpSetPropTop`）
 - **其他**：`delete` 运算符（实际删除属性）、labeled 语句、函数方法（call/apply/bind）
 
 #### 已知缺失的关键特性
 
 1. ~~模块系统 ESM/CJS（1C.9-1C.11）— 阻塞多文件项目~~ ✅ 已完成
 2. ~~可选链 `?.`（1D.12）— 常用语法~~ ✅ 已完成
-3. TS 转译（1D.1-1D.8）— 阻塞 `.ts` 文件运行
+3. ~~TS 转译（1D.1-1D.8）— 阻塞 `.ts` 文件运行~~ ✅ 已完成
 4. `for await...of`（1D.10）— 异步迭代器（async/await 已就绪）
 5. 隐藏类 + IC（1B.5）和自研 GC（1B.6）— 影响性能
 

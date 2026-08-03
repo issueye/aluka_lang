@@ -87,7 +87,7 @@ var multiPuncts = []string{
 }
 
 // 单字符标点集合。
-var singlePuncts = "{}()[].;,?:+-*/%<>=!&|^~"
+var singlePuncts = "{}()[].;,?:+-*/%<>=!&|^~@"
 
 // IsPunctChar 判断字符是否可作为标点的起始。
 func IsPunctChar(ch byte) bool {

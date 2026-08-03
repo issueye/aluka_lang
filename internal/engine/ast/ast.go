@@ -542,10 +542,11 @@ const (
 	MethodConstructor
 	MethodGetter
 	MethodSetter
+	MethodField // class field declaration (ES2022 / TS): `x = init;` or `x: T;`
 )
 
 // MethodDefinition is one entry in a class body: a constructor, method,
-// getter, or setter (optionally static).
+// getter, setter, or field declaration (optionally static).
 type MethodDefinition struct {
 	Key      Expression // Identifier / StringLit / NumberLit / computed expr
 	Value    *FunctionExpr
@@ -553,6 +554,9 @@ type MethodDefinition struct {
 	Static   bool
 	Computed bool
 	Loc      Pos
+	// Init is the initializer expression for a class field (Kind == MethodField).
+	// Nil means the field is declared without an initializer (sets to undefined).
+	Init Expression
 }
 
 // ClassBody is the { ... } part of a class, holding method definitions.
