@@ -18,6 +18,9 @@ type Loader struct {
 
 	mu    sync.Mutex
 	cache map[string]engine.Value // resolved path → module.exports value
+
+	// bcCache 是字节码磁盘缓存（1C.14），命中时跳过 parse+compile。
+	bcCache bytecodeCache
 }
 
 // NewLoader creates a module loader bound to the given context.
@@ -27,6 +30,11 @@ func NewLoader(ctx engine.Context) *Loader {
 		resolver: NewResolver(),
 		cache:    make(map[string]engine.Value),
 	}
+}
+
+// SetNoCache 禁用字节码缓存（对应 --no-cache）。
+func (l *Loader) SetNoCache(disabled bool) {
+	l.bcCache.disabled = disabled
 }
 
 // Run is the entry point for executing a file as the main module.
@@ -149,4 +157,64 @@ func (l *Loader) makeRequireFunc(modulePath string) engine.Function {
 		spec := args[0].String()
 		return l.require(spec, modulePath)
 	})
+}
+
+// makeImportFunc creates a JS dynamic-import function for the given module
+// path. It implements ES2020 dynamic import(): always returns a Promise that
+// resolves to the module's namespace (exports) or rejects on load failure.
+//
+// 实现说明：动态 import 复用 require() 的同步加载链路，再用全局 Promise
+// 把结果包装成已 settled 的 Promise。通过 engine.Function.Call 调用
+// Promise.resolve / Promise.reject 静态方法，避免依赖 interpreter 包。
+func (l *Loader) makeImportFunc(modulePath string) engine.Function {
+	return engine.NewFunction("__import", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return l.rejectImport(fmt.Errorf("import: missing module specifier"))
+		}
+		spec := args[0].String()
+		exports, err := l.require(spec, modulePath)
+		if err != nil {
+			return l.rejectImport(err)
+		}
+		return l.resolveImport(exports)
+	})
+}
+
+// resolveImport wraps a value in a resolved Promise via the global Promise.resolve.
+func (l *Loader) resolveImport(v engine.Value) (engine.Value, error) {
+	promiseCtor, err := l.ctx.Global().Get("Promise")
+	if err != nil || !promiseCtor.IsFunction() {
+		// 回退：若全局无 Promise（不应发生），直接返回原值。
+		return v, nil
+	}
+	// Promise 构造器同时也是对象，取其 resolve/reject 静态方法。
+	if ctorObj, ok := promiseCtor.AsObject(); ok {
+		resolveFn, err := ctorObj.Get("resolve")
+		if err == nil && resolveFn.IsFunction() {
+			if rf, ok := resolveFn.AsFunction(); ok {
+				return rf.Call([]engine.Value{v})
+			}
+		}
+	}
+	return v, nil
+}
+
+// rejectImport wraps an error in a rejected Promise via the global Promise.reject.
+func (l *Loader) rejectImport(err error) (engine.Value, error) {
+	promiseCtor, e := l.ctx.Global().Get("Promise")
+	if e != nil || !promiseCtor.IsFunction() {
+		// 回退：让错误同步抛出。
+		return engine.Undefined(), err
+	}
+	if ctorObj, ok := promiseCtor.AsObject(); ok {
+		rejectFn, e := ctorObj.Get("reject")
+		if e == nil && rejectFn.IsFunction() {
+			if rf, ok := rejectFn.AsFunction(); ok {
+				// 用字符串包装错误消息（后续可改为构造 Error 对象）。
+				errVal := engine.Str(err.Error())
+				return rf.Call([]engine.Value{errVal})
+			}
+		}
+	}
+	return engine.Undefined(), err
 }

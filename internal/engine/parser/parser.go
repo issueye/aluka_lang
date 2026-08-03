@@ -8,6 +8,7 @@ package parser
 
 import (
 	"fmt"
+	"math/big"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine/ast"
@@ -194,6 +195,12 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 		case "class":
 			return p.parseClassDecl()
 		case "import":
+			// 动态 import(...) 作为表达式语句：import 后紧跟 "(" 时不是声明。
+			// 落到 parseExprStmt → parsePrimary 的 import 分支处理。
+			next := p.peekAt(1)
+			if next.Type == lexer.TokenPunct && next.Value == "(" {
+				break
+			}
 			return p.parseImportDecl()
 		case "export":
 			return p.parseExportDecl()
@@ -513,6 +520,18 @@ func (p *Parser) parseDoWhile() (*ast.DoWhileStmt, error) {
 
 func (p *Parser) parseFor() (ast.Statement, error) {
 	t := p.next()
+
+	// for await...of：仅在 async 函数体内合法（ES2018）。
+	// token 序列为 `for` `await` `(`，因此 await 必须在期望 "(" 之前消费。
+	isForAwait := false
+	if p.peek().Type == lexer.TokenKeyword && p.peek().Value == "await" {
+		if len(p.asyncStack) == 0 || !p.asyncStack[len(p.asyncStack)-1] {
+			return nil, fmt.Errorf("aluka: syntax error: for await...of is only valid in async functions")
+		}
+		p.next() // 消费 await
+		isForAwait = true
+	}
+
 	if err := p.expectPunct("("); err != nil {
 		return nil, err
 	}
@@ -565,7 +584,7 @@ func (p *Parser) parseFor() (ast.Statement, error) {
 			decl.Decls = append(decl.Decls, vd)
 			leftNode = decl
 			initIsVarDecl = true
-			return p.parseForOf(leftNode, t)
+			return p.parseForOf(leftNode, t, isForAwait)
 		}
 		// 普通 for：var x = init, y = ...
 		if p.matchPunct("=") {
@@ -601,7 +620,7 @@ func (p *Parser) parseFor() (ast.Statement, error) {
 		}
 		if p.peek().Type == lexer.TokenKeyword && p.peek().Value == "of" {
 			p.next()
-			return p.parseForOf(expr, t)
+			return p.parseForOf(expr, t, isForAwait)
 		}
 		leftNode = expr
 		if err := p.expectPunct(";"); err != nil {
@@ -654,7 +673,7 @@ func (p *Parser) parseForIn(left ast.Node, isVarDecl bool, forTok lexer.Token) (
 	return &ast.ForInStmt{Left: left, Right: right, Body: body, Loc: posOf(forTok)}, nil
 }
 
-func (p *Parser) parseForOf(left ast.Node, forTok lexer.Token) (*ast.ForOfStmt, error) {
+func (p *Parser) parseForOf(left ast.Node, forTok lexer.Token, isAwait bool) (*ast.ForOfStmt, error) {
 	right, err := p.parseAssignment()
 	if err != nil {
 		return nil, err
@@ -666,7 +685,7 @@ func (p *Parser) parseForOf(left ast.Node, forTok lexer.Token) (*ast.ForOfStmt, 
 	if err != nil {
 		return nil, err
 	}
-	return &ast.ForOfStmt{Left: left, Right: right, Body: body, Loc: posOf(forTok)}, nil
+	return &ast.ForOfStmt{Left: left, Right: right, Body: body, IsAwait: isAwait, Loc: posOf(forTok)}, nil
 }
 
 func (p *Parser) parseReturn() (*ast.ReturnStmt, error) {
@@ -847,6 +866,8 @@ var assignOps = map[string]bool{
 	"=": true, "+=": true, "-=": true, "*=": true, "/=": true, "%=": true,
 	"**=": true, "<<=": true, ">>=": true, ">>>=": true,
 	"&=": true, "|=": true, "^=": true,
+	// 逻辑赋值运算符（ES2021）。
+	"||=": true, "&&=": true, "??=": true,
 }
 
 func (p *Parser) parseExpression() (ast.Expression, error) {
@@ -1492,6 +1513,11 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 		p.next()
 		val, _ := parseNumberLiteral(t.Value)
 		return &ast.NumberLit{Value: val, Raw: t.Value, Loc: posOf(t)}, nil
+	case lexer.TokenBigInt:
+		p.next()
+		// BigInt 字面量：解析为十进制整数字符串（去掉进制前缀与下划线）。
+		dec := bigIntLiteralToDecimal(t.Value)
+		return &ast.BigIntLit{Text: dec, Loc: posOf(t)}, nil
 	case lexer.TokenString:
 		p.next()
 		return &ast.StringLit{Value: t.Value, Loc: posOf(t)}, nil
@@ -1545,6 +1571,27 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 			return p.parseClassExpr()
 		case "new":
 			return p.parseNew()
+		case "import":
+			// 动态 import(specifier)：在 parser 层直接 lower 为对内置全局
+			// __import 的调用，复用现有 CallExpr 编译链路。__import 由模块
+			// 加载器在 setGlobals 时注入，返回 Promise<module exports>。
+			// 这样无需新增 AST 节点/opcode/compiler 分支。
+			p.next() // 消费 import 关键字
+			if err := p.expectPunct("("); err != nil {
+				return nil, err
+			}
+			spec, err := p.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectPunct(")"); err != nil {
+				return nil, err
+			}
+			return &ast.CallExpr{
+				Callee:    &ast.Identifier{Name: "__import", Loc: posOf(t)},
+				Arguments: []ast.Expression{spec},
+				Loc:       posOf(t),
+			}, nil
 		}
 	case lexer.TokenPunct:
 		switch t.Value {
@@ -2565,8 +2612,38 @@ func (p *Parser) parsePatternTarget() (ast.Pattern, error) {
 
 // parseNumberLiteral 解析数字字面量字符串为 float64。
 // 支持：十进制、十六进制(0x)、八进制(0o)、二进制(0b)、科学计数法、数字分隔符。
+// bigIntLiteralToDecimal 将 BigInt 字面量（已去 n 后缀）转为十进制整数字符串。
+// 支持 0x/0o/0b 前缀与下划线分隔符。例："0xFF" → "255"，"1_000" → "1000"。
+func bigIntLiteralToDecimal(s string) string {
+	clean := ""
+	for i := 0; i < len(s); i++ {
+		if s[i] != '_' {
+			clean += string(s[i])
+		}
+	}
+	if len(clean) >= 2 && clean[0] == '0' {
+		switch clean[1] {
+		case 'x', 'X':
+			if bi, ok := new(big.Int).SetString(clean[2:], 16); ok {
+				return bi.String()
+			}
+		case 'o', 'O':
+			if bi, ok := new(big.Int).SetString(clean[2:], 8); ok {
+				return bi.String()
+			}
+		case 'b', 'B':
+			if bi, ok := new(big.Int).SetString(clean[2:], 2); ok {
+				return bi.String()
+			}
+		}
+	}
+	if bi, ok := new(big.Int).SetString(clean, 10); ok {
+		return bi.String()
+	}
+	return clean
+}
+
 func parseNumberLiteral(s string) (float64, error) {
-	// 去除数字分隔符
 	clean := ""
 	for i := 0; i < len(s); i++ {
 		if s[i] != '_' {

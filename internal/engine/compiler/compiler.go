@@ -13,6 +13,7 @@ package compiler
 
 import (
 	"fmt"
+	"math/big"
 	"strconv"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -135,6 +136,8 @@ func (c *Compiler) compileStmtValue(s ast.Statement) error {
 		return c.compileIfValue(n)
 	case *ast.BlockStmt:
 		return c.compileBlockValue(n)
+	case *ast.TryStmt:
+		return c.compileTryValue(n)
 	case *ast.EmptyStmt:
 		c.emit(bytecode.OpPushUndefined, 0)
 		return nil
@@ -430,9 +433,9 @@ func (c *Compiler) compileStmt(s ast.Statement) error {
 	case *ast.ForStmt:
 		return c.compileFor(n)
 	case *ast.ForInStmt:
-		return c.compileForInOrOf(n.Left, n.Right, n.Body, false)
+		return c.compileForInOrOf(n.Left, n.Right, n.Body, false, false)
 	case *ast.ForOfStmt:
-		return c.compileForInOrOf(n.Left, n.Right, n.Body, true)
+		return c.compileForInOrOf(n.Left, n.Right, n.Body, true, n.IsAwait)
 	case *ast.ReturnStmt:
 		return c.compileReturn(n)
 	case *ast.BreakStmt:
@@ -755,16 +758,18 @@ func (c *Compiler) compileFor(s *ast.ForStmt) error {
 	return nil
 }
 
-func (c *Compiler) compileForInOrOf(left ast.Node, right ast.Expression, body ast.Statement, isOf bool) error {
+func (c *Compiler) compileForInOrOf(left ast.Node, right ast.Expression, body ast.Statement, isOf bool, isAwait bool) error {
 	if isOf {
-		return c.compileForOf(left, right, body)
+		return c.compileForOf(left, right, body, isAwait)
 	}
 	return c.compileForIn(left, right, body)
 }
 
 // compileForOf compiles `for (left of right) body` using the ES2015 iterator
 // protocol: get [Symbol.iterator](), call .next(), check {done, value}.
-func (c *Compiler) compileForOf(left ast.Node, right ast.Expression, body ast.Statement) error {
+// 当 isAwait 为 true 时编译为 `for await (left of right) body`（ES2018）：
+// 使用 OpGetAsyncIterator 获取迭代器，并对每次 .next() 的结果执行 OpAwait。
+func (c *Compiler) compileForOf(left ast.Node, right ast.Expression, body ast.Statement, isAwait bool) error {
 	c.pushBlock()
 	defer c.popBlock()
 
@@ -773,7 +778,11 @@ func (c *Compiler) compileForOf(left ast.Node, right ast.Expression, body ast.St
 	if err := c.compileExpr(right); err != nil {
 		return err
 	}
-	c.emit(bytecode.OpGetIterator, 0) // pop iterable, push iterator
+	if isAwait {
+		c.emit(bytecode.OpGetAsyncIterator, 0) // ES2018: Symbol.asyncIterator (回退 Symbol.iterator)
+	} else {
+		c.emit(bytecode.OpGetIterator, 0) // pop iterable, push iterator
+	}
 	c.emit(bytecode.OpStoreLocal, uint32(tmpIter))
 
 	tmpResult := c.declareLocal("__iter_result__")
@@ -787,6 +796,10 @@ func (c *Compiler) compileForOf(left ast.Node, right ast.Expression, body ast.St
 	// Call iter.next() — push iterator as receiver, 0 args.
 	c.emit(bytecode.OpLoadLocal, uint32(tmpIter))
 	c.emit(bytecode.OpCallMethod, uint32(nameNext)) // 0 args encoded in high bits
+	if isAwait {
+		// for await：next() 返回 Promise，需 await 解包后再存储结果。
+		c.emit(bytecode.OpAwait, 0)
+	}
 	c.emit(bytecode.OpStoreLocal, uint32(tmpResult))
 
 	// Check done: if result.done is truthy, exit loop.
@@ -1046,6 +1059,83 @@ func (c *Compiler) compileTry(s *ast.TryStmt) error {
 	return nil
 }
 
+// compileTryValue compiles a try statement in "value mode": the value of the
+// try block (on normal completion) or catch block (on caught exception) — or
+// finally block if present — is left on top of the stack. Used for REPL
+// semantics when a try statement is the last top-level statement.
+//
+// 设计要点：try 正常完成时保留块值；catch 接住异常时也用值模式编译 body。
+// 两路径在 endPC 汇合，栈深度均为 1。finally 存在时其值覆盖 try/catch 值。
+func (c *Compiler) compileTryValue(s *ast.TryStmt) error {
+	tmpl := c.cur().tmpl
+	tryIdx := len(tmpl.TryTable)
+	entry := bytecode.TryEntry{StartPC: c.curPC(), HasCatch: s.Handler != nil, HasFinally: s.Finally != nil}
+	tmpl.TryTable = append(tmpl.TryTable, entry)
+
+	// try 块用值模式编译（保留最后表达式值）。
+	c.emit(bytecode.OpTryEnter, uint32(tryIdx))
+	if err := c.compileBlockValue(s.Block); err != nil {
+		return err
+	}
+	c.emit(bytecode.OpTryExit, uint32(tryIdx))
+
+	jmpAfter := c.emit(bytecode.OpJmp, 0)
+
+	// catch 块用值模式编译（保留 body 最后表达式值）。
+	if s.Handler != nil {
+		handlerPC := c.curPC()
+		tmpl.TryTable[tryIdx].CatchPC = handlerPC
+		c.pushBlock()
+		if s.Handler.Param != nil {
+			slot := c.declareLocal(s.Handler.Param.Name)
+			c.emit(bytecode.OpStoreLocal, uint32(slot))
+		} else {
+			c.emit(bytecode.OpPop, 0)
+		}
+		if err := c.compileStmtsAsValue(s.Handler.Body.Body); err != nil {
+			return err
+		}
+		c.popBlock()
+		c.emit(bytecode.OpTryExit, uint32(tryIdx))
+	}
+
+	endPC := c.curPC()
+	bytecode.PatchOperand(tmpl.Code, jmpAfter, uint32(endPC-(jmpAfter+bytecode.InstrSize)))
+
+	// finally 块（若有）：finally 的完成值覆盖 try/catch 的值。
+	if s.Finally != nil {
+		finallyPC := c.curPC()
+		tmpl.TryTable[tryIdx].FinallyPC = finallyPC
+		c.pushBlock()
+		// finally 执行前弹出 try/catch 的结果值（finally 的值才是最终值）。
+		c.emit(bytecode.OpPop, 0)
+		if err := c.compileStmtsAsValue(s.Finally.Body); err != nil {
+			return err
+		}
+		c.popBlock()
+		c.emit(bytecode.OpTryExitFinally, uint32(tryIdx))
+	}
+	return nil
+}
+
+// compileStmtsAsValue 编译语句列表，最后一条语句用值模式（保留值）。空列表 push undefined。
+func (c *Compiler) compileStmtsAsValue(body []ast.Statement) error {
+	if len(body) == 0 {
+		c.emit(bytecode.OpPushUndefined, 0)
+		return nil
+	}
+	last := len(body) - 1
+	for i, st := range body {
+		if i == last {
+			return c.compileStmtValue(st)
+		}
+		if err := c.compileStmt(st); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c *Compiler) compileSwitch(s *ast.SwitchStmt) error {
 	c.pushBlock()
 	defer c.popBlock()
@@ -1128,6 +1218,15 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 			}
 		}
 		idx := c.cur().tmpl.AddConst(engine.Number(f))
+		c.emit(bytecode.OpPushConst, uint32(idx))
+		return nil
+	case *ast.BigIntLit:
+		// BigInt 字面量：解析十进制字符串为 *big.Int，放入常量池。
+		bi, ok := new(big.Int).SetString(n.Text, 10)
+		if !ok {
+			return fmt.Errorf("invalid BigInt literal: %s", n.Text)
+		}
+		idx := c.cur().tmpl.AddConst(engine.BigInt(bi))
 		c.emit(bytecode.OpPushConst, uint32(idx))
 		return nil
 	case *ast.StringLit:
@@ -1587,6 +1686,17 @@ func (c *Compiler) compileAssign(n *ast.AssignExpr) error {
 		c.emit(bytecode.OpDup, 0)
 		return c.assignTo(n.Left)
 	}
+	// 逻辑赋值运算符（ES2021）：||= / &&= / ??= 有短路语义。
+	// 左值只求值一次：读取 → 短路判断 → 条件成立才编译右值并赋值。
+	// 栈布局：[leftVal] → (跳过时保留) / (赋值时为 [rightVal]，赋值后保留)
+	switch n.Op {
+	case "||=":
+		return c.compileLogicalAssign(n.Left, n.Right, bytecode.OpJmpTrueKeep)
+	case "&&=":
+		return c.compileLogicalAssign(n.Left, n.Right, bytecode.OpJmpFalseKeep)
+	case "??=":
+		return c.compileLogicalAssign(n.Left, n.Right, bytecode.OpJmpNullishKeep)
+	}
 	// compound: desugar a OP= b → a = a OP b
 	if err := c.compileExpr(n.Left); err != nil {
 		return err
@@ -1601,6 +1711,35 @@ func (c *Compiler) compileAssign(n *ast.AssignExpr) error {
 	c.emit(op, 0)
 	c.emit(bytecode.OpDup, 0)
 	return c.assignTo(n.Left)
+}
+
+// compileLogicalAssign 编译逻辑赋值（||= / &&= / ??=）。
+// jmpOp 决定短路条件：OpJmpTrueKeep（||=，truthy 跳过）、OpJmpFalseKeep（&&=，falsy 跳过）、
+// OpJmpNullishKeep（??=，null/undefined 跳过）。
+//
+// 这些 Keep 跳转指令的语义：满足条件时跳过并保留栈顶值；不满足时 pop 栈顶值。
+// 字节码序列：
+//   compileExpr(left)          // push 当前左值
+//   OpJmpTrueKeep end          // 满足短路条件 → 保留 left 跳到 end；否则 pop left
+//   compileExpr(right)         // push 右值（left 已被跳转指令 pop）
+//   OpDup                      // 复制（一份赋值，一份作为结果保留）
+//   assignTo(left)             // 赋值给左值
+//   end:                       // 栈顶为结果值（left 或 right）
+func (c *Compiler) compileLogicalAssign(left ast.Expression, right ast.Expression, jmpOp bytecode.Opcode) error {
+	if err := c.compileExpr(left); err != nil {
+		return err
+	}
+	jumpSkip := c.emit(jmpOp, 0)
+	// 不满足短路条件：跳转指令已 pop 左值，直接编译右值并赋值。
+	if err := c.compileExpr(right); err != nil {
+		return err
+	}
+	c.emit(bytecode.OpDup, 0)
+	if err := c.assignTo(left); err != nil {
+		return err
+	}
+	c.patchJumpToHere(jumpSkip)
+	return nil
 }
 
 func stripAssignSuffix(op string) string {

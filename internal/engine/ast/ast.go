@@ -257,6 +257,16 @@ func (n *NumberLit) Pos() Pos  { return n.Loc }
 func (n *NumberLit) exprNode() {}
 func (n *NumberLit) node()     {}
 
+// BigIntLit 表示 BigInt 字面量（ES2020），如 123n、0xFFn。
+type BigIntLit struct {
+	Text string // 十进制整数字符串（已去掉 n 后缀，用于编译期 math/big 解析）
+	Loc  Pos
+}
+
+func (n *BigIntLit) Pos() Pos  { return n.Loc }
+func (n *BigIntLit) exprNode() {}
+func (n *BigIntLit) node()     {}
+
 type StringLit struct {
 	Value string
 	Loc   Pos

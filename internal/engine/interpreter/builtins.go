@@ -275,6 +275,8 @@ func (interp *Interpreter) setupObjectCtor() {
 		}
 		return proto, nil
 	}))
+	// Object 静态方法扩展（见 object_methods.go）。
+	interp.setupObjectCtorExt(obj)
 	_ = obj.Set("prototype", interp.objectProto)
 	_ = obj.Set("name", engine.Str("Object"))
 	engine.SetProto(obj, interp.functionProto)
@@ -567,9 +569,12 @@ func (interp *Interpreter) setupArrayProto() {
 				return nil, err
 			}
 			acc = v
-		}
-		return acc, nil
-	}))
+			}
+			return acc, nil
+		}))
+
+	// ES5+ 基础方法与 ES2019/ES2022/ES2023 扩展（见 array_methods.go）。
+	interp.setupArrayProtoExt()
 }
 
 // --- Array constructor ---
@@ -597,6 +602,7 @@ func (interp *Interpreter) setupArrayCtor() {
 		_, ok := args[0].(*engine.ArrayValue)
 		return engine.Boolean(ok), nil
 	}))
+	interp.setupArrayCtorExt(ctor)
 	_ = ctor.Set("prototype", interp.arrayProto)
 	_ = interp.arrayProto.Set("constructor", ctor)
 	_ = interp.globalObj.Set("Array", ctor)
@@ -1133,6 +1139,15 @@ func (interp *Interpreter) setupErrorCtors() {
 			if len(args) > 0 {
 				_ = errObj.Set("message", engine.Str(args[0].String()))
 			}
+			// Error cause（ES2022）：第二参数 options 的 cause 属性。
+			// new Error("msg", { cause: originalError }) → err.cause
+			if len(args) > 1 && !args[1].IsUndefined() && !args[1].IsNull() {
+				if optObj, ok := args[1].AsObject(); ok {
+					if cause, err := optObj.Get("cause"); err == nil && !cause.IsUndefined() {
+						_ = errObj.Set("cause", cause)
+					}
+				}
+			}
 			_ = errObj.Set("name", engine.Str(ctorName))
 			return errObj, nil
 		})
@@ -1216,6 +1231,8 @@ func (interp *Interpreter) setupMath() {
 	_ = m.Set("random", interp.makeFunc("random", func(args []engine.Value) (engine.Value, error) {
 		return engine.Number(0.5), nil // simplified; no math/rand for determinism
 	}))
+	// Math 扩展方法与常量（见 math_methods.go）。
+	interp.setupMathExt(m)
 	_ = interp.globalObj.Set("Math", m)
 }
 

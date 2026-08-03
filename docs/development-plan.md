@@ -1,6 +1,6 @@
 # Aluka 运行时 — 开发计划文档
 
-> 项目代号：`aluka` ｜ 文档版本：v0.7 ｜ 日期：2026-08-03
+> 项目代号：`aluka` ｜ 文档版本：v1.3 ｜ 日期：2026-08-03
 > 配套文档：[需求分析文档](./requirements-analysis.md)
 
 ---
@@ -58,7 +58,7 @@
 
 ### 2.0 当前完成状态评估
 
-> 评估日期：2026-08-03 ｜ 测试总数：345 个（全部通过）
+> 评估日期：2026-08-03 ｜ 测试总数：413 个（全部通过）
 
 #### 总体进度概览
 
@@ -67,8 +67,8 @@
 | 0 | 工程基座 | ✅ 完成 | 100% |
 | 1A | AST-walking PoC | ✅ 完成 | ~90% |
 | 1B | 字节码 VM | ⚠️ 大部分完成 | ~65% |
-| 1C | ES2015 + 模块系统 | 🔨 进行中 | ~60% |
-| 1D | TS 转译 + ES2017-2020 | 🔨 进行中 | ~65% |
+| 1C | ES2015 + 模块系统 | 🔨 进行中 | ~70% |
+| 1D | TS 转译 + ES2017-2020 | 🔨 进行中 | ~90% |
 | 2-8 | 后续阶段 | ❌ 未开始 | 0% |
 
 #### Phase 0：工程基座 — ✅ 完成
@@ -125,9 +125,9 @@
 | 1C.8 | `Proxy`/`Reflect` | ✅ | **完成**：`Proxy` 构造器（get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap）、`Proxy.revocable`、`Reflect` 全局对象（get/set/has/deleteProperty/ownKeys/getPrototypeOf/setPrototypeOf/apply/construct/defineProperty/getOwnPropertyDescriptor/isExtensible/preventExtensions）；VM 拦截 `getProperty`/`setProperty`/`inOp`/`instanceof`/`getProto`/`OpDelProp`/`OpGetProto`/`OpSpreadObject` 分发到 trap；`Interpreter.currentVM` 为 native 回调提供 VM 上下文；修复 `inOp` 对普通对象的原型链键存在性检查 |
 | 1C.9 | ESM 加载器 | ✅ | **完成**：ESM `import`/`export` 语法解析（AST 节点 + parser）、AST→CJS 转换（默认/命名/命名空间导入、重导出、`export *`、`export default`）、`EvalProgram` 直接执行预转换 AST |
 | 1C.10 | CJS 加载器 | ✅ | **完成**：`require()`/`module.exports`/`exports`/`__filename`/`__dirname`、模块缓存 + 循环依赖处理（预填充 cache）、嵌套 require 的全局变量 save/restore、JSON 模块加载 |
-| 1C.11 | Node.js 模块解析算法 | ✅ | **完成**：相对/绝对路径解析、扩展名补全（`.js`/`.mjs`/`.cjs`/`.json`）、目录解析（`package.json` main 字段 + index 文件）、`node_modules` 逐级向上查找、package.json `type` 字段判定模块类型 |
-| 1C.12 | `tsconfig.json` 读取 | ❌ | 未实现 |
-| 1C.13 | 路径别名（`paths`/`baseUrl`） | ❌ | 未实现 |
+| 1C.11 | Node.js 模块解析算法 | ✅ | **完成**：相对/绝对路径解析、扩展名补全（`.ts`/`.mts`/`.cts`/`.js`/`.mjs`/`.cjs`/`.json`）、目录解析（`package.json` main 字段 + index 文件）、`node_modules` 逐级向上查找、package.json `type` 字段判定模块类型 |
+| 1C.12 | `tsconfig.json` 读取 | ✅ | **完成**：新增 `tsconfig.go`，`tsconfigCache` 沿模块目录树向上查找 `tsconfig.json`（回退 `jsconfig.json`）并缓存解析结果；解析 `compilerOptions.baseUrl`/`paths`；支持 jsonc 格式（`//` 行注释与 `/* */` 块注释容错剥离） |
+| 1C.13 | 路径别名（`paths`/`baseUrl`） | ✅ | **完成**：`Resolver.resolvePaths` 实现 TypeScript paths 匹配规则——通配符 `*` key 映射（`@/* → src/*`，提取匹配片段替换 target 中的 `*`）、精确匹配、多 target 顺序尝试、最长匹配优先；`baseUrl` 单独作用时 bare specifier 相对 baseUrl 解析；别名未匹配时回退到 node_modules 查找；ESM `import` 与 CJS `require` 均支持；顺带补全 TS 扩展名解析（`.ts`/`.mts`/`.cts` 加入 Extensions/IndexNames，`.ts` 按 ESM 处理走类型剥离转译） |
 | 1C.14 | 字节码缓存 | ❌ | 未实现 |
 | 1C.15 | test262 ES5+ES2015 ≥ 60% | ❌ | 未集成 |
 
@@ -144,10 +144,10 @@
 | 1D.7 | 泛型参数删除 | ✅ | **完成**：`skipTypeParameters` 在函数/类声明处跳过 `<T, U extends X, R = D>`；`trySkipTypeArgs` 在调用表达式和 `new` 表达式处回溯式跳过 `<T>(args)`（区分 `<` 为泛型参数 vs 小于号）；`skipAngleBraces` 处理 `>>`/`>>>` 嵌套泛型 token 拆分 |
 | 1D.8 | `import type`/`export type` 删除 | ✅ | **完成**：`import type ...` 整体擦除为 `EmptyStmt`；`export type { ... }`/`export type * from 'mod'` 擦除为 `EmptyStmt`；内联 `{ type X, Y }` 逐个 specifier 擦除（import 和 export 均支持） |
 | 1D.9 | `async`/`await` | ✅ | **完成**：`async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法、`await` 表达式（值/Promise/thenable）；新增 `async.go`（`asyncRunner` 复用生成器式帧挂起，集成 Promise 微任务调度）、`OpAwait` 指令、`FuncTemplate.IsAsync` 标志、`AwaitExpr` AST 节点；parser 新增 `asyncStack` 跟踪异步作用域以正确解析 `await`；错误传播保留原始值（`normalizeException` 处理 `*jsThrow`/`engine.Value`/`error`），rejected promise 经 `await` 抛入帧可被 `try/catch` 捕获；async 函数返回值自动 Promise 包装（resolve 采用 thenable） |
-| 1D.10 | `for await...of` / rest in object / `Promise.finally` | ⚠️ | 对象 rest 解构已实现；`Promise.finally` 已实现（1C.4）；`for await...of` 未实现 |
-| 1D.11 | ES2019：`Array.flat/flatMap`/`Object.fromEntries`/`trimStart` | ❌ | 未实现 |
-| 1D.12 | ES2020：可选链 `?.`/空值合并 `??`/`BigInt`/`Promise.allSettled` | ⚠️ | 空值合并 `??` 已实现并测试；`Promise.allSettled` 已实现（1C.4）；可选链 `?.` 已实现（lexer 新增 `?.` token、parser `parseCallMember` 处理 `a?.b`/`a?.[b]`/`a?.()`、compiler `optionalChainStack` + `OpOptionalJump` 短路、`OpCallWithThis`/`OpCallWithThisArgs` 保持 `this` 绑定）；BigInt 未实现 |
-| 1D.13 | 动态 `import()` | ❌ | 未实现 |
+| 1D.10 | `for await...of` / rest in object / `Promise.finally` | ✅ | **完成**：`for await...of`（ES2018 异步迭代协议）已实现——`parseFor` 识别 `for await` 关键字（仅 async 函数内合法，否则语法错误）并设置 `ForOfStmt.IsAwait`；compiler 在 `isAwait` 时改用 `OpGetAsyncIterator` 获取迭代器、并在每次 `iter.next()` 后插入 `OpAwait` 解包 Promise；新增 `OpGetAsyncIterator` 字节码指令与 `VM.getAsyncIterator`（优先 `[Symbol.asyncIterator]()`，回退到 `[Symbol.iterator]()`——后者配合 OpAwait 的 `promiseResolve` 包装实现自动回退）；对象 rest 解构已实现；`Promise.finally` 已实现（1C.4） |
+| 1D.11 | ES2019：`Array.flat/flatMap`/`Object.fromEntries`/`trimStart` | ✅ | **完成**：`Array.prototype.flat/flatMap`（支持深度参数与 `Infinity`）、`Object.fromEntries`（支持数组/Map/通用可迭代对象输入）；`trimStart/trimEnd` 已在 1D 前期随 String 方法补齐。顺带补全了一批 ES5/ES2015 基础数组方法（`splice/sort/find/findIndex/some/every/reduceRight/fill/copyWithin`）、迭代器方法（`keys/values/entries`）、ES2022/ES2023（`findLast/findLastIndex/at`）、Array 静态方法（`from/of`）、Object 静态方法族（`create/defineProperty/defineProperties/getOwnPropertyDescriptor(s)/getOwnPropertyNames/is/hasOwn/setPrototypeOf`）、Math 缺失方法与常量（`sign/trunc/cbrt/log1p/expm1/sinh/cosh/tanh/asinh/acosh/atanh/asin/acos/atan/atan2/fround/imul/clz32` + `LOG2E/LOG10E/SQRT1_2`） |
+| 1D.12 | ES2020：可选链 `?.`/空值合并 `??`/`BigInt`/`Promise.allSettled` | ✅ | **完成**：空值合并 `??`、可选链 `?.`（成员访问 `a?.b`/计算属性 `a?.[b]`/可选调用 `a?.()`/短路）、`Promise.allSettled` 均已实现；**BigInt**（ES2020）完成——新增 `TypeBigInt` 值类型与 `bigIntValue`（`math/big.Int` 包装，`Float()`/`Int()` 返回 `(0,false)` 阻断 float 路径）；lexer 新增 `TokenBigInt` 与 `n` 后缀检测（支持 `123n`/`0xFFn`/`0o17n`/`0b1010n`/`1_000n`）；AST 新增 `BigIntLit`；compiler 走常量池 `AddConst(engine.BigInt)`；新增 `bigint_ops.go` 集中实现算术（`+ - * / % **`，整除向零截断）、位运算（`& | ^ << >>`，不支持 `>>>`）、比较（BigInt vs BigInt/Number 用 `big.Float` 精确比较）、严格/宽松相等（`5n == 5` 为 true、`5n === 5` 为 false）；vm.go 各算术/位运算 case 加 BigInt 分发；混合 BigInt+Number 算术抛 TypeError；`typeof 123n === "bigint"` 自动工作 |
+| 1D.13 | 动态 `import()` | ✅ | **完成**：采用 parser 层 lower 方案（无需新 opcode/AST 节点/compiler 分支）——parser 在语句分发处 peek `import` 后是否紧跟 `(`，若是则走表达式路径；`parsePrimary` 新增 `import` case 把 `import(spec)` 直接 lower 成对内置全局 `__import(spec)` 的 `CallExpr`。`Loader.makeImportFunc` 复用 `require()` 的同步加载链路（`Loader.require`，自动按 CJS/ESM/JSON 分发、缓存、处理循环依赖），再用全局 `Promise.resolve`/`Promise.reject` 把结果包装成已 settled 的 Promise（通过 `engine.Function.Call` 调用静态方法，避免 module→interpreter 循环依赖）。`setGlobals`/`saveGlobals`/`restoreGlobals` 扩展处理 `__import` 全局（与 `require` 同样的 parentPath 闭包，相对路径基于发起模块解析）。支持 `await import(...)`、`.then` 链式、命名/默认导出访问、加载失败返回 rejected Promise |
 | 1D.14 | TS conformance ≥ 50% | ❌ | 未集成 |
 | 1D.15 | REPL 基础 | ❌ | 未实现 |
 
@@ -156,10 +156,14 @@
 以下特性已在 parser + compiler + VM 中完整实现并通过测试：
 
 - **ES5 核心**：变量声明、函数声明/表达式、闭包、`if`/`for`/`while`/`do-while`/`switch`、`try/catch/finally`、`throw`、`break`/`continue`（含 label）、`typeof`/`void`/`delete`/`in`/`instanceof`
-- **ES5 内置**：Object/Array/String/Number/Boolean/Math/JSON/Error 完整方法
-- **ES2015**：`let`/`const`/块级作用域、箭头函数、模板字符串、解构赋值（数组+对象，含 holes/rest/default/嵌套）、默认参数、rest/spread 参数、`for...of`、spread 展开（数组+对象）、空值合并 `??`、`class` 语法（声明/表达式/继承/super/static/getter/setter/默认构造函数）、`Promise`（构造器 + then/catch/finally 链式调用 + resolve/reject/all/race/allSettled + microtask 队列）、`Symbol`（+ for/keyFor + hasInstance/toPrimitive/toStringTag）、`Map`/`Set`/`WeakMap`/`WeakSet`（完整原型方法 + 迭代器协议 + 构造器 iterable 输入）、`Proxy`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap + revocable）、`Reflect`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/setPrototypeOf/apply/construct/defineProperty/getOwnPropertyDescriptor）
+- **ES5 内置**：Object/Array/String/Number/Boolean/Math/JSON/Error 方法（Array 含 `splice/sort/find/findIndex/some/every/reduce/reduceRight/fill/copyWithin/indexOf/includes/forEach/map/filter/concat/slice/join/keys/values/entries`；Object 含 `create/assign/keys/values/entries/fromEntries/freeze/is/hasOwn/getPrototypeOf/setPrototypeOf/defineProperty/defineProperties/getOwnPropertyDescriptor(s)/getOwnPropertyNames`；Math 含 `abs/floor/ceil/round/trunc/sign/sqrt/pow/max/min/random/cbrt/log/log1p/log2/log10/exp/expm1/sinh/cosh/tanh/asinh/acosh/atanh/sin/cos/tan/asin/acos/atan/atan2/fround/imul/clz32` + 全部常量）
+- **ES2015**：`let`/`const`/块级作用域、箭头函数、模板字符串、解构赋值（数组+对象，含 holes/rest/default/嵌套）、默认参数、rest/spread 参数、`for...of`、spread 展开（数组+对象）、空值合并 `??`、`class` 语法（声明/表达式/继承/super/static/getter/setter/默认构造函数）、`Promise`（构造器 + then/catch/finally 链式调用 + resolve/reject/all/race/allSettled + microtask 队列）、`Symbol`（+ for/keyFor + hasInstance/toPrimitive/toStringTag）、`Map`/`Set`/`WeakMap`/`WeakSet`（完整原型方法 + 迭代器协议 + 构造器 iterable 输入）、`Proxy`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap + revocable）、`Reflect`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/setPrototypeOf/apply/construct/defineProperty/getOwnPropertyDescriptor）、`Array.from`/`Array.of`/`Array.isArray`
 - **ES2017**：`async`/`await`（`async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法、`await` 值/Promise/thenable、错误经 `try/catch` 捕获、返回值自动 Promise 包装）
-- **ES2020**：可选链 `?.`（成员访问 `a?.b`、计算属性 `a?.[b]`、可选调用 `a?.()`、方法调用 `a?.b()`/`a.b?.()`、深层链短路、`this` 绑定保持）
+- **ES2018**：`for await...of`（异步迭代协议；`Symbol.asyncIterator` 优先、回退 `Symbol.iterator` + Promise 包装；支持 `break`/`try-catch` 捕获 rejected next、解构绑定；仅 async 函数内合法）、对象 rest 解构（`let {a, ...rest} = obj`）
+- **ES2019**：`Array.prototype.flat`/`flatMap`（支持深度参数与 `Infinity`）、`Object.fromEntries`（数组/Map/通用可迭代对象输入）、`Array.prototype.flat` 的迭代器消费、`String.prototype.trimStart`/`trimEnd`、可选 catch 绑定（`catch {}` 无参数）
+- **ES2020**：可选链 `?.`（成员访问 `a?.b`、计算属性 `a?.[b]`、可选调用 `a?.()`、方法调用 `a?.b()`/`a.b?.()`、深层链短路、`this` 绑定保持）、动态 `import()`（运行时按 specifier 加载 CJS/ESM/JSON 模块，返回 `Promise<module namespace>`；支持 `await import(...)`、相对路径基于发起模块解析、加载失败返回 rejected Promise）
+- **ES2021**：数字分隔符（`1_000_000`、`0xFF_FF`、`0o7777_7777`、`0b1010_1010`，含小数/指数部分 `1_000.500_25`）、逻辑赋值运算符（`||=`/`&&=`/`??=`，含短路语义与左值一次性求值）、`String.prototype.replaceAll`（随 String 方法补齐）
+- **ES2022/ES2023**：`Object.hasOwn`、`Array.prototype.at`、`Array.prototype.findLast`/`findLastIndex`、Error cause（`new Error("msg", {cause})` → `err.cause`）、Hashbang 语法（`#!/usr/bin/env aluka` 脚本首行）
 - **TypeScript 转译**：类型注解剥离（变量/参数/返回值/类字段）、`interface`/`type` 别名声明擦除、`enum` 降级（数字自动递增 + 反向映射 / 字符串枚举 / 混合枚举）、`namespace` 降级为 IIFE（导出声明转 `ns.Name = ...`）、装饰器解析后丢弃（`@dec`/`@dec(args)`/`@foo.bar`）、`as`/`satisfies`/`as const` 断言剥离、泛型参数删除（函数/类声明 + 调用表达式类型实参）、`import type`/`export type` 擦除（含内联 `{ type X }` specifier）、类字段初始化（实例字段注入构造函数 + 静态字段 `OpSetPropTop`）
 - **其他**：`delete` 运算符（实际删除属性）、labeled 语句、函数方法（call/apply/bind）
 
@@ -168,8 +172,15 @@
 1. ~~模块系统 ESM/CJS（1C.9-1C.11）— 阻塞多文件项目~~ ✅ 已完成
 2. ~~可选链 `?.`（1D.12）— 常用语法~~ ✅ 已完成
 3. ~~TS 转译（1D.1-1D.8）— 阻塞 `.ts` 文件运行~~ ✅ 已完成
-4. `for await...of`（1D.10）— 异步迭代器（async/await 已就绪）
-5. 隐藏类 + IC（1B.5）和自研 GC（1B.6）— 影响性能
+4. ~~ES2019 `Array.flat/flatMap`/`Object.fromEntries`（1D.11）~~ ✅ 已完成
+5. ~~`for await...of`（1D.10）— 异步迭代器~~ ✅ 已完成
+6. ~~`BigInt`（1D.12）— ES2020 大整数~~ ✅ 已完成（ES2020 P0 特性全部齐备）
+7. ~~动态 `import()`（1D.13）— 模块系统已就绪，待接入~~ ✅ 已完成
+8. 隐藏类 + IC（1B.5）和自研 GC（1B.6）— 影响性能
+9. 普通函数 `this` 绑定：`Array.prototype.find/map` 等的 `thisArg` 第二参数未对非箭头函数生效（引擎既有缺陷，箭头函数闭包可绕过）
+10. CJS/ESM interop：`module.exports = func` 整体赋值的 CJS 模块，动态 import 返回的 namespace 不额外包装 `.default`（当前直接返回 exports，简化 interop）
+11. ~~顶层 try/catch 既有缺陷~~ ✅ 已修复（v1.3，根因为 `compileStmtValue` 缺 TryStmt 分支 + `findHandlerInFrame` 未跳过 phase==1 handler 导致 rethrow 无限循环）
+12. lexer 正则/除法歧义：表达式语句开头的 `/` 在某些上下文被误判为正则字面量起始（如 `10n / 3n` 作为语句开头），需用变量或 `console.log` 包装绕过
 
 ### 2.1 Phase 时间轴
 
@@ -1253,3 +1264,9 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 | v0.5 | 2026-08-03 | Phase 1C.5 `Symbol`/`Map`/`Set`/`WeakMap`/`WeakSet` 完成：`Symbol` 增强（`Symbol.for`/`keyFor` 全局注册表 + `hasInstance`/`toPrimitive`/`toStringTag` well-known symbols）；新增 `map_set.go`（`MapValue`/`SetValue`/`WeakMapValue`/`WeakSetValue` + 完整原型方法 + 迭代器协议 + 构造器 iterable 输入 + SameValueZero 键相等）；`VM.backingObj` 统一处理自定义值类型的 accessor 查找（修复 `size` getter 不被调用的问题）；`getProto` 新增 Map/Set/WeakMap/WeakSet 分支；测试总数 198→240 |
 | v0.6 | 2026-08-03 | Phase 1C.8 `Proxy`/`Reflect` 完成：新增 `proxy.go`（`ProxyValue` + get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap + `Proxy.revocable`）和 `reflect.go`（`Reflect` 全局对象 + 12 个方法）；VM 拦截 `getProperty`/`setProperty`/`inOp`/`instanceof`/`getProto`/`OpDelProp`/`OpGetProto`/`OpSpreadObject` 分发到 Proxy trap；`Interpreter.currentVM` 为 native 回调提供 VM 上下文；`proxyGetSymbol` 传递实际 Symbol 值给 get trap（支持 `k === Symbol.hasInstance` 比较）；修复 `inOp` 对普通对象的原型链键存在性检查（`Get` 返回 `Undefined, nil` 导致 `in` 总是返回 true）；`Object.getPrototypeOf`/`Object.keys` 支持 Proxy；测试总数 240→264 |
 | v0.7 | 2026-08-03 | Phase 1D.9 `async`/`await` 完成：新增 `async.go`（`asyncRunner` 复用生成器式帧挂起/恢复，集成 Promise 微任务调度）、`OpAwait` 指令、`FuncTemplate.IsAsync` 标志、`AwaitExpr` AST 节点；parser 新增 `asyncStack` 跟踪异步作用域以正确解析 `await`，支持 `async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法；`callClosure` 对 async 函数创建 `asyncRunner` 并返回 Promise；`normalizeException` 处理 `*jsThrow`/`engine.Value`/`error` 保留原始错误值，使 rejected promise 经 `await` 抛入帧可被 `try/catch` 捕获；async 函数返回值经 `promiseResolve` 自动采用 thenable；测试总数 264→290 |
+| v0.8 | 2026-08-03 | Phase 1D.11 ES2019 内置方法补全 + 大规模内置对象方法补齐：新增 `array_methods.go`（`Array.prototype.splice/sort/find/findIndex/some/every/reduceRight/fill/copyWithin/keys/values/entries/flat/flatMap/findLast/findLastIndex/at` + `Array.from`/`Array.of`，含负索引、迭代器协议消费、`Infinity` 深度处理）、`object_methods.go`（`Object.create/defineProperty/defineProperties/getOwnPropertyDescriptor/getOwnPropertyDescriptors/getOwnPropertyNames/getOwnPropertySymbols/is/fromEntries/hasOwn/setPrototypeOf/seal/preventExtensions/isFrozen/isSealed/isExtensible`，含 `Object.is` 的 `NaN`/`±0` 同值相等语义、`fromEntries` 的数组/Map/通用迭代器输入）、`math_methods.go`（`sign/trunc/cbrt/log1p/expm1/sinh/cosh/tanh/asinh/acosh/atanh/asin/acos/atan/atan2/fround/imul/clz32` + `LOG2E/LOG10E/SQRT1_2` 常量）；新增测试文件 3 个（`array_methods_test.go`/`object_methods_test.go`/`math_methods_test.go`）共 27 个测试函数；修复 `flat(Infinity)` 因 `numberValue.Int()` 对 `+Inf` 返回垃圾值导致深度计算错误（改为优先用 `Float()` 并 `math.IsInf` 判定）；测试总数 345→372 |
+| v0.9 | 2026-08-03 | Phase 1D.10 `for await...of`（ES2018 异步迭代协议）完成：`parseFor` 在 `for` 与 `(` 之间识别 `await` 关键字（仅 async 函数内合法，否则语法错误），经 `parseForOf` 的 `isAwait` 参数设置既有但从未使用的 `ForOfStmt.IsAwait` 字段；compiler `compileForOf` 接受 `isAwait` 标志，在异步路径上改用新指令 `OpGetAsyncIterator` 获取迭代器、并在每次 `OpCallMethod("next")` 后插入 `OpAwait` 以解包 next() 返回的 Promise；新增 `OpGetAsyncIterator` 字节码指令（`opcodes.go` 枚举 + 反汇编名 `GET_ASYNC_ITERATOR`，无操作数）与 `VM.getAsyncIterator`（优先 `[Symbol.asyncIterator]()` 方法，回退到 `getIterator` 的 `Symbol.iterator` 路径——回退场景下 next() 返回普通对象，由 OpAwait 的 `promiseResolve` 自动包装）；复用既有 async/await 的 `asyncRunner` 挂起-恢复机制（`tmpIter`/`tmpResult` 作为真实栈槽在 await 期间保留）；新增 `for_await_test.go` 7 个测试（手写 async iterable、回退到数组/字符串同步迭代器、`Promise.reject` 经 await 抛入被 try/catch 捕获、break 提前退出、解构绑定、非 async 上下文语法错误）；测试总数 372→379 |
+| v1.0 | 2026-08-03 | Phase 1D.13 动态 `import()`（ES2020）完成：采用 parser 层 lower 方案（最小改动，无新 opcode/AST 节点/compiler 分支）——parser 语句分发处对 `import` 关键字 peek 下一个 token，若紧跟 `(` 则判定为动态调用，跳出声明路径走表达式语句；`parsePrimary` 新增 `import` case，将 `import(specifier)` 直接 lower 成对内置全局 `__import(specifier)` 的 `ast.CallExpr`（复用现有 CallExpr 编译链路）；`Loader.makeImportFunc`（`loader.go`）复用 `require()` 的同步加载入口 `Loader.require`（自动按 CJS/ESM/JSON 分发、缓存、处理循环依赖），再用全局 `Promise.resolve`/`Promise.reject` 静态方法把结果包装成已 settled 的 Promise（通过 `engine.Function.Call` 调用，避免 module→interpreter 循环依赖）；`cjs.go` 的 `setGlobals`/`saveGlobals`/`restoreGlobals` 扩展处理 `__import` 全局（与 `require` 同样的 parentPath 闭包，相对路径基于发起模块自身路径解析）；新增 `dynamic_import_test.go` 8 个测试（CJS 命名/默认导出、ESM 命名+默认+命名空间、JSON 模块、`await import`、`instanceof Promise` 断言、加载失败 rejected Promise、子目录相对路径解析）；测试总数 379→387 |
+| v1.1 | 2026-08-03 | Phase 1C.12 `tsconfig.json` 读取 + 1C.13 路径别名 `paths`/`baseUrl` 完成：新增 `tsconfig.go`——`tsconfigCache` 沿模块目录树向上查找 `tsconfig.json`（回退 `jsconfig.json`）并按目录缓存解析结果（`sync.Mutex` 保护），解析 `compilerOptions.baseUrl`/`paths` 字段；`stripJSONC` 实现 jsonc 容错（剥离 `//` 行注释与 `/* */` 块注释，正确处理字符串字面量内的注释符号）；`Resolver.resolvePaths` 实现 TypeScript paths 匹配规则——通配符 `*` key 映射（`@/* → src/*`，从 specifier 提取匹配片段替换 target 中的 `*`）、精确匹配（无通配符）、多 target 顺序尝试、最长 key 匹配优先；`baseUrl` 单独作用时（无 paths）bare specifier 相对 baseUrl 解析；`Resolver.Resolve` 在 bare specifier 路径上先尝试 paths 别名候选，失败后回退到 `resolveBare`（node_modules 查找）；ESM `import` 与 CJS `require` 均自动走别名解析；顺带补全 TS 扩展名解析（`Extensions`/`IndexNames` 加入 `.ts`/`.mts`/`.cts`，`ModuleType` 将 `.ts`/`.mts` 归为 ESM 走类型剥离转译）；新增 `tsconfig_test.go` 8 个测试（通配符别名、多别名+精确匹配、baseUrl-only、子目录向上查找命中根 tsconfig、jsconfig 回退、jsonc 注释容错、回退 node_modules、CJS require 别名）；测试总数 387→395 |
+| v1.2 | 2026-08-03 | 一批 ES2019-ES2023 语法特性修复与新增：**数字分隔符（ES2021）修复**——`lexer.go readNumber` 重写，新增 `readDigitsWithSep` 统一辅助函数，使 `0x`/`0o`/`0b` 字面量及十进制小数/指数部分均支持下划线分隔符（`0xFF_FF`、`0o7777_7777`、`0b1010_1010`、`1_000.500_25`）；**逻辑赋值运算符（ES2021）**——三层实现：`token.go multiPuncts` 添加 `||=`/`&&=`/`??=`（排在对应 2 字符形式之前保证最长匹配）、`parser.go assignOps` 添加三个运算符、`compiler.go` 新增 `compileLogicalAssign` 用 `OpJmpTrueKeep`/`OpJmpFalseKeep`/`OpJmpNullishKeep` 实现短路语义（左值只求值一次，复用 Keep 跳转指令的"满足条件保留栈顶、不满足则 pop"语义）；**Error cause（ES2022）**——`setupErrorCtors` 构造器读取第二参数 options 对象的 `cause` 属性并设置到错误对象；**确认已实现**：可选 catch 绑定（ES2019）、Hashbang（ES2023）；发现并记录**顶层 try/catch 既有缺陷**（顶层代码的 catch 参数 `e` 为 undefined，函数体内正常）；新增 `modern_syntax_test.go` 6 个测试（数字分隔符、Error cause、`||=`/`&&=`/`??=` 含短路与成员表达式）；测试总数 395→401 |
+| v1.3 | 2026-08-03 | 顶层 try/catch 缺陷修复 + BigInt（ES2020）完成：**顶层 try/catch 修复**——根因有二：(1) `compileStmtValue` 缺少 `TryStmt` 分支导致顶层最后一条语句为 try 时不产生返回值（新增 `compileTryValue` 值模式编译 try/catch/finally 块）；(2) `findHandlerInFrame` 未跳过 `phase==1`（已进 catch）的 handler，导致 catch 块内 rethrow 重新匹配同一 handler 形成无限循环（修复为 `phase >= 1` 时弹出该 handler 继续向上搜索）；新增 `try_catch_test.go` 6 个测试覆盖顶层 try/catch/finally 返回值与 rethrow；**BigInt（1D.12）完成**——新增 `TypeBigInt` 值类型与 `bigIntValue`（`math/big.Int` 包装，`Float()`/`Int()` 返回 `(0,false)` 阻断 float 路径）；lexer 新增 `TokenBigInt` 与 `n` 后缀检测（`123n`/`0xFFn`/`0o17n`/`0b1010n`/`1_000n`）；AST 新增 `BigIntLit`；compiler 走常量池；新增 `bigint_ops.go` 集中实现算术（`+ - * / % **`，整除向零截断、除零抛 RangeError）、位运算（`& | ^ << >>`，不支持 `>>>` 抛 TypeError）、比较（BigInt vs BigInt/Number 用 `big.Float` 精确比较）、严格/宽松相等（`5n == 5` 为 true、`5n === 5` 为 false）；vm.go 各算术/位运算 case 加 BigInt 分发；`typeof 123n === "bigint"` 自动工作；混合 BigInt+Number 算术抛 TypeError；新增 `bigint_test.go` 6 个测试；测试总数 401→413（**ES2020 P0 特性全部齐备**） |

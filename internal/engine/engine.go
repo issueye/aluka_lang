@@ -95,6 +95,7 @@ const (
 	TypeObject
 	TypeFunction
 	TypeSymbol
+	TypeBigInt
 )
 
 // String 返回类型名称（用于 typeof 输出）。
@@ -116,6 +117,8 @@ func (t ValueType) String() string {
 		return "function"
 	case TypeSymbol:
 		return "symbol"
+	case TypeBigInt:
+		return "bigint"
 	default:
 		return "unknown"
 	}

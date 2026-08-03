@@ -139,6 +139,8 @@ func strictEqual(l, r engine.Value) bool {
 		ln, _ := l.Float()
 		rn, _ := r.Float()
 		return ln == rn
+	case engine.TypeBigInt:
+		return bigintStrictEqual(l, r)
 	case engine.TypeString:
 		return l.String() == r.String()
 	default:
@@ -149,6 +151,10 @@ func strictEqual(l, r engine.Value) bool {
 
 // looseEquals implements JS == comparison.
 func looseEquals(l, r engine.Value) bool {
+	// BigInt 相关的宽松相等（BigInt == Number/String/Boolean）。
+	if ok, handled := bigintLooseEqual(l, r); handled {
+		return ok
+	}
 	if l.Type() == r.Type() {
 		return strictEqual(l, r)
 	}
@@ -193,6 +199,10 @@ func looseEquals(l, r engine.Value) bool {
 
 // compareValues implements JS relational comparison (< > <= >=).
 func compareValues(l, r engine.Value) int {
+	// BigInt 相关的比较（BigInt vs BigInt / Number）。
+	if isBigInt(l) || isBigInt(r) {
+		return bigintCompare(l, r)
+	}
 	if l.Type() == engine.TypeString && r.Type() == engine.TypeString {
 		return strings.Compare(l.String(), r.String())
 	}

@@ -23,13 +23,18 @@ type Resolver struct {
 
 	// IndexNames lists the index file names tried for directory resolution.
 	IndexNames []string
+
+	// tsconfigCache 缓存已解析的 tsconfig.json（路径别名支持，1C.12/1C.13）。
+	tsconfigCache *tsconfigCache
 }
 
 // NewResolver creates a Resolver with Node.js defaults.
+// 扩展名补全顺序遵循需求文档 3.3.2（含 TS 扩展名）。
 func NewResolver() *Resolver {
 	return &Resolver{
-		Extensions: []string{".js", ".mjs", ".cjs", ".json"},
-		IndexNames: []string{"index.js", "index.mjs", "index.cjs", "index.json"},
+		Extensions:    []string{".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"},
+		IndexNames:    []string{"index.ts", "index.mts", "index.cts", "index.js", "index.mjs", "index.cjs", "index.json"},
+		tsconfigCache: newTsconfigCache(),
 	}
 }
 
@@ -47,6 +52,15 @@ func (r *Resolver) Resolve(specifier, parentPath string) (string, error) {
 		base := filepath.Dir(parentPath)
 		full := filepath.Join(base, filepath.FromSlash(specifier))
 		return r.resolveFileOrDir(full)
+	}
+
+	// Bare specifier: 先尝试 tsconfig paths 别名（1C.13），再回退 node_modules。
+	if candidates := r.resolvePaths(specifier, filepath.Dir(parentPath)); len(candidates) > 0 {
+		for _, cand := range candidates {
+			if resolved, err := r.resolveFileOrDir(cand); err == nil {
+				return resolved, nil
+			}
+		}
 	}
 
 	// Bare specifier: walk up node_modules
@@ -196,14 +210,15 @@ func (r *Resolver) resolveBare(specifier, parentPath string) (string, error) {
 }
 
 // ModuleType determines the module type for a file path.
-// Returns "module" for ESM (.mjs or .js with type:module in package.json)
-// and "commonjs" for CJS (.cjs or .js with type:commonjs/default).
+// Returns "module" for ESM (.mjs/.ts/.mts or .js with type:module in package.json)
+// and "commonjs" for CJS (.cjs/.cts or .js with type:commonjs/default).
+// TS 文件按 ESM 处理（loadESM 会做类型剥离转译）。
 func (r *Resolver) ModuleType(path string) string {
 	ext := filepath.Ext(path)
 	switch ext {
-	case ".mjs":
+	case ".mjs", ".ts", ".mts":
 		return "module"
-	case ".cjs":
+	case ".cjs", ".cts":
 		return "commonjs"
 	case ".json":
 		return "json"

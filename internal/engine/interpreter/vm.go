@@ -95,6 +95,36 @@ func (v *VM) EvalProgram(prog *ast.Program, filename string) (engine.Value, erro
 	return v.runModule(mod)
 }
 
+// Compile 解析源码并编译为字节码 Module（不执行）。供字节码缓存使用：
+// 加载器可先检查磁盘缓存，未命中时调用此方法编译并写盘，再调用 RunModule 执行。
+func (v *VM) Compile(src, filename string) (*bytecode.Module, error) {
+	prog, err := parser.Parse(src)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", engine.ErrSyntaxError, filename, err)
+	}
+	comp := compiler.New()
+	mod, err := comp.Compile(prog, filename)
+	if err != nil {
+		return nil, fmt.Errorf("aluka: compile error: %w", err)
+	}
+	return mod, nil
+}
+
+// CompileAST 编译预解析的 AST 为字节码 Module（不执行）。
+func (v *VM) CompileAST(prog *ast.Program, filename string) (*bytecode.Module, error) {
+	comp := compiler.New()
+	mod, err := comp.Compile(prog, filename)
+	if err != nil {
+		return nil, fmt.Errorf("aluka: compile error: %w", err)
+	}
+	return mod, nil
+}
+
+// RunModule 执行已编译的字节码 Module（公开版，供缓存恢复后执行）。
+func (v *VM) RunModule(mod *bytecode.Module) (engine.Value, error) {
+	return v.runModule(mod)
+}
+
 // runModule executes the top-level function of a module.
 //
 // This function is re-entrant: when require() is called inside a module, the
@@ -259,92 +289,189 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpAdd:
 				r := v.pop()
 				l := v.pop()
-				v.push(v.binAdd(l, r))
+				if isBigInt(l) || isBigInt(r) {
+					result, err := bigintArith2(l, r, '+')
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					v.push(result)
+				} else {
+					v.push(v.binAdd(l, r))
+				}
 			case bytecode.OpSub:
 				r := v.pop()
 				l := v.pop()
-				ln, _ := l.Float()
-				rn, _ := r.Float()
-				v.push(engine.Number(ln - rn))
+				if isBigInt(l) || isBigInt(r) {
+					result, err := bigintArith2(l, r, '-')
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					v.push(result)
+				} else {
+					ln, _ := l.Float()
+					rn, _ := r.Float()
+					v.push(engine.Number(ln - rn))
+				}
 			case bytecode.OpMul:
 				r := v.pop()
 				l := v.pop()
-				ln, _ := l.Float()
-				rn, _ := r.Float()
-				v.push(engine.Number(ln * rn))
+				if isBigInt(l) || isBigInt(r) {
+					result, err := bigintArith2(l, r, '*')
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					v.push(result)
+				} else {
+					ln, _ := l.Float()
+					rn, _ := r.Float()
+					v.push(engine.Number(ln * rn))
+				}
 			case bytecode.OpDiv:
 				r := v.pop()
 				l := v.pop()
-				ln, _ := l.Float()
-				rn, _ := r.Float()
-				if rn == 0 {
-					if ln == 0 {
-						v.push(engine.Number(math.NaN()))
-					} else if ln > 0 {
-						v.push(engine.Number(math.Inf(1)))
-					} else {
-						v.push(engine.Number(math.Inf(-1)))
+				if isBigInt(l) || isBigInt(r) {
+					result, err := bigintArith2(l, r, '/')
+					if err != nil {
+						return v.handleThrow(err)
 					}
+					v.push(result)
 				} else {
-					v.push(engine.Number(ln / rn))
+					ln, _ := l.Float()
+					rn, _ := r.Float()
+					if rn == 0 {
+						if ln == 0 {
+							v.push(engine.Number(math.NaN()))
+						} else if ln > 0 {
+							v.push(engine.Number(math.Inf(1)))
+						} else {
+							v.push(engine.Number(math.Inf(-1)))
+						}
+					} else {
+						v.push(engine.Number(ln / rn))
+					}
 				}
 			case bytecode.OpMod:
 				r := v.pop()
 				l := v.pop()
-				ln, _ := l.Float()
-				rn, _ := r.Float()
-				if rn == 0 {
-					v.push(engine.Number(math.NaN()))
+				if isBigInt(l) || isBigInt(r) {
+					result, err := bigintArith2(l, r, '%')
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					v.push(result)
 				} else {
-					v.push(engine.Number(math.Mod(ln, rn)))
+					ln, _ := l.Float()
+					rn, _ := r.Float()
+					if rn == 0 {
+						v.push(engine.Number(math.NaN()))
+					} else {
+						v.push(engine.Number(math.Mod(ln, rn)))
+					}
 				}
 			case bytecode.OpPow:
 				r := v.pop()
 				l := v.pop()
-				ln, _ := l.Float()
-				rn, _ := r.Float()
-				v.push(engine.Number(math.Pow(ln, rn)))
+				if isBigInt(l) || isBigInt(r) {
+					result, err := bigintPow(l, r)
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					v.push(result)
+				} else {
+					ln, _ := l.Float()
+					rn, _ := r.Float()
+					v.push(engine.Number(math.Pow(ln, rn)))
+				}
 			case bytecode.OpBitAnd:
 				r := v.pop()
 				l := v.pop()
-				ln, _ := l.Int()
-				rn, _ := r.Int()
-				v.push(engine.Number(float64(ln & rn)))
+				if isBigInt(l) || isBigInt(r) {
+					result, err := bigintBitwise(l, r, "&")
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					v.push(result)
+				} else {
+					ln, _ := l.Int()
+					rn, _ := r.Int()
+					v.push(engine.Number(float64(ln & rn)))
+				}
 			case bytecode.OpBitOr:
 				r := v.pop()
 				l := v.pop()
-				ln, _ := l.Int()
-				rn, _ := r.Int()
-				v.push(engine.Number(float64(ln | rn)))
+				if isBigInt(l) || isBigInt(r) {
+					result, err := bigintBitwise(l, r, "|")
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					v.push(result)
+				} else {
+					ln, _ := l.Int()
+					rn, _ := r.Int()
+					v.push(engine.Number(float64(ln | rn)))
+				}
 			case bytecode.OpBitXor:
 				r := v.pop()
 				l := v.pop()
-				ln, _ := l.Int()
-				rn, _ := r.Int()
-				v.push(engine.Number(float64(ln ^ rn)))
+				if isBigInt(l) || isBigInt(r) {
+					result, err := bigintBitwise(l, r, "^")
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					v.push(result)
+				} else {
+					ln, _ := l.Int()
+					rn, _ := r.Int()
+					v.push(engine.Number(float64(ln ^ rn)))
+				}
 			case bytecode.OpShl:
 				r := v.pop()
 				l := v.pop()
-				ln, _ := l.Int()
-				rn, _ := r.Int()
-				v.push(engine.Number(float64(ln << (uint(rn) & 31))))
+				if isBigInt(l) || isBigInt(r) {
+					result, err := bigintBitwise(l, r, "<<")
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					v.push(result)
+				} else {
+					ln, _ := l.Int()
+					rn, _ := r.Int()
+					v.push(engine.Number(float64(ln << (uint(rn) & 31))))
+				}
 			case bytecode.OpShr:
 				r := v.pop()
 				l := v.pop()
-				ln, _ := l.Int()
-				rn, _ := r.Int()
-				v.push(engine.Number(float64(ln >> (uint(rn) & 31))))
+				if isBigInt(l) || isBigInt(r) {
+					result, err := bigintBitwise(l, r, ">>")
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					v.push(result)
+				} else {
+					ln, _ := l.Int()
+					rn, _ := r.Int()
+					v.push(engine.Number(float64(ln >> (uint(rn) & 31))))
+				}
 			case bytecode.OpUShr:
 				r := v.pop()
 				l := v.pop()
+				if isBigInt(l) || isBigInt(r) {
+					// BigInt 不支持 >>> （无符号右移），抛 TypeError。
+					return v.handleThrow(fmt.Errorf("%w: BigInts have no unsigned right shift, use >> instead", engine.ErrTypeError))
+				}
 				ln, _ := l.Int()
 				rn, _ := r.Int()
 				v.push(engine.Number(float64(uint32(ln) >> (uint(rn) & 31))))
 
 			// --- Unary ---
 			case bytecode.OpNeg:
-				n, _ := v.pop().Float()
-				v.push(engine.Number(-n))
+				val := v.pop()
+				if isBigInt(val) {
+					v.push(bigintNeg(val))
+				} else {
+					n, _ := val.Float()
+					v.push(engine.Number(-n))
+				}
 			case bytecode.OpNot:
 				b, _ := v.pop().Bool()
 				v.push(engine.Boolean(!b))
@@ -795,6 +922,15 @@ func (v *VM) run() (engine.Value, error) {
 				return v.handleThrow(err)
 			}
 			v.push(iter)
+		case bytecode.OpGetAsyncIterator:
+			// ES2018 异步迭代协议：优先 [Symbol.asyncIterator]()，
+			// 回退到 [Symbol.iterator]()（其 next 结果由后续 OpAwait 解包）。
+			iterable := v.pop()
+			iter, err := v.getAsyncIterator(iterable)
+			if err != nil {
+				return v.handleThrow(err)
+			}
+			v.push(iter)
 		case bytecode.OpYield:
 			// Generator yield: pop yielded value, suspend frame, return to caller.
 			yieldVal := v.pop()
@@ -987,7 +1123,24 @@ func (v *VM) getIterator(iterable engine.Value) (engine.Value, error) {
 	return engine.Undefined(), fmt.Errorf("%w: %s is not iterable", engine.ErrTypeError, iterable.Type())
 }
 
-// newArrayIterator creates an iterator object for an ArrayValue.
+// getAsyncIterator 使用 ES2018 异步迭代协议从可迭代值中获取异步迭代器。
+// 优先查找 [Symbol.asyncIterator]()；若不存在则回退到 [Symbol.iterator]()
+// （回退场景下 next() 返回普通值，由后续 OpAwait 经 promiseResolve 包装）。
+// 数组/字符串/生成器无内置 asyncIterator，自动回退到同步迭代器。
+func (v *VM) getAsyncIterator(iterable engine.Value) (engine.Value, error) {
+	if iterable.IsNull() || iterable.IsUndefined() {
+		return engine.Undefined(), fmt.Errorf("%w: %s is not iterable", engine.ErrTypeError, iterable.String())
+	}
+	// 优先：对象上的 [Symbol.asyncIterator] 方法。
+	if obj, ok := iterable.AsObject(); ok {
+		asyncKey := engine.SymbolAsyncIterator.SymbolKey()
+		if iterMethod, err := obj.Get(asyncKey); err == nil && !iterMethod.IsUndefined() {
+			return v.invoke(iterMethod, iterable, nil, false)
+		}
+	}
+	// 回退：同步迭代器协议（数组/字符串/生成器/带 [Symbol.iterator] 的对象）。
+	return v.getIterator(iterable)
+}
 func (v *VM) newArrayIterator(arr *engine.ArrayValue) engine.Value {
 	idx := 0
 	iterObj := engine.NewObject()
@@ -1644,8 +1797,11 @@ func (v *VM) findHandlerInFrame(excVal engine.Value) (*vmTryHandler, bool) {
 	frame := v.cur()
 	for i := len(frame.tryStack) - 1; i >= 0; i-- {
 		h := frame.tryStack[i]
-		if h.phase == 2 {
-			// Already in finally; can't re-enter.
+		if h.phase >= 1 {
+			// Already in catch (phase 1) or finally (phase 2); a re-thrown
+			// exception must propagate to an OUTER handler, not re-enter this one.
+			// Pop this handler so the search continues to enclosing handlers.
+			frame.tryStack = frame.tryStack[:i]
 			continue
 		}
 		// This is the handler to use. Pop handlers above it.

@@ -86,11 +86,13 @@ type savedGlobals struct {
 	exports   engine.Value
 	filename  engine.Value
 	dirname   engine.Value
-	hasRequire bool
-	hasModule  bool
-	hasExports bool
+	importFn  engine.Value
+	hasRequire  bool
+	hasModule   bool
+	hasExports  bool
 	hasFilename bool
 	hasDirname  bool
+	hasImport   bool
 }
 
 // saveGlobals saves the current values of module-scoped globals.
@@ -118,6 +120,10 @@ func (l *Loader) saveGlobals(path string) savedGlobals {
 		s.dirname = v
 		s.hasDirname = true
 	}
+	if v, err := g.Get("__import"); err == nil && !v.IsUndefined() {
+		s.importFn = v
+		s.hasImport = true
+	}
 
 	return s
 }
@@ -131,6 +137,8 @@ func (l *Loader) setGlobals(path string, moduleObj engine.Object, exports engine
 	_ = g.Set("exports", exports)
 	_ = g.Set("__filename", engine.Str(path))
 	_ = g.Set("__dirname", engine.Str(filepath.Dir(path)))
+	// 动态 import()：注入 __import 全局（parser 把 import(spec) lower 成 __import(spec)）。
+	_ = g.Set("__import", l.makeImportFunc(path))
 }
 
 // restoreGlobals restores the previous values of module-scoped globals.
@@ -160,5 +168,10 @@ func (l *Loader) restoreGlobals(s savedGlobals) {
 		_ = g.Set("__dirname", s.dirname)
 	} else {
 		g.Delete("__dirname")
+	}
+	if s.hasImport {
+		_ = g.Set("__import", s.importFn)
+	} else {
+		g.Delete("__import")
 	}
 }

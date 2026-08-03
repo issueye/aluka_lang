@@ -12,6 +12,7 @@ type TokenType int
 const (
 	TokenEOF TokenType = iota
 	TokenNumber     // 123, 1.5, 0x1F, 0o17, 0b101
+	TokenBigInt     // 123n, 0xFFn（ES2020）
 	TokenString     // "..." 或 '...'
 	TokenTemplate   // `...` 模板字符串（Phase 1C 起用）
 	TokenRegex      // /pattern/flags
@@ -39,6 +40,8 @@ func (t Token) String() string {
 		return "EOF"
 	case TokenNumber:
 		return fmt.Sprintf("Num(%s)", t.Value)
+	case TokenBigInt:
+		return fmt.Sprintf("BigInt(%s)", t.Value)
 	case TokenString:
 		return fmt.Sprintf("Str(%q)", t.Value)
 	case TokenIdent:
@@ -80,6 +83,8 @@ func IsKeyword(s string) bool { return keywords[s] }
 // 多字符标点运算符（按长度降序匹配，最长优先）。
 var multiPuncts = []string{
 	">>>=", "===", "!==",
+	// 逻辑赋值运算符（ES2021）：3 字符，必须排在对应 2 字符形式之前。
+	"||=", "&&=", "??=",
 	">>>", "**=", "<<=", ">>=", "...", "=>",
 	"??", "==", "!=", "<=", ">=", "&&", "||", "++", "--",
 	"+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "**",

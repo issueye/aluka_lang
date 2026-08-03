@@ -194,64 +194,94 @@ func (l *Lexer) skipWhitespaceAndComments() {
 
 func (l *Lexer) readNumber(startLine, startCol int) (Token, error) {
 	start := l.pos
-	// 十六进制 / 八进制 / 二进制
+	// 十六进制 / 八进制 / 二进制（ES2021 数字分隔符在所有进制中均支持）
 	if l.src[l.pos] == '0' && l.pos+1 < len(l.src) {
 		next := l.src[l.pos+1]
 		if next == 'x' || next == 'X' {
 			l.advance() // 0
 			l.advance() // x
-			for l.pos < len(l.src) && isHexDigit(l.src[l.pos]) {
+			l.readDigitsWithSep(isHexDigit)
+			// BigInt 后缀（ES2020）：0xFFn
+			if l.pos < len(l.src) && l.src[l.pos] == 'n' {
 				l.advance()
+				return l.makeNumToken(start, startLine, startCol, true), nil
 			}
-			return Token{Type: TokenNumber, Value: l.src[start:l.pos], Raw: l.src[start:l.pos], Line: startLine, Col: startCol}, nil
+			return l.makeNumToken(start, startLine, startCol, false), nil
 		}
 		if next == 'o' || next == 'O' {
 			l.advance()
 			l.advance()
-			for l.pos < len(l.src) && isOctDigit(l.src[l.pos]) {
+			l.readDigitsWithSep(isOctDigit)
+			if l.pos < len(l.src) && l.src[l.pos] == 'n' {
 				l.advance()
+				return l.makeNumToken(start, startLine, startCol, true), nil
 			}
-			return Token{Type: TokenNumber, Value: l.src[start:l.pos], Line: startLine, Col: startCol}, nil
+			return l.makeNumToken(start, startLine, startCol, false), nil
 		}
 		if next == 'b' || next == 'B' {
 			l.advance()
 			l.advance()
-			for l.pos < len(l.src) && isBinDigit(l.src[l.pos]) {
+			l.readDigitsWithSep(isBinDigit)
+			if l.pos < len(l.src) && l.src[l.pos] == 'n' {
 				l.advance()
+				return l.makeNumToken(start, startLine, startCol, true), nil
 			}
-			return Token{Type: TokenNumber, Value: l.src[start:l.pos], Line: startLine, Col: startCol}, nil
+			return l.makeNumToken(start, startLine, startCol, false), nil
 		}
 	}
-	// 十进制整数与小数
-	for l.pos < len(l.src) && isDigit(l.src[l.pos]) {
-		l.advance()
-	}
+	// 十进制整数与小数（含数字分隔符：1_000_000、1_000.500_25、1e9_5）
+	l.readDigitsWithSep(isDigit)
+	hasDecimal := false
 	// 小数部分
 	if l.pos < len(l.src) && l.src[l.pos] == '.' {
+		hasDecimal = true
 		l.advance()
-		for l.pos < len(l.src) && isDigit(l.src[l.pos]) {
-			l.advance()
-		}
+		l.readDigitsWithSep(isDigit)
 	}
 	// 指数
 	if l.pos < len(l.src) && (l.src[l.pos] == 'e' || l.src[l.pos] == 'E') {
+		hasDecimal = true
 		l.advance()
 		if l.pos < len(l.src) && (l.src[l.pos] == '+' || l.src[l.pos] == '-') {
 			l.advance()
 		}
-		for l.pos < len(l.src) && isDigit(l.src[l.pos]) {
-			l.advance()
-		}
+		l.readDigitsWithSep(isDigit)
 	}
-	// 数字分隔符（ES2021）：1_000_000
-	for l.pos < len(l.src) && l.src[l.pos] == '_' && l.pos+1 < len(l.src) && isDigit(l.src[l.pos+1]) {
-		l.advance() // _
-		for l.pos < len(l.src) && isDigit(l.src[l.pos]) {
-			l.advance()
-		}
+	// BigInt 后缀（ES2020）：仅整数形式可带 n（123n），小数/指数不行（1.5n 非法）。
+	if !hasDecimal && l.pos < len(l.src) && l.src[l.pos] == 'n' {
+		l.advance()
+		return l.makeNumToken(start, startLine, startCol, true), nil
 	}
+	return l.makeNumToken(start, startLine, startCol, false), nil
+}
+
+// makeNumToken 构造数字 token。isBigInt 为 true 时返回 TokenBigInt，
+// Value 为去掉 n 后缀的整数字面量（保留进制前缀，由 parser 转换为十进制）。
+func (l *Lexer) makeNumToken(start, startLine, startCol int, isBigInt bool) Token {
 	val := l.src[start:l.pos]
-	return Token{Type: TokenNumber, Value: val, Raw: val, Line: startLine, Col: startCol}, nil
+	if isBigInt {
+		// 去掉末尾的 n 后缀。
+		val = strings.TrimSuffix(val, "n")
+		return Token{Type: TokenBigInt, Value: val, Raw: l.src[start:l.pos], Line: startLine, Col: startCol}
+	}
+	return Token{Type: TokenNumber, Value: val, Raw: val, Line: startLine, Col: startCol}
+}
+
+// readDigitsWithSep 连续读取满足 pred 的数字与单个下划线分隔符（ES2021）。
+// 下划线必须夹在两个数字之间；连续下划线或末尾下划线不在此处消费（留给后续报错）。
+func (l *Lexer) readDigitsWithSep(pred func(byte) bool) {
+	for l.pos < len(l.src) {
+		// 下划线分隔符：仅当下一个字符是数字时才消费
+		if l.src[l.pos] == '_' && l.pos+1 < len(l.src) && pred(l.src[l.pos+1]) {
+			l.advance() // _
+			continue
+		}
+		if pred(l.src[l.pos]) {
+			l.advance()
+			continue
+		}
+		break
+	}
 }
 
 func (l *Lexer) readString(quote byte, startLine, startCol int) (Token, error) {
