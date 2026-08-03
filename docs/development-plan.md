@@ -1,6 +1,6 @@
 # Aluka 运行时 — 开发计划文档
 
-> 项目代号：`aluka` ｜ 文档版本：v0.1 ｜ 日期：2026-08-02
+> 项目代号：`aluka` ｜ 文档版本：v0.6 ｜ 日期：2026-08-03
 > 配套文档：[需求分析文档](./requirements-analysis.md)
 
 ---
@@ -55,6 +55,111 @@
 ---
 
 ## 2. 总体路线图
+
+### 2.0 当前完成状态评估
+
+> 评估日期：2026-08-03 ｜ 测试总数：264 个（全部通过）
+
+#### 总体进度概览
+
+| Phase | 名称 | 状态 | 完成度 |
+|-------|------|------|--------|
+| 0 | 工程基座 | ✅ 完成 | 100% |
+| 1A | AST-walking PoC | ✅ 完成 | ~90% |
+| 1B | 字节码 VM | ⚠️ 大部分完成 | ~65% |
+| 1C | ES2015 + 模块系统 | 🔨 进行中 | ~60% |
+| 1D | TS 转译 + ES2017-2020 | ❌ 未开始 | ~5% |
+| 2-8 | 后续阶段 | ❌ 未开始 | 0% |
+
+#### Phase 0：工程基座 — ✅ 完成
+
+| ID | 任务 | 状态 | 说明 |
+|----|------|------|------|
+| 0.1 | Go module 与目录骨架 | ✅ | `go.mod` + 完整目录树 |
+| 0.2 | `.golangci.yml` / `.editorconfig` | ✅ | 配置文件就绪 |
+| 0.3 | CLI 入口 `cmd/aluka/main.go` | ✅ | 支持 `-e`/`--version`/`--help`/`run`/`--ast`/`--vm` |
+| 0.4 | 引擎抽象层接口 | ✅ | `Engine`/`Context`/`Value`/`Object` 接口（含 `Delete` 方法） |
+| 0.5 | 桩引擎 → 已升级为真实引擎 | ✅ | AST 解释器 + 字节码 VM 双引擎 |
+| 0.6 | `console.log/error/warn/info` | ✅ | `internal/runtime/globals/console.go` |
+| 0.7 | `process.argv`/`process.env` | ✅ | `internal/runtime/globals/process.go` |
+| 0.8 | GitHub Actions CI | ✅ | lint + test + build |
+| 0.9 | Makefile | ✅ | `make build`/`test` 可用 |
+| 0.10 | README.md | ✅ | 项目简介 + 构建 + 使用 |
+
+#### Phase 1A：AST-walking PoC — ✅ 完成（~90%）
+
+| ID | 任务 | 状态 | 说明 |
+|----|------|------|------|
+| 1A.1 | Lexer | ✅ | 支持 ES5 + ES2015 token 集（含模板字符串、箭头函数、spread/rest）；未覆盖完整 ES2023 |
+| 1A.2 | Parser（递归下降 + Pratt） | ✅ | ES5 + ES2015 核心语法 |
+| 1A.3 | AST 节点类型 | ✅ | 完整节点定义，含解构模式（`ArrayPattern`/`ObjectPattern`） |
+| 1A.4 | AST-walking 解释器 | ✅ | `internal/engine/interpreter/interpreter.go` |
+| 1A.5 | 基本内置对象 | ✅ | Object/Array/String/Number/Boolean/Math/JSON（方法覆盖良好） |
+| 1A.6 | Error 体系 | ✅ | Error/TypeError/RangeError/SyntaxError/ReferenceError |
+| 1A.7 | test262 ES5 子集 ≥ 50% | ❌ | 未集成 test262 |
+
+#### Phase 1B：字节码 VM — ⚠️ 大部分完成（~60%）
+
+| ID | 任务 | 状态 | 说明 |
+|----|------|------|------|
+| 1B.1 | 字节码指令集设计 | ✅ | `internal/engine/bytecode/opcodes.go`，含 `OpDelProp`/`OpMakeClass`/`OpCallThis` 等 65+ 指令 |
+| 1B.2 | Compiler（AST → Bytecode） | ✅ | `internal/engine/compiler/compiler.go` |
+| 1B.3 | VM（栈式执行） | ✅ | `internal/engine/interpreter/vm.go` |
+| 1B.4 | 闭包环境（upvalue） | ✅ | 完整 upvalue 捕获链（local → upvalue → global 解析） |
+| 1B.5 | 隐藏类 + 内联缓存 | ❌ | 未实现 |
+| 1B.6 | GC（arena + 三色标记-清除） | ❌ | 依赖 Go runtime GC，未自研 GC |
+| 1B.7 | 性能基准 fib(30) ≥ goja 30% | ⚠️ | `bench/fib_test.go` 存在，未与 goja 对比验证 |
+| 1B.8 | test262 ES5 ≥ 60% | ❌ | 未集成 test262 |
+
+#### Phase 1C：ES2015 + 模块系统 — 🔨 进行中（~25%）
+
+| ID | 任务 | 状态 | 说明 |
+|----|------|------|------|
+| 1C.1 | `let`/`const`/块级作用域 | ✅ | parser + compiler + VM 完整支持 |
+| 1C.2 | 箭头函数 + `this` 绑定 | ✅ | 词法 this 捕获 |
+| 1C.3 | `class` 语法 | ✅ | **完成**：class 声明/表达式、继承（extends）、super 调用/方法、静态方法、getter/setter、默认构造函数、instanceof |
+| 1C.4 | `Promise` + microtask 队列 | ✅ | **完成**：`Promise` 构造器（executor + resolve/reject）、`then`/`catch`/`finally`（链式调用、值穿透、错误冒泡）、`Promise.resolve`/`Promise.reject`、`Promise.all`/`race`/`allSettled`（支持迭代器输入）、微任务队列（`runModule` 后排水）、`queueMicrotask`、`instanceof` 支持自定义值类型原型链 |
+| 1C.5 | `Symbol`/`Map`/`Set`/`WeakMap`/`WeakSet` | ✅ | **完成**：`Symbol()`（+ `Symbol.for`/`keyFor` 全局注册表 + `hasInstance`/`toPrimitive`/`toStringTag` well-known symbols）、`Map`（get/set/has/delete/clear/forEach/keys/values/entries/size getter/`[Symbol.iterator]`/构造器支持 iterable/对象键/SameValueZero）、`Set`（add/has/delete/clear/forEach/keys/values/entries/size/`[Symbol.iterator]`/构造器支持 iterable/去重）、`WeakMap`（get/set/has/delete，键必须为对象）、`WeakSet`（add/has/delete，值必须为对象） |
+| 1C.6 | 迭代器协议 + `for...of` + 生成器 | ✅ | **完成**：`Symbol.iterator` 协议、`for...of`（数组/字符串/生成器/自定义迭代器）、`function*`/`yield`/`yield*`、生成器 `.next()`/`.return()`/`.throw()`、`[Symbol.iterator]()` 自定义迭代器、展开运算符支持迭代器协议 |
+| 1C.7 | 模板字符串 / 解构 / 默认参数 / rest/spread | ✅ | **全部完成**：模板字符串、数组/对象解构（含 rest/default/嵌套）、默认参数、rest/spread 参数与调用、`delete` 运算符 |
+| 1C.8 | `Proxy`/`Reflect` | ✅ | **完成**：`Proxy` 构造器（get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap）、`Proxy.revocable`、`Reflect` 全局对象（get/set/has/deleteProperty/ownKeys/getPrototypeOf/setPrototypeOf/apply/construct/defineProperty/getOwnPropertyDescriptor/isExtensible/preventExtensions）；VM 拦截 `getProperty`/`setProperty`/`inOp`/`instanceof`/`getProto`/`OpDelProp`/`OpGetProto`/`OpSpreadObject` 分发到 trap；`Interpreter.currentVM` 为 native 回调提供 VM 上下文；修复 `inOp` 对普通对象的原型链键存在性检查 |
+| 1C.9 | ESM 加载器 | ❌ | 未实现 |
+| 1C.10 | CJS 加载器 | ❌ | 未实现 |
+| 1C.11 | Node.js 模块解析算法 | ❌ | 未实现 |
+| 1C.12 | `tsconfig.json` 读取 | ❌ | 未实现 |
+| 1C.13 | 路径别名（`paths`/`baseUrl`） | ❌ | 未实现 |
+| 1C.14 | 字节码缓存 | ❌ | 未实现 |
+| 1C.15 | test262 ES5+ES2015 ≥ 60% | ❌ | 未集成 |
+
+#### Phase 1D：TS 转译 + ES2017-2020 — ❌ 基本未开始（~5%）
+
+| ID | 任务 | 状态 | 说明 |
+|----|------|------|------|
+| 1D.1-1D.8 | TS 转译器（类型剥离/enum/namespace/装饰器等） | ❌ | 未实现 |
+| 1D.9 | `async`/`await` | ❌ | 未实现（依赖 Promise + microtask） |
+| 1D.10 | `for await...of` / rest in object / `Promise.finally` | ⚠️ | 对象 rest 解构已实现；`Promise.finally` 已实现（1C.4）；`for await...of` 未实现（依赖 async/await） |
+| 1D.11 | ES2019：`Array.flat/flatMap`/`Object.fromEntries`/`trimStart` | ❌ | 未实现 |
+| 1D.12 | ES2020：可选链 `?.`/空值合并 `??`/`BigInt`/`Promise.allSettled` | ⚠️ | 空值合并 `??` 已实现并测试；`Promise.allSettled` 已实现（1C.4）；可选链 `?.` AST 节点有 `Optional` 字段但 parser/compiler 未处理；BigInt 未实现 |
+| 1D.13 | 动态 `import()` | ❌ | 未实现 |
+| 1D.14 | TS conformance ≥ 50% | ❌ | 未集成 |
+| 1D.15 | REPL 基础 | ❌ | 未实现 |
+
+#### 已实现的 ES 特性清单
+
+以下特性已在 parser + compiler + VM 中完整实现并通过测试：
+
+- **ES5 核心**：变量声明、函数声明/表达式、闭包、`if`/`for`/`while`/`do-while`/`switch`、`try/catch/finally`、`throw`、`break`/`continue`（含 label）、`typeof`/`void`/`delete`/`in`/`instanceof`
+- **ES5 内置**：Object/Array/String/Number/Boolean/Math/JSON/Error 完整方法
+- **ES2015**：`let`/`const`/块级作用域、箭头函数、模板字符串、解构赋值（数组+对象，含 holes/rest/default/嵌套）、默认参数、rest/spread 参数、`for...of`、spread 展开（数组+对象）、空值合并 `??`、`class` 语法（声明/表达式/继承/super/static/getter/setter/默认构造函数）、`Promise`（构造器 + then/catch/finally 链式调用 + resolve/reject/all/race/allSettled + microtask 队列）、`Symbol`（+ for/keyFor + hasInstance/toPrimitive/toStringTag）、`Map`/`Set`/`WeakMap`/`WeakSet`（完整原型方法 + 迭代器协议 + 构造器 iterable 输入）、`Proxy`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap + revocable）、`Reflect`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/setPrototypeOf/apply/construct/defineProperty/getOwnPropertyDescriptor）
+- **其他**：`delete` 运算符（实际删除属性）、labeled 语句、函数方法（call/apply/bind）
+
+#### 已知缺失的关键特性
+
+1. 模块系统 ESM/CJS（1C.9-1C.11）— 阻塞多文件项目
+2. 可选链 `?.`（1D.12）— 常用语法
+3. `async`/`await`（1D.9）— 阻塞异步代码（Promise 已就绪）
+4. TS 转译（1D.1-1D.8）— 阻塞 `.ts` 文件运行
+5. 隐藏类 + IC（1B.5）和自研 GC（1B.6）— 影响性能
 
 ### 2.1 Phase 时间轴
 
@@ -1132,3 +1237,8 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 | 版本 | 日期 | 变更 |
 |------|------|------|
 | v0.1 | 2026-08-02 | 初稿，覆盖 Phase 0-8 全部规划 |
+| v0.2 | 2026-08-03 | 新增 §2.0 当前完成状态评估；Phase 1C.7 解构赋值完成（含 `delete` 运算符修复）；`Object` 接口新增 `Delete` 方法；新增 `OpDelProp` 指令 |
+| v0.3 | 2026-08-03 | Phase 1C.3 `class` 语法完成（声明/表达式/继承/super/static/getter/setter/默认构造函数）；新增 `OpMakeClass`/`OpGetProto`/`OpCallThis`/`OpConstructThis`/`OpCallThisArgs`/`OpConstructThisArgs` 指令；新增 `AccessorValue` 类型及 `ClassTemplate` 结构；修复 `OpSetPropTop`/`OpSetElemTop` 栈顺序 bug；测试总数 145→160 |
+| v0.4 | 2026-08-03 | Phase 1C.4 `Promise` + microtask 完成：新增 `microtask.go`（微任务队列 enqueue/drain）和 `promise.go`（`PromiseValue` + then/catch/finally + resolve/reject/all/race/allSettled + queueMicrotask）；`runModule` 顶层执行后排水微任务；修复 upvalue 共享（`captureUpvalues` 复用现有 upvalue）和 `instanceof` 对自定义值类型（`PromiseValue`/`GeneratorValue`）的原型链查找（`VM.getProto`）；测试总数 173→198 |
+| v0.5 | 2026-08-03 | Phase 1C.5 `Symbol`/`Map`/`Set`/`WeakMap`/`WeakSet` 完成：`Symbol` 增强（`Symbol.for`/`keyFor` 全局注册表 + `hasInstance`/`toPrimitive`/`toStringTag` well-known symbols）；新增 `map_set.go`（`MapValue`/`SetValue`/`WeakMapValue`/`WeakSetValue` + 完整原型方法 + 迭代器协议 + 构造器 iterable 输入 + SameValueZero 键相等）；`VM.backingObj` 统一处理自定义值类型的 accessor 查找（修复 `size` getter 不被调用的问题）；`getProto` 新增 Map/Set/WeakMap/WeakSet 分支；测试总数 198→240 |
+| v0.6 | 2026-08-03 | Phase 1C.8 `Proxy`/`Reflect` 完成：新增 `proxy.go`（`ProxyValue` + get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap + `Proxy.revocable`）和 `reflect.go`（`Reflect` 全局对象 + 12 个方法）；VM 拦截 `getProperty`/`setProperty`/`inOp`/`instanceof`/`getProto`/`OpDelProp`/`OpGetProto`/`OpSpreadObject` 分发到 Proxy trap；`Interpreter.currentVM` 为 native 回调提供 VM 上下文；`proxyGetSymbol` 传递实际 Symbol 值给 get trap（支持 `k === Symbol.hasInstance` 比较）；修复 `inOp` 对普通对象的原型链键存在性检查（`Get` 返回 `Undefined, nil` 导致 `in` 总是返回 true）；`Object.getPrototypeOf`/`Object.keys` 支持 Proxy；测试总数 240→264 |

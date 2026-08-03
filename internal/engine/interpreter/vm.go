@@ -91,6 +91,7 @@ func (v *VM) Eval(src, filename string) (engine.Value, error) {
 // runModule executes the top-level function of a module.
 func (v *VM) runModule(mod *bytecode.Module) (engine.Value, error) {
 	v.module = mod
+	v.interp.currentVM = v
 	main := mod.Functions[0]
 	// Reserve locals for the top-level frame.
 	v.stack = make([]engine.Value, 0, main.NumLocals+16)
@@ -103,6 +104,13 @@ func (v *VM) runModule(mod *bytecode.Module) (engine.Value, error) {
 	})
 	result, err := v.run()
 	v.frames = v.frames[:0]
+	// Clean up any leftover stack values from uncaught exceptions before
+	// draining microtasks (microtask callbacks reuse v.stack).
+	v.stack = v.stack[:0]
+	// Drain the microtask queue (Promise reactions, queueMicrotask callbacks).
+	// Errors from microtasks are handled internally by Promise reactions; any
+	// uncaught error is silently ignored here.
+	v.interp.drainMicrotasks()
 	return result, err
 }
 
@@ -140,6 +148,9 @@ func (v *VM) run() (engine.Value, error) {
 
 		// Each iteration: decode + dispatch.
 		for {
+			// Re-fetch frame pointer: call/invoke operations may reallocate
+			// v.frames (via append), invalidating the previously cached pointer.
+			frame = v.cur()
 			pc := frame.pc
 			if pc >= len(code) {
 				// Ran off the end without OpReturn — treat as undefined return.
@@ -209,6 +220,12 @@ func (v *VM) run() (engine.Value, error) {
 				engine.SetProto(closure.obj, v.interp.functionProto)
 				_ = closure.obj.Set("name", engine.Str(closureTmpl.Name))
 				_ = closure.obj.Set("length", engine.IntValue(closureTmpl.NumParams))
+				// Create prototype object so `new Fn()` sets the instance's
+				// [[Prototype]] to Fn.prototype (needed for instanceof).
+				proto := engine.NewObject()
+				engine.SetProto(proto, v.interp.objectProto)
+				_ = proto.Set("constructor", closure)
+				_ = closure.obj.Set("prototype", proto)
 				v.push(closure)
 
 			// --- Binary arithmetic & bitwise ---
@@ -397,13 +414,13 @@ func (v *VM) run() (engine.Value, error) {
 				}
 				v.push(result)
 			case bytecode.OpCallMethod:
-				numArgs := int(operand >> 16)
-				nameIdx := int(operand & 0xFFFF)
-				result, err := v.doCallMethod(numArgs, nameIdx)
-				if err != nil {
-					return v.handleThrow(err)
-				}
-				v.push(result)
+			numArgs := int(operand >> 16)
+			nameIdx := int(operand & 0xFFFF)
+			result, err := v.doCallMethod(numArgs, nameIdx)
+			if err != nil {
+				return v.handleThrow(err)
+			}
+			v.push(result)
 			case bytecode.OpNew:
 				numArgs := int(operand)
 				result, err := v.doNew(numArgs)
@@ -455,9 +472,10 @@ func (v *VM) run() (engine.Value, error) {
 					return v.handleThrow(err)
 				}
 			case bytecode.OpSetPropTop:
+				// Stack: [..., val, obj] — assignTo pushes val first, then obj.
 				name := tmpl.Constants[operand].String()
-				val := v.pop()
 				obj := v.pop()
+				val := v.pop()
 				if err := v.setProperty(obj, name, val); err != nil {
 					return v.handleThrow(err)
 				}
@@ -478,22 +496,41 @@ func (v *VM) run() (engine.Value, error) {
 				}
 				v.push(val)
 			case bytecode.OpSetElemTop:
-				val := v.pop()
+				// Stack: [..., val, obj, key] — assignTo pushes val, then obj, then key.
 				key := v.pop()
 				obj := v.pop()
+				val := v.pop()
 				if err := v.setProperty(obj, key.String(), val); err != nil {
 					return v.handleThrow(err)
 				}
 			case bytecode.OpDelProp:
-				// A: name-const index; pop obj, delete own prop, push bool result.
-				nameIdx := int(operand)
-				name := tmpl.Constants[nameIdx].String()
-				obj := v.pop()
-				result := true
-				if o, ok := obj.AsObject(); ok {
-					result = o.Delete(name)
+			// A: name-const index; pop obj, delete own prop, push bool result.
+			nameIdx := int(operand)
+			name := tmpl.Constants[nameIdx].String()
+			obj := v.pop()
+			// Proxy interception: dispatch to the deleteProperty trap if defined.
+			if p, ok := obj.(*ProxyValue); ok {
+				ok, err := p.proxyDelete(name)
+				if err != nil {
+					return v.handleThrow(err)
 				}
-				v.push(engine.Boolean(result))
+				v.push(engine.Boolean(ok))
+				break
+			}
+			result := true
+			if o, ok := obj.AsObject(); ok {
+				result = o.Delete(name)
+			}
+			v.push(engine.Boolean(result))
+		case bytecode.OpSetPropComputedObj:
+			// Stack: [..., obj, key, value] → set obj[key] = value, obj stays.
+			val := v.pop()
+			key := v.pop()
+			keyStr := propertyKeyOf(key)
+			obj := v.peek()
+			if err := v.setProperty(obj, keyStr, val); err != nil {
+				return v.handleThrow(err)
+			}
 
 			// --- Spread (ES2015) ---
 			case bytecode.OpBuildArray:
@@ -509,38 +546,76 @@ func (v *VM) run() (engine.Value, error) {
 				}
 				arr.Append(val)
 			case bytecode.OpArraySpread:
-				spreadVal := v.pop()
-				arrVal := v.peek()
-				arr, ok := arrVal.(*engine.ArrayValue)
-				if !ok {
-					return v.handleThrow(fmt.Errorf("%w: ARRAY_SPREAD target not an array", engine.ErrTypeError))
+			spreadVal := v.pop()
+			arrVal := v.peek()
+			arr, ok := arrVal.(*engine.ArrayValue)
+			if !ok {
+				return v.handleThrow(fmt.Errorf("%w: ARRAY_SPREAD target not an array", engine.ErrTypeError))
+			}
+			if sa, ok := spreadVal.(*engine.ArrayValue); ok {
+				for _, el := range sa.Elems() {
+					arr.Append(el)
 				}
-				if sa, ok := spreadVal.(*engine.ArrayValue); ok {
-					for _, el := range sa.Elems() {
-						arr.Append(el)
-					}
-				} else if so, ok := spreadVal.AsObject(); ok {
-					// Spread an iterable-like object: copy own enumerable keys.
-					for _, k := range so.Keys() {
-						if pv, err := so.Get(k); err == nil {
-							arr.Append(pv)
-						}
-					}
+			} else {
+				// Use the iterator protocol for all other iterables
+				// (generators, strings, objects with [Symbol.iterator], etc.).
+				iter, err := v.getIterator(spreadVal)
+				if err != nil {
+					return v.handleThrow(err)
 				}
+				for {
+					nextFn, err := v.getProperty(iter, "next")
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					result, err := v.invoke(nextFn, iter, nil, false)
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					doneVal, err := v.getProperty(result, "done")
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					done, _ := doneVal.Bool()
+					if done {
+						break
+					}
+					valueVal, err := v.getProperty(result, "value")
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					arr.Append(valueVal)
+				}
+			}
 			case bytecode.OpSpreadObject:
-				src := v.pop()
-				dst := v.peek()
-				dstObj, ok := dst.AsObject()
-				if !ok {
-					return v.handleThrow(fmt.Errorf("%w: SPREAD_OBJECT target not an object", engine.ErrTypeError))
+			src := v.pop()
+			dst := v.peek()
+			dstObj, ok := dst.AsObject()
+			if !ok {
+				return v.handleThrow(fmt.Errorf("%w: SPREAD_OBJECT target not an object", engine.ErrTypeError))
+			}
+			// Proxy interception: use ownKeys + get traps.
+			if p, ok := src.(*ProxyValue); ok {
+				keys, err := p.proxyOwnKeys()
+				if err != nil {
+					return v.handleThrow(err)
 				}
-				if srcObj, ok := src.AsObject(); ok {
-					for _, k := range srcObj.Keys() {
-						if pv, err := srcObj.Get(k); err == nil {
-							_ = dstObj.Set(k, pv)
-						}
+				for _, k := range keys {
+					pv, err := p.proxyGet(k)
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					_ = dstObj.Set(k, pv)
+				}
+				break
+			}
+			if srcObj, ok := src.AsObject(); ok {
+				for _, k := range srcObj.Keys() {
+					if pv, err := srcObj.Get(k); err == nil {
+						_ = dstObj.Set(k, pv)
 					}
 				}
+			}
 			case bytecode.OpCallArgs:
 				// Stack: ... callee argsArray
 				argsArr := v.pop()
@@ -606,6 +681,62 @@ func (v *VM) run() (engine.Value, error) {
 				r := v.pop()
 				l := v.pop()
 				v.push(engine.Boolean(v.inOp(l, r)))
+
+			// --- Class (ES2015) ---
+			case bytecode.OpMakeClass:
+				classIdx := int(operand)
+				result, err := v.doMakeClass(classIdx)
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(result)
+			case bytecode.OpGetProto:
+			obj := v.pop()
+			proto := v.getProto(obj)
+			if proto != nil {
+				v.push(proto)
+			} else {
+				v.push(engine.Null())
+			}
+			case bytecode.OpCallThis:
+				numArgs := int(operand)
+				result, err := v.doCallThis(numArgs, false)
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(result)
+			case bytecode.OpConstructThis:
+				numArgs := int(operand)
+				result, err := v.doCallThis(numArgs, true)
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(result)
+			case bytecode.OpCallThisArgs:
+				result, err := v.doCallThisArgs(false)
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(result)
+			case bytecode.OpConstructThisArgs:
+				result, err := v.doCallThisArgs(true)
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(result)
+
+		// --- Iterator protocol (ES2015) ---
+		case bytecode.OpGetIterator:
+			iterable := v.pop()
+			iter, err := v.getIterator(iterable)
+			if err != nil {
+				return v.handleThrow(err)
+			}
+			v.push(iter)
+		case bytecode.OpYield:
+			// Generator yield: pop yielded value, suspend frame, return to caller.
+			yieldVal := v.pop()
+			return v.doYield(yieldVal)
 
 			default:
 				return engine.Undefined(), fmt.Errorf("aluka: unknown opcode %s (%d)", op, op)
@@ -676,6 +807,251 @@ func (v *VM) doNew(numArgs int) (engine.Value, error) {
 	// Pop callee + args.
 	v.stack = v.stack[:argStart-1]
 	return v.invoke(callee, engine.Undefined(), args, true)
+}
+
+// === Class assembly =======================================================
+
+// doMakeClass assembles a class from its ClassTemplate. If the template has a
+// superclass, it is popped from the stack. The assembled constructor function
+// is returned (the caller pushes it).
+func (v *VM) doMakeClass(classIdx int) (engine.Value, error) {
+	classTpl := v.module.Classes[classIdx]
+
+	var superCtor engine.Value
+	if classTpl.HasSuper {
+		superCtor = v.pop()
+	}
+
+	// Create the constructor closure.
+	ctorTmpl := v.module.Functions[classTpl.CtorIdx]
+	ctor := newVMClosure(v, ctorTmpl, v.captureUpvalues(ctorTmpl))
+	engine.SetProto(ctor.obj, v.interp.functionProto)
+	_ = ctor.obj.Set("name", engine.Str(classTpl.Name))
+	_ = ctor.obj.Set("length", engine.IntValue(ctorTmpl.NumParams))
+
+	// Create the prototype object.
+	proto := engine.NewObject()
+	if classTpl.HasSuper {
+		// proto = Object.create(super.prototype)
+		if superProto, err := v.getProperty(superCtor, "prototype"); err == nil && !superProto.IsUndefined() {
+			if po, ok := superProto.(engine.Object); ok {
+				engine.SetProto(proto, po)
+			}
+		}
+	} else {
+		engine.SetProto(proto, v.interp.objectProto)
+	}
+	_ = proto.Set("constructor", ctor)
+	_ = ctor.obj.Set("prototype", proto)
+
+	// Wire up static inheritance: constructor's [[Prototype]] = superclass.
+	// Use the underlying *objectValue so prototype-chain walks in Get() work.
+	if classTpl.HasSuper {
+		if superCl, ok := superCtor.(*vmClosure); ok {
+			engine.SetProto(ctor.obj, superCl.obj)
+		} else if superObj, ok := superCtor.AsObject(); ok {
+			engine.SetProto(ctor.obj, superObj)
+		}
+	}
+
+	// Install methods / accessors.
+	for _, m := range classTpl.Methods {
+		mTmpl := v.module.Functions[m.TmplIdx]
+		mClosure := newVMClosure(v, mTmpl, v.captureUpvalues(mTmpl))
+		engine.SetProto(mClosure.obj, v.interp.functionProto)
+		_ = mClosure.obj.Set("name", engine.Str(m.Name))
+		_ = mClosure.obj.Set("length", engine.IntValue(mTmpl.NumParams))
+
+		// Create prototype for the method (so it can be used as a constructor).
+		mProto := engine.NewObject()
+		engine.SetProto(mProto, v.interp.objectProto)
+		_ = mProto.Set("constructor", mClosure)
+		_ = mClosure.obj.Set("prototype", mProto)
+
+		var target engine.Object
+		if m.Static {
+			target = ctor.obj
+		} else {
+			target = proto
+		}
+
+		switch m.Kind {
+		case bytecode.MethodKindNormal:
+			_ = target.Set(m.Name, mClosure)
+		case bytecode.MethodKindGetter:
+			engine.UpdateAccessor(target, m.Name, true, mClosure)
+		case bytecode.MethodKindSetter:
+			engine.UpdateAccessor(target, m.Name, false, mClosure)
+		}
+	}
+
+	return ctor, nil
+}
+
+// === Iterator protocol ====================================================
+
+// getIterator obtains an iterator from an iterable value using the ES2015
+// protocol. Arrays and strings are special-cased for efficiency; other objects
+// must have a [Symbol.iterator] method.
+func (v *VM) getIterator(iterable engine.Value) (engine.Value, error) {
+	if iterable.IsNull() || iterable.IsUndefined() {
+		return engine.Undefined(), fmt.Errorf("%w: %s is not iterable", engine.ErrTypeError, iterable.String())
+	}
+	// Array: built-in array iterator.
+	if arr, ok := iterable.(*engine.ArrayValue); ok {
+		return v.newArrayIterator(arr), nil
+	}
+	// String: built-in string iterator.
+	if iterable.Type() == engine.TypeString {
+		return v.newStringIterator(iterable.String()), nil
+	}
+	// Generator: generators are their own iterators.
+	if gen, ok := iterable.(*GeneratorValue); ok {
+		return gen, nil
+	}
+	// Object with [Symbol.iterator]: look up and call the method.
+	if obj, ok := iterable.AsObject(); ok {
+		symKey := engine.SymbolIterator.SymbolKey()
+		if iterMethod, err := obj.Get(symKey); err == nil && !iterMethod.IsUndefined() {
+			return v.invoke(iterMethod, iterable, nil, false)
+		}
+	}
+	return engine.Undefined(), fmt.Errorf("%w: %s is not iterable", engine.ErrTypeError, iterable.Type())
+}
+
+// newArrayIterator creates an iterator object for an ArrayValue.
+func (v *VM) newArrayIterator(arr *engine.ArrayValue) engine.Value {
+	idx := 0
+	iterObj := engine.NewObject()
+	engine.SetProto(iterObj, v.interp.objectProto)
+	nextFn := v.interp.nativeMethod("next", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		result := engine.NewObject()
+		engine.SetProto(result, v.interp.objectProto)
+		elems := arr.Elems()
+		if idx >= len(elems) {
+			_ = result.Set("value", engine.Undefined())
+			_ = result.Set("done", engine.Boolean(true))
+		} else {
+			_ = result.Set("value", elems[idx])
+			_ = result.Set("done", engine.Boolean(false))
+			idx++
+		}
+		return result, nil
+	})
+	_ = iterObj.Set("next", nextFn)
+	// Store [Symbol.iterator] so the iterator itself is iterable.
+	_ = iterObj.Set(engine.SymbolIterator.SymbolKey(), v.interp.nativeMethod("[Symbol.iterator]", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		return iterObj, nil
+	}))
+	return iterObj
+}
+
+// newStringIterator creates an iterator object for a string.
+func (v *VM) newStringIterator(s string) engine.Value {
+	idx := 0
+	runes := []rune(s)
+	iterObj := engine.NewObject()
+	engine.SetProto(iterObj, v.interp.objectProto)
+	nextFn := v.interp.nativeMethod("next", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		result := engine.NewObject()
+		engine.SetProto(result, v.interp.objectProto)
+		if idx >= len(runes) {
+			_ = result.Set("value", engine.Undefined())
+			_ = result.Set("done", engine.Boolean(true))
+		} else {
+			_ = result.Set("value", engine.Str(string(runes[idx])))
+			_ = result.Set("done", engine.Boolean(false))
+			idx++
+		}
+		return result, nil
+	})
+	_ = iterObj.Set("next", nextFn)
+	_ = iterObj.Set(engine.SymbolIterator.SymbolKey(), v.interp.nativeMethod("[Symbol.iterator]", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		return iterObj, nil
+	}))
+	return iterObj
+}
+
+// === super call support ===================================================
+
+// doCallThis pops numArgs + callee and calls/constructs it with this = the
+// current frame's slot 0 (the `this` binding). Used for super.method() and
+// super() inside class methods/constructors.
+func (v *VM) doCallThis(numArgs int, asNew bool) (engine.Value, error) {
+	argStart := len(v.stack) - numArgs
+	callee := v.stack[argStart-1]
+	args := make([]engine.Value, numArgs)
+	copy(args, v.stack[argStart:argStart+numArgs])
+	v.stack = v.stack[:argStart-1]
+	thisVal := *v.local(0)
+	if asNew {
+		return v.constructThis(callee, thisVal, args)
+	}
+	return v.invoke(callee, thisVal, args, false)
+}
+
+// doCallThisArgs is the spread-args variant of doCallThis.
+func (v *VM) doCallThisArgs(asNew bool) (engine.Value, error) {
+	argsArr := v.pop()
+	callee := v.pop()
+	args := v.toArrayValues(argsArr)
+	thisVal := *v.local(0)
+	if asNew {
+		return v.constructThis(callee, thisVal, args)
+	}
+	return v.invoke(callee, thisVal, args, false)
+}
+
+// constructThis calls callee as a constructor but with a pre-existing `this`
+// (the current frame's slot 0). This implements super() semantics: the parent
+// constructor runs on the same `this` object instead of creating a new one.
+func (v *VM) constructThis(callee engine.Value, thisVal engine.Value, args []engine.Value) (engine.Value, error) {
+	if cl, ok := callee.(*vmClosure); ok {
+		return v.callClosureThis(cl, thisVal, args)
+	}
+	// Native/non-closure parent: fall back to regular construct. This creates
+	// a new `this` instead of reusing the current one — an MVP limitation for
+	// extending built-in constructors via super().
+	if ac, ok := callee.(*Closure); ok {
+		return ac.construct(args)
+	}
+	return v.invoke(callee, engine.Undefined(), args, true)
+}
+
+// callClosureThis sets up a new VM frame for a bytecode closure, reusing the
+// caller's `this` value (slot 0) instead of creating a new object. Used by
+// super() to chain constructor calls on the same instance.
+func (v *VM) callClosureThis(cl *vmClosure, thisVal engine.Value, args []engine.Value) (engine.Value, error) {
+	tmpl := cl.tmpl
+	frame := vmFrame{
+		tmpl:     tmpl,
+		base:     len(v.stack),
+		upvalues: cl.upvalues,
+	}
+	for i := 0; i < tmpl.NumLocals; i++ {
+		v.stack = append(v.stack, engine.Undefined())
+	}
+	v.stack[frame.base] = thisVal // reuse the caller's this
+	for i := 0; i < tmpl.NumParams && i < len(args); i++ {
+		v.stack[frame.base+1+i] = args[i]
+	}
+	if tmpl.IsVarArgs {
+		restSlot := frame.base + 1 + tmpl.NumParams
+		var restElems []engine.Value
+		if len(args) > tmpl.NumParams {
+			restElems = append(restElems, args[tmpl.NumParams:]...)
+		}
+		restArr := engine.NewArray(restElems)
+		engine.SetProto(restArr, v.interp.arrayProto)
+		v.stack[restSlot] = restArr
+	}
+	v.frames = append(v.frames, frame)
+	result, err := v.run()
+	// super() returns this if the parent ctor didn't return an object.
+	if err == nil && !result.IsObject() {
+		result = thisVal
+	}
+	return result, err
 }
 
 // invoke calls callee with the given this and args, handling both bytecode
@@ -749,6 +1125,12 @@ func (v *VM) constructNative(f engine.Function, callee engine.Value, args []engi
 // The callee and args must already be popped from the stack.
 func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Value, asNew bool) (engine.Value, error) {
 	tmpl := cl.tmpl
+	// Generator function: calling it returns a generator object rather than
+	// executing the body. The body runs lazily on each .next() call.
+	if tmpl.IsGenerator {
+		gen := NewGeneratorValue(v, tmpl, cl.upvalues, thisVal, args)
+		return gen, nil
+	}
 	if asNew {
 		// Create a new object with proto from cl.prototype.
 		newObj := engine.NewObject()
@@ -789,8 +1171,21 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 
 	v.frames = append(v.frames, frame)
 	result, err := v.run()
-	// run() pops the frame on return.
-	return result, err
+	if err != nil {
+		// Uncaught exception: run() does NOT pop the frame on error.
+		// Clean up so the caller's handleThrow sees its own frame on top.
+		v.closeUpvalues(frame.base)
+		v.stack = v.stack[:frame.base]
+		v.frames = v.frames[:len(v.frames)-1]
+		return result, err
+	}
+	// run() pops the frame on normal return.
+	// Constructor semantics: if the function returns a non-object, the
+	// newly-created `this` object is the result of `new`.
+	if asNew && !result.IsObject() {
+		result = thisVal
+	}
+	return result, nil
 }
 
 // doReturn is called from the run loop when a function returns. It pops the
@@ -799,8 +1194,11 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 // caller's OpCall handler pushes it).
 func (v *VM) doReturn(retVal engine.Value) engine.Value {
 	frame := v.cur()
-	// Close open upvalues that point into this frame's locals.
-	v.closeUpvalues(frame.base + frame.tmpl.NumLocals)
+	// Close ALL open upvalues pointing into this frame's slots (locals +
+	// operands). Using frame.base as the threshold ensures closures that
+	// captured this frame's locals get a stable copy before the stack is
+	// truncated; otherwise the upvalue would hold a dangling pointer.
+	v.closeUpvalues(frame.base)
 	// Truncate stack to the frame's base (removes locals + operands).
 	v.stack = v.stack[:frame.base]
 	// Pop the frame.
@@ -821,9 +1219,23 @@ func (v *VM) captureUpvalues(tmpl *bytecode.FuncTemplate) []*upvalue {
 		if cap.IsLocal {
 			// Open upvalue: point at the parent frame's local slot.
 			slot := &v.stack[frame.base+cap.Index]
-			uv := &upvalue{slot: slot}
-			frame.openUpvalues = append(frame.openUpvalues, uv)
-			uvs[i] = uv
+			// Reuse an existing open upvalue for the same slot so that
+			// multiple closures capturing the same variable share state
+			// (writes by one closure are visible to others).
+			var existing *upvalue
+			for _, ou := range frame.openUpvalues {
+				if ou.slot == slot {
+					existing = ou
+					break
+				}
+			}
+			if existing != nil {
+				uvs[i] = existing
+			} else {
+				uv := &upvalue{slot: slot}
+				frame.openUpvalues = append(frame.openUpvalues, uv)
+				uvs[i] = uv
+			}
 		} else {
 			// Inherited upvalue: share the parent's upvalue.
 			uvs[i] = frame.upvalues[cap.Index]
@@ -860,10 +1272,23 @@ func (v *VM) closeUpvalues(threshold int) {
 
 // === Property access =====================================================
 
+// propertyKeyOf converts a value to a property key string. Symbols use their
+// unique SymbolKey(); other values use their string representation.
+func propertyKeyOf(key engine.Value) string {
+	if sym, ok := key.(*engine.SymbolValue); ok {
+		return sym.SymbolKey()
+	}
+	return key.String()
+}
+
 // getProperty reads a property from a value, handling primitives via prototypes.
 func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 	if obj.IsNull() || obj.IsUndefined() {
 		return engine.Undefined(), fmt.Errorf("%w: Cannot read properties of %s (reading '%s')", engine.ErrTypeError, obj.String(), key)
+	}
+	// Proxy interception: dispatch to the get trap if defined.
+	if p, ok := obj.(*ProxyValue); ok {
+		return p.proxyGet(key)
 	}
 	// String primitives: handle length + indexed access + string proto methods.
 	if obj.Type() == engine.TypeString {
@@ -907,14 +1332,66 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 			return v.interp.booleanProto.Get(key)
 		}
 	}
+	// Accessor (getter/setter) interception: if an accessor is found on the
+	// prototype chain for this key, invoke the getter with this = obj.
+	// For custom value types (MapValue, SetValue, etc.) the proto chain lives
+	// on the backing obj, so we search from there.
+	backing := v.backingObj(obj)
+	if acc, ok := engine.FindAccessor(backing, key); ok {
+		if acc.Getter != nil && !acc.Getter.IsUndefined() {
+			return v.invoke(acc.Getter, obj, nil, false)
+		}
+		return engine.Undefined(), nil
+	}
 	if o, ok := obj.AsObject(); ok {
 		return o.Get(key)
 	}
 	return engine.Undefined(), nil
 }
 
+// backingObj returns the underlying engine.Object for custom value types
+// (PromiseValue, GeneratorValue, MapValue, SetValue, WeakMapValue, WeakSetValue)
+// whose proto chain lives on a backing obj. For other values, returns val as-is.
+func (v *VM) backingObj(val engine.Value) engine.Value {
+	if p, ok := val.(*PromiseValue); ok {
+		return p.obj
+	}
+	if g, ok := val.(*GeneratorValue); ok {
+		return g.obj
+	}
+	if m, ok := val.(*MapValue); ok {
+		return m.obj
+	}
+	if s, ok := val.(*SetValue); ok {
+		return s.obj
+	}
+	if w, ok := val.(*WeakMapValue); ok {
+		return w.obj
+	}
+	if w, ok := val.(*WeakSetValue); ok {
+		return w.obj
+	}
+	return val
+}
+
 // setProperty writes a property on a value.
 func (v *VM) setProperty(obj engine.Value, key string, val engine.Value) error {
+	// Proxy interception: dispatch to the set trap if defined.
+	if p, ok := obj.(*ProxyValue); ok {
+		return p.proxySet(key, val)
+	}
+	// Accessor (getter/setter) interception: if an accessor is found on the
+	// prototype chain for this key, invoke the setter with this = obj.
+	// For custom value types, search from the backing obj.
+	backing := v.backingObj(obj)
+	if acc, ok := engine.FindAccessor(backing, key); ok {
+		if acc.Setter != nil && !acc.Setter.IsUndefined() {
+			_, err := v.invoke(acc.Setter, obj, []engine.Value{val}, false)
+			return err
+		}
+		// Read-only accessor: silently ignore (strict mode would throw).
+		return nil
+	}
 	// Array indexed assignment.
 	if arr, ok := obj.(*engine.ArrayValue); ok {
 		if n, err := strconv.Atoi(key); err == nil {
@@ -950,6 +1427,35 @@ func (v *VM) instanceof(l, r engine.Value) bool {
 	if !ok {
 		return false
 	}
+	// Proxy interception: if r is a Proxy, get [Symbol.hasInstance] via the
+	// get trap (passing the actual Symbol value so the handler can compare
+	// `key === Symbol.hasInstance`). If found and callable, invoke it.
+	if p, ok := r.(*ProxyValue); ok {
+		hasInstanceVal, err := p.proxyGetSymbol(engine.SymbolHasInstance)
+		if err == nil && !hasInstanceVal.IsUndefined() && isCallable(hasInstanceVal) {
+			result, err := v.invoke(hasInstanceVal, r, []engine.Value{l}, false)
+			if err != nil {
+				return false
+			}
+			b, _ := result.Bool()
+			return b
+		}
+		// No [Symbol.hasInstance]: fall through using the target's prototype.
+		r = p.target
+		ro, ok = r.AsObject()
+		if !ok {
+			return false
+		}
+	}
+	// Symbol.hasInstance on the constructor takes precedence over [[Prototype]] walk.
+	if hasInstanceVal, err := ro.Get(engine.SymbolHasInstance.SymbolKey()); err == nil && !hasInstanceVal.IsUndefined() && isCallable(hasInstanceVal) {
+		result, err := v.invoke(hasInstanceVal, r, []engine.Value{l}, false)
+		if err != nil {
+			return false
+		}
+		b, _ := result.Bool()
+		return b
+	}
 	proto, err := ro.Get("prototype")
 	if err != nil || proto.IsUndefined() {
 		return false
@@ -958,23 +1464,75 @@ func (v *VM) instanceof(l, r engine.Value) bool {
 	if !ok {
 		return false
 	}
-	cur := engine.GetProto(l)
+	cur := v.getProto(l)
 	for cur != nil {
 		if cur == protoObj {
 			return true
 		}
-		cur = engine.GetProto(cur)
+		cur = v.getProto(cur)
 	}
 	return false
 }
 
+// getProto returns the [[Prototype]] of a value, handling custom value types
+// (PromiseValue, GeneratorValue, MapValue, SetValue, WeakMapValue, WeakSetValue)
+// whose proto lives on a backing object.
+func (v *VM) getProto(val engine.Value) engine.Object {
+	if p, ok := val.(*ProxyValue); ok {
+		proto, err := p.proxyGetProto()
+		if err != nil {
+			return nil
+		}
+		return proto
+	}
+	if p, ok := val.(*PromiseValue); ok {
+		return engine.GetProto(p.obj)
+	}
+	if g, ok := val.(*GeneratorValue); ok {
+		return engine.GetProto(g.obj)
+	}
+	if m, ok := val.(*MapValue); ok {
+		return engine.GetProto(m.obj)
+	}
+	if s, ok := val.(*SetValue); ok {
+		return engine.GetProto(s.obj)
+	}
+	if w, ok := val.(*WeakMapValue); ok {
+		return engine.GetProto(w.obj)
+	}
+	if w, ok := val.(*WeakSetValue); ok {
+		return engine.GetProto(w.obj)
+	}
+	return engine.GetProto(val)
+}
+
 func (v *VM) inOp(l, r engine.Value) bool {
+	// Proxy interception: dispatch to the has trap if defined.
+	if p, ok := r.(*ProxyValue); ok {
+		has, err := p.proxyHas(l.String())
+		if err != nil {
+			return false
+		}
+		return has
+	}
 	o, ok := r.AsObject()
 	if !ok {
 		return false
 	}
-	_, err := o.Get(l.String())
-	return err == nil
+	key := l.String()
+	// Walk the prototype chain checking key existence. We cannot rely on
+	// Get() returning an error for missing keys (it returns Undefined, nil),
+	// so we check Keys() membership at each level.
+	cur := o
+	for cur != nil {
+		for _, k := range cur.Keys() {
+			if k == key {
+				return true
+			}
+		}
+		cur = v.getProto(cur)
+	}
+	return false
 }
 
 // === Try / catch =========================================================

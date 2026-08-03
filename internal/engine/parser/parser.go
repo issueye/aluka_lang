@@ -19,6 +19,11 @@ type Parser struct {
 	tokens []lexer.Token
 	pos    int
 	src    string
+
+	// genStack tracks whether each enclosing function is a generator.
+	// genStack[len-1] == true means we're currently inside a generator body,
+	// so `yield` should be parsed as a YieldExpr.
+	genStack []bool
 }
 
 // New 创建解析器。
@@ -163,6 +168,8 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 			return p.parseVarDecl()
 		case "function":
 			return p.parseFunctionDecl(false)
+		case "class":
+			return p.parseClassDecl()
 		case "if":
 			return p.parseIf()
 		case "while":
@@ -272,24 +279,31 @@ func (p *Parser) parseVarDeclarator() (ast.VarDeclarator, error) {
 
 func (p *Parser) parseFunctionDecl(isExpr bool) (*ast.FunctionDecl, error) {
 	t := p.next() // function
+	isGenerator := p.matchPunct("*")
 	if isExpr {
 		// 函数表达式：可选名称
 	}
-	nameTok, err := p.expect(lexer.TokenIdent, "")
-	if err != nil {
-		return nil, err
+	var name *ast.Identifier
+	if p.peek().Type == lexer.TokenIdent {
+		nameTok := p.next()
+		name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+	} else if !isExpr {
+		return nil, p.errorf(p.peek(), "function declaration requires a name")
 	}
+	p.genStack = append(p.genStack, isGenerator)
 	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+	p.genStack = p.genStack[:len(p.genStack)-1]
 	if err != nil {
 		return nil, err
 	}
 	return &ast.FunctionDecl{
-		Name:      &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)},
-		Params:    params,
-		Defaults:  defaults,
-		RestParam: rest,
-		Body:      body,
-		Loc:       posOf(t),
+		Name:        name,
+		Params:      params,
+		Defaults:    defaults,
+		RestParam:   rest,
+		Body:        body,
+		IsGenerator: isGenerator,
+		Loc:         posOf(t),
 	}, nil
 }
 
@@ -775,6 +789,13 @@ func (p *Parser) parseExpression() (ast.Expression, error) {
 }
 
 func (p *Parser) parseAssignment() (ast.Expression, error) {
+	// `yield` is only valid inside a generator function body.
+	if len(p.genStack) > 0 && p.genStack[len(p.genStack)-1] {
+		t := p.peek()
+		if t.Type == lexer.TokenKeyword && t.Value == "yield" {
+			return p.parseYield()
+		}
+	}
 	// 检测箭头函数：x => ... 或 (x, y) => ...
 	if expr, ok, err := p.tryParseArrow(); ok {
 		return expr, err
@@ -793,6 +814,53 @@ func (p *Parser) parseAssignment() (ast.Expression, error) {
 		return &ast.AssignExpr{Op: t.Value, Left: left, Right: right, Loc: posOf(t)}, nil
 	}
 	return left, nil
+}
+
+// parseYield parses a `yield` expression. Must only be called when inside a
+// generator function. Forms:
+//   yield            -> bare yield (argument is undefined)
+//   yield expr       -> yield the value of expr
+//   yield* expr      -> delegate: iterate expr's iterator and yield each value
+func (p *Parser) parseYield() (ast.Expression, error) {
+	t := p.next() // consume `yield`
+	y := &ast.YieldExpr{Loc: posOf(t)}
+	// `yield*` — delegate
+	if p.matchPunct("*") {
+		y.Delegate = true
+		arg, err := p.parseAssignment()
+		if err != nil {
+			return nil, err
+		}
+		y.Argument = arg
+		return y, nil
+	}
+	// Bare `yield` with no operand: only when the next token cannot start an
+	// expression (e.g. `;`, `)`, `}`, `,`, end of input, or a binary operator).
+	// Otherwise, parse the operand as an assignment expression.
+	if p.yieldHasOperand() {
+		arg, err := p.parseAssignment()
+		if err != nil {
+			return nil, err
+		}
+		y.Argument = arg
+	}
+	return y, nil
+}
+
+// yieldHasOperand reports whether the upcoming token can start an expression
+// (and thus belongs to the `yield` operand rather than terminating it).
+func (p *Parser) yieldHasOperand() bool {
+	t := p.peek()
+	if t.Type == lexer.TokenEOF {
+		return false
+	}
+	if t.Type == lexer.TokenPunct {
+		switch t.Value {
+		case ";", ")", "}", ",", "]", ":", "?":
+			return false
+		}
+	}
+	return true
 }
 
 // tryParseArrow 尝试解析箭头函数。
@@ -1221,6 +1289,8 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 			return &ast.SuperExpr{Loc: posOf(t)}, nil
 		case "function":
 			return p.parseFunctionExpr()
+		case "class":
+			return p.parseClassExpr()
 		case "new":
 			return p.parseNew()
 		}
@@ -1239,16 +1309,191 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 
 func (p *Parser) parseFunctionExpr() (ast.Expression, error) {
 	t := p.next() // function
+	isGenerator := p.matchPunct("*")
 	var name *ast.Identifier
 	if p.peek().Type == lexer.TokenIdent {
 		nameTok := p.next()
 		name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
 	}
+	p.genStack = append(p.genStack, isGenerator)
 	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+	p.genStack = p.genStack[:len(p.genStack)-1]
 	if err != nil {
 		return nil, err
 	}
-	return &ast.FunctionExpr{Name: name, Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(t)}, nil
+	return &ast.FunctionExpr{Name: name, Params: params, Defaults: defaults, RestParam: rest, Body: body, IsGenerator: isGenerator, Loc: posOf(t)}, nil
+}
+
+// === Class parsing (ES2015) ==============================================
+
+// parseClassDecl parses `class Name [extends Super] { body }` as a statement.
+func (p *Parser) parseClassDecl() (ast.Statement, error) {
+	t := p.next() // class
+	var name *ast.Identifier
+	if p.peek().Type == lexer.TokenIdent {
+		nameTok := p.next()
+		name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+	} else {
+		return nil, p.errorf(p.peek(), "class declaration requires a name")
+	}
+	super, body, err := p.parseClassTail()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ClassDecl{Name: name, SuperClass: super, Body: body, Loc: posOf(t)}, nil
+}
+
+// parseClassExpr parses `class [Name] [extends Super] { body }` as an expression.
+func (p *Parser) parseClassExpr() (ast.Expression, error) {
+	t := p.next() // class
+	var name *ast.Identifier
+	if p.peek().Type == lexer.TokenIdent {
+		nameTok := p.next()
+		name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+	}
+	super, body, err := p.parseClassTail()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ClassExpr{Name: name, SuperClass: super, Body: body, Loc: posOf(t)}, nil
+}
+
+// parseClassTail parses the optional `extends Super` and the class body `{ ... }`.
+func (p *Parser) parseClassTail() (ast.Expression, *ast.ClassBody, error) {
+	var super ast.Expression
+	if p.matchKeyword("extends") {
+		s, err := p.parseCallMember()
+		if err != nil {
+			return nil, nil, err
+		}
+		super = s
+	}
+	body, err := p.parseClassBody()
+	if err != nil {
+		return nil, nil, err
+	}
+	return super, body, nil
+}
+
+// parseClassBody parses `{ members }` for a class.
+func (p *Parser) parseClassBody() (*ast.ClassBody, error) {
+	t := p.peek()
+	if err := p.expectPunct("{"); err != nil {
+		return nil, err
+	}
+	cb := &ast.ClassBody{Loc: posOf(t)}
+	for {
+		// Allow stray semicolons between members.
+		if p.matchPunct(";") {
+			continue
+		}
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "}" {
+			break
+		}
+		if p.peek().Type == lexer.TokenEOF {
+			return nil, p.errorf(p.peek(), "unterminated class body")
+		}
+		m, err := p.parseClassMember()
+		if err != nil {
+			return nil, err
+		}
+		cb.Methods = append(cb.Methods, m)
+	}
+	if err := p.expectPunct("}"); err != nil {
+		return nil, err
+	}
+	return cb, nil
+}
+
+// parseClassMember parses a single class member: an optional `static` prefix,
+// then either a `get`/`set` accessor, a `constructor`, or a normal method.
+func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
+	t := p.peek()
+	var def ast.MethodDefinition
+	def.Loc = posOf(t)
+
+	// `static` is a contextual keyword: only treat as static when the next
+	// token is a valid method-name start (ident/string/number/[).
+	isStatic := false
+	if t.Type == lexer.TokenIdent && t.Value == "static" {
+		nx := p.peekAt(1)
+		if nx.Type == lexer.TokenIdent || nx.Type == lexer.TokenString || nx.Type == lexer.TokenNumber ||
+			(nx.Type == lexer.TokenPunct && (nx.Value == "[" || nx.Value == "{")) {
+			p.next() // consume static
+			isStatic = true
+		}
+	}
+	def.Static = isStatic
+
+	// get/set accessors are also contextual keywords.
+	kind := ast.MethodNormal
+	computed := false
+	var key ast.Expression
+	if t.Type == lexer.TokenIdent && (t.Value == "get" || t.Value == "set") {
+		nx := p.peekAt(1)
+		// Treat as accessor only if a real key follows. `get() {}` is a normal
+		// method named "get".
+		if nx.Type != lexer.TokenPunct || nx.Value != "(" {
+			if t.Value == "get" {
+				kind = ast.MethodGetter
+			} else {
+				kind = ast.MethodSetter
+			}
+			p.next() // consume get/set
+		}
+	}
+
+	// Computed key: [expr]
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "[" {
+		p.next() // [
+		expr, err := p.parseAssignment()
+		if err != nil {
+			return def, err
+		}
+		if err := p.expectPunct("]"); err != nil {
+			return def, err
+		}
+		key = expr
+		computed = true
+	} else {
+		kt := p.next()
+		switch kt.Type {
+		case lexer.TokenIdent, lexer.TokenKeyword:
+			key = &ast.Identifier{Name: kt.Value, Loc: posOf(kt)}
+		case lexer.TokenString:
+			key = &ast.StringLit{Value: kt.Value, Loc: posOf(kt)}
+		case lexer.TokenNumber:
+			val, _ := parseNumberLiteral(kt.Value)
+			key = &ast.NumberLit{Value: val, Raw: kt.Value, Loc: posOf(kt)}
+		default:
+			return def, p.errorf(kt, "unexpected token %q in class body", kt.Value)
+		}
+	}
+
+	// `constructor` (non-static, non-computed, identifier key) is the ctor.
+	if !isStatic && !computed && kind == ast.MethodNormal {
+		if id, ok := key.(*ast.Identifier); ok && id.Name == "constructor" {
+			kind = ast.MethodConstructor
+		}
+	}
+
+	// Parse the method body using the standard function-params-and-body rule.
+	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+	if err != nil {
+		return def, err
+	}
+	fn := &ast.FunctionExpr{
+		Params:    params,
+		Defaults:  defaults,
+		RestParam: rest,
+		Body:      body,
+		Loc:       posOf(t),
+	}
+	def.Key = key
+	def.Value = fn
+	def.Kind = kind
+	def.Computed = computed
+	return def, nil
 }
 
 func (p *Parser) parseNew() (ast.Expression, error) {
@@ -1371,6 +1616,7 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 		} else {
 			propTok := p.peek()
 			var key ast.Expression
+			computedKey := false
 			switch propTok.Type {
 			case lexer.TokenIdent, lexer.TokenKeyword:
 				p.next()
@@ -1383,20 +1629,21 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 				v, _ := parseNumberLiteral(propTok.Value)
 				key = &ast.NumberLit{Value: v, Raw: propTok.Value, Loc: posOf(propTok)}
 			case lexer.TokenPunct:
-				if propTok.Value == "[" {
-					p.next()
-					ce, err := p.parseAssignment()
-					if err != nil {
-						return nil, err
-					}
-					if err := p.expectPunct("]"); err != nil {
-						return nil, err
-					}
-					key = ce
-					_ = propTok
-				} else {
-					return nil, p.errorf(propTok, "invalid object key")
+			if propTok.Value == "[" {
+				p.next()
+				ce, err := p.parseAssignment()
+				if err != nil {
+					return nil, err
 				}
+				if err := p.expectPunct("]"); err != nil {
+					return nil, err
+				}
+				key = ce
+				computedKey = true
+				_ = propTok
+			} else {
+				return nil, p.errorf(propTok, "invalid object key")
+			}
 			default:
 				return nil, p.errorf(propTok, "invalid object key")
 			}
@@ -1433,26 +1680,26 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 				}
 			}
 			// 普通 init 或 method shorthand
-			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
-				// method shorthand
-			params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+			// method shorthand
+		params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+		if err != nil {
+			return nil, err
+		}
+		fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(propTok)}
+			obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: fn, Kind: ast.PropertyMethod, Computed: computedKey, Loc: posOf(propTok)})
+		} else if p.matchPunct(":") {
+			val, err := p.parseAssignment()
 			if err != nil {
 				return nil, err
 			}
-			fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(propTok)}
-				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: fn, Kind: ast.PropertyMethod, Loc: posOf(propTok)})
-			} else if p.matchPunct(":") {
-				val, err := p.parseAssignment()
-				if err != nil {
-					return nil, err
-				}
-				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: val, Kind: ast.PropertyInit, Loc: posOf(propTok)})
-			} else if id, ok := key.(*ast.Identifier); ok {
-				// shorthand: { x } → { x: x }
-				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: id, Kind: ast.PropertyInit, Loc: posOf(propTok)})
-			} else {
-				return nil, p.errorf(p.peek(), "expected ':' after object key")
-			}
+			obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: val, Kind: ast.PropertyInit, Computed: computedKey, Loc: posOf(propTok)})
+		} else if id, ok := key.(*ast.Identifier); ok {
+			// shorthand: { x } → { x: x }
+			obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: id, Kind: ast.PropertyInit, Computed: computedKey, Loc: posOf(propTok)})
+		} else {
+			return nil, p.errorf(p.peek(), "expected ':' after object key")
+		}
 		}
 		if !p.matchPunct(",") {
 			break

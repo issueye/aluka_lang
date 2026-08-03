@@ -103,7 +103,8 @@ const (
 	OpGetElem    // obj, key on stack → value
 	OpSetElem    // obj, key, value on stack (assignment context)
 	OpSetElemTop // pops value, key, obj (no push)
-	OpDelProp    // A: name-const index; pops obj, deletes own prop, pushes bool
+	OpDelProp           // A: name-const index; pops obj, deletes own prop, pushes bool
+	OpSetPropComputedObj // for { [expr]: val }: pops value then key then obj (peek), pushes obj back
 
 	// --- Spread (ES2015) ---
 	OpBuildArray     // push a new empty array onto the stack
@@ -130,6 +131,18 @@ const (
 
 	// --- Iteration support ---
 	OpForInNext // A: jump offset to exit when exhausted
+
+	// --- Class (ES2015) ---
+	OpMakeClass        // A: class-template index; pops optional superclass, pushes ctor
+	OpGetProto         // pop obj, push its [[Prototype]] (or null)
+	OpCallThis         // A: numArgs; pop fn+args, call with this = current frame's slot 0
+	OpConstructThis    // A: numArgs; pop ctor+args, call as constructor with this = slot 0
+	OpCallThisArgs     // pop argsArray + fn, call with this = slot 0 (spread args)
+	OpConstructThisArgs // pop argsArray + ctor, call as constructor with this = slot 0 (spread)
+
+	// --- Iterator protocol (ES2015) ---
+	OpGetIterator // pop iterable, push iterator object (with .next() method)
+	OpYield       // pop value; yield it from generator. Resume value is pushed on resume.
 
 	OpEnd // sentinel marking end of code (for safety)
 )
@@ -206,7 +219,8 @@ var opNames = [...]string{
 	OpGetElem:    "GET_ELEM",
 	OpSetElem:    "SET_ELEM",
 	OpSetElemTop: "SET_ELEM_TOP",
-	OpDelProp:    "DEL_PROP",
+	OpDelProp:           "DEL_PROP",
+	OpSetPropComputedObj: "SET_PROP_COMPUTED_OBJ",
 
 	OpBuildArray:     "BUILD_ARRAY",
 	OpArrayPush:      "ARRAY_PUSH",
@@ -228,7 +242,18 @@ var opNames = [...]string{
 	OpIn:         "IN",
 
 	OpForInNext: "FOR_IN_NEXT",
-	OpEnd:       "END",
+
+	OpMakeClass:         "MAKE_CLASS",
+	OpGetProto:          "GET_PROTO",
+	OpCallThis:          "CALL_THIS",
+	OpConstructThis:     "CONSTRUCT_THIS",
+	OpCallThisArgs:      "CALL_THIS_ARGS",
+	OpConstructThisArgs: "CONSTRUCT_THIS_ARGS",
+
+	OpGetIterator: "GET_ITERATOR",
+	OpYield:       "YIELD",
+
+	OpEnd: "END",
 }
 
 // String returns the human-readable opcode name (for disassembly/debugging).
@@ -255,7 +280,7 @@ func (op Opcode) HasOperand() bool {
 		return true
 	case OpGetProp, OpSetProp, OpSetPropObj, OpSetPropTop:
 		return true
-	case OpGetElem, OpSetElem, OpSetElemTop, OpDelProp:
+	case OpGetElem, OpSetElem, OpSetElemTop, OpDelProp, OpSetPropComputedObj:
 		return true
 	case OpCallMethodArgs:
 		return true
@@ -264,6 +289,8 @@ func (op Opcode) HasOperand() bool {
 	case OpTryEnter, OpTryExit, OpTryExitFinally:
 		return true
 	case OpNewArray, OpForInNext:
+		return true
+	case OpMakeClass, OpCallThis, OpConstructThis:
 		return true
 	}
 	return false

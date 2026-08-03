@@ -34,6 +34,13 @@ type Compiler struct {
 	// it was emitted; on loop exit we patch entries with matching depth.
 	pendingBreaks    []pendingJump
 	pendingContinues []pendingJump
+
+	// classCounter generates unique upvalue names for each class's
+	// __home_ctor_N__ / __home_proto_N__ bindings (supporting `super`).
+	classCounter int
+	// curClassID is the ID of the class currently being compiled (for super
+	// resolution). -1 when not inside a class body.
+	curClassID int
 }
 
 type pendingJump struct {
@@ -66,7 +73,7 @@ type scope struct {
 }
 
 // New creates a Compiler.
-func New() *Compiler { return &Compiler{module: bytecode.NewModule()} }
+func New() *Compiler { return &Compiler{module: bytecode.NewModule(), curClassID: -1} }
 
 // Compile compiles a whole program AST into a Module. The top-level program
 // is returned as Functions[0].
@@ -397,6 +404,8 @@ func (c *Compiler) compileStmt(s ast.Statement) error {
 		return c.compileVarDecl(n)
 	case *ast.FunctionDecl:
 		return c.compileFunctionDecl(n)
+	case *ast.ClassDecl:
+		return c.compileClassDecl(n)
 	case *ast.BlockStmt:
 		return c.compileBlock(n)
 	case *ast.ExprStmt:
@@ -619,7 +628,7 @@ func (c *Compiler) compileFunctionDecl(d *ast.FunctionDecl) error {
 		return nil
 	}
 	slot := c.declareVar(d.Name.Name)
-	if err := c.compileFunction(d.Name.Name, d.Params, d.Defaults, d.RestParam, d.Body, false); err != nil {
+	if err := c.compileFunction(d.Name.Name, d.Params, d.Defaults, d.RestParam, d.Body, false, d.IsGenerator); err != nil {
 		return err
 	}
 	c.emit(bytecode.OpStoreLocal, uint32(slot))
@@ -742,6 +751,83 @@ func (c *Compiler) compileFor(s *ast.ForStmt) error {
 }
 
 func (c *Compiler) compileForInOrOf(left ast.Node, right ast.Expression, body ast.Statement, isOf bool) error {
+	if isOf {
+		return c.compileForOf(left, right, body)
+	}
+	return c.compileForIn(left, right, body)
+}
+
+// compileForOf compiles `for (left of right) body` using the ES2015 iterator
+// protocol: get [Symbol.iterator](), call .next(), check {done, value}.
+func (c *Compiler) compileForOf(left ast.Node, right ast.Expression, body ast.Statement) error {
+	c.pushBlock()
+	defer c.popBlock()
+
+	// Evaluate iterable and get iterator.
+	tmpIter := c.declareLocal("__iter__")
+	if err := c.compileExpr(right); err != nil {
+		return err
+	}
+	c.emit(bytecode.OpGetIterator, 0) // pop iterable, push iterator
+	c.emit(bytecode.OpStoreLocal, uint32(tmpIter))
+
+	tmpResult := c.declareLocal("__iter_result__")
+
+	nameNext := c.cur().tmpl.AddStringConst("next")
+	nameDone := c.cur().tmpl.AddStringConst("done")
+	nameValue := c.cur().tmpl.AddStringConst("value")
+
+	loopStart := c.curPC()
+
+	// Call iter.next() — push iterator as receiver, 0 args.
+	c.emit(bytecode.OpLoadLocal, uint32(tmpIter))
+	c.emit(bytecode.OpCallMethod, uint32(nameNext)) // 0 args encoded in high bits
+	c.emit(bytecode.OpStoreLocal, uint32(tmpResult))
+
+	// Check done: if result.done is truthy, exit loop.
+	c.emit(bytecode.OpLoadLocal, uint32(tmpResult))
+	c.emit(bytecode.OpGetProp, uint32(nameDone))
+	jumpExit := c.emit(bytecode.OpJmpTruePop, 0)
+
+	c.pushLoop(loopStart, 0)
+	defer c.popLoop()
+
+	// Get value and bind to left.
+	c.emit(bytecode.OpLoadLocal, uint32(tmpResult))
+	c.emit(bytecode.OpGetProp, uint32(nameValue))
+	if vd, ok := left.(*ast.VarDecl); ok {
+		for _, d := range vd.Decls {
+			if d.Pattern != nil {
+				tmpSlot := c.newSlot()
+				c.emit(bytecode.OpStoreLocal, uint32(tmpSlot))
+				if err := c.compileBindPattern(d.Pattern, tmpSlot, vd.Kind); err != nil {
+					return err
+				}
+			} else {
+				slot := c.declareLocal(d.Name.Name)
+				c.emit(bytecode.OpStoreLocal, uint32(slot))
+			}
+		}
+	} else if err := c.assignTo(left); err != nil {
+		return err
+	}
+
+	if err := c.compileStmt(body); err != nil {
+		return err
+	}
+	continuePC := c.curPC()
+	c.topLoop().continueTarget = continuePC
+	c.patchLoopContinues(continuePC)
+	c.emit(bytecode.OpJmp, uint32(loopStart-(c.curPC()+bytecode.InstrSize)))
+	exit := c.curPC()
+	c.patchJumpToHere(jumpExit)
+	c.topLoop().breakTarget = exit
+	c.patchLoopBreaks(exit)
+	return nil
+}
+
+// compileForIn compiles `for (left in right) body` using Object.keys + index.
+func (c *Compiler) compileForIn(left ast.Node, right ast.Expression, body ast.Statement) error {
 	c.pushBlock()
 	defer c.popBlock()
 	tmpRight := c.declareLocal("__iter_src__")
@@ -754,29 +840,18 @@ func (c *Compiler) compileForInOrOf(left ast.Node, right ast.Expression, body as
 	tmpIdx := c.declareLocal("__iter_idx__")
 	tmpLen := c.declareLocal("__iter_len__")
 
-	// Set up keys / length.
+	// keys = Object.keys(source)
 	nameLen := c.cur().tmpl.AddStringConst("length")
-	if isOf {
-		// keys = source (we index the source directly)
-		c.emit(bytecode.OpLoadLocal, uint32(tmpRight))
-		c.emit(bytecode.OpStoreLocal, uint32(tmpKeys))
-		// len = source.length (if it has one), else 0
-		c.emit(bytecode.OpLoadLocal, uint32(tmpRight))
-		c.emit(bytecode.OpGetProp, uint32(nameLen))
-		c.emit(bytecode.OpStoreLocal, uint32(tmpLen))
-	} else {
-		// keys = Object.keys(source)
-		objIdx := c.cur().tmpl.AddStringConst("Object")
-		keysIdx := c.cur().tmpl.AddStringConst("keys")
-		c.emit(bytecode.OpLoadGlobal, uint32(objIdx))
-		c.emit(bytecode.OpGetProp, uint32(keysIdx))
-		c.emit(bytecode.OpLoadLocal, uint32(tmpRight))
-		c.emit(bytecode.OpCall, 1)
-		c.emit(bytecode.OpStoreLocal, uint32(tmpKeys))
-		c.emit(bytecode.OpLoadLocal, uint32(tmpKeys))
-		c.emit(bytecode.OpGetProp, uint32(nameLen))
-		c.emit(bytecode.OpStoreLocal, uint32(tmpLen))
-	}
+	objIdx := c.cur().tmpl.AddStringConst("Object")
+	keysIdx := c.cur().tmpl.AddStringConst("keys")
+	c.emit(bytecode.OpLoadGlobal, uint32(objIdx))
+	c.emit(bytecode.OpGetProp, uint32(keysIdx))
+	c.emit(bytecode.OpLoadLocal, uint32(tmpRight))
+	c.emit(bytecode.OpCall, 1)
+	c.emit(bytecode.OpStoreLocal, uint32(tmpKeys))
+	c.emit(bytecode.OpLoadLocal, uint32(tmpKeys))
+	c.emit(bytecode.OpGetProp, uint32(nameLen))
+	c.emit(bytecode.OpStoreLocal, uint32(tmpLen))
 	c.emit(bytecode.OpPushInt, 0)
 	c.emit(bytecode.OpStoreLocal, uint32(tmpIdx))
 
@@ -789,11 +864,10 @@ func (c *Compiler) compileForInOrOf(left ast.Node, right ast.Expression, body as
 	c.pushLoop(loopStart, 0)
 	defer c.popLoop()
 
-	// Load current element/key.
+	// Load current key.
 	c.emit(bytecode.OpLoadLocal, uint32(tmpKeys))
 	c.emit(bytecode.OpLoadLocal, uint32(tmpIdx))
 	c.emit(bytecode.OpGetElem, 0)
-	// The left side may be a VarDecl (var x / var [a,b]) or an Identifier (x).
 	if vd, ok := left.(*ast.VarDecl); ok {
 		for _, d := range vd.Decls {
 			if d.Pattern != nil {
@@ -1110,15 +1184,23 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 	case *ast.ObjectLit:
 		c.emit(bytecode.OpNewObject, 0)
 		for _, prop := range n.Properties {
-			if prop.Computed {
-				return fmt.Errorf("computed object keys not supported in 1B MVP")
-			}
 			if prop.Kind == ast.PropertySpread {
 				// `{...obj}`: copy own enumerable props into the target.
 				if err := c.compileExpr(prop.Value); err != nil {
 					return err
 				}
 				c.emit(bytecode.OpSpreadObject, 0)
+				continue
+			}
+			if prop.Computed {
+				// { [expr]: value } — evaluate key at runtime.
+				if err := c.compileExpr(prop.Key); err != nil {
+					return err
+				}
+				if err := c.compileExpr(prop.Value); err != nil {
+					return err
+				}
+				c.emit(bytecode.OpSetPropComputedObj, 0)
 				continue
 			}
 			if err := c.compileExpr(prop.Value); err != nil {
@@ -1146,9 +1228,11 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 	case *ast.MemberExpr:
 		return c.compileMember(n)
 	case *ast.FunctionExpr:
-		return c.compileFunction(funcNameFromExpr(n), n.Params, n.Defaults, n.RestParam, n.Body, n.IsAsync)
+		return c.compileFunction(funcNameFromExpr(n), n.Params, n.Defaults, n.RestParam, n.Body, n.IsAsync, n.IsGenerator)
 	case *ast.ArrowFunc:
-		return c.compileFunction("", n.Params, n.Defaults, n.RestParam, n.Body, n.IsAsync)
+		return c.compileFunction("", n.Params, n.Defaults, n.RestParam, n.Body, n.IsAsync, false)
+	case *ast.ClassExpr:
+		return c.compileClassExpr(n)
 	case *ast.ConditionalExpr:
 		return c.compileConditional(n)
 	case *ast.SequenceExpr:
@@ -1174,6 +1258,8 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 		return nil
 	case *ast.TemplateLit:
 		return c.compileTemplateLit(n)
+	case *ast.YieldExpr:
+		return c.compileYield(n)
 	}
 	return fmt.Errorf("unsupported expression %T", e)
 }
@@ -1196,6 +1282,88 @@ func (c *Compiler) compileTemplateLit(n *ast.TemplateLit) error {
 		c.emit(bytecode.OpPushConst, uint32(quasiIdx))
 		c.emit(bytecode.OpAdd, 0)
 	}
+	return nil
+}
+
+// compileYield compiles a `yield` / `yield*` expression.
+//
+//   yield        -> push undefined; OpYield
+//   yield expr   -> compile expr; OpYield
+//   yield* expr  -> compile expr; OpGetIterator; loop { next(); if done push
+//                  value & break; else OpYield (discard sent value) }
+//
+// OpYield pops the yielded value and suspends; on resume it pushes the value
+// passed to .next(v), which becomes the result of the yield expression.
+func (c *Compiler) compileYield(n *ast.YieldExpr) error {
+	if n.Delegate {
+		return c.compileYieldStar(n)
+	}
+	if n.Argument == nil {
+		c.emit(bytecode.OpPushUndefined, 0)
+	} else {
+		if err := c.compileExpr(n.Argument); err != nil {
+			return err
+		}
+	}
+	c.emit(bytecode.OpYield, 0)
+	return nil
+}
+
+// compileYieldStar compiles `yield* expr`: iterate the iterable produced by
+// expr and yield each value in turn. The result of the yield* expression is
+// the iterator's final {value} (when done becomes true).
+func (c *Compiler) compileYieldStar(n *ast.YieldExpr) error {
+	c.pushBlock()
+	defer c.popBlock()
+
+	// Evaluate the iterable and obtain its iterator.
+	if err := c.compileExpr(n.Argument); err != nil {
+		return err
+	}
+	c.emit(bytecode.OpGetIterator, 0)
+	tmpIter := c.declareLocal("__yield_star_iter__")
+	c.emit(bytecode.OpStoreLocal, uint32(tmpIter))
+
+	tmpResult := c.declareLocal("__yield_star_result__")
+
+	nameNext := c.cur().tmpl.AddStringConst("next")
+	nameDone := c.cur().tmpl.AddStringConst("done")
+	nameValue := c.cur().tmpl.AddStringConst("value")
+
+	loopStart := c.curPC()
+
+	// iter.next()
+	c.emit(bytecode.OpLoadLocal, uint32(tmpIter))
+	c.emit(bytecode.OpCallMethod, uint32(nameNext)) // 0 args
+	c.emit(bytecode.OpStoreLocal, uint32(tmpResult))
+
+	// if result.done -> push result.value and exit loop.
+	c.emit(bytecode.OpLoadLocal, uint32(tmpResult))
+	c.emit(bytecode.OpGetProp, uint32(nameDone))
+	jExit := c.emit(bytecode.OpJmpTruePop, 0)
+
+	c.pushLoop(loopStart, 0)
+	defer c.popLoop()
+
+	// yield result.value (discard the value sent back by .next()).
+	c.emit(bytecode.OpLoadLocal, uint32(tmpResult))
+	c.emit(bytecode.OpGetProp, uint32(nameValue))
+	c.emit(bytecode.OpYield, 0)
+	c.emit(bytecode.OpPop, 0) // discard sent value
+
+	// continue -> jump back to loopStart.
+	continuePC := c.curPC()
+	c.topLoop().continueTarget = continuePC
+	c.patchLoopContinues(continuePC)
+	c.emit(bytecode.OpJmp, uint32(loopStart-(c.curPC()+bytecode.InstrSize)))
+
+	// exit: push the final value as the result of yield*.
+	exit := c.curPC()
+	c.patchJumpToHere(jExit)
+	c.emit(bytecode.OpLoadLocal, uint32(tmpResult))
+	c.emit(bytecode.OpGetProp, uint32(nameValue))
+	c.topLoop().breakTarget = exit
+	c.patchLoopBreaks(exit)
 	return nil
 }
 
@@ -1467,6 +1635,46 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 		}
 	}
 
+	// super(args) — construct the parent class with this = current slot 0.
+	if _, ok := n.Callee.(*ast.SuperExpr); ok {
+		c.emitSuperCtor()
+		if !hasSpread {
+			for _, a := range n.Arguments {
+				if err := c.compileExpr(a); err != nil {
+					return err
+				}
+			}
+			c.emit(bytecode.OpConstructThis, uint32(len(n.Arguments)))
+			return nil
+		}
+		c.compileArgsArray(n.Arguments)
+		c.emit(bytecode.OpConstructThisArgs, 0)
+		return nil
+	}
+
+	// super.method(args) — call method from parent prototype with this = slot 0.
+	if m, ok := n.Callee.(*ast.MemberExpr); ok {
+		if _, isSuper := m.Object.(*ast.SuperExpr); isSuper {
+			c.emitSuperProto()
+			if !hasSpread {
+				for _, a := range n.Arguments {
+					if err := c.compileExpr(a); err != nil {
+						return err
+					}
+				}
+				nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
+				c.emit(bytecode.OpGetProp, uint32(nameIdx))
+				c.emit(bytecode.OpCallThis, uint32(len(n.Arguments)))
+				return nil
+			}
+			c.compileArgsArray(n.Arguments)
+			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
+			c.emit(bytecode.OpGetProp, uint32(nameIdx))
+			c.emit(bytecode.OpCallThisArgs, 0)
+			return nil
+		}
+	}
+
 	// Method call: foo.bar(args) — keep receiver as `this`.
 	if m, ok := n.Callee.(*ast.MemberExpr); ok {
 		if m.Computed {
@@ -1552,6 +1760,21 @@ func (c *Compiler) compileNew(n *ast.NewExpr) error {
 }
 
 func (c *Compiler) compileMember(n *ast.MemberExpr) error {
+	// super.prop — look up on parent prototype.
+	if _, isSuper := n.Object.(*ast.SuperExpr); isSuper {
+		c.emitSuperProto()
+		if n.Computed {
+			if err := c.compileExpr(n.Property); err != nil {
+				return err
+			}
+			c.emit(bytecode.OpGetElem, 0)
+		} else {
+			key := n.Property.(*ast.Identifier).Name
+			nameIdx := c.cur().tmpl.AddStringConst(key)
+			c.emit(bytecode.OpGetProp, uint32(nameIdx))
+		}
+		return nil
+	}
 	if err := c.compileExpr(n.Object); err != nil {
 		return err
 	}
@@ -1591,7 +1814,7 @@ func (c *Compiler) compileConditional(n *ast.ConditionalExpr) error {
 // FuncTemplate and emits OpMakeClosure in the enclosing function.
 // `defaults[i]` is the default expression for params[i] (nil = no default).
 // `rest` is the ES2015 rest parameter name (or "" if none).
-func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaults []ast.Expression, rest *ast.Identifier, body ast.Node, isAsync bool) error {
+func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaults []ast.Expression, rest *ast.Identifier, body ast.Node, isAsync, isGenerator bool) error {
 	if isAsync {
 		// Async needs Promise (Phase 1C/1D); compile as regular function.
 	}
@@ -1602,11 +1825,12 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 		numLocals++
 	}
 	tmpl := &bytecode.FuncTemplate{
-		Name:       name,
-		NumParams:  len(params),
-		NumLocals:  numLocals,
-		IsVarArgs:  rest != nil,
-		SourceFile: c.cur().tmpl.SourceFile,
+		Name:        name,
+		NumParams:   len(params),
+		NumLocals:   numLocals,
+		IsVarArgs:   rest != nil,
+		IsGenerator: isGenerator,
+		SourceFile:  c.cur().tmpl.SourceFile,
 	}
 	funcIdx := c.module.AddFunction(tmpl)
 
@@ -1775,4 +1999,273 @@ func funcNameFromExpr(n *ast.FunctionExpr) string {
 		return n.Name.Name
 	}
 	return ""
+}
+
+// === class compilation (ES2015) ===========================================
+
+// superCtorName / superProtoName return the unique upvalue binding names for
+// a class's superclass constructor and prototype, used by `super` resolution.
+func superCtorName(classID int) string {
+	return fmt.Sprintf("__home_ctor_%d__", classID)
+}
+func superProtoName(classID int) string {
+	return fmt.Sprintf("__home_proto_%d__", classID)
+}
+
+// emitSuperCtor loads the current class's superclass constructor (for super()
+// calls in a derived constructor).
+func (c *Compiler) emitSuperCtor() {
+	kind, idx := c.resolve(superCtorName(c.curClassID))
+	c.emitLoadByKind(kind, idx)
+}
+
+// emitSuperProto loads the current class's superclass prototype (for
+// super.method() calls).
+func (c *Compiler) emitSuperProto() {
+	kind, idx := c.resolve(superProtoName(c.curClassID))
+	c.emitLoadByKind(kind, idx)
+}
+
+func (c *Compiler) emitLoadByKind(kind string, idx int) {
+	switch kind {
+	case "local":
+		c.emit(bytecode.OpLoadLocal, uint32(idx))
+	case "upvalue":
+		c.emit(bytecode.OpLoadUpvalue, uint32(idx))
+	case "global":
+		c.emit(bytecode.OpLoadGlobal, uint32(idx))
+	}
+}
+
+// compileClassDecl compiles `class Name [extends Super] { body }` as a
+// statement: the constructor is stored in a variable named Name.
+func (c *Compiler) compileClassDecl(d *ast.ClassDecl) error {
+	nameSlot := c.declareVar(d.Name.Name)
+	if err := c.compileClass(d.Name.Name, d.SuperClass, d.Body); err != nil {
+		return err
+	}
+	c.emit(bytecode.OpStoreLocal, uint32(nameSlot))
+	return nil
+}
+
+// compileClassExpr compiles `class [Name] [extends Super] { body }` as an
+// expression: the constructor is left on the stack.
+func (c *Compiler) compileClassExpr(e *ast.ClassExpr) error {
+	name := ""
+	if e.Name != nil {
+		name = e.Name.Name
+	}
+	return c.compileClass(name, e.SuperClass, e.Body)
+}
+
+// compileClass is the core class compilation routine. It compiles all methods
+// into FuncTemplates, builds a ClassTemplate, and emits OpMakeClass. After
+// OpMakeClass, the constructor function is on top of the stack.
+func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.ClassBody) error {
+	classID := c.classCounter
+	c.classCounter++
+	savedClassID := c.curClassID
+	c.curClassID = classID
+	defer func() { c.curClassID = savedClassID }()
+
+	hasSuper := super != nil
+
+	// Evaluate the superclass and stash it in unique local slots so that
+	// methods can capture them as upvalues for `super` resolution.
+	if hasSuper {
+		if err := c.compileExpr(super); err != nil {
+			return err
+		}
+		// stack: [super]
+		c.emit(bytecode.OpDup, 0)
+		// stack: [super, super]
+		ctorSlot := c.declareLocal(superCtorName(classID))
+		c.emit(bytecode.OpStoreLocal, uint32(ctorSlot))
+		// stack: [super]
+		c.emit(bytecode.OpLoadLocal, uint32(ctorSlot))
+		protoIdx := c.cur().tmpl.AddStringConst("prototype")
+		c.emit(bytecode.OpGetProp, uint32(protoIdx))
+		protoSlot := c.declareLocal(superProtoName(classID))
+		c.emit(bytecode.OpStoreLocal, uint32(protoSlot))
+		// stack: [super]  — consumed by OpMakeClass below
+	}
+
+	classTpl := &bytecode.ClassTemplate{
+		Name:     name,
+		HasSuper: hasSuper,
+	}
+
+	// Compile the constructor (or synthesize a default).
+	hasCtor := false
+	for _, m := range body.Methods {
+		if m.Kind == ast.MethodConstructor {
+			idx, err := c.compileMethod("constructor", m.Value)
+			if err != nil {
+				return err
+			}
+			classTpl.CtorIdx = idx
+			hasCtor = true
+			break
+		}
+	}
+	if !hasCtor {
+		var idx int
+		var err error
+		if hasSuper {
+			idx, err = c.compileDefaultDerivedCtor()
+		} else {
+			idx, err = c.compileDefaultBaseCtor()
+		}
+		if err != nil {
+			return err
+		}
+		classTpl.CtorIdx = idx
+	}
+
+	// Compile non-constructor methods.
+	for _, m := range body.Methods {
+		if m.Kind == ast.MethodConstructor {
+			continue
+		}
+		if m.Computed {
+			return fmt.Errorf("computed class method names not supported in 1C MVP")
+		}
+		methodName := propKey(m.Key)
+		idx, err := c.compileMethod(methodName, m.Value)
+		if err != nil {
+			return err
+		}
+		kind := bytecode.MethodKindNormal
+		switch m.Kind {
+		case ast.MethodGetter:
+			kind = bytecode.MethodKindGetter
+		case ast.MethodSetter:
+			kind = bytecode.MethodKindSetter
+		}
+		classTpl.Methods = append(classTpl.Methods, bytecode.ClassMethodTemplate{
+			Name:    methodName,
+			Kind:    kind,
+			Static:  m.Static,
+			TmplIdx: idx,
+		})
+	}
+
+	classIdx := c.module.AddClass(classTpl)
+	c.emit(bytecode.OpMakeClass, uint32(classIdx))
+	return nil
+}
+
+// compileMethod compiles a class method body into a FuncTemplate and returns
+// its index. Unlike compileFunction, it does NOT emit OpMakeClosure — the
+// class assembler (OpMakeClass) creates the closure at runtime.
+func (c *Compiler) compileMethod(name string, fn *ast.FunctionExpr) (int, error) {
+	params := fn.Params
+	defaults := fn.Defaults
+	rest := fn.RestParam
+
+	numLocals := 1 + len(params)
+	if rest != nil {
+		numLocals++
+	}
+	tmpl := &bytecode.FuncTemplate{
+		Name:        name,
+		NumParams:   len(params),
+		NumLocals:   numLocals,
+		IsVarArgs:   rest != nil,
+		IsGenerator: fn.IsGenerator,
+		SourceFile:  c.cur().tmpl.SourceFile,
+	}
+	funcIdx := c.module.AddFunction(tmpl)
+
+	fc := &funcCtx{
+		tmpl:         tmpl,
+		upvalueIndex: make(map[string]int),
+	}
+	fc.scopes = []*scope{{decls: make(map[string]int), isFunc: true}}
+	fc.scopes[0].decls["__this__"] = 0
+	for i, p := range params {
+		fc.scopes[0].decls[p.Name] = i + 1
+	}
+	if rest != nil {
+		fc.scopes[0].decls[rest.Name] = 1 + len(params)
+	}
+	c.funcStack = append(c.funcStack, fc)
+
+	// Default-parameter initialization at function entry.
+	for i, def := range defaults {
+		if def == nil {
+			continue
+		}
+		slot := i + 1
+		c.emit(bytecode.OpLoadLocal, uint32(slot))
+		c.emit(bytecode.OpPushUndefined, 0)
+		c.emit(bytecode.OpStrictEq, 0)
+		jSkip := c.emit(bytecode.OpJmpFalsePop, 0)
+		if err := c.compileExpr(def); err != nil {
+			return 0, err
+		}
+		c.emit(bytecode.OpStoreLocal, uint32(slot))
+		c.patchJumpToHere(jSkip)
+	}
+
+	c.hoistFunc(fn.Body)
+	if err := c.compileStmts(fn.Body.Body); err != nil {
+		return 0, err
+	}
+	c.emit(bytecode.OpReturnUndef, 0)
+	c.funcStack = c.funcStack[:len(c.funcStack)-1]
+	return funcIdx, nil
+}
+
+// compileDefaultBaseCtor synthesizes an empty constructor for a base class
+// (no extends): `function() {}`.
+func (c *Compiler) compileDefaultBaseCtor() (int, error) {
+	tmpl := &bytecode.FuncTemplate{
+		Name:       "constructor",
+		NumParams:  0,
+		NumLocals:  1, // slot 0 = this
+		SourceFile: c.cur().tmpl.SourceFile,
+	}
+	funcIdx := c.module.AddFunction(tmpl)
+	fc := &funcCtx{
+		tmpl:         tmpl,
+		upvalueIndex: make(map[string]int),
+	}
+	fc.scopes = []*scope{{decls: make(map[string]int), isFunc: true}}
+	fc.scopes[0].decls["__this__"] = 0
+	c.funcStack = append(c.funcStack, fc)
+	c.emit(bytecode.OpReturnUndef, 0)
+	c.funcStack = c.funcStack[:len(c.funcStack)-1]
+	return funcIdx, nil
+}
+
+// compileDefaultDerivedCtor synthesizes `function(...args) { super(...args); }`
+// for a derived class with no explicit constructor.
+func (c *Compiler) compileDefaultDerivedCtor() (int, error) {
+	tmpl := &bytecode.FuncTemplate{
+		Name:       "constructor",
+		NumParams:  0,
+		NumLocals:  2, // slot 0 = this, slot 1 = rest "args"
+		IsVarArgs:  true,
+		SourceFile: c.cur().tmpl.SourceFile,
+	}
+	funcIdx := c.module.AddFunction(tmpl)
+	fc := &funcCtx{
+		tmpl:         tmpl,
+		upvalueIndex: make(map[string]int),
+	}
+	fc.scopes = []*scope{{decls: make(map[string]int), isFunc: true}}
+	fc.scopes[0].decls["__this__"] = 0
+	fc.scopes[0].decls["args"] = 1
+	c.funcStack = append(c.funcStack, fc)
+
+	// super(...args): load home-ctor, load rest args, construct with this.
+	c.emitSuperCtor()
+	c.emit(bytecode.OpLoadLocal, 1) // rest param "args"
+	c.emit(bytecode.OpConstructThisArgs, 0)
+	c.emit(bytecode.OpPop, 0)
+
+	c.emit(bytecode.OpReturnUndef, 0)
+	c.funcStack = c.funcStack[:len(c.funcStack)-1]
+	return funcIdx, nil
 }

@@ -51,11 +51,24 @@ type Interpreter struct {
 	numberProto   engine.Object
 	booleanProto  engine.Object
 	errorProto    engine.Object
+	promiseProto  engine.Object
+	mapProto      engine.Object
+	setProto      engine.Object
+	weakMapProto  engine.Object
+	weakSetProto  engine.Object
 
 	// Built-in constructors
 	constructors map[string]engine.Object
 
 	argumentsSupported bool
+
+	// microtaskQueue holds pending microtasks (Promise reactions, queueMicrotask).
+	microtaskQueue []func()
+
+	// currentVM is the VM currently executing on this interpreter (set in
+	// runModule). Used by native callbacks (Proxy traps, etc.) that need to
+	// invoke JS functions through the VM.
+	currentVM *VM
 }
 
 // NewInterpreter creates an interpreter with built-in globals set up.

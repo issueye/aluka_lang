@@ -94,6 +94,7 @@ const (
 	TypeString
 	TypeObject
 	TypeFunction
+	TypeSymbol
 )
 
 // String 返回类型名称（用于 typeof 输出）。
@@ -113,6 +114,8 @@ func (t ValueType) String() string {
 		return "object"
 	case TypeFunction:
 		return "function"
+	case TypeSymbol:
+		return "symbol"
 	default:
 		return "unknown"
 	}

@@ -508,6 +508,73 @@ func (n *NewTargetExpr) Pos() Pos  { return n.Loc }
 func (n *NewTargetExpr) exprNode() {}
 func (n *NewTargetExpr) node()     {}
 
+// YieldExpr is a `yield` expression (only valid inside generator functions).
+//   yield            -> Argument == nil
+//   yield expr       -> Argument = expr
+//   yield* expr      -> Delegate = true, Argument = expr
+type YieldExpr struct {
+	Argument Expression
+	Delegate bool // `yield*`
+	Loc      Pos
+}
+
+func (y *YieldExpr) Pos() Pos  { return y.Loc }
+func (y *YieldExpr) exprNode() {}
+func (y *YieldExpr) node()     {}
+
+// === Class declarations (ES2015) ==========================================
+
+// MethodKind classifies a class method definition.
+type MethodKind int
+
+const (
+	MethodNormal MethodKind = iota
+	MethodConstructor
+	MethodGetter
+	MethodSetter
+)
+
+// MethodDefinition is one entry in a class body: a constructor, method,
+// getter, or setter (optionally static).
+type MethodDefinition struct {
+	Key      Expression // Identifier / StringLit / NumberLit / computed expr
+	Value    *FunctionExpr
+	Kind     MethodKind
+	Static   bool
+	Computed bool
+	Loc      Pos
+}
+
+// ClassBody is the { ... } part of a class, holding method definitions.
+type ClassBody struct {
+	Methods []MethodDefinition
+	Loc     Pos
+}
+
+// ClassDecl is a class declaration: `class Name [extends Super] { body }`.
+type ClassDecl struct {
+	Name      *Identifier
+	SuperClass Expression // nil if no extends
+	Body      *ClassBody
+	Loc       Pos
+}
+
+func (c *ClassDecl) Pos() Pos  { return c.Loc }
+func (c *ClassDecl) stmtNode() {}
+func (c *ClassDecl) node()     {}
+
+// ClassExpr is a class expression: `class [Name] [extends Super] { body }`.
+type ClassExpr struct {
+	Name      *Identifier
+	SuperClass Expression
+	Body      *ClassBody
+	Loc       Pos
+}
+
+func (c *ClassExpr) Pos() Pos  { return c.Loc }
+func (c *ClassExpr) exprNode() {}
+func (c *ClassExpr) node()     {}
+
 // === Destructuring patterns (ES2015) ======================================
 
 // Pattern is a binding pattern for destructuring declarations.

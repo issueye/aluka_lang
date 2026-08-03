@@ -13,6 +13,9 @@ type FuncTemplate struct {
 	NumParams int
 	NumLocals int // total slots = NumParams + declared locals (incl. temporaries)
 	IsVarArgs bool
+	// IsGenerator marks a `function*` — calling it returns a GeneratorValue
+	// instead of executing the body immediately. The body may use OpYield.
+	IsGenerator bool
 
 	// Code is the flat instruction stream. Fixed-width (InstrSize bytes each).
 	Code []byte
@@ -61,6 +64,7 @@ type LineEntry struct {
 // Module is the compiled output of a single source file.
 type Module struct {
 	Functions []*FuncTemplate // [0] is the top-level program
+	Classes   []*ClassTemplate
 }
 
 // NewModule creates an empty module.
@@ -71,6 +75,45 @@ func (m *Module) AddFunction(fn *FuncTemplate) int {
 	idx := len(m.Functions)
 	m.Functions = append(m.Functions, fn)
 	return idx
+}
+
+// AddClass appends a class template and returns its index.
+func (m *Module) AddClass(c *ClassTemplate) int {
+	idx := len(m.Classes)
+	m.Classes = append(m.Classes, c)
+	return idx
+}
+
+// === Class templates (ES2015) ============================================
+
+// MethodKindValue mirrors ast.MethodKind in the compiled form (kept in the
+// bytecode package to avoid an ast import cycle).
+type MethodKindValue int
+
+const (
+	MethodKindNormal MethodKindValue = iota
+	MethodKindConstructor
+	MethodKindGetter
+	MethodKindSetter
+)
+
+// ClassMethodTemplate describes one member of a class (method/accessor/ctor).
+type ClassMethodTemplate struct {
+	Name    string         // property name (empty for computed keys — not supported in MVP)
+	Kind    MethodKindValue
+	Static  bool
+	TmplIdx int            // function-template index
+}
+
+// ClassTemplate is the compiled form of a class. OpMakeClass reads the
+// superclass (if HasSuper) from the stack, instantiates the constructor and
+// prototype, installs methods/accessors, wires up the prototype chain, and
+// pushes the constructor.
+type ClassTemplate struct {
+	Name     string
+	HasSuper bool
+	CtorIdx  int                  // function-template index for the constructor
+	Methods  []ClassMethodTemplate
 }
 
 // === Instruction encoding =================================================

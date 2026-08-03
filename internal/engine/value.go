@@ -142,6 +142,97 @@ func (s stringValue) IsFunction() bool             { return false }
 func (s stringValue) AsObject() (Object, bool)     { return nil, false }
 func (s stringValue) AsFunction() (Function, bool) { return nil, false }
 
+// --- symbol ----------------------------------------------------------------
+
+// SymbolValue is a JS Symbol primitive. Symbols are unique, immutable values
+// used as property keys (especially for well-known protocols like Symbol.iterator).
+type SymbolValue struct {
+	desc string
+	id   uint64
+}
+
+var symbolCounter uint64
+
+// NewSymbol creates a new unique symbol with the given description.
+func NewSymbol(desc string) *SymbolValue {
+	symbolCounter++
+	return &SymbolValue{desc: desc, id: symbolCounter}
+}
+
+// SymbolIterator returns the well-known Symbol.iterator symbol.
+var SymbolIterator = &SymbolValue{desc: "Symbol.iterator", id: 0}
+
+// SymbolAsyncIterator returns the well-known Symbol.asyncIterator symbol.
+var SymbolAsyncIterator = &SymbolValue{desc: "Symbol.asyncIterator", id: 1}
+
+// SymbolHasInstance is the well-known Symbol.hasInstance symbol.
+var SymbolHasInstance = &SymbolValue{desc: "Symbol.hasInstance", id: 2}
+
+// SymbolToPrimitive is the well-known Symbol.toPrimitive symbol.
+var SymbolToPrimitive = &SymbolValue{desc: "Symbol.toPrimitive", id: 3}
+
+// SymbolToStringTag is the well-known Symbol.toStringTag symbol.
+var SymbolToStringTag = &SymbolValue{desc: "Symbol.toStringTag", id: 4}
+
+// symbolRegistry implements the global Symbol registry for Symbol.for()/keyFor().
+var symbolRegistry = struct {
+	entries map[string]*SymbolValue
+	order   []string
+}{
+	entries: make(map[string]*SymbolValue),
+}
+
+// SymbolFor returns the shared symbol registered under the given key, creating
+// a new one if none exists yet. Implements the global Symbol registry.
+func SymbolFor(key string) *SymbolValue {
+	if s, ok := symbolRegistry.entries[key]; ok {
+		return s
+	}
+	symbolCounter++
+	s := &SymbolValue{desc: key, id: symbolCounter}
+	symbolRegistry.entries[key] = s
+	symbolRegistry.order = append(symbolRegistry.order, key)
+	return s
+}
+
+// KeyFor returns the registry key under which the symbol was registered via
+// SymbolFor, or ("", false) if the symbol is not in the global registry.
+func (s *SymbolValue) KeyFor() (string, bool) {
+	for k, v := range symbolRegistry.entries {
+		if v == s {
+			return k, true
+		}
+	}
+	return "", false
+}
+
+func (s *SymbolValue) Type() ValueType { return TypeSymbol }
+func (s *SymbolValue) String() string {
+	if s.desc == "" {
+		return "Symbol()"
+	}
+	return "Symbol(" + s.desc + ")"
+}
+func (s *SymbolValue) Int() (int, bool)             { return 0, false }
+func (s *SymbolValue) Float() (float64, bool)       { return 0, false }
+func (s *SymbolValue) Bool() (bool, bool)           { return true, true }
+func (s *SymbolValue) IsUndefined() bool            { return false }
+func (s *SymbolValue) IsNull() bool                 { return false }
+func (s *SymbolValue) IsObject() bool               { return false }
+func (s *SymbolValue) IsFunction() bool             { return false }
+func (s *SymbolValue) AsObject() (Object, bool)     { return nil, false }
+func (s *SymbolValue) AsFunction() (Function, bool) { return nil, false }
+
+// SymbolKey returns the string key used to store a symbol-keyed property.
+// Since our object implementation uses string keys, we map symbols to unique
+// internal strings.
+func (s *SymbolValue) SymbolKey() string {
+	return fmt.Sprintf("\x00symbol:%d:%s", s.id, s.desc)
+}
+
+// IsWellKnown returns true if this is a well-known symbol (id < 100).
+func (s *SymbolValue) IsWellKnown() bool { return s.id < 100 }
+
 // --- object ----------------------------------------------------------------
 
 // objectValue is the minimal JS Object implementation: map + insertion order.
@@ -423,6 +514,132 @@ func (f *functionValue) AsFunction() (Function, bool) { return f, true }
 
 func (f *functionValue) Call(args []Value) (Value, error) {
 	return f.fn(args)
+}
+
+// --- accessor (getter/setter) --------------------------------------------
+
+// AccessorValue wraps a getter/setter pair. It is stored as a property value
+// on an object to model ES2015 class accessors and Object.defineProperty
+// accessors. The VM/interpreter detect it via type assertion and invoke the
+// getter/setter with the appropriate `this` binding instead of returning the
+// accessor itself.
+type AccessorValue struct {
+	Getter Value // function or Undefined
+	Setter Value // function or Undefined
+}
+
+// NewAccessor creates an accessor value. Either getter or setter may be nil
+// (treated as undefined — i.e. a no-op getter/setter).
+func NewAccessor(getter, setter Value) *AccessorValue {
+	if getter == nil {
+		getter = Undefined()
+	}
+	if setter == nil {
+		setter = Undefined()
+	}
+	return &AccessorValue{Getter: getter, Setter: setter}
+}
+
+func (a *AccessorValue) Type() ValueType { return TypeObject } // internal sentinel
+func (a *AccessorValue) String() string  { return "[Accessor]" }
+func (a *AccessorValue) Int() (int, bool)             { return 0, false }
+func (a *AccessorValue) Float() (float64, bool)       { return 0, false }
+func (a *AccessorValue) Bool() (bool, bool)           { return false, true }
+func (a *AccessorValue) IsUndefined() bool            { return false }
+func (a *AccessorValue) IsNull() bool                 { return false }
+func (a *AccessorValue) IsObject() bool               { return false }
+func (a *AccessorValue) IsFunction() bool             { return false }
+func (a *AccessorValue) AsObject() (Object, bool)     { return nil, false }
+func (a *AccessorValue) AsFunction() (Function, bool) { return nil, false }
+
+// SetAccessor installs a getter/setter pair as an own property on obj.
+func SetAccessor(obj Object, key string, getter, setter Value) {
+	ov, ok := obj.(*objectValue)
+	if !ok {
+		// Fall back to plain set (accessors unsupported on this type).
+		_ = obj.Set(key, NewAccessor(getter, setter))
+		return
+	}
+	if _, exists := ov.values[key]; !exists {
+		ov.keys = append(ov.keys, key)
+	}
+	ov.values[key] = NewAccessor(getter, setter)
+}
+
+// UpdateAccessor installs or updates a single getter or setter on obj. If an
+// accessor already exists for key, only the requested half (getter or setter)
+// is updated, preserving the other. Used by class assembly when get/set pairs
+// are installed as separate method definitions.
+func UpdateAccessor(obj Object, key string, isGetter bool, fn Value) {
+	ov, ok := obj.(*objectValue)
+	if !ok {
+		return
+	}
+	if existing, exists := ov.values[key]; exists {
+		if acc, ok := existing.(*AccessorValue); ok {
+			if isGetter {
+				acc.Getter = fn
+			} else {
+				acc.Setter = fn
+			}
+			return
+		}
+	}
+	getter, setter := Undefined(), Undefined()
+	if isGetter {
+		getter = fn
+	} else {
+		setter = fn
+	}
+	if _, exists := ov.values[key]; !exists {
+		ov.keys = append(ov.keys, key)
+	}
+	ov.values[key] = NewAccessor(getter, setter)
+}
+
+// FindAccessor walks the prototype chain of obj looking for an accessor
+// stored under key. Returns the accessor and true if found.
+func FindAccessor(obj Value, key string) (*AccessorValue, bool) {
+	cur := obj
+	for cur != nil {
+		if o, ok := cur.(*objectValue); ok {
+			if v, exists := o.values[key]; exists {
+				if acc, ok := v.(*AccessorValue); ok {
+					return acc, true
+				}
+				// Non-accessor own property shadows accessors up the chain.
+				return nil, false
+			}
+			if p, ok := o.proto.(*objectValue); ok {
+				cur = p
+			} else {
+				return nil, false
+			}
+		} else if a, ok := cur.(*ArrayValue); ok {
+			if a.objectValue != nil {
+				if v, exists := a.objectValue.values[key]; exists {
+					if acc, ok := v.(*AccessorValue); ok {
+						return acc, true
+					}
+					return nil, false
+				}
+			}
+			cur = GetProto(cur)
+		} else if f, ok := cur.(*functionValue); ok {
+			if f.objectValue != nil {
+				if v, exists := f.objectValue.values[key]; exists {
+					if acc, ok := v.(*AccessorValue); ok {
+						return acc, true
+					}
+					return nil, false
+				}
+			}
+			cur = GetProto(cur)
+		} else {
+			return nil, false
+		}
+	}
+	return nil, false
 }
 
 // --- 辅助函数 --------------------------------------------------------------

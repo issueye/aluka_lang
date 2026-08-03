@@ -47,6 +47,18 @@ func (interp *Interpreter) setupBuiltins() {
 	interp.setupMath()
 	// JSON
 	interp.setupJSON()
+	// Symbol
+	interp.setupSymbol()
+	// Promise + microtask queue
+	interp.setupPromise()
+	// Map / Set / WeakMap / WeakSet
+	interp.setupMap()
+	interp.setupSet()
+	interp.setupWeakMap()
+	interp.setupWeakSet()
+	// Proxy / Reflect
+	interp.setupProxy()
+	interp.setupReflect()
 
 	// Global functions
 	interp.setupGlobalFuncs()
@@ -173,6 +185,14 @@ func (interp *Interpreter) setupObjectCtor() {
 		if len(args) == 0 {
 			return interp.newArray(nil), nil
 		}
+		// Proxy interception: use the ownKeys trap.
+		if p, ok := args[0].(*ProxyValue); ok {
+			keys, err := p.proxyOwnKeys()
+			if err != nil {
+				return interp.newArray(nil), nil
+			}
+			return interp.newArray(toValues(keys)), nil
+		}
 		o, ok := args[0].AsObject()
 		if !ok {
 			return interp.newArray(nil), nil
@@ -239,6 +259,15 @@ func (interp *Interpreter) setupObjectCtor() {
 	_ = obj.Set("getPrototypeOf", interp.makeFunc("getPrototypeOf", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Null(), nil
+		}
+		// Proxy interception: use the VM's getProto so the getPrototypeOf
+		// trap fires for Proxy targets.
+		if vm := interp.currentVM; vm != nil {
+			proto := vm.getProto(args[0])
+			if proto == nil {
+				return engine.Null(), nil
+			}
+			return proto, nil
 		}
 		proto := engine.GetProto(args[0])
 		if proto == nil {
@@ -1338,6 +1367,49 @@ func (interp *Interpreter) setupGlobalFuncs() {
 		return engine.Boolean(ok && !math.IsNaN(f) && !math.IsInf(f, 0)), nil
 	}))
 	_ = interp.globalObj.Set("String", interp.constructors["String"])
+}
+
+// --- Symbol ---
+
+// setupSymbol creates the Symbol global function and well-known symbols.
+// Symbol is not a constructor (new Symbol() throws), but Symbol() creates
+// a unique symbol primitive.
+func (interp *Interpreter) setupSymbol() {
+	symbolFn := interp.makeFunc("Symbol", func(args []engine.Value) (engine.Value, error) {
+		desc := ""
+		if len(args) > 0 && !args[0].IsUndefined() {
+			desc = args[0].String()
+		}
+		return engine.NewSymbol(desc), nil
+	})
+	// Well-known symbols accessible as Symbol.iterator, Symbol.asyncIterator, etc.
+	_ = symbolFn.Set("iterator", engine.SymbolIterator)
+	_ = symbolFn.Set("asyncIterator", engine.SymbolAsyncIterator)
+	_ = symbolFn.Set("hasInstance", engine.SymbolHasInstance)
+	_ = symbolFn.Set("toPrimitive", engine.SymbolToPrimitive)
+	_ = symbolFn.Set("toStringTag", engine.SymbolToStringTag)
+	// Symbol.for(key) / Symbol.keyFor(symbol): global symbol registry.
+	_ = symbolFn.Set("for", interp.makeFunc("for", func(args []engine.Value) (engine.Value, error) {
+		key := ""
+		if len(args) > 0 && !args[0].IsUndefined() {
+			key = args[0].String()
+		}
+		return engine.SymbolFor(key), nil
+	}))
+	_ = symbolFn.Set("keyFor", interp.makeFunc("keyFor", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("%w: Symbol.keyFor requires a symbol argument", engine.ErrTypeError)
+		}
+		sym, ok := args[0].(*engine.SymbolValue)
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("%w: %s is not a symbol", engine.ErrTypeError, args[0].Type())
+		}
+		if k, ok := sym.KeyFor(); ok {
+			return engine.Str(k), nil
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = interp.globalObj.Set("Symbol", symbolFn)
 }
 
 // toValues converts []string to []Value.
