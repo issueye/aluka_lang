@@ -24,6 +24,11 @@ type Parser struct {
 	// genStack[len-1] == true means we're currently inside a generator body,
 	// so `yield` should be parsed as a YieldExpr.
 	genStack []bool
+
+	// asyncStack tracks whether each enclosing function is async.
+	// asyncStack[len-1] == true means we're currently inside an async function
+	// body, so `await` should be parsed as an AwaitExpr.
+	asyncStack []bool
 }
 
 // New 创建解析器。
@@ -168,6 +173,14 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 			return p.parseVarDecl()
 		case "function":
 			return p.parseFunctionDecl(false)
+		case "async":
+			// `async function` declaration. Only treat as async when the next
+			// token is `function`; otherwise `async` is a contextual keyword
+			// (e.g. `async()` as a call, or `async = 1` as an identifier).
+			next := p.peekAt(1)
+			if next.Type == lexer.TokenKeyword && next.Value == "function" {
+				return p.parseFunctionDecl(false)
+			}
 		case "class":
 			return p.parseClassDecl()
 		case "if":
@@ -278,6 +291,12 @@ func (p *Parser) parseVarDeclarator() (ast.VarDeclarator, error) {
 }
 
 func (p *Parser) parseFunctionDecl(isExpr bool) (*ast.FunctionDecl, error) {
+	// Detect `async function` — consume the `async` keyword if present.
+	isAsync := false
+	if p.peek().Type == lexer.TokenKeyword && p.peek().Value == "async" {
+		p.next() // consume async
+		isAsync = true
+	}
 	t := p.next() // function
 	isGenerator := p.matchPunct("*")
 	if isExpr {
@@ -291,8 +310,10 @@ func (p *Parser) parseFunctionDecl(isExpr bool) (*ast.FunctionDecl, error) {
 		return nil, p.errorf(p.peek(), "function declaration requires a name")
 	}
 	p.genStack = append(p.genStack, isGenerator)
+	p.asyncStack = append(p.asyncStack, isAsync)
 	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
 	p.genStack = p.genStack[:len(p.genStack)-1]
+	p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
 	if err != nil {
 		return nil, err
 	}
@@ -302,6 +323,7 @@ func (p *Parser) parseFunctionDecl(isExpr bool) (*ast.FunctionDecl, error) {
 		Defaults:    defaults,
 		RestParam:   rest,
 		Body:        body,
+		IsAsync:     isAsync,
 		IsGenerator: isGenerator,
 		Loc:         posOf(t),
 	}, nil
@@ -796,6 +818,8 @@ func (p *Parser) parseAssignment() (ast.Expression, error) {
 			return p.parseYield()
 		}
 	}
+	// `await` is handled in parseUnary (as a unary operator) so that binary
+	// operators after it (e.g. `await x + 1`) parse correctly as `(await x) + 1`.
 	// 检测箭头函数：x => ... 或 (x, y) => ...
 	if expr, ok, err := p.tryParseArrow(); ok {
 		return expr, err
@@ -861,6 +885,80 @@ func (p *Parser) yieldHasOperand() bool {
 		}
 	}
 	return true
+}
+
+// parseAwait parses an `await expr` expression. Must only be called when
+// inside an async function body. The operand is parsed as a unary expression
+// so that `await a + b` is parsed as `(await a) + b`, matching JS semantics.
+func (p *Parser) parseAwait() (ast.Expression, error) {
+	t := p.next() // consume `await`
+	// `await` requires an operand in practice; parse it as a unary expression
+	// so `await a.b()` binds correctly. We use parseUnary to avoid grabbing
+	// binary operators that should apply to the whole await expression.
+	arg, err := p.parseUnary()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.AwaitExpr{Argument: arg, Loc: posOf(t)}, nil
+}
+
+// tryParseAsyncArrow attempts to parse `async x => ...` or `async (...) => ...`.
+// On success returns (expr, true, nil). If the tokens after `async` don't form
+// an arrow, it backtracks and returns (nil, false, nil) so the caller can
+// treat `async` as a regular identifier.
+func (p *Parser) tryParseAsyncArrow() (ast.Expression, bool, error) {
+	start := p.pos
+	asyncTok := p.next() // consume `async`
+
+	// `async x => ...`
+	t := p.peek()
+	if t.Type == lexer.TokenIdent {
+		next := p.peekAt(1)
+		if next.Type == lexer.TokenPunct && next.Value == "=>" {
+			p.next() // ident
+			p.next() // =>
+			expr, ok, err := p.parseArrowBody(
+				[]*ast.Identifier{{Name: t.Value, Loc: posOf(t)}}, nil, nil)
+			if err != nil || !ok {
+				return nil, false, err
+			}
+			if arrow, ok := expr.(*ast.ArrowFunc); ok {
+				arrow.IsAsync = true
+				arrow.Loc = posOf(asyncTok)
+			}
+			return expr, true, err
+		}
+	}
+
+	// `async (...) => ...`
+	if t.Type == lexer.TokenPunct && t.Value == "(" {
+		if endIdx, ok := p.findMatchingParen(p.pos); ok {
+			afterParen := p.peekAt(endIdx - p.pos + 1)
+			if afterParen.Type == lexer.TokenPunct && afterParen.Value == "=>" {
+				// It's an async arrow with parens. Reuse parseArrowWithParens
+				// but we've already consumed `async`; that's fine because
+				// parseArrowWithParens starts at `(`.
+				p.asyncStack = append(p.asyncStack, true)
+				expr, ok, err := p.parseArrowWithParens()
+				p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
+				if err != nil {
+					return nil, true, err
+				}
+				if ok {
+					if arrow, ok := expr.(*ast.ArrowFunc); ok {
+						arrow.IsAsync = true
+						arrow.Loc = posOf(asyncTok)
+					}
+					return expr, true, nil
+				}
+			}
+		}
+	}
+
+	// Not an async arrow — backtrack and let the caller treat `async` as an
+	// identifier.
+	p.pos = start
+	return nil, false, nil
 }
 
 // tryParseArrow 尝试解析箭头函数。
@@ -1076,6 +1174,11 @@ func (p *Parser) parseUnary() (ast.Expression, error) {
 				return nil, err
 			}
 			return &ast.UnaryExpr{Op: t.Value, Arg: arg, Loc: posOf(t)}, nil
+		case "await":
+			// `await` is a unary operator only valid inside async functions.
+			if len(p.asyncStack) > 0 && p.asyncStack[len(p.asyncStack)-1] {
+				return p.parseAwait()
+			}
 		}
 	}
 	return p.parsePostfix()
@@ -1289,6 +1392,21 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 			return &ast.SuperExpr{Loc: posOf(t)}, nil
 		case "function":
 			return p.parseFunctionExpr()
+		case "async":
+			// `async function` expression, or `async () =>` / `async x =>` arrow.
+			next := p.peekAt(1)
+			if next.Type == lexer.TokenKeyword && next.Value == "function" {
+				return p.parseFunctionExpr()
+			}
+			// async arrow: `async x =>` or `async (...) =>`
+			if expr, ok, err := p.tryParseAsyncArrow(); ok {
+				return expr, err
+			} else if err != nil {
+				return nil, err
+			}
+			// Not an async arrow — fall through to treat `async` as identifier.
+			p.next()
+			return &ast.Identifier{Name: "async", Loc: posOf(t)}, nil
 		case "class":
 			return p.parseClassExpr()
 		case "new":
@@ -1308,6 +1426,12 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 }
 
 func (p *Parser) parseFunctionExpr() (ast.Expression, error) {
+	// Detect `async function` expression.
+	isAsync := false
+	if p.peek().Type == lexer.TokenKeyword && p.peek().Value == "async" {
+		p.next() // consume async
+		isAsync = true
+	}
 	t := p.next() // function
 	isGenerator := p.matchPunct("*")
 	var name *ast.Identifier
@@ -1316,12 +1440,14 @@ func (p *Parser) parseFunctionExpr() (ast.Expression, error) {
 		name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
 	}
 	p.genStack = append(p.genStack, isGenerator)
+	p.asyncStack = append(p.asyncStack, isAsync)
 	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
 	p.genStack = p.genStack[:len(p.genStack)-1]
+	p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
 	if err != nil {
 		return nil, err
 	}
-	return &ast.FunctionExpr{Name: name, Params: params, Defaults: defaults, RestParam: rest, Body: body, IsGenerator: isGenerator, Loc: posOf(t)}, nil
+	return &ast.FunctionExpr{Name: name, Params: params, Defaults: defaults, RestParam: rest, Body: body, IsAsync: isAsync, IsGenerator: isGenerator, Loc: posOf(t)}, nil
 }
 
 // === Class parsing (ES2015) ==============================================
@@ -1425,6 +1551,18 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 	}
 	def.Static = isStatic
 
+	// `async` is a contextual keyword for async methods: `async foo() {}`.
+	// Only treat as async when followed by a method name (not `(`, which
+	// would make `async` a regular method name).
+	isAsync := false
+	if t2 := p.peek(); t2.Type == lexer.TokenKeyword && t2.Value == "async" {
+		nx := p.peekAt(1)
+		if nx.Type != lexer.TokenPunct || nx.Value != "(" {
+			p.next() // consume async
+			isAsync = true
+		}
+	}
+
 	// get/set accessors are also contextual keywords.
 	kind := ast.MethodNormal
 	computed := false
@@ -1478,7 +1616,9 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 	}
 
 	// Parse the method body using the standard function-params-and-body rule.
+	p.asyncStack = append(p.asyncStack, isAsync)
 	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+	p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
 	if err != nil {
 		return def, err
 	}
@@ -1487,6 +1627,7 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 		Defaults:  defaults,
 		RestParam: rest,
 		Body:      body,
+		IsAsync:   isAsync,
 		Loc:       posOf(t),
 	}
 	def.Key = key
@@ -1650,6 +1791,30 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 			// get / set / method shorthand
 			kind := ast.PropertyInit
 			if id, ok := key.(*ast.Identifier); ok {
+				// async method shorthand: `async foo() {}`
+				if id.Name == "async" && p.peek().Type != lexer.TokenPunct {
+					methodTok := p.next()
+					var methodKey ast.Expression
+					if methodTok.Type == lexer.TokenIdent || methodTok.Type == lexer.TokenKeyword {
+						methodKey = &ast.Identifier{Name: methodTok.Value, Loc: posOf(methodTok)}
+					} else if methodTok.Type == lexer.TokenString {
+						methodKey = &ast.StringLit{Value: methodTok.Value, Loc: posOf(methodTok)}
+					} else {
+						return nil, p.errorf(methodTok, "invalid async method name")
+					}
+					p.asyncStack = append(p.asyncStack, true)
+					params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+					p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
+					if err != nil {
+						return nil, err
+					}
+					fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, IsAsync: true, Loc: posOf(methodTok)}
+					obj.Properties = append(obj.Properties, ast.Property{Key: methodKey, Value: fn, Kind: ast.PropertyMethod, Loc: posOf(propTok)})
+					if !p.matchPunct(",") {
+						break
+					}
+					continue
+				}
 				if (id.Name == "get" || id.Name == "set") &&
 					p.peek().Type != lexer.TokenPunct {
 					// 实际是访问器：get prop() {}

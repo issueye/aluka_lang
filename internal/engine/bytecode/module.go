@@ -16,6 +16,10 @@ type FuncTemplate struct {
 	// IsGenerator marks a `function*` — calling it returns a GeneratorValue
 	// instead of executing the body immediately. The body may use OpYield.
 	IsGenerator bool
+	// IsAsync marks an `async function` — calling it returns a Promise.
+	// The body may use OpAwait, which suspends execution until the awaited
+	// promise settles, then resumes with the resolved value.
+	IsAsync bool
 
 	// Code is the flat instruction stream. Fixed-width (InstrSize bytes each).
 	Code []byte

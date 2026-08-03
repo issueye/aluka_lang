@@ -1,6 +1,6 @@
 # Aluka 运行时 — 开发计划文档
 
-> 项目代号：`aluka` ｜ 文档版本：v0.6 ｜ 日期：2026-08-03
+> 项目代号：`aluka` ｜ 文档版本：v0.7 ｜ 日期：2026-08-03
 > 配套文档：[需求分析文档](./requirements-analysis.md)
 
 ---
@@ -58,7 +58,7 @@
 
 ### 2.0 当前完成状态评估
 
-> 评估日期：2026-08-03 ｜ 测试总数：264 个（全部通过）
+> 评估日期：2026-08-03 ｜ 测试总数：290 个（全部通过）
 
 #### 总体进度概览
 
@@ -68,7 +68,7 @@
 | 1A | AST-walking PoC | ✅ 完成 | ~90% |
 | 1B | 字节码 VM | ⚠️ 大部分完成 | ~65% |
 | 1C | ES2015 + 模块系统 | 🔨 进行中 | ~60% |
-| 1D | TS 转译 + ES2017-2020 | ❌ 未开始 | ~5% |
+| 1D | TS 转译 + ES2017-2020 | 🔨 进行中 | ~30% |
 | 2-8 | 后续阶段 | ❌ 未开始 | 0% |
 
 #### Phase 0：工程基座 — ✅ 完成
@@ -131,12 +131,12 @@
 | 1C.14 | 字节码缓存 | ❌ | 未实现 |
 | 1C.15 | test262 ES5+ES2015 ≥ 60% | ❌ | 未集成 |
 
-#### Phase 1D：TS 转译 + ES2017-2020 — ❌ 基本未开始（~5%）
+#### Phase 1D：TS 转译 + ES2017-2020 — 🔨 进行中（~30%）
 
 | ID | 任务 | 状态 | 说明 |
 |----|------|------|------|
 | 1D.1-1D.8 | TS 转译器（类型剥离/enum/namespace/装饰器等） | ❌ | 未实现 |
-| 1D.9 | `async`/`await` | ❌ | 未实现（依赖 Promise + microtask） |
+| 1D.9 | `async`/`await` | ✅ | **完成**：`async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法、`await` 表达式（值/Promise/thenable）；新增 `async.go`（`asyncRunner` 复用生成器式帧挂起，集成 Promise 微任务调度）、`OpAwait` 指令、`FuncTemplate.IsAsync` 标志、`AwaitExpr` AST 节点；parser 新增 `asyncStack` 跟踪异步作用域以正确解析 `await`；错误传播保留原始值（`normalizeException` 处理 `*jsThrow`/`engine.Value`/`error`），rejected promise 经 `await` 抛入帧可被 `try/catch` 捕获；async 函数返回值自动 Promise 包装（resolve 采用 thenable）；测试覆盖基本返回/await 值/Promise/错误处理/箭头函数/类方法/闭包捕获/finally |
 | 1D.10 | `for await...of` / rest in object / `Promise.finally` | ⚠️ | 对象 rest 解构已实现；`Promise.finally` 已实现（1C.4）；`for await...of` 未实现（依赖 async/await） |
 | 1D.11 | ES2019：`Array.flat/flatMap`/`Object.fromEntries`/`trimStart` | ❌ | 未实现 |
 | 1D.12 | ES2020：可选链 `?.`/空值合并 `??`/`BigInt`/`Promise.allSettled` | ⚠️ | 空值合并 `??` 已实现并测试；`Promise.allSettled` 已实现（1C.4）；可选链 `?.` AST 节点有 `Optional` 字段但 parser/compiler 未处理；BigInt 未实现 |
@@ -151,14 +151,15 @@
 - **ES5 核心**：变量声明、函数声明/表达式、闭包、`if`/`for`/`while`/`do-while`/`switch`、`try/catch/finally`、`throw`、`break`/`continue`（含 label）、`typeof`/`void`/`delete`/`in`/`instanceof`
 - **ES5 内置**：Object/Array/String/Number/Boolean/Math/JSON/Error 完整方法
 - **ES2015**：`let`/`const`/块级作用域、箭头函数、模板字符串、解构赋值（数组+对象，含 holes/rest/default/嵌套）、默认参数、rest/spread 参数、`for...of`、spread 展开（数组+对象）、空值合并 `??`、`class` 语法（声明/表达式/继承/super/static/getter/setter/默认构造函数）、`Promise`（构造器 + then/catch/finally 链式调用 + resolve/reject/all/race/allSettled + microtask 队列）、`Symbol`（+ for/keyFor + hasInstance/toPrimitive/toStringTag）、`Map`/`Set`/`WeakMap`/`WeakSet`（完整原型方法 + 迭代器协议 + 构造器 iterable 输入）、`Proxy`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap + revocable）、`Reflect`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/setPrototypeOf/apply/construct/defineProperty/getOwnPropertyDescriptor）
+- **ES2017**：`async`/`await`（`async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法、`await` 值/Promise/thenable、错误经 `try/catch` 捕获、返回值自动 Promise 包装）
 - **其他**：`delete` 运算符（实际删除属性）、labeled 语句、函数方法（call/apply/bind）
 
 #### 已知缺失的关键特性
 
 1. 模块系统 ESM/CJS（1C.9-1C.11）— 阻塞多文件项目
 2. 可选链 `?.`（1D.12）— 常用语法
-3. `async`/`await`（1D.9）— 阻塞异步代码（Promise 已就绪）
-4. TS 转译（1D.1-1D.8）— 阻塞 `.ts` 文件运行
+3. TS 转译（1D.1-1D.8）— 阻塞 `.ts` 文件运行
+4. `for await...of`（1D.10）— 异步迭代器（async/await 已就绪）
 5. 隐藏类 + IC（1B.5）和自研 GC（1B.6）— 影响性能
 
 ### 2.1 Phase 时间轴
@@ -1242,3 +1243,4 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 | v0.4 | 2026-08-03 | Phase 1C.4 `Promise` + microtask 完成：新增 `microtask.go`（微任务队列 enqueue/drain）和 `promise.go`（`PromiseValue` + then/catch/finally + resolve/reject/all/race/allSettled + queueMicrotask）；`runModule` 顶层执行后排水微任务；修复 upvalue 共享（`captureUpvalues` 复用现有 upvalue）和 `instanceof` 对自定义值类型（`PromiseValue`/`GeneratorValue`）的原型链查找（`VM.getProto`）；测试总数 173→198 |
 | v0.5 | 2026-08-03 | Phase 1C.5 `Symbol`/`Map`/`Set`/`WeakMap`/`WeakSet` 完成：`Symbol` 增强（`Symbol.for`/`keyFor` 全局注册表 + `hasInstance`/`toPrimitive`/`toStringTag` well-known symbols）；新增 `map_set.go`（`MapValue`/`SetValue`/`WeakMapValue`/`WeakSetValue` + 完整原型方法 + 迭代器协议 + 构造器 iterable 输入 + SameValueZero 键相等）；`VM.backingObj` 统一处理自定义值类型的 accessor 查找（修复 `size` getter 不被调用的问题）；`getProto` 新增 Map/Set/WeakMap/WeakSet 分支；测试总数 198→240 |
 | v0.6 | 2026-08-03 | Phase 1C.8 `Proxy`/`Reflect` 完成：新增 `proxy.go`（`ProxyValue` + get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap + `Proxy.revocable`）和 `reflect.go`（`Reflect` 全局对象 + 12 个方法）；VM 拦截 `getProperty`/`setProperty`/`inOp`/`instanceof`/`getProto`/`OpDelProp`/`OpGetProto`/`OpSpreadObject` 分发到 Proxy trap；`Interpreter.currentVM` 为 native 回调提供 VM 上下文；`proxyGetSymbol` 传递实际 Symbol 值给 get trap（支持 `k === Symbol.hasInstance` 比较）；修复 `inOp` 对普通对象的原型链键存在性检查（`Get` 返回 `Undefined, nil` 导致 `in` 总是返回 true）；`Object.getPrototypeOf`/`Object.keys` 支持 Proxy；测试总数 240→264 |
+| v0.7 | 2026-08-03 | Phase 1D.9 `async`/`await` 完成：新增 `async.go`（`asyncRunner` 复用生成器式帧挂起/恢复，集成 Promise 微任务调度）、`OpAwait` 指令、`FuncTemplate.IsAsync` 标志、`AwaitExpr` AST 节点；parser 新增 `asyncStack` 跟踪异步作用域以正确解析 `await`，支持 `async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法；`callClosure` 对 async 函数创建 `asyncRunner` 并返回 Promise；`normalizeException` 处理 `*jsThrow`/`engine.Value`/`error` 保留原始错误值，使 rejected promise 经 `await` 抛入帧可被 `try/catch` 捕获；async 函数返回值经 `promiseResolve` 自动采用 thenable；测试总数 264→290 |

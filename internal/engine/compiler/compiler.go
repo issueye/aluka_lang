@@ -628,7 +628,7 @@ func (c *Compiler) compileFunctionDecl(d *ast.FunctionDecl) error {
 		return nil
 	}
 	slot := c.declareVar(d.Name.Name)
-	if err := c.compileFunction(d.Name.Name, d.Params, d.Defaults, d.RestParam, d.Body, false, d.IsGenerator); err != nil {
+	if err := c.compileFunction(d.Name.Name, d.Params, d.Defaults, d.RestParam, d.Body, d.IsAsync, d.IsGenerator); err != nil {
 		return err
 	}
 	c.emit(bytecode.OpStoreLocal, uint32(slot))
@@ -1260,6 +1260,8 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 		return c.compileTemplateLit(n)
 	case *ast.YieldExpr:
 		return c.compileYield(n)
+	case *ast.AwaitExpr:
+		return c.compileAwait(n)
 	}
 	return fmt.Errorf("unsupported expression %T", e)
 }
@@ -1364,6 +1366,21 @@ func (c *Compiler) compileYieldStar(n *ast.YieldExpr) error {
 	c.emit(bytecode.OpGetProp, uint32(nameValue))
 	c.topLoop().breakTarget = exit
 	c.patchLoopBreaks(exit)
+	return nil
+}
+
+// compileAwait compiles `await expr`: evaluate the argument, then emit OpAwait
+// which suspends the async function until the (promise-wrapped) value settles.
+// On resume, OpAwait pushes the resolved value (or throws the rejection).
+func (c *Compiler) compileAwait(n *ast.AwaitExpr) error {
+	if n.Argument == nil {
+		c.emit(bytecode.OpPushUndefined, 0)
+	} else {
+		if err := c.compileExpr(n.Argument); err != nil {
+			return err
+		}
+	}
+	c.emit(bytecode.OpAwait, 0)
 	return nil
 }
 
@@ -1815,9 +1832,6 @@ func (c *Compiler) compileConditional(n *ast.ConditionalExpr) error {
 // `defaults[i]` is the default expression for params[i] (nil = no default).
 // `rest` is the ES2015 rest parameter name (or "" if none).
 func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaults []ast.Expression, rest *ast.Identifier, body ast.Node, isAsync, isGenerator bool) error {
-	if isAsync {
-		// Async needs Promise (Phase 1C/1D); compile as regular function.
-	}
 	// `this` slot = 0; params = slots 1..N; rest param (if any) = slot N+1;
 	// locals start after that.
 	numLocals := 1 + len(params)
@@ -1829,6 +1843,7 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 		NumParams:   len(params),
 		NumLocals:   numLocals,
 		IsVarArgs:   rest != nil,
+		IsAsync:     isAsync,
 		IsGenerator: isGenerator,
 		SourceFile:  c.cur().tmpl.SourceFile,
 	}
@@ -2172,6 +2187,7 @@ func (c *Compiler) compileMethod(name string, fn *ast.FunctionExpr) (int, error)
 		NumParams:   len(params),
 		NumLocals:   numLocals,
 		IsVarArgs:   rest != nil,
+		IsAsync:     fn.IsAsync,
 		IsGenerator: fn.IsGenerator,
 		SourceFile:  c.cur().tmpl.SourceFile,
 	}

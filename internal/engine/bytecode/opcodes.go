@@ -144,6 +144,9 @@ const (
 	OpGetIterator // pop iterable, push iterator object (with .next() method)
 	OpYield       // pop value; yield it from generator. Resume value is pushed on resume.
 
+	// --- Async/await (ES2017) ---
+	OpAwait // pop value; suspend async function until value's promise settles. Push resolved value on resume.
+
 	OpEnd // sentinel marking end of code (for safety)
 )
 
@@ -252,6 +255,7 @@ var opNames = [...]string{
 
 	OpGetIterator: "GET_ITERATOR",
 	OpYield:       "YIELD",
+	OpAwait:       "AWAIT",
 
 	OpEnd: "END",
 }

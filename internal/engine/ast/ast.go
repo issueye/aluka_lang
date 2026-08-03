@@ -522,6 +522,16 @@ func (y *YieldExpr) Pos() Pos  { return y.Loc }
 func (y *YieldExpr) exprNode() {}
 func (y *YieldExpr) node()     {}
 
+// AwaitExpr is `await expr` — only valid inside an async function.
+type AwaitExpr struct {
+	Argument Expression
+	Loc      Pos
+}
+
+func (a *AwaitExpr) Pos() Pos  { return a.Loc }
+func (a *AwaitExpr) exprNode() {}
+func (a *AwaitExpr) node()     {}
+
 // === Class declarations (ES2015) ==========================================
 
 // MethodKind classifies a class method definition.

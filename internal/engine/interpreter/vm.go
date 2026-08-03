@@ -737,6 +737,12 @@ func (v *VM) run() (engine.Value, error) {
 			// Generator yield: pop yielded value, suspend frame, return to caller.
 			yieldVal := v.pop()
 			return v.doYield(yieldVal)
+		case bytecode.OpAwait:
+			// Async await: pop awaited value, suspend frame. The asyncRunner
+			// catches the awaitSignal and schedules resumption when the
+			// value's Promise settles.
+			awaitedVal := v.pop()
+			return v.doAwait(awaitedVal)
 
 			default:
 				return engine.Undefined(), fmt.Errorf("aluka: unknown opcode %s (%d)", op, op)
@@ -1130,6 +1136,13 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 	if tmpl.IsGenerator {
 		gen := NewGeneratorValue(v, tmpl, cl.upvalues, thisVal, args)
 		return gen, nil
+	}
+	// Async function: calling it returns a Promise. The body runs with
+	// suspension at each OpAwait; the asyncRunner resolves/rejects the
+	// Promise when the body completes or throws.
+	if tmpl.IsAsync {
+		ar := newAsyncRunner(v, tmpl, cl.upvalues, thisVal, args)
+		return ar.start(), nil
 	}
 	if asNew {
 		// Create a new object with proto from cl.prototype.
@@ -1626,7 +1639,7 @@ func (v *VM) handleTryExitFinally(tryIdx int) error {
 		if h.entry == &frame.tmpl.TryTable[tryIdx] {
 			frame.tryStack = frame.tryStack[:i]
 			if h.exc != nil {
-				return fmt.Errorf("%s", h.exc.String())
+				return &jsThrow{val: h.exc}
 			}
 			return nil
 		}
@@ -1640,6 +1653,8 @@ func (v *VM) normalizeException(exc interface{}) engine.Value {
 	switch e := exc.(type) {
 	case engine.Value:
 		return e
+	case *jsThrow:
+		return e.val
 	case error:
 		return v.goErrorToValue(e)
 	default:
