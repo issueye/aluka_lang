@@ -123,9 +123,9 @@
 | 1C.6 | 迭代器协议 + `for...of` + 生成器 | ✅ | **完成**：`Symbol.iterator` 协议、`for...of`（数组/字符串/生成器/自定义迭代器）、`function*`/`yield`/`yield*`、生成器 `.next()`/`.return()`/`.throw()`、`[Symbol.iterator]()` 自定义迭代器、展开运算符支持迭代器协议 |
 | 1C.7 | 模板字符串 / 解构 / 默认参数 / rest/spread | ✅ | **全部完成**：模板字符串、数组/对象解构（含 rest/default/嵌套）、默认参数、rest/spread 参数与调用、`delete` 运算符 |
 | 1C.8 | `Proxy`/`Reflect` | ✅ | **完成**：`Proxy` 构造器（get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap）、`Proxy.revocable`、`Reflect` 全局对象（get/set/has/deleteProperty/ownKeys/getPrototypeOf/setPrototypeOf/apply/construct/defineProperty/getOwnPropertyDescriptor/isExtensible/preventExtensions）；VM 拦截 `getProperty`/`setProperty`/`inOp`/`instanceof`/`getProto`/`OpDelProp`/`OpGetProto`/`OpSpreadObject` 分发到 trap；`Interpreter.currentVM` 为 native 回调提供 VM 上下文；修复 `inOp` 对普通对象的原型链键存在性检查 |
-| 1C.9 | ESM 加载器 | ❌ | 未实现 |
-| 1C.10 | CJS 加载器 | ❌ | 未实现 |
-| 1C.11 | Node.js 模块解析算法 | ❌ | 未实现 |
+| 1C.9 | ESM 加载器 | ✅ | **完成**：ESM `import`/`export` 语法解析（AST 节点 + parser）、AST→CJS 转换（默认/命名/命名空间导入、重导出、`export *`、`export default`）、`EvalProgram` 直接执行预转换 AST |
+| 1C.10 | CJS 加载器 | ✅ | **完成**：`require()`/`module.exports`/`exports`/`__filename`/`__dirname`、模块缓存 + 循环依赖处理（预填充 cache）、嵌套 require 的全局变量 save/restore、JSON 模块加载 |
+| 1C.11 | Node.js 模块解析算法 | ✅ | **完成**：相对/绝对路径解析、扩展名补全（`.js`/`.mjs`/`.cjs`/`.json`）、目录解析（`package.json` main 字段 + index 文件）、`node_modules` 逐级向上查找、package.json `type` 字段判定模块类型 |
 | 1C.12 | `tsconfig.json` 读取 | ❌ | 未实现 |
 | 1C.13 | 路径别名（`paths`/`baseUrl`） | ❌ | 未实现 |
 | 1C.14 | 字节码缓存 | ❌ | 未实现 |
@@ -156,7 +156,7 @@
 
 #### 已知缺失的关键特性
 
-1. 模块系统 ESM/CJS（1C.9-1C.11）— 阻塞多文件项目
+1. ~~模块系统 ESM/CJS（1C.9-1C.11）— 阻塞多文件项目~~ ✅ 已完成
 2. 可选链 `?.`（1D.12）— 常用语法
 3. TS 转译（1D.1-1D.8）— 阻塞 `.ts` 文件运行
 4. `for await...of`（1D.10）— 异步迭代器（async/await 已就绪）

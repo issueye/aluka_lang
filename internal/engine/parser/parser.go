@@ -95,6 +95,10 @@ func (p *Parser) match(typ lexer.TokenType, val string) bool {
 func (p *Parser) matchPunct(val string) bool   { return p.match(lexer.TokenPunct, val) }
 func (p *Parser) matchKeyword(val string) bool { return p.match(lexer.TokenKeyword, val) }
 
+// matchIdent matches a contextual keyword that the lexer tokenizes as an
+// identifier (e.g. "from", "as" in import/export declarations).
+func (p *Parser) matchIdent(val string) bool { return p.match(lexer.TokenIdent, val) }
+
 func (p *Parser) expect(typ lexer.TokenType, val string) (lexer.Token, error) {
 	t := p.peek()
 	if t.Type != typ || (val != "" && t.Value != val) {
@@ -183,6 +187,10 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 			}
 		case "class":
 			return p.parseClassDecl()
+		case "import":
+			return p.parseImportDecl()
+		case "export":
+			return p.parseExportDecl()
 		case "if":
 			return p.parseIf()
 		case "while":
@@ -1448,6 +1456,239 @@ func (p *Parser) parseFunctionExpr() (ast.Expression, error) {
 		return nil, err
 	}
 	return &ast.FunctionExpr{Name: name, Params: params, Defaults: defaults, RestParam: rest, Body: body, IsAsync: isAsync, IsGenerator: isGenerator, Loc: posOf(t)}, nil
+}
+
+// === ESM import/export parsing ===========================================
+
+// parseImportDecl parses an ESM import declaration.
+//
+//	import 'mod'
+//	import x from 'mod'
+//	import * as ns from 'mod'
+//	import {a, b as c} from 'mod'
+//	import x, {a, b} from 'mod'
+//	import x, * as ns from 'mod'
+func (p *Parser) parseImportDecl() (ast.Statement, error) {
+	t := p.next() // consume 'import'
+	decl := &ast.ImportDecl{Loc: posOf(t)}
+
+	// Side-effect-only import: import 'mod'
+	if p.peek().Type == lexer.TokenString {
+		s, err := p.parseStringLiteral()
+		if err != nil {
+			return nil, err
+		}
+		decl.Source = s
+		if err := p.consumeSemicolon(); err != nil {
+			return nil, err
+		}
+		return decl, nil
+	}
+
+	// Parse import specifiers
+	for {
+		// Default import: import x from 'mod'
+		if p.peek().Type == lexer.TokenIdent {
+			nameTok := p.next()
+			decl.Specifiers = append(decl.Specifiers, ast.ImportSpecifier{
+				Imported: "",
+				Local:    nameTok.Value,
+			})
+		} else if p.peek().Type == lexer.TokenPunct && p.peek().Value == "*" {
+			// Namespace import: import * as ns from 'mod'
+			p.next() // consume '*'
+			if !p.matchIdent("as") {
+				return nil, p.errorf(p.peek(), "expected 'as' after '*' in import")
+			}
+			nameTok, err := p.expect(lexer.TokenIdent, "")
+			if err != nil {
+				return nil, err
+			}
+			decl.Specifiers = append(decl.Specifiers, ast.ImportSpecifier{
+				Imported: "*",
+				Local:    nameTok.Value,
+			})
+		} else if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
+			// Named imports: import {a, b as c} from 'mod'
+			p.next() // consume '{'
+			for {
+				nameTok, err := p.expect(lexer.TokenIdent, "")
+				if err != nil {
+					return nil, err
+				}
+				spec := ast.ImportSpecifier{Imported: nameTok.Value, Local: nameTok.Value}
+				// `as` rename: {a as b}
+				if p.matchIdent("as") {
+					localTok, err := p.expect(lexer.TokenIdent, "")
+					if err != nil {
+						return nil, err
+					}
+					spec.Local = localTok.Value
+				}
+				decl.Specifiers = append(decl.Specifiers, spec)
+				if !p.matchPunct(",") {
+					break
+				}
+			}
+			if err := p.expectPunct("}"); err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, p.errorf(p.peek(), "unexpected token %q in import", p.peek().Value)
+		}
+
+		// Multiple specifier groups separated by comma: import x, {a, b} from 'mod'
+		if p.matchPunct(",") {
+			continue
+		}
+		break
+	}
+
+	// Expect 'from'
+	if !p.matchIdent("from") {
+		return nil, p.errorf(p.peek(), "expected 'from' in import declaration")
+	}
+
+	// Parse module specifier (string literal)
+	s, err := p.parseStringLiteral()
+	if err != nil {
+		return nil, err
+	}
+	decl.Source = s
+	if err := p.consumeSemicolon(); err != nil {
+		return nil, err
+	}
+	return decl, nil
+}
+
+// parseStringLiteral parses a string literal token and returns its value.
+func (p *Parser) parseStringLiteral() (string, error) {
+	t := p.peek()
+	if t.Type != lexer.TokenString {
+		return "", p.errorf(t, "expected string literal but got %q", t.Value)
+	}
+	p.next()
+	// The lexer stores the raw value (without quotes) in t.Value.
+	return t.Value, nil
+}
+
+// parseExportDecl parses an ESM export declaration.
+//
+//	export var x = 1
+//	export function f() {}
+//	export class C {}
+//	export {a, b as c}
+//	export {a, b} from 'mod'
+//	export * from 'mod'
+//	export default expr
+//	export default function f() {}
+//	export default class C {}
+func (p *Parser) parseExportDecl() (ast.Statement, error) {
+	t := p.next() // consume 'export'
+
+	// export default ...
+	if p.matchKeyword("default") {
+		expr, err := p.parseAssignment()
+		if err != nil {
+			return nil, err
+		}
+		// For `export default function f() {}` and `export default class C {}`,
+		// parseAssignment already handles these as expressions (FunctionExpr/ClassExpr).
+		if err := p.consumeSemicolon(); err != nil {
+			return nil, err
+		}
+		return &ast.ExportDefaultDecl{Expression: expr, Loc: posOf(t)}, nil
+	}
+
+	// export * from 'mod'
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "*" {
+		p.next() // consume '*'
+		if !p.matchIdent("from") {
+			return nil, p.errorf(p.peek(), "expected 'from' after '*' in export")
+		}
+		src, err := p.parseStringLiteral()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.consumeSemicolon(); err != nil {
+			return nil, err
+		}
+		return &ast.ExportDecl{IsStar: true, Source: src, Loc: posOf(t)}, nil
+	}
+
+	// export {a, b as c} [from 'mod']
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
+		p.next() // consume '{'
+		decl := &ast.ExportDecl{Loc: posOf(t)}
+		for {
+			nameTok, err := p.expect(lexer.TokenIdent, "")
+			if err != nil {
+				return nil, err
+			}
+			spec := ast.ExportSpecifier{Local: nameTok.Value, Exported: nameTok.Value}
+			if p.matchIdent("as") {
+				exportedTok, err := p.expect(lexer.TokenIdent, "")
+				if err != nil {
+					return nil, err
+				}
+				spec.Exported = exportedTok.Value
+			}
+			decl.Specifiers = append(decl.Specifiers, spec)
+			if !p.matchPunct(",") {
+				break
+			}
+		}
+		if err := p.expectPunct("}"); err != nil {
+			return nil, err
+		}
+		// Optional re-export: export {a, b} from 'mod'
+		if p.matchIdent("from") {
+			src, err := p.parseStringLiteral()
+			if err != nil {
+				return nil, err
+			}
+			decl.Source = src
+		}
+		if err := p.consumeSemicolon(); err != nil {
+			return nil, err
+		}
+		return decl, nil
+	}
+
+	// export <declaration>: var/let/const, function, async function, class
+	if p.peek().Type == lexer.TokenKeyword {
+		switch p.peek().Value {
+		case "var", "let", "const":
+			vd, err := p.parseVarDecl()
+			if err != nil {
+				return nil, err
+			}
+			return &ast.ExportDecl{Declaration: vd, Loc: posOf(t)}, nil
+		case "function":
+			fd, err := p.parseFunctionDecl(false)
+			if err != nil {
+				return nil, err
+			}
+			return &ast.ExportDecl{Declaration: fd, Loc: posOf(t)}, nil
+		case "async":
+			next := p.peekAt(1)
+			if next.Type == lexer.TokenKeyword && next.Value == "function" {
+				fd, err := p.parseFunctionDecl(false)
+				if err != nil {
+					return nil, err
+				}
+				return &ast.ExportDecl{Declaration: fd, Loc: posOf(t)}, nil
+			}
+		case "class":
+			cd, err := p.parseClassDecl()
+			if err != nil {
+				return nil, err
+			}
+			return &ast.ExportDecl{Declaration: cd, Loc: posOf(t)}, nil
+		}
+	}
+
+	return nil, p.errorf(p.peek(), "unexpected token %q after 'export'", p.peek().Value)
 }
 
 // === Class parsing (ES2015) ==============================================

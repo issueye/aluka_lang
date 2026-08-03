@@ -634,3 +634,65 @@ func (o *ObjectPattern) node()        {}
 func PosFromToken(t lexer.Token) Pos {
 	return Pos{Line: t.Line, Col: t.Col}
 }
+
+// --- ESM import/export nodes --------------------------------------------
+
+// ImportSpecifier describes one binding imported from a module.
+type ImportSpecifier struct {
+	Imported string // imported name; "" = default import, "*" = namespace import
+	Local    string // local binding name
+}
+
+// ImportDecl represents an ESM import declaration:
+//
+//	import 'mod'
+//	import x from 'mod'
+//	import * as ns from 'mod'
+//	import {a, b as c} from 'mod'
+//	import x, {a, b} from 'mod'
+type ImportDecl struct {
+	Source     string             // module specifier (string literal)
+	Specifiers []ImportSpecifier  // empty for side-effect-only import
+	Loc        Pos
+}
+
+func (d *ImportDecl) Pos() Pos  { return d.Loc }
+func (d *ImportDecl) stmtNode() {}
+func (d *ImportDecl) node()     {}
+
+// ExportSpecifier describes one name exported from the current module.
+type ExportSpecifier struct {
+	Local    string // local name (what's being exported)
+	Exported string // exported name (may differ via `as`)
+}
+
+// ExportDecl represents an ESM export declaration:
+//
+//	export {a, b as c}
+//	export {a, b} from 'mod'
+//	export * from 'mod'
+//	export var x = 1
+//	export function f() {}
+//	export class C {}
+type ExportDecl struct {
+	Declaration Statement        // non-nil for `export <decl>` (VarDecl/FunctionDecl/ClassDecl)
+	Specifiers  []ExportSpecifier // non-empty for `export {a, b}`
+	Source      string           // non-empty for re-export `export {a} from 'mod'`
+	IsStar      bool             // `export * from 'mod'`
+	Loc         Pos
+}
+
+func (d *ExportDecl) Pos() Pos  { return d.Loc }
+func (d *ExportDecl) stmtNode() {}
+func (d *ExportDecl) node()     {}
+
+// ExportDefaultDecl represents `export default <expr>`.
+type ExportDefaultDecl struct {
+	Expression Expression // the default export expression
+	Loc        Pos
+}
+
+func (d *ExportDefaultDecl) Pos() Pos  { return d.Loc }
+func (d *ExportDefaultDecl) stmtNode() {}
+func (d *ExportDefaultDecl) node()     {}
+
