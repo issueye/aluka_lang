@@ -41,6 +41,11 @@ type Compiler struct {
 	// curClassID is the ID of the class currently being compiled (for super
 	// resolution). -1 when not inside a class body.
 	curClassID int
+
+	// optionalChainStack tracks pending OpOptionalJump PCs for the current
+	// optional chaining (?.) context. Each entry is a list of jump PCs that
+	// must be patched to the end of the chain when it completes.
+	optionalChainStack [][]int
 }
 
 type pendingJump struct {
@@ -1692,13 +1697,86 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 		}
 	}
 
-	// Method call: foo.bar(args) — keep receiver as `this`.
+	// === Optional chaining support ===
+	// Determine if this CallExpr is the head of an optional chain.
+	chainHead := hasOptionalAccess(n) && !c.inOptionalChain()
+	if chainHead {
+		c.beginOptionalChain()
+	}
+
+	// Optional call with MemberExpr callee: a.b?.() or a?.b?.()
+	// Need to get the method, check nullish, then call with this=receiver.
+	if n.Optional {
+		if m, ok := n.Callee.(*ast.MemberExpr); ok && !m.Computed {
+			// 1. Compile receiver (may contain inner optional nodes)
+			if err := c.compileExpr(m.Object); err != nil {
+				return err
+			}
+			// 2. If m.Optional, check if receiver is nullish (short-circuit)
+			if m.Optional {
+				c.emitOptionalJump()
+			}
+			// 3. Store receiver in temp for `this` binding
+			tempSlot := c.newSlot()
+			c.emit(bytecode.OpStoreLocal, uint32(tempSlot))
+			// 4. Get method from receiver
+			c.emit(bytecode.OpLoadLocal, uint32(tempSlot))
+			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
+			c.emit(bytecode.OpGetProp, uint32(nameIdx))
+			// 5. Check if method is nullish (n.Optional short-circuit)
+			c.emitOptionalJump()
+			// 6. Call with this=receiver
+			c.emit(bytecode.OpLoadLocal, uint32(tempSlot)) // stack: method receiver
+			if !hasSpread {
+				for _, a := range n.Arguments {
+					if err := c.compileExpr(a); err != nil {
+						return err
+					}
+				}
+				c.emit(bytecode.OpCallWithThis, uint32(len(n.Arguments)))
+			} else {
+				c.compileArgsArray(n.Arguments)
+				c.emit(bytecode.OpCallWithThisArgs, 0)
+			}
+			if chainHead {
+				c.endOptionalChain()
+			}
+			return nil
+		}
+
+		// Optional call with non-MemberExpr callee: a?.()
+		if err := c.compileExpr(n.Callee); err != nil {
+			return err
+		}
+		c.emitOptionalJump()
+		if !hasSpread {
+			for _, a := range n.Arguments {
+				if err := c.compileExpr(a); err != nil {
+					return err
+				}
+			}
+			c.emit(bytecode.OpCall, uint32(len(n.Arguments)))
+		} else {
+			c.compileArgsArray(n.Arguments)
+			c.emit(bytecode.OpCallArgs, 0)
+		}
+		if chainHead {
+			c.endOptionalChain()
+		}
+		return nil
+	}
+
+	// Method call: foo.bar(args) or foo?.bar(args) — keep receiver as `this`.
 	if m, ok := n.Callee.(*ast.MemberExpr); ok {
 		if m.Computed {
 			return fmt.Errorf("computed method call not supported in 1B MVP")
 		}
 		if err := c.compileExpr(m.Object); err != nil {
 			return err
+		}
+		// If m.Optional, check if receiver is nullish (short-circuit)
+		if m.Optional {
+			c.emitOptionalJump()
 		}
 		if !hasSpread {
 			// Fast path: args inline.
@@ -1710,15 +1788,19 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
 			operand := uint32(len(n.Arguments))<<16 | uint32(nameIdx&0xFFFF)
 			c.emit(bytecode.OpCallMethod, operand)
-			return nil
+		} else {
+			// Slow path: build args array, then OpCallMethodArgs.
+			c.compileArgsArray(n.Arguments)
+			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
+			c.emit(bytecode.OpCallMethodArgs, uint32(nameIdx))
 		}
-		// Slow path: build args array, then OpCallMethodArgs.
-		c.compileArgsArray(n.Arguments)
-		nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
-		c.emit(bytecode.OpCallMethodArgs, uint32(nameIdx))
+		if chainHead {
+			c.endOptionalChain()
+		}
 		return nil
 	}
 
+	// Regular call: f(args)
 	if err := c.compileExpr(n.Callee); err != nil {
 		return err
 	}
@@ -1729,10 +1811,13 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 			}
 		}
 		c.emit(bytecode.OpCall, uint32(len(n.Arguments)))
-		return nil
+	} else {
+		c.compileArgsArray(n.Arguments)
+		c.emit(bytecode.OpCallArgs, 0)
 	}
-	c.compileArgsArray(n.Arguments)
-	c.emit(bytecode.OpCallArgs, 0)
+	if chainHead {
+		c.endOptionalChain()
+	}
 	return nil
 }
 
@@ -1792,9 +1877,25 @@ func (c *Compiler) compileMember(n *ast.MemberExpr) error {
 		}
 		return nil
 	}
+
+	// Determine if this is the head of an optional chain. The head is the
+	// outermost MemberExpr/CallExpr containing an optional access, compiled
+	// from the top down. Nested nodes see inOptionalChain() == true.
+	chainHead := hasOptionalAccess(n) && !c.inOptionalChain()
+	if chainHead {
+		c.beginOptionalChain()
+	}
+
 	if err := c.compileExpr(n.Object); err != nil {
 		return err
 	}
+
+	// If this node is optional, emit short-circuit jump after evaluating
+	// the object: if nullish, pop + push undefined + jump to chain end.
+	if n.Optional {
+		c.emitOptionalJump()
+	}
+
 	if n.Computed {
 		if err := c.compileExpr(n.Property); err != nil {
 			return err
@@ -1804,6 +1905,10 @@ func (c *Compiler) compileMember(n *ast.MemberExpr) error {
 		key := n.Property.(*ast.Identifier).Name
 		nameIdx := c.cur().tmpl.AddStringConst(key)
 		c.emit(bytecode.OpGetProp, uint32(nameIdx))
+	}
+
+	if chainHead {
+		c.endOptionalChain()
 	}
 	return nil
 }
@@ -1994,6 +2099,46 @@ func (c *Compiler) patchJumpToHere(pc int) {
 	target := c.curPC()
 	delta := target - (pc + bytecode.InstrSize)
 	bytecode.PatchOperand(c.cur().tmpl.Code, pc, uint32(delta))
+}
+
+// === Optional chaining (?.) support ==========================================
+
+// hasOptionalAccess returns true if the expression tree (following Object/Callee
+// chains) contains any MemberExpr or CallExpr with Optional=true.
+func hasOptionalAccess(expr ast.Expression) bool {
+	switch n := expr.(type) {
+	case *ast.MemberExpr:
+		return n.Optional || hasOptionalAccess(n.Object)
+	case *ast.CallExpr:
+		return n.Optional || hasOptionalAccess(n.Callee)
+	}
+	return false
+}
+
+// beginOptionalChain starts a new optional chain context.
+func (c *Compiler) beginOptionalChain() {
+	c.optionalChainStack = append(c.optionalChainStack, nil)
+}
+
+// emitOptionalJump emits an OpOptionalJump and records it in the current chain.
+func (c *Compiler) emitOptionalJump() {
+	pc := c.emit(bytecode.OpOptionalJump, 0)
+	chain := &c.optionalChainStack[len(c.optionalChainStack)-1]
+	*chain = append(*chain, pc)
+}
+
+// endOptionalChain patches all pending jumps in the current chain to here.
+func (c *Compiler) endOptionalChain() {
+	idx := len(c.optionalChainStack) - 1
+	for _, pc := range c.optionalChainStack[idx] {
+		c.patchJumpToHere(pc)
+	}
+	c.optionalChainStack = c.optionalChainStack[:idx]
+}
+
+// inOptionalChain returns true if there's an active optional chain context.
+func (c *Compiler) inOptionalChain() bool {
+	return len(c.optionalChainStack) > 0
 }
 
 // propKey returns the property name for a literal key.

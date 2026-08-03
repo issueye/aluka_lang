@@ -863,6 +863,11 @@ func (interp *Interpreter) evalMember(e *ast.MemberExpr, scope *Scope) (engine.V
 	if err != nil {
 		return nil, err
 	}
+	// Optional chaining: if the object is null/undefined, short-circuit to
+	// undefined without attempting property access (no TypeError thrown).
+	if e.Optional && (obj.IsNull() || obj.IsUndefined()) {
+		return engine.Undefined(), nil
+	}
 	var key string
 	if e.Computed {
 		kv, err := interp.evalExpr(e.Property, scope)
@@ -921,6 +926,10 @@ func (interp *Interpreter) evalCall(e *ast.CallExpr, scope *Scope) (engine.Value
 		if err != nil {
 			return nil, err
 		}
+		// Optional member access short-circuit: a?.b() / a?.b?.()
+		if member.Optional && (receiver.IsNull() || receiver.IsUndefined()) {
+			return engine.Undefined(), nil
+		}
 		var key string
 		if member.Computed {
 			kv, err := interp.evalExpr(member.Property, scope)
@@ -935,12 +944,20 @@ func (interp *Interpreter) evalCall(e *ast.CallExpr, scope *Scope) (engine.Value
 		if err != nil {
 			return nil, err
 		}
+		// Optional call short-circuit: a.b?.() — skip call if method is nullish
+		if e.Optional && (fn.IsNull() || fn.IsUndefined()) {
+			return engine.Undefined(), nil
+		}
 		callee = fn
 		thisVal = receiver
 	} else {
 		callee, err = interp.evalExpr(e.Callee, scope)
 		if err != nil {
 			return nil, err
+		}
+		// Optional call short-circuit: f?.()
+		if e.Optional && (callee.IsNull() || callee.IsUndefined()) {
+			return engine.Undefined(), nil
 		}
 	}
 

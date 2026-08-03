@@ -85,11 +85,14 @@ const (
 	OpJmpTrueKeep    // jump if true WITHOUT popping (for &&)
 	OpJmpFalseKeep   // jump if false WITHOUT popping (for ||)
 	OpJmpNullishKeep // jump if null/undefined WITHOUT popping (for ??)
+	OpOptionalJump   // optional chain short-circuit: if top is nullish, pop+push undefined+jump; else keep and fall through
 
 	// --- Functions ---
-	OpCall        // A: numArgs
-	OpCallMethod  // A: numArgs (callee.method(...args), `this` = receiver)
-	OpNew         // A: numArgs
+	OpCall         // A: numArgs
+	OpCallMethod   // A: numArgs (callee.method(...args), `this` = receiver)
+	OpCallWithThis    // A: numArgs; stack: callee this arg0...argN-1; calls callee with this
+	OpCallWithThisArgs // stack: callee this argsArray; calls callee with this (spread args)
+	OpNew             // A: numArgs
 	OpReturn      // return top of stack
 	OpReturnUndef // return undefined
 
@@ -206,10 +209,13 @@ var opNames = [...]string{
 	OpJmpTrueKeep:    "JMP_TRUE_KEEP",
 	OpJmpFalseKeep:   "JMP_FALSE_KEEP",
 	OpJmpNullishKeep: "JMP_NULLISH_KEEP",
+	OpOptionalJump:   "OPTIONAL_JUMP",
 
-	OpCall:        "CALL",
-	OpCallMethod:  "CALL_METHOD",
-	OpNew:         "NEW",
+	OpCall:            "CALL",
+	OpCallMethod:      "CALL_METHOD",
+	OpCallWithThis:    "CALL_WITH_THIS",
+	OpCallWithThisArgs: "CALL_WITH_THIS_ARGS",
+	OpNew:             "NEW",
 	OpReturn:      "RETURN",
 	OpReturnUndef: "RETURN_UNDEF",
 
@@ -278,9 +284,9 @@ func (op Opcode) HasOperand() bool {
 		return true
 	case OpLoadUpvalue, OpStoreUpvalue, OpMakeClosure:
 		return true
-	case OpJmp, OpJmpTruePop, OpJmpFalsePop, OpJmpTrueKeep, OpJmpFalseKeep, OpJmpNullishKeep:
+	case OpJmp, OpJmpTruePop, OpJmpFalsePop, OpJmpTrueKeep, OpJmpFalseKeep, OpJmpNullishKeep, OpOptionalJump:
 		return true
-	case OpCall, OpCallMethod, OpNew:
+	case OpCall, OpCallMethod, OpCallWithThis, OpNew:
 		return true
 	case OpGetProp, OpSetProp, OpSetPropObj, OpSetPropTop:
 		return true

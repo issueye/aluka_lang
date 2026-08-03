@@ -649,3 +649,80 @@ func TestTernary(t *testing.T) {
 		t.Errorf("got %q, want yes", got)
 	}
 }
+
+// === Optional chaining (?.) — AST interpreter path ==========================
+
+func TestOptionalChainingMember(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{`null?.x`, "undefined"},
+		{`undefined?.x`, "undefined"},
+		{`({x: 1})?.x`, "1"},
+		{`({})?.x`, "undefined"},
+		{`var a = {b: {c: 7}}; a?.b?.c`, "7"},
+		{`var a = {b: null}; a?.b?.c`, "undefined"},
+		{`var a = null; a?.b?.c?.d`, "undefined"},
+	}
+	for _, c := range cases {
+		got := evalStr(t, c.code)
+		if got != c.want {
+			t.Errorf("Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
+func TestOptionalChainingComputed(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{`null?.[0]`, "undefined"},
+		{`([10, 20, 30])?.[1]`, "20"},
+		{`null?.[0]?.[1]`, "undefined"},
+	}
+	for _, c := range cases {
+		got := evalStr(t, c.code)
+		if got != c.want {
+			t.Errorf("Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
+func TestOptionalChainingCall(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{`null?.()`, "undefined"},
+		{`(function() { return 42 })?.()`, "42"},
+		{`var f = function(a, b) { return a + b }; f?.(2, 3)`, "5"},
+	}
+	for _, c := range cases {
+		got := evalStr(t, c.code)
+		if got != c.want {
+			t.Errorf("Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
+func TestOptionalChainingMethodCall(t *testing.T) {
+	got := evalStr(t, `var o = {greet: function() { return "hi" }}; o?.greet()`)
+	if got != "hi" {
+		t.Errorf("o?.greet() = %q, want hi", got)
+	}
+	got = evalStr(t, `var o = null; o?.greet()`)
+	if got != "undefined" {
+		t.Errorf("null?.greet() = %q, want undefined", got)
+	}
+	// a.b?.() — method nullish, skip call
+	got = evalStr(t, `var o = {greet: null}; o.greet?.()`)
+	if got != "undefined" {
+		t.Errorf("o.greet?.() with null method = %q, want undefined", got)
+	}
+	got = evalStr(t, `var o = {greet: function() { return this.name }, name: "x"}; o?.greet?.()`)
+	if got != "x" {
+		t.Errorf("o?.greet?.() = %q, want x", got)
+	}
+}

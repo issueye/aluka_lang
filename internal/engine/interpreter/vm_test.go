@@ -2203,3 +2203,232 @@ Reflect.has(p, "magic") + "," + Reflect.has(p, "other")`)
 	}
 }
 
+// === Optional chaining (?.) ===============================================
+
+func TestVMOptionalChainingMember(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		// null/undefined head → undefined (no throw)
+		{`null?.x`, "undefined"},
+		{`undefined?.x`, "undefined"},
+		// object head → property value
+		{`({x: 1})?.x`, "1"},
+		{`({x: 5})?.x + 1`, "6"},
+		// missing property on non-null → undefined
+		{`({})?.x`, "undefined"},
+		// chained head not null continues normally
+		{`var a = {b: {c: 7}}; a?.b?.c`, "7"},
+		{`var a = {b: {c: 7}}; a?.b.c`, "7"},
+		// short-circuit in the middle
+		{`var a = {b: null}; a?.b?.c`, "undefined"},
+		{`var a = null; a?.b?.c?.d`, "undefined"},
+	}
+	for _, c := range cases {
+		got := vmEvalStr(t, c.code)
+		if got != c.want {
+			t.Errorf("VM.Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
+func TestVMOptionalChainingComputed(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{`null?.[0]`, "undefined"},
+		{`undefined?.["x"]`, "undefined"},
+		{`([10, 20, 30])?.[1]`, "20"},
+		{`var a = {k: 42}; a?.["k"]`, "42"},
+		{`null?.[0]?.[1]`, "undefined"},
+	}
+	for _, c := range cases {
+		got := vmEvalStr(t, c.code)
+		if got != c.want {
+			t.Errorf("VM.Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
+func TestVMOptionalChainingCall(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		// optional call on null/undefined callee
+		{`null?.()`, "undefined"},
+		{`undefined?.()`, "undefined"},
+		// optional call on a function
+		{`(function() { return 42 })?.()`, "42"},
+		{`var f = function(a, b) { return a + b }; f?.(2, 3)`, "5"},
+		// callee exists but is not called when nullish
+		{`var n = null; n?.(999)`, "undefined"},
+	}
+	for _, c := range cases {
+		got := vmEvalStr(t, c.code)
+		if got != c.want {
+			t.Errorf("VM.Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
+func TestVMOptionalChainingMethodCall(t *testing.T) {
+	// a?.b() — member access optional, call not optional
+	got := vmEvalStr(t, `var o = {greet: function() { return "hi" }}; o?.greet()`)
+	if got != "hi" {
+		t.Errorf("o?.greet() = %q, want hi", got)
+	}
+	got = vmEvalStr(t, `var o = null; o?.greet()`)
+	if got != "undefined" {
+		t.Errorf("null?.greet() = %q, want undefined", got)
+	}
+
+	// a.b?.() — method itself optional (nullish method not called)
+	got = vmEvalStr(t, `var o = {greet: null}; o.greet?.()`)
+	if got != "undefined" {
+		t.Errorf("o.greet?.() with null method = %q, want undefined", got)
+	}
+	got = vmEvalStr(t, `var o = {greet: function() { return "hello" }}; o.greet?.()`)
+	if got != "hello" {
+		t.Errorf("o.greet?.() with method = %q, want hello", got)
+	}
+
+	// a?.b?.() — both optional
+	got = vmEvalStr(t, `var o = null; o?.greet?.()`)
+	if got != "undefined" {
+		t.Errorf("null?.greet?.() = %q, want undefined", got)
+	}
+	got = vmEvalStr(t, `var o = {greet: function() { return "both" }}; o?.greet?.()`)
+	if got != "both" {
+		t.Errorf("o?.greet?.() = %q, want both", got)
+	}
+	got = vmEvalStr(t, `var o = {greet: null}; o?.greet?.()`)
+	if got != "undefined" {
+		t.Errorf("o?.greet?.() with null method = %q, want undefined", got)
+	}
+}
+
+// TestVMOptionalChainingThisBinding verifies `this` is correctly bound to the
+// receiver when calling a method through an optional chain.
+func TestVMOptionalChainingThisBinding(t *testing.T) {
+	got := vmEvalStr(t, `
+var o = {
+  name: "obj",
+  whoami: function() { return this.name; }
+};
+o?.whoami()`)
+	if got != "obj" {
+		t.Errorf("o?.whoami() this binding = %q, want obj", got)
+	}
+
+	got = vmEvalStr(t, `
+var o = {
+  name: "obj2",
+  whoami: function() { return this.name; }
+};
+o.whoami?.()`)
+	if got != "obj2" {
+		t.Errorf("o.whoami?.() this binding = %q, want obj2", got)
+	}
+
+	got = vmEvalStr(t, `
+var o = {
+  name: "obj3",
+  whoami: function() { return this.name; }
+};
+o?.whoami?.()`)
+	if got != "obj3" {
+		t.Errorf("o?.whoami?.() this binding = %q, want obj3", got)
+	}
+}
+
+func TestVMOptionalChainingDeepShortCircuit(t *testing.T) {
+	// Short-circuit at different points of a deep chain.
+	cases := []struct {
+		code string
+		want string
+	}{
+		// head null
+		{`var a = null; a?.b.c.d.e`, "undefined"},
+		// middle null
+		{`var a = {b: null}; a?.b?.c?.d`, "undefined"},
+		{`var a = {b: {c: null}}; a?.b?.c?.d`, "undefined"},
+		// all present
+		{`var a = {b: {c: {d: {e: "deep"}}}}; a?.b?.c?.d?.e`, "deep"},
+		// continuation after optional (non-optional) is skipped too
+		{`var a = null; a?.b.c`, "undefined"},
+		// optional call in the middle of a chain (?.() makes the call optional too)
+		{`var a = null; a?.m?.()?.x`, "undefined"},
+		{`var a = {m: function() { return {x: 9} }}; a?.m?.()?.x`, "9"},
+		{`var a = {m: null}; a?.m?.()?.x`, "undefined"},
+	}
+	for _, c := range cases {
+		got := vmEvalStr(t, c.code)
+		if got != c.want {
+			t.Errorf("VM.Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
+func TestVMOptionalChainingWithNullishCoalescing(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{`null?.x ?? "default"`, "default"},
+		{`undefined?.y ?? 42`, "42"},
+		{`({x: 1})?.x ?? 99`, "1"},
+		{`null?.m?.() ?? "fallback"`, "fallback"},
+	}
+	for _, c := range cases {
+		got := vmEvalStr(t, c.code)
+		if got != c.want {
+			t.Errorf("VM.Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
+func TestVMOptionalChainingWithArguments(t *testing.T) {
+	// Optional method call with arguments + this binding
+	got := vmEvalStr(t, `
+var calc = {
+  base: 100,
+  add: function(x, y) { return this.base + x + y; }
+};
+calc?.add?.(1, 2)`)
+	if got != "103" {
+		t.Errorf("optional method with args = %q, want 103", got)
+	}
+
+	// Spread args in optional call
+	got = vmEvalStr(t, `
+var sum = function(...nums) {
+  var s = 0;
+  for (var i = 0; i < nums.length; i++) s += nums[i];
+  return s;
+};
+var args = [1, 2, 3];
+sum?.(...args)`)
+	if got != "6" {
+		t.Errorf("optional call with spread = %q, want 6", got)
+	}
+}
+
+func TestVMOptionalChainingNoShortCircuit(t *testing.T) {
+	// When the head is present, the chain must NOT short-circuit and must
+	// actually access the property (which may throw if it doesn't exist on
+	// a non-nullish intermediate that is not an object). Here we just verify
+	// normal property access works end-to-end.
+	got := vmEvalStr(t, `
+var calls = 0;
+var obj = {
+  a: { b: { c: function() { calls++; return calls; } } }
+};
+obj?.a?.b?.c()`)
+	if got != "1" {
+		t.Errorf("chain with call = %q, want 1", got)
+	}
+}
+

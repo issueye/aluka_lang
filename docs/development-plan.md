@@ -139,7 +139,7 @@
 | 1D.9 | `async`/`await` | ✅ | **完成**：`async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法、`await` 表达式（值/Promise/thenable）；新增 `async.go`（`asyncRunner` 复用生成器式帧挂起，集成 Promise 微任务调度）、`OpAwait` 指令、`FuncTemplate.IsAsync` 标志、`AwaitExpr` AST 节点；parser 新增 `asyncStack` 跟踪异步作用域以正确解析 `await`；错误传播保留原始值（`normalizeException` 处理 `*jsThrow`/`engine.Value`/`error`），rejected promise 经 `await` 抛入帧可被 `try/catch` 捕获；async 函数返回值自动 Promise 包装（resolve 采用 thenable）；测试覆盖基本返回/await 值/Promise/错误处理/箭头函数/类方法/闭包捕获/finally |
 | 1D.10 | `for await...of` / rest in object / `Promise.finally` | ⚠️ | 对象 rest 解构已实现；`Promise.finally` 已实现（1C.4）；`for await...of` 未实现（依赖 async/await） |
 | 1D.11 | ES2019：`Array.flat/flatMap`/`Object.fromEntries`/`trimStart` | ❌ | 未实现 |
-| 1D.12 | ES2020：可选链 `?.`/空值合并 `??`/`BigInt`/`Promise.allSettled` | ⚠️ | 空值合并 `??` 已实现并测试；`Promise.allSettled` 已实现（1C.4）；可选链 `?.` AST 节点有 `Optional` 字段但 parser/compiler 未处理；BigInt 未实现 |
+| 1D.12 | ES2020：可选链 `?.`/空值合并 `??`/`BigInt`/`Promise.allSettled` | ⚠️ | 空值合并 `??` 已实现并测试；`Promise.allSettled` 已实现（1C.4）；可选链 `?.` 已实现（lexer 新增 `?.` token、parser `parseCallMember` 处理 `a?.b`/`a?.[b]`/`a?.()`、compiler `optionalChainStack` + `OpOptionalJump` 短路、`OpCallWithThis`/`OpCallWithThisArgs` 保持 `this` 绑定，9 个测试全部通过）；BigInt 未实现 |
 | 1D.13 | 动态 `import()` | ❌ | 未实现 |
 | 1D.14 | TS conformance ≥ 50% | ❌ | 未集成 |
 | 1D.15 | REPL 基础 | ❌ | 未实现 |
@@ -152,12 +152,13 @@
 - **ES5 内置**：Object/Array/String/Number/Boolean/Math/JSON/Error 完整方法
 - **ES2015**：`let`/`const`/块级作用域、箭头函数、模板字符串、解构赋值（数组+对象，含 holes/rest/default/嵌套）、默认参数、rest/spread 参数、`for...of`、spread 展开（数组+对象）、空值合并 `??`、`class` 语法（声明/表达式/继承/super/static/getter/setter/默认构造函数）、`Promise`（构造器 + then/catch/finally 链式调用 + resolve/reject/all/race/allSettled + microtask 队列）、`Symbol`（+ for/keyFor + hasInstance/toPrimitive/toStringTag）、`Map`/`Set`/`WeakMap`/`WeakSet`（完整原型方法 + 迭代器协议 + 构造器 iterable 输入）、`Proxy`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap + revocable）、`Reflect`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/setPrototypeOf/apply/construct/defineProperty/getOwnPropertyDescriptor）
 - **ES2017**：`async`/`await`（`async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法、`await` 值/Promise/thenable、错误经 `try/catch` 捕获、返回值自动 Promise 包装）
+- **ES2020**：可选链 `?.`（成员访问 `a?.b`、计算属性 `a?.[b]`、可选调用 `a?.()`、方法调用 `a?.b()`/`a.b?.()`、深层链短路、`this` 绑定保持）
 - **其他**：`delete` 运算符（实际删除属性）、labeled 语句、函数方法（call/apply/bind）
 
 #### 已知缺失的关键特性
 
 1. ~~模块系统 ESM/CJS（1C.9-1C.11）— 阻塞多文件项目~~ ✅ 已完成
-2. 可选链 `?.`（1D.12）— 常用语法
+2. ~~可选链 `?.`（1D.12）— 常用语法~~ ✅ 已完成
 3. TS 转译（1D.1-1D.8）— 阻塞 `.ts` 文件运行
 4. `for await...of`（1D.10）— 异步迭代器（async/await 已就绪）
 5. 隐藏类 + IC（1B.5）和自研 GC（1B.6）— 影响性能

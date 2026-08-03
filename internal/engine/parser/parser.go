@@ -1260,6 +1260,46 @@ func (p *Parser) parseCallMember() (ast.Expression, error) {
 			expr = &ast.CallExpr{Callee: expr, Arguments: args, Loc: posOf(t)}
 			continue
 		}
+		// Optional chaining: ?.name, ?.[expr], ?.(args)
+		if t.Type == lexer.TokenPunct && t.Value == "?." {
+			p.next() // consume '?.'
+			next := p.peek()
+			if next.Type == lexer.TokenPunct && next.Value == "(" {
+				// Optional call: a?.()
+				args, err := p.parseArgs()
+				if err != nil {
+					return nil, err
+				}
+				expr = &ast.CallExpr{Callee: expr, Arguments: args, Optional: true, Loc: posOf(t)}
+				continue
+			}
+			if next.Type == lexer.TokenPunct && next.Value == "[" {
+				// Optional computed member: a?.[expr]
+				p.next() // consume '['
+				propExpr, err := p.parseExpression()
+				if err != nil {
+					return nil, err
+				}
+				if err := p.expectPunct("]"); err != nil {
+					return nil, err
+				}
+				expr = &ast.MemberExpr{Object: expr, Property: propExpr, Computed: true, Optional: true, Loc: posOf(t)}
+				continue
+			}
+			// Optional member: a?.name
+			propTok := p.next()
+			if propTok.Type != lexer.TokenIdent && propTok.Type != lexer.TokenKeyword {
+				return nil, p.errorf(propTok, "expected property name after '?.'")
+			}
+			expr = &ast.MemberExpr{
+				Object:   expr,
+				Property: &ast.Identifier{Name: propTok.Value, Loc: posOf(propTok)},
+				Computed: false,
+				Optional: true,
+				Loc:      posOf(t),
+			}
+			continue
+		}
 		prev := expr
 		expr, err = p.parseMemberTail(expr)
 		if err != nil {

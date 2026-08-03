@@ -431,11 +431,46 @@ func (v *VM) run() (engine.Value, error) {
 				} else {
 					frame.pc = pc + bytecode.InstrSize + bytecode.SignedOperand(operand)
 				}
+			case bytecode.OpOptionalJump:
+				// Optional chaining short-circuit (?.): if top is null/undefined,
+				// pop it, push undefined, and jump to the chain end. Otherwise,
+				// keep the value on stack and fall through.
+				val := v.peek()
+				if val.IsUndefined() || val.IsNull() {
+					v.pop()
+					v.push(engine.Undefined())
+					frame.pc = pc + bytecode.InstrSize + bytecode.SignedOperand(operand)
+				}
 
 			// --- Functions ---
 			case bytecode.OpCall:
 				numArgs := int(operand)
 				result, err := v.doCall(numArgs, engine.Undefined())
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(result)
+			case bytecode.OpCallWithThis:
+				// Stack: ... callee this arg0 ... argN-1
+				numArgs := int(operand)
+				argStart := len(v.stack) - numArgs
+				thisVal := v.stack[argStart-1]
+				callee := v.stack[argStart-2]
+				args := make([]engine.Value, numArgs)
+				copy(args, v.stack[argStart:argStart+numArgs])
+				v.stack = v.stack[:argStart-2]
+				result, err := v.invoke(callee, thisVal, args, false)
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(result)
+			case bytecode.OpCallWithThisArgs:
+				// Stack: ... callee this argsArray
+				argsArr := v.pop()
+				thisVal := v.pop()
+				callee := v.pop()
+				args := v.toArrayValues(argsArr)
+				result, err := v.invoke(callee, thisVal, args, false)
 				if err != nil {
 					return v.handleThrow(err)
 				}
