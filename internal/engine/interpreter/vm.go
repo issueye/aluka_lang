@@ -1582,6 +1582,17 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 			}
 			return engine.Undefined(), nil
 		}
+		// 数组 own 属性 miss：先查显式原型链（绑定了 arrayProto 的数组），
+		// 再回退到 interp.arrayProto（Go 侧创建、未绑定原型的数组）。
+		if o, ok := arr.AsObject(); ok {
+			if val, _ := o.Get(key); !val.IsUndefined() {
+				return val, nil
+			}
+		}
+		if v.interp.arrayProto != nil {
+			return v.interp.arrayProto.Get(key)
+		}
+		return engine.Undefined(), nil
 	}
 	// Number/boolean primitives: look up on prototype.
 	switch obj.Type() {

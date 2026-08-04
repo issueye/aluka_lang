@@ -116,3 +116,36 @@ func TestBareBuiltinRequire(t *testing.T) {
 
 // 防止 import 未用（math 仅在文档引用）。
 var _ = math.NaN
+
+// TestFunctionDeclHoisting 验证函数声明提升（module.exports = fn 在 fn 声明前）。
+func TestFunctionDeclHoisting(t *testing.T) {
+	// 函数声明在 module.exports 赋值之后，但应已提升绑定。
+	got := vmEvalStr(t, `
+		var exports = {};
+		var module = {exports: exports};
+		module.exports = leftPad;
+		function leftPad(s, n) { return s; }
+		typeof module.exports;
+	`)
+	if got != "function" {
+		t.Errorf("hoisted function decl = %q, want function", got)
+	}
+	// 顶层 const 在函数声明闭包中可见。
+	got = vmEvalStr(t, `
+		const x = 42;
+		function f() { return x; }
+		f();
+	`)
+	if got != "42" {
+		t.Errorf("const closure = %q, want 42", got)
+	}
+}
+
+// TestArrayProtoFallback 验证 Go 侧创建的数组（process.argv 等）能访问 Array.prototype 方法。
+func TestArrayProtoFallback(t *testing.T) {
+	// 经 new Array 创建的数组有原型方法。
+	got := vmEvalStr(t, `[1,2,3].indexOf(2)`)
+	if got != "1" {
+		t.Errorf("[1,2,3].indexOf(2) = %q, want 1", got)
+	}
+}

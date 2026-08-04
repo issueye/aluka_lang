@@ -11,8 +11,9 @@ import (
 // 本文件实现 bytecode.Module 的二进制序列化/反序列化，供磁盘缓存（1C.14）使用。
 // 格式版本号变更时，旧缓存自动失效。
 
-// FormatVersion 是字节码缓存格式版本。当 Module 布局或常量编码变化时递增。
-const FormatVersion = 1
+// FormatVersion 是字节码缓存格式版本。当 Module 布局、常量编码或编译器
+// 语义变化（如函数声明提升修复）时递增，使旧缓存自动失效。
+const FormatVersion = 2
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")

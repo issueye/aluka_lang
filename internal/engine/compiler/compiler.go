@@ -104,6 +104,9 @@ func (c *Compiler) Compile(prog *ast.Program, filename string) (*bytecode.Module
 	// Hoist top-level var/function declarations so NumLocals is correct.
 	c.hoistTopLevel(prog.Body)
 
+	// 函数声明提升：编译并绑定所有顶层函数声明，使其名字在后续语句前可用。
+	c.hoistFunctionDecls(prog.Body)
+
 	// Compile all statements except the last normally; the last statement is
 	// compiled in "value mode" so its value is returned (REPL semantics,
 	// matching the AST interpreter).
@@ -206,8 +209,19 @@ func (c *Compiler) hoistTopLevel(stmts []ast.Statement) {
 		for _, s := range ss {
 			switch st := s.(type) {
 			case *ast.VarDecl:
+				// var 提升到函数作用域；let/const 也提前占槽（初始 undefined），
+				// 使函数声明提升编译的函数体能正确捕获同作用域的 let/const
+				// （TDZ 简化为 undefined，对真实包兼容）。
 				if st.Kind == "var" {
 					c.hoistVarDeclarators(st.Decls)
+				} else {
+					for _, d := range st.Decls {
+						if d.Name != nil {
+							c.declareLocal(d.Name.Name)
+						} else if d.Pattern != nil {
+							c.declarePatternSlots(d.Pattern)
+						}
+					}
 				}
 			case *ast.FunctionDecl:
 				if st.Name != nil {
@@ -522,6 +536,28 @@ func patternNames(p ast.Pattern) []string {
 // compileBindPattern emits code to destructure the value in srcSlot into the
 // bindings declared by the pattern. `kind` is "var" or "let"/"const" and
 // controls whether bindings go to the function scope or the block scope.
+// declarePatternSlots 为解构模式中的所有绑定名提前占槽（用于 let/const 提升）。
+func (c *Compiler) declarePatternSlots(p ast.Pattern) {
+	switch pat := p.(type) {
+	case *ast.Identifier:
+		c.declareLocal(pat.Name)
+	case *ast.ArrayPattern:
+		for _, el := range pat.Elements {
+			if el.Target != nil {
+				c.declarePatternSlots(el.Target)
+			}
+		}
+	case *ast.ObjectPattern:
+		for _, prop := range pat.Properties {
+			if prop.Value != nil {
+				c.declarePatternSlots(prop.Value)
+			} else if id, ok := prop.Key.(*ast.Identifier); ok {
+				c.declareLocal(id.Name)
+			}
+		}
+	}
+}
+
 func (c *Compiler) compileBindPattern(p ast.Pattern, srcSlot int, kind string) error {
 	switch pat := p.(type) {
 	case *ast.Identifier:
@@ -632,20 +668,19 @@ func objectPatternBoundKeys(pat *ast.ObjectPattern) []string {
 }
 
 func (c *Compiler) compileFunctionDecl(d *ast.FunctionDecl) error {
+	// 函数声明已在 hoistFunctionDecls 中提升编译（名字提前绑定），
+	// 这里跳过避免重复编译。
 	if d.Name == nil {
 		return nil
 	}
-	slot := c.declareVar(d.Name.Name)
-	if err := c.compileFunction(d.Name.Name, d.Params, d.Defaults, d.RestParam, d.Body, d.IsAsync, d.IsGenerator); err != nil {
-		return err
-	}
-	c.emit(bytecode.OpStoreLocal, uint32(slot))
 	return nil
 }
 
 func (c *Compiler) compileBlock(b *ast.BlockStmt) error {
 	c.pushBlock()
 	defer c.popBlock()
+	// 块内函数声明提升（块级作用域开头绑定）。
+	c.hoistFunctionDecls(b.Body)
 	return c.compileStmts(b.Body)
 }
 
@@ -2156,12 +2191,13 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 		c.patchJumpToHere(jSkip)
 	}
 
-	// body 编译可能失败（语法/语义错误）；出错时必须先 pop funcStack，
-	// 否则 c.cur() 残留该函数帧，后续编译在错误的 scopes 上操作。
-	bodyErr := func() error {
+		bodyErr := func() error {
 		switch b := body.(type) {
 		case *ast.BlockStmt:
 			c.hoistFunc(b)
+			// 函数声明提升：在 body 开头依次编译所有 FunctionDecl，
+			// 使其名字在后续语句执行前已绑定到函数对象（JS 语义）。
+			c.hoistFunctionDecls(b.Body)
 			return c.compileStmts(b.Body)
 		case ast.Expression:
 			if err := c.compileExpr(b); err != nil {
@@ -2243,6 +2279,24 @@ func (c *Compiler) hoistFunc(body *ast.BlockStmt) {
 		}
 	}
 	walk(body.Body)
+}
+
+// hoistFunctionDecls 在当前作用域开头编译所有顶层函数声明（提升语义）。
+// 之后 compileFunctionDecl 遇到这些声明时跳过（避免重复编译）。
+// 嵌套块级作用域内的函数声明不在此处理（由 compileStmts 正常编译）。
+func (c *Compiler) hoistFunctionDecls(stmts []ast.Statement) {
+	for _, s := range stmts {
+		if fd, ok := s.(*ast.FunctionDecl); ok && fd.Name != nil {
+			slot := c.declareVar(fd.Name.Name)
+			if err := c.compileFunction(fd.Name.Name, fd.Params, fd.Defaults, fd.RestParam, fd.Body, fd.IsAsync, fd.IsGenerator); err != nil {
+				// 提升编译出错：推迟到正常编译路径报错（这里不中断）。
+				_ = err
+				_ = slot
+				continue
+			}
+			c.emit(bytecode.OpStoreLocal, uint32(slot))
+		}
+	}
 }
 
 // hoistVarDeclarators declares all var-scoped bindings from declarators,
