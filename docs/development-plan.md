@@ -1,6 +1,6 @@
 # Aluka 运行时 — 开发计划文档
 
-> 项目代号：`aluka` ｜ 文档版本：v1.16 ｜ 日期：2026-08-04
+> 项目代号：`aluka` ｜ 文档版本：v1.17 ｜ 日期：2026-08-04
 > 配套文档：[需求分析文档](./requirements-analysis.md)
 
 ---
@@ -160,7 +160,7 @@
 以下特性已在 parser + compiler + VM 中完整实现并通过测试：
 
 - **ES5 核心**：变量声明、函数声明/表达式、闭包、`if`/`for`/`while`/`do-while`/`switch`、`try/catch/finally`、`throw`、`break`/`continue`（含 label）、`typeof`/`void`/`delete`/`in`/`instanceof`
-- **ES5 内置**：Object/Array/String/Number/Boolean/Math/JSON/Error 方法（Array 含 `splice/sort/find/findIndex/some/every/reduce/reduceRight/fill/copyWithin/indexOf/includes/forEach/map/filter/concat/slice/join/keys/values/entries`；Object 含 `create/assign/keys/values/entries/fromEntries/freeze/is/hasOwn/getPrototypeOf/setPrototypeOf/defineProperty/defineProperties/getOwnPropertyDescriptor(s)/getOwnPropertyNames`；Math 含 `abs/floor/ceil/round/trunc/sign/sqrt/pow/max/min/random/cbrt/log/log1p/log2/log10/exp/expm1/sinh/cosh/tanh/asinh/acosh/atanh/sin/cos/tan/asin/acos/atan/atan2/fround/imul/clz32` + 全部常量）
+- **ES5 内置**：Object/Array/String/Number/Boolean/Math/JSON/Error/**RegExp** 方法。RegExp（v1.17，Go regexp 翻译层内核）——`RegExp` 构造器（pattern 为 RegExp 时复制/覆盖 flags）、`test`/`exec`（含捕获组/命名组/index/input/groups）、`toString`/`source`/`flags`、g/y lastIndex 状态机、`i`/`m`/`s`/`u`/`d`/`v`/`y` 标志、`[Symbol.match/replace/search/split/species]`；`String.prototype` 正则集成（`split` 含捕获组、`replace`/`replaceAll` 含 `$&`/`$n`/`$<name>` 替换串与函数替换、`match`/`search`/`matchAll`）；对象字面量 getter/setter 注册为真 accessor（`OpSetGetterObj`/`OpSetSetterObj`）。（Array 含 `splice/sort/find/findIndex/some/every/reduce/reduceRight/fill/copyWithin/indexOf/includes/forEach/map/filter/concat/slice/join/keys/values/entries`；Object 含 `create/assign/keys/values/entries/fromEntries/freeze/is/hasOwn/getPrototypeOf/setPrototypeOf/defineProperty/defineProperties/getOwnPropertyDescriptor(s)/getOwnPropertyNames`；Math 含 `abs/floor/ceil/round/trunc/sign/sqrt/pow/max/min/random/cbrt/log/log1p/log2/log10/exp/expm1/sinh/cosh/tanh/asinh/acosh/atanh/sin/cos/tan/asin/acos/atan/atan2/fround/imul/clz32` + 全部常量）
 - **ES2015**：`let`/`const`/块级作用域、箭头函数、模板字符串、解构赋值（数组+对象，含 holes/rest/default/嵌套）、默认参数、rest/spread 参数、`for...of`、spread 展开（数组+对象）、空值合并 `??`、`class` 语法（声明/表达式/继承/super/static/getter/setter/默认构造函数）、`Promise`（构造器 + then/catch/finally 链式调用 + resolve/reject/all/race/allSettled + microtask 队列）、`Symbol`（+ for/keyFor + hasInstance/toPrimitive/toStringTag）、`Map`/`Set`/`WeakMap`/`WeakSet`（完整原型方法 + 迭代器协议 + 构造器 iterable 输入）、`Proxy`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/Symbol.hasInstance trap + revocable）、`Reflect`（get/set/has/deleteProperty/ownKeys/getPrototypeOf/setPrototypeOf/apply/construct/defineProperty/getOwnPropertyDescriptor）、`Array.from`/`Array.of`/`Array.isArray`
 - **ES2017**：`async`/`await`（`async function` 声明/表达式、`async` 箭头函数、`async` 类/对象方法、`await` 值/Promise/thenable、错误经 `try/catch` 捕获、返回值自动 Promise 包装）
 - **ES2018**：`for await...of`（异步迭代协议；`Symbol.asyncIterator` 优先、回退 `Symbol.iterator` + Promise 包装；支持 `break`/`try-catch` 捕获 rejected next、解构绑定；仅 async 函数内合法）、对象 rest 解构（`let {a, ...rest} = obj`）
@@ -180,11 +180,12 @@
 5. ~~`for await...of`（1D.10）— 异步迭代器~~ ✅ 已完成
 6. ~~`BigInt`（1D.12）— ES2020 大整数~~ ✅ 已完成（ES2020 P0 特性全部齐备）
 7. ~~动态 `import()`（1D.13）— 模块系统已就绪，待接入~~ ✅ 已完成
-8. 隐藏类 + IC（1B.5）和自研 GC（1B.6）— 影响性能
-9. 普通函数 `this` 绑定：`Array.prototype.find/map` 等的 `thisArg` 第二参数未对非箭头函数生效（引擎既有缺陷，箭头函数闭包可绕过）
-10. CJS/ESM interop：`module.exports = func` 整体赋值的 CJS 模块，动态 import 返回的 namespace 不额外包装 `.default`（当前直接返回 exports，简化 interop）
-11. ~~顶层 try/catch 既有缺陷~~ ✅ 已修复（v1.3，根因为 `compileStmtValue` 缺 TryStmt 分支 + `findHandlerInFrame` 未跳过 phase==1 handler 导致 rethrow 无限循环）
-12. lexer 正则/除法歧义：表达式语句开头的 `/` 在某些上下文被误判为正则字面量起始（如 `10n / 3n` 作为语句开头），需用变量或 `console.log` 包装绕过
+8. ~~自研 JS 正则引擎（1-R5/RM7，此前正则字面量仅解析为 `{source,flags}` 占位对象）~~ ✅ 已实现（v1.17，Go regexp 翻译层；反向引用/前瞻/后行断言不支持，自研 NFA+回溯匹配器为后续迭代）
+9. 隐藏类 + IC（1B.5）和自研 GC（1B.6）— 影响性能
+10. 普通函数 `this` 绑定：`Array.prototype.find/map` 等的 `thisArg` 第二参数未对非箭头函数生效（引擎既有缺陷，箭头函数闭包可绕过）
+11. CJS/ESM interop：`module.exports = func` 整体赋值的 CJS 模块，动态 import 返回的 namespace 不额外包装 `.default`（当前直接返回 exports，简化 interop）
+12. ~~顶层 try/catch 既有缺陷~~ ✅ 已修复（v1.3，根因为 `compileStmtValue` 缺 TryStmt 分支 + `findHandlerInFrame` 未跳过 phase==1 handler 导致 rethrow 无限循环）
+13. lexer 正则/除法歧义：表达式语句开头的 `/` 在某些上下文被误判为正则字面量起始（如 `10n / 3n` 作为语句开头），需用变量或 `console.log` 包装绕过
 
 ### 2.1 Phase 时间轴
 
@@ -606,7 +607,7 @@ internal/runtime/module/
 | 1-R2 | GC 与 Go runtime 冲突导致崩溃 | 用 `runtime.Pinner` + 早期压力测试 |
 | 1-R3 | TS 转译 corner case 多 | 分阶段：先 strip-types，再 enum/namespace/decorator |
 | 1-R4 | 模块解析算法复杂 | 严格按 Node.js 规范，用 Node 官方测试用例回归 |
-| 1-R5 | 正则引擎正确性 | 实现 PCRE 子集 + test262 regex 测试 |
+| 1-R5 | 正则引擎正确性 | v1.17 已落地 Go regexp 翻译层（`internal/engine/regex/`）；反向引用/前瞻/后行不支持（编译期 SyntaxError），test262 regex 全量子集待拉取 |
 
 ---
 
@@ -1222,7 +1223,7 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 | RM4 | TS 转译 corner case 多 | 中 | 中 | 严格按 TS conformance 测试；优先级递降 | conformance < 50% |
 | RM5 | Go GC 与自管理堆冲突导致崩溃 | 中 | 高 | 用 `runtime.Pinner`；早期压力测试 | 长跑崩溃 |
 | RM6 | npm 兼容性长尾多 | 中 | 中 | 不追求 100%；标注不兼容清单 | Top 100 通过率 < 60% |
-| RM7 | 正则引擎性能/正确性 | 中 | 中 | 实现 PCRE 子集 + test262 regex 测试 | regex test262 < 90% |
+| RM7 | 正则引擎性能/正确性 | 中 | 中 | v1.17 已落地 Go regexp 翻译层；反向引用/前瞻/后行不支持，自研 NFA+回溯引擎为后续迭代 | test262 regex 全量子集 < 90% |
 | RM8 | Windows 平台行为差异 | 低 | 低 | CI 矩阵覆盖；抽象平台层 | Windows CI 失败 |
 | RM9 | Bun.ffi 纯 Go 不可行 | 高 | 低 | 文档明确不实现；不阻塞发布 | — |
 | RM10 | 法律风险（复制 Bun API） | 低 | 中 | API 行为不版权保护；代码原创 | 法律函告 |
@@ -1261,6 +1262,7 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v1.17 | 2026-08-04 | **RegExp 引擎落地（Go regexp 翻译层）**。新增 `internal/engine/regex` 包（`translate.go` JS→Go RE2 语法翻译 + `regex.go` flags 校验/编译包装/匹配索引）；完整 RegExp 内置对象（`internal/engine/interpreter/regexp.go`）：构造器（pattern 为 RegExp 时复制/覆盖 flags、无 new 调用）、原型 getters（source/flags/global/ignoreCase/multiline/dotAll/unicode/sticky）、exec/test/toString、`[Symbol.match/replace/search/split/species]`、g/y lastIndex 状态机、命名捕获组、`$` 替换串与函数替换；`String.prototype` 正则集成（split 含捕获组/replace+replaceAll 含 `$` 替换/match/search/matchAll）；正则字面量经新 `OpMakeRegexp` 指令构造；新增 well-known Symbols（match/replace/search/split/species）；`util.types.isRegExp` 修复。**引擎缺陷修复（真实 npm 包 semver/debug/chalk 暴露，Phase 5 v1.16 已知限制解除）**——模板字面量插值内字符串含 `{` 导致误配大括号（lexer/parser 双修，新增 `lexer.SkipTemplateExpr`）；数组追加索引赋值 `arr[i]=v` 写入丢失（VM setProperty 委托 `ArrayValue.Set`）；switch 内 break 报 illegal break（compileSwitch 提前 pushLoop）；前缀 `--i`/`++i` 结果未留栈（compileUpdate 前缀 Dup）；TS 泛型 `trySkipTypeArgs` 回溯不还原被改写的 `>=` token（token 快照恢复）；`static get/set` 类成员误判（parseClassMember 用当前 token）；标签语句 `OUTER: for(...)` + labeled break/continue（parser parseLabeled + compiler label 绑定）；对象字面量 getter/setter 未注册 accessor（新 `OpSetGetterObj`/`OpSetSetterObj`）；对象 spread 不调用 getter（VM getProperty 读取）；原型链遍历在函数对象原型处断链（objectValue.Get/FindAccessor 委托 GetProto）；VM 原生错误统一为 name=Error（`goErrorToValue` 复用 `goErrorToJSValue`，TypeError/SyntaxError 等 name 正确）。字节码缓存 FormatVersion 2→3（OpMakeRegexp/OpSetGetterObj/OpSetSetterObj 新指令）。**测试**——`internal/engine/regex/regex_test.go`（翻译/标志/匹配/命名组）+ `internal/engine/interpreter/regexp_test.go`（集成 10 组）+ test262 conformance 新增 `06-regexp.js`/`07-regexp-negative.js`；npm conformance 新增 chalk 入口回退与裸包名解析修复；**npm 包 5/5 全部通过（semver/ms/debug/is-odd/chalk@4）**；node conformance 10/10、test262 7/7 无回归。**已知限制**——反向引用/前瞻/后行断言不支持（编译期 SyntaxError）；`\s` 展开精确、`$` 结尾换行、u 模式按 UTF-8 码点等近似；正则字面量非法 pattern 为运行时 SyntaxError（非解析期）；`String` 方法走直接 isRegExp 分发而非完整 Symbol 协议；已知缺失 #9（thisArg）、#10（CJS/ESM `.default` 包装）、#12（语句开头 `/` 除法歧义）仍存在，留待后续迭代。 |
 | v0.1 | 2026-08-02 | 初稿，覆盖 Phase 0-8 全部规划 |
 | v0.2 | 2026-08-03 | 新增 §2.0 当前完成状态评估；Phase 1C.7 解构赋值完成（含 `delete` 运算符修复）；`Object` 接口新增 `Delete` 方法；新增 `OpDelProp` 指令 |
 | v0.3 | 2026-08-03 | Phase 1C.3 `class` 语法完成（声明/表达式/继承/super/static/getter/setter/默认构造函数）；新增 `OpMakeClass`/`OpGetProto`/`OpCallThis`/`OpConstructThis`/`OpCallThisArgs`/`OpConstructThisArgs` 指令；新增 `AccessorValue` 类型及 `ClassTemplate` 结构；修复 `OpSetPropTop`/`OpSetElemTop` 栈顺序 bug；测试总数 145→160 |

@@ -402,24 +402,20 @@ func (l *Lexer) readTemplate(startLine, startCol int) (Token, error) {
 			b.WriteString(esc)
 			continue
 		}
-		// ${...} 表达式插值：Phase 1A 简化，不解析表达式，原样保留
+		// ${...} 表达式插值：Phase 1A 简化，不解析表达式，原样保留。
+		// 用 SkipTemplateExpr 正确配对大括号（跳过字符串/注释/嵌套模板）。
 		if l.src[l.pos] == '$' && l.peekAt(1) == '{' {
 			b.WriteString("${")
 			l.advance()
 			l.advance()
-			depth := 1
-			for l.pos < len(l.src) && depth > 0 {
-				if l.src[l.pos] == '{' {
-					depth++
-				} else if l.src[l.pos] == '}' {
-					depth--
-					if depth == 0 {
-						b.WriteByte('}')
-						l.advance()
-						break
-					}
-				}
-				b.WriteByte(l.src[l.pos])
+			end, ok := SkipTemplateExpr(l.src, l.pos-2)
+			if !ok {
+				return Token{}, fmt.Errorf("unterminated template literal at line %d", startLine)
+			}
+			// end 指向匹配 '}' 之后；表达式文本为 [l.pos, end-1)。
+			b.WriteString(l.src[l.pos : end-1])
+			b.WriteByte('}')
+			for l.pos < end {
 				l.advance()
 			}
 			continue
@@ -432,6 +428,94 @@ func (l *Lexer) readTemplate(startLine, startCol int) (Token, error) {
 	}
 	l.advance() // 结尾 `
 	return Token{Type: TokenTemplate, Value: b.String(), Line: startLine, Col: startCol}, nil
+}
+
+// SkipTemplateExpr 从 raw[i]=='$' 且 raw[i+1]=='{' 处扫描模板插值表达式，
+// 跳过字符串字面量、行/块注释、转义序列与嵌套模板，返回匹配 '}' 之后的下标。
+// 未找到匹配的 '}' 时返回 (0, false)。
+func SkipTemplateExpr(raw string, i int) (int, bool) {
+	depth := 1
+	j := i + 2
+	for j < len(raw) && depth > 0 {
+		c := raw[j]
+		switch {
+		case c == '\\':
+			if j+1 < len(raw) {
+				j += 2
+			} else {
+				j++
+			}
+			continue
+		case c == '\'' || c == '"':
+			quote := c
+			j++
+			for j < len(raw) && raw[j] != quote {
+				if raw[j] == '\\' && j+1 < len(raw) {
+					j += 2
+				} else {
+					j++
+				}
+			}
+			j++ // 跳过结尾引号
+			continue
+		case c == '`':
+			nj, ok := skipTemplateLiteral(raw, j)
+			if !ok {
+				return 0, false
+			}
+			j = nj
+			continue
+		case c == '/' && j+1 < len(raw) && raw[j+1] == '/':
+			for j < len(raw) && raw[j] != '\n' {
+				j++
+			}
+			continue
+		case c == '/' && j+1 < len(raw) && raw[j+1] == '*':
+			j += 2
+			for j+1 < len(raw) && !(raw[j] == '*' && raw[j+1] == '/') {
+				j++
+			}
+			if j+1 < len(raw) {
+				j += 2
+			}
+			continue
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return j + 1, true
+			}
+		}
+		j++
+	}
+	return 0, false
+}
+
+// skipTemplateLiteral 跳过 raw[i]=='`' 处的模板字面量（含其插值），返回结尾 ` 之后的下标。
+func skipTemplateLiteral(raw string, i int) (int, bool) {
+	j := i + 1
+	for j < len(raw) {
+		switch {
+		case raw[j] == '\\':
+			if j+1 < len(raw) {
+				j += 2
+			} else {
+				j++
+			}
+		case raw[j] == '`':
+			return j + 1, true
+		case raw[j] == '$' && j+1 < len(raw) && raw[j+1] == '{':
+			end, ok := SkipTemplateExpr(raw, j)
+			if !ok {
+				return 0, false
+			}
+			j = end
+		default:
+			j++
+		}
+	}
+	return 0, false
 }
 
 func (l *Lexer) readIdent(startLine, startCol int) (Token, error) {

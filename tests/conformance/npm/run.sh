@@ -32,10 +32,17 @@ run_one() {
     return
   fi
   local main
-  main="$(cd "$dir" && node -e "try{console.log(require.resolve('$pkg'))}catch(e){console.log('')}" 2>/dev/null)"
+  # require.resolve 需要裸包名（去掉 @version 后缀，如 chalk@4 → chalk）。
+  local bare="${pkg%@*}"
+  main="$(cd "$dir" && node -e "try{console.log(require.resolve('$bare'))}catch(e){console.log('')}" 2>/dev/null)"
   if [ -z "$main" ] || [ ! -f "$main" ]; then
-    # 回退：直接用 node_modules/<pkg> 的入口。
-    main="$dir/node_modules/$pkg/index.js"
+    # 回退：尝试常见入口（main 字段可能是目录，如 chalk@4 的 "source"）。
+    for cand in "$dir/node_modules/$pkg/index.js" "$dir/node_modules/$pkg/source/index.js" "$dir/node_modules/$pkg/src/index.js" "$dir/node_modules/$pkg/lib/index.js"; do
+      if [ -f "$cand" ]; then
+        main="$cand"
+        break
+      fi
+    done
   fi
   if [ -f "$main" ]; then
     if $ALUKA "$main" >/tmp/aluka_npm.log 2>&1; then

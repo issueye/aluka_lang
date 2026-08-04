@@ -13,7 +13,9 @@ import (
 
 // FormatVersion 是字节码缓存格式版本。当 Module 布局、常量编码或编译器
 // 语义变化（如函数声明提升修复）时递增，使旧缓存自动失效。
-const FormatVersion = 2
+// v3：新增 OpMakeRegexp 指令（RegExp 引擎）；switch break 目标、前缀自增、
+//     标签 continue/break、正则字面量等编译器语义修复。
+const FormatVersion = 3
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")

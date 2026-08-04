@@ -47,6 +47,11 @@ type Compiler struct {
 	// optional chaining (?.) context. Each entry is a list of jump PCs that
 	// must be patched to the end of the chain when it completes.
 	optionalChainStack [][]int
+
+	// curLabel is the label of the labeled statement currently being compiled
+	// (set by compileLabeled). Loops pick it up as their loopCtx.hasLabel so
+	// that labeled break/continue jumps can be resolved to this loop.
+	curLabel string
 }
 
 type pendingJump struct {
@@ -981,7 +986,11 @@ func (c *Compiler) pushLoop(loopStart, continueTarget int) {
 		depth:          len(c.loopStack),
 		continueTarget: continueTarget,
 		breakTarget:    -1,
+		hasLabel:       c.curLabel,
 	}
+	// 标签只属于紧邻的循环；被取走后立即清空，避免泄漏到嵌套循环
+	// （否则内层循环也会拿到外层标签，误匹配 labeled break/continue）。
+	c.curLabel = ""
 	if loopStart != 0 {
 		lc.continueTarget = loopStart
 	}
@@ -1017,9 +1026,13 @@ func (c *Compiler) compileContinue(s *ast.ContinueStmt) error {
 // patchLoopBreaks patches all pending break jumps at the current loop depth.
 func (c *Compiler) patchLoopBreaks(exitPC int) {
 	curDepth := len(c.loopStack) // topLoop is about to be popped; use current depth
+	topLabel := c.topLoop().hasLabel
 	kept := c.pendingBreaks[:0]
 	for _, pj := range c.pendingBreaks {
-		if pj.depth == curDepth-1 && pj.label == "" {
+		// 无标签：匹配当前循环深度；带标签：匹配当前循环的标签（忽略深度，
+		// 因为 `break label` 可能出现在标签循环的任意嵌套深度）。
+		if (pj.label == "" && pj.depth == curDepth-1) ||
+			(pj.label != "" && pj.label == topLabel) {
 			delta := exitPC - (pj.pc + bytecode.InstrSize)
 			bytecode.PatchOperand(c.cur().tmpl.Code, pj.pc, uint32(delta))
 		} else {
@@ -1032,9 +1045,11 @@ func (c *Compiler) patchLoopBreaks(exitPC int) {
 // patchLoopContinues patches all pending continue jumps at the current loop depth.
 func (c *Compiler) patchLoopContinues(targetPC int) {
 	curDepth := len(c.loopStack)
+	topLabel := c.topLoop().hasLabel
 	kept := c.pendingContinues[:0]
 	for _, pj := range c.pendingContinues {
-		if pj.depth == curDepth-1 && pj.label == "" {
+		if (pj.label == "" && pj.depth == curDepth-1) ||
+			(pj.label != "" && pj.label == topLabel) {
 			delta := targetPC - (pj.pc + bytecode.InstrSize)
 			bytecode.PatchOperand(c.cur().tmpl.Code, pj.pc, uint32(delta))
 		} else {
@@ -1180,6 +1195,10 @@ func (c *Compiler) compileStmtsAsValue(body []ast.Statement) error {
 func (c *Compiler) compileSwitch(s *ast.SwitchStmt) error {
 	c.pushBlock()
 	defer c.popBlock()
+	// Switch 是 break 的合法目标：必须在编译 case 体之前压入 loopCtx，
+	// 否则 case 内的 break 会被 compileBreak 判为 "illegal break statement"。
+	c.pushLoop(0, 0)
+
 	discSlot := c.declareLocal("__switch_disc__")
 	if err := c.compileExpr(s.Disc); err != nil {
 		return err
@@ -1228,8 +1247,6 @@ func (c *Compiler) compileSwitch(s *ast.SwitchStmt) error {
 	endPC := c.curPC()
 	bytecode.PatchOperand(c.cur().tmpl.Code, fallJmp, uint32(endPC-(fallJmp+bytecode.InstrSize)))
 
-	// Switch acts as a break target.
-	c.pushLoop(0, 0)
 	c.topLoop().breakTarget = endPC
 	c.patchLoopBreaks(endPC)
 	c.popLoop()
@@ -1237,8 +1254,38 @@ func (c *Compiler) compileSwitch(s *ast.SwitchStmt) error {
 }
 
 func (c *Compiler) compileLabeled(s *ast.LabeledStmt) error {
-	// Simplified: execute body; labeled break patches filter by label.
-	return c.compileStmt(s.Body)
+	// 标签只有绑定到循环时才对 break/continue 生效（continue 到非循环标签是
+	// 非法 JS）。body 是循环时设置 curLabel，由该循环的 pushLoop 拾取；
+	// body 非循环（如块）时保持 curLabel 为空，`break label` 由下方 endPC patch 处理。
+	if isLoopStmt(s.Body) {
+		c.curLabel = s.Label
+	}
+	if err := c.compileStmt(s.Body); err != nil {
+		return err
+	}
+	c.curLabel = ""
+	// 标签包裹块（非循环）时：`break label` 跳到标签语句末尾。
+	endPC := c.curPC()
+	kept := c.pendingBreaks[:0]
+	for _, pj := range c.pendingBreaks {
+		if pj.label == s.Label {
+			delta := endPC - (pj.pc + bytecode.InstrSize)
+			bytecode.PatchOperand(c.cur().tmpl.Code, pj.pc, uint32(delta))
+		} else {
+			kept = append(kept, pj)
+		}
+	}
+	c.pendingBreaks = kept
+	return nil
+}
+
+// isLoopStmt 判断语句是否为循环（标签可绑定 break/continue）。
+func isLoopStmt(s ast.Statement) bool {
+	switch s.(type) {
+	case *ast.ForStmt, *ast.WhileStmt, *ast.DoWhileStmt, *ast.ForInStmt, *ast.ForOfStmt:
+		return true
+	}
+	return false
 }
 
 // === expressions ==========================================================
@@ -1348,6 +1395,20 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 				c.emit(bytecode.OpSetPropComputedObj, 0)
 				continue
 			}
+			// get/set 访问器：把函数注册为对象上的 accessor。
+			if prop.Kind == ast.PropertyGet || prop.Kind == ast.PropertySet {
+				if err := c.compileExpr(prop.Value); err != nil {
+					return err
+				}
+				key := propKey(prop.Key)
+				nameIdx := c.cur().tmpl.AddStringConst(key)
+				if prop.Kind == ast.PropertyGet {
+					c.emit(bytecode.OpSetGetterObj, uint32(nameIdx))
+				} else {
+					c.emit(bytecode.OpSetSetterObj, uint32(nameIdx))
+				}
+				continue
+			}
 			if err := c.compileExpr(prop.Value); err != nil {
 				return err
 			}
@@ -1391,15 +1452,12 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 		}
 		return nil
 	case *ast.RegexLit:
-		c.emit(bytecode.OpNewObject, 0)
-		srcName := c.cur().tmpl.AddStringConst("source")
-		srcIdx := c.cur().tmpl.AddStringConst(n.Pattern)
-		c.emit(bytecode.OpPushConst, uint32(srcIdx))
-		c.emit(bytecode.OpSetPropObj, uint32(srcName))
-		flagsName := c.cur().tmpl.AddStringConst("flags")
+		// 正则字面量：压入 pattern 与 flags，OpMakeRegexp 构造 RegExp 实例。
+		patIdx := c.cur().tmpl.AddStringConst(n.Pattern)
 		flagsIdx := c.cur().tmpl.AddStringConst(n.Flags)
+		c.emit(bytecode.OpPushConst, uint32(patIdx))
 		c.emit(bytecode.OpPushConst, uint32(flagsIdx))
-		c.emit(bytecode.OpSetPropObj, uint32(flagsName))
+		c.emit(bytecode.OpMakeRegexp, 0)
 		return nil
 	case *ast.TemplateLit:
 		return c.compileTemplateLit(n)
@@ -1710,6 +1768,10 @@ func (c *Compiler) compileUpdate(n *ast.UpdateExpr) error {
 		c.emit(bytecode.OpAdd, 0)
 	} else {
 		c.emit(bytecode.OpSub, 0)
+	}
+	// prefix 需要把"新值"作为表达式结果留在栈上，赋值前 Dup 一份。
+	if n.Prefix {
+		c.emit(bytecode.OpDup, 0)
 	}
 	// Store back (consumes the new value).
 	if err := c.assignTo(n.Arg); err != nil {

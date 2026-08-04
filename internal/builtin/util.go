@@ -222,7 +222,19 @@ func registerUtilTypes(types engine.Object) {
 		return v.Type() == engine.TypeObject && strings.Contains(v.String(), "Set")
 	})
 	typeCheck("isRegExp", func(v engine.Value) bool {
-		return v.Type() == engine.TypeObject && strings.HasPrefix(v.String(), "/")
+		if v.Type() != engine.TypeObject {
+			return false
+		}
+		// RegExp 实例 String() 为 "/source/flags" 且带可写 lastIndex 自有属性。
+		if !strings.HasPrefix(v.String(), "/") {
+			return false
+		}
+		if o, ok := v.AsObject(); ok {
+			if li, _ := o.Get("lastIndex"); !li.IsUndefined() {
+				return true
+			}
+		}
+		return false
 	})
 	typeCheck("isDate", func(v engine.Value) bool {
 		return v.Type() == engine.TypeObject && strings.Contains(v.String(), "Date")

@@ -230,6 +230,21 @@ var SymbolToPrimitive = &SymbolValue{desc: "Symbol.toPrimitive", id: 3}
 // SymbolToStringTag is the well-known Symbol.toStringTag symbol.
 var SymbolToStringTag = &SymbolValue{desc: "Symbol.toStringTag", id: 4}
 
+// SymbolMatch is the well-known Symbol.match symbol (String.prototype.match dispatch).
+var SymbolMatch = &SymbolValue{desc: "Symbol.match", id: 5}
+
+// SymbolReplace is the well-known Symbol.replace symbol.
+var SymbolReplace = &SymbolValue{desc: "Symbol.replace", id: 6}
+
+// SymbolSearch is the well-known Symbol.search symbol.
+var SymbolSearch = &SymbolValue{desc: "Symbol.search", id: 7}
+
+// SymbolSplit is the well-known Symbol.split symbol.
+var SymbolSplit = &SymbolValue{desc: "Symbol.split", id: 8}
+
+// SymbolSpecies is the well-known Symbol.species symbol.
+var SymbolSpecies = &SymbolValue{desc: "Symbol.species", id: 9}
+
 // symbolRegistry implements the global Symbol registry for Symbol.for()/keyFor().
 var symbolRegistry = struct {
 	entries map[string]*SymbolValue
@@ -411,11 +426,17 @@ func (o *objectValue) Get(key string) (Value, error) {
 		if v, ok := cur.getSlot(key); ok {
 			return v, nil
 		}
-		if p, ok := cur.proto.(*objectValue); ok {
-			cur = p
-		} else {
+		if cur.proto == nil {
 			break
 		}
+		if p, ok := cur.proto.(*objectValue); ok {
+			cur = p
+			continue
+		}
+		// 非 objectValue 原型（函数对象/闭包等作为原型，如 chalk 的
+		// Object.setPrototypeOf(builder, proto)）：委托其 Get 继续沿链查找，
+		// 否则原型链会在此断掉，导致访问器/方法无法解析。
+		return cur.proto.Get(key)
 	}
 	return Undefined(), nil
 }
@@ -699,11 +720,11 @@ func FindAccessor(obj Value, key string) (*AccessorValue, bool) {
 				// Non-accessor own property shadows accessors up the chain.
 				return nil, false
 			}
-			if p, ok := o.proto.(*objectValue); ok {
-				cur = p
-			} else {
+			if o.proto == nil {
 				return nil, false
 			}
+			// 交给循环重新分发（functionValue/ArrayValue/闭包等原型类型）。
+			cur = o.proto
 		} else if a, ok := cur.(*ArrayValue); ok {
 			if a.objectValue != nil {
 				if v, exists := a.objectValue.getSlot(key); exists {
@@ -724,6 +745,9 @@ func FindAccessor(obj Value, key string) (*AccessorValue, bool) {
 				}
 			}
 			cur = GetProto(cur)
+		} else if p := GetProto(cur); p != nil {
+			// 自定义类型（如闭包）作为原型：经 Proto() 解包继续。
+			cur = p
 		} else {
 			return nil, false
 		}

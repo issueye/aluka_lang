@@ -229,6 +229,10 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 			return &ast.EmptyStmt{Loc: posOf(t)}, nil
 		}
 	case lexer.TokenIdent:
+		// 标签语句：`name: statement`（仅当标识符后紧跟 ":"）。
+		if p.peekAt(1).Type == lexer.TokenPunct && p.peekAt(1).Value == ":" {
+			return p.parseLabeled()
+		}
 		// TypeScript contextual-keyword declarations.
 		switch t.Value {
 		case "interface":
@@ -256,6 +260,19 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 	}
 	// 表达式语句
 	return p.parseExprStmt()
+}
+
+// parseLabeled 解析标签语句 `name: statement`（如 OUTER: for (...) {...}）。
+func (p *Parser) parseLabeled() (ast.Statement, error) {
+	t := p.next() // 标签标识符
+	if err := p.expectPunct(":"); err != nil {
+		return nil, err
+	}
+	body, err := p.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.LabeledStmt{Label: t.Value, Body: body, Loc: posOf(t)}, nil
 }
 
 func (p *Parser) parseBlock() (*ast.BlockStmt, error) {
@@ -1464,28 +1481,12 @@ func (p *Parser) parseTemplateLit(raw string, loc ast.Pos) (*ast.TemplateLit, er
 		if raw[i] == '$' && i+1 < len(raw) && raw[i+1] == '{' {
 			quasis = append(quasis, quasi.String())
 			quasi.Reset()
-			// Find the matching closing brace (the lexer already balanced them).
-			depth := 1
-			j := i + 2
-			for j < len(raw) && depth > 0 {
-				switch raw[j] {
-				case '{':
-					depth++
-				case '}':
-					depth--
-					if depth == 0 {
-						break
-					}
-				}
-				if depth == 0 {
-					break
-				}
-				j++
-			}
-			if depth != 0 {
+			// 用 lexer.SkipTemplateExpr 正确配对大括号（跳过字符串/注释/嵌套模板）。
+			end, ok := lexer.SkipTemplateExpr(raw, i)
+			if !ok {
 				return nil, fmt.Errorf("template literal: unbalanced ${ at line %d", loc.Line)
 			}
-			exprSrc := raw[i+2 : j]
+			exprSrc := raw[i+2 : end-1]
 			// Re-parse the expression source using a fresh parser.
 			sub, err := NewFromString(exprSrc)
 			if err != nil {
@@ -1496,7 +1497,7 @@ func (p *Parser) parseTemplateLit(raw string, loc ast.Pos) (*ast.TemplateLit, er
 				return nil, fmt.Errorf("template literal expression %q: %w", exprSrc, err)
 			}
 			exprs = append(exprs, expr)
-			i = j + 1
+			i = end
 			continue
 		}
 		quasi.WriteByte(raw[i])
@@ -2122,15 +2123,18 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 	}
 
 	// get/set accessors are also contextual keywords.
+	// 注意：必须用当前 token（static/async 已消费后重新 peek），
+	// 不能用 parseClassMember 开头捕获的 t，否则 `static get x()` 会被
+	// 误判为以 "get" 命名的普通方法/字段。
 	kind := ast.MethodNormal
 	computed := false
 	var key ast.Expression
-	if t.Type == lexer.TokenIdent && (t.Value == "get" || t.Value == "set") {
+	if ct := p.peek(); ct.Type == lexer.TokenIdent && (ct.Value == "get" || ct.Value == "set") {
 		nx := p.peekAt(1)
 		// Treat as accessor only if a real key follows. `get() {}` is a normal
 		// method named "get".
 		if nx.Type != lexer.TokenPunct || nx.Value != "(" {
-			if t.Value == "get" {
+			if ct.Value == "get" {
 				kind = ast.MethodGetter
 			} else {
 				kind = ast.MethodSetter
@@ -3419,13 +3423,20 @@ func (p *Parser) skipTypeParameters() error {
 // (`<T, U>`) before a call expression or `new`. It backtracks (restoring the
 // position) if the `<...>` is not followed by `(`, since `<` could also be a
 // less-than comparison. Returns true if type arguments were skipped.
+//
+// 注意：skipAngleBraces 会把 `>=`/`>>`/`>>>` 就地改写（拆解嵌套泛型闭合角括号），
+// 因此回溯时必须同时恢复 token 快照，否则后续 `a >= b` 等比较表达式的 token
+// 已被破坏（`>=` 被改成 `=`）。
 func (p *Parser) trySkipTypeArgs() bool {
 	if p.peek().Type != lexer.TokenPunct || p.peek().Value != "<" {
 		return false
 	}
 	savedPos := p.pos
+	savedTokens := make([]lexer.Token, len(p.tokens))
+	copy(savedTokens, p.tokens)
 	if err := p.skipAngleBraces(); err != nil {
 		p.pos = savedPos
+		p.tokens = savedTokens
 		return false
 	}
 	// Only treat as type args if followed by `(` (a call).
@@ -3433,6 +3444,7 @@ func (p *Parser) trySkipTypeArgs() bool {
 		return true
 	}
 	p.pos = savedPos
+	p.tokens = savedTokens
 	return false
 }
 

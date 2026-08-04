@@ -153,6 +153,15 @@ const (
 	// --- Async/await (ES2017) ---
 	OpAwait // pop value; suspend async function until value's promise settles. Push resolved value on resume.
 
+	// --- RegExp literal (Go regexp translation kernel) ---
+	// 弹 flags + pattern，压入 RegExp 实例。
+	OpMakeRegexp
+
+	// --- Object literal accessors (get/set) ---
+	// 栈 [obj, fn]：把 fn 注册为 obj 上 key（A: 常量索引）的 getter/setter。
+	OpSetGetterObj
+	OpSetSetterObj
+
 	OpEnd // sentinel marking end of code (for safety)
 )
 
@@ -267,6 +276,12 @@ var opNames = [...]string{
 	OpGetAsyncIterator: "GET_ASYNC_ITERATOR",
 	OpAwait:       "AWAIT",
 
+	// 正则字面量：弹 flags + pattern，压入 RegExp 实例。
+	OpMakeRegexp: "MAKE_REGEXP",
+
+	OpSetGetterObj: "SET_GETTER_OBJ",
+	OpSetSetterObj: "SET_SETTER_OBJ",
+
 	OpEnd: "END",
 }
 
@@ -293,6 +308,8 @@ func (op Opcode) HasOperand() bool {
 	case OpCall, OpCallMethod, OpCallWithThis, OpNew:
 		return true
 	case OpGetProp, OpSetProp, OpSetPropObj, OpSetPropTop:
+		return true
+	case OpSetGetterObj, OpSetSetterObj:
 		return true
 	case OpGetElem, OpSetElem, OpSetElemTop, OpDelProp, OpSetPropComputedObj:
 		return true

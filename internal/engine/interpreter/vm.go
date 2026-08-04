@@ -711,6 +711,15 @@ func (v *VM) run() (engine.Value, error) {
 				arr := engine.NewArray(elems)
 				engine.SetProto(arr, v.interp.arrayProto)
 				v.push(arr)
+			case bytecode.OpMakeRegexp:
+				// 正则字面量：弹 flags + pattern，构造 RegExp 实例。
+				flagsVal := v.pop()
+				patVal := v.pop()
+				rv, err := v.interp.makeRegexp(patVal.String(), flagsVal.String())
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(rv)
 			case bytecode.OpGetProp:
 				name := tmpl.Constants[operand].String()
 				obj := v.pop()
@@ -741,6 +750,22 @@ func (v *VM) run() (engine.Value, error) {
 				val := v.pop()
 				if err := v.setProperty(obj, name, val); err != nil {
 					return v.handleThrow(err)
+				}
+			case bytecode.OpSetGetterObj:
+				// 对象字面量 getter：栈 [obj, fn]，注册为 accessor getter。
+				fn := v.pop()
+				obj := v.peek()
+				name := tmpl.Constants[operand].String()
+				if o, ok := obj.AsObject(); ok {
+					engine.UpdateAccessor(o, name, true, fn)
+				}
+			case bytecode.OpSetSetterObj:
+				// 对象字面量 setter：栈 [obj, fn]，注册为 accessor setter。
+				fn := v.pop()
+				obj := v.peek()
+				name := tmpl.Constants[operand].String()
+				if o, ok := obj.AsObject(); ok {
+					engine.UpdateAccessor(o, name, false, fn)
 				}
 			case bytecode.OpGetElem:
 				key := v.pop()
@@ -874,7 +899,9 @@ func (v *VM) run() (engine.Value, error) {
 			}
 			if srcObj, ok := src.AsObject(); ok {
 				for _, k := range srcObj.Keys() {
-					if pv, err := srcObj.Get(k); err == nil {
+					// 用 getProperty 读取：getter 访问器会被调用（spread 语义
+					// 复制 getter 的结果值，而非 AccessorValue 本身）。
+					if pv, err := v.getProperty(src, k); err == nil {
 						_ = dstObj.Set(k, pv)
 					}
 				}
@@ -1724,6 +1751,9 @@ func (v *VM) backingObj(val engine.Value) engine.Value {
 	if w, ok := val.(*WeakSetValue); ok {
 		return w.obj
 	}
+	if r, ok := val.(*RegexpValue); ok {
+		return r.obj
+	}
 	return val
 }
 
@@ -1745,17 +1775,9 @@ func (v *VM) setProperty(obj engine.Value, key string, val engine.Value) error {
 		// Read-only accessor: silently ignore (strict mode would throw).
 		return nil
 	}
-	// Array indexed assignment.
+	// Array indexed assignment：委托给 ArrayValue.Set（正确处理追加索引与 length 同步）。
 	if arr, ok := obj.(*engine.ArrayValue); ok {
-		if n, err := strconv.Atoi(key); err == nil {
-			elems := arr.Elems()
-			for len(elems) <= n {
-				elems = append(elems, engine.Undefined())
-			}
-			elems[n] = val
-			_ = arr.Set("length", engine.IntValue(len(elems)))
-			return nil
-		}
+		return arr.Set(key, val)
 	}
 	if o, ok := obj.AsObject(); ok {
 		return o.Set(key, val)
@@ -1855,6 +1877,9 @@ func (v *VM) getProto(val engine.Value) engine.Object {
 	}
 	if w, ok := val.(*WeakSetValue); ok {
 		return engine.GetProto(w.obj)
+	}
+	if r, ok := val.(*RegexpValue); ok {
+		return engine.GetProto(r.obj)
 	}
 	return engine.GetProto(val)
 }
@@ -2007,15 +2032,7 @@ func (v *VM) normalizeException(exc interface{}) engine.Value {
 
 // goErrorToValue converts a Go error to a JS Value (Error object or string).
 func (v *VM) goErrorToValue(err error) engine.Value {
-	if errCtor, ok := v.interp.constructors["Error"]; ok {
-		if f, ok := errCtor.AsFunction(); ok {
-			result, callErr := f.Call([]engine.Value{engine.Str(err.Error())})
-			if callErr == nil && result.IsObject() {
-				return result
-			}
-		}
-	}
-	return engine.Str(err.Error())
+	return v.interp.goErrorToJSValue(err)
 }
 
 // === vmClosure: bytecode function value ===================================

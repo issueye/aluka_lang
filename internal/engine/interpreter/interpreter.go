@@ -57,6 +57,7 @@ type Interpreter struct {
 	setProto      engine.Object
 	weakMapProto  engine.Object
 	weakSetProto  engine.Object
+	regexpProto   engine.Object
 
 	// Built-in constructors
 	constructors map[string]engine.Object
@@ -746,11 +747,8 @@ func (interp *Interpreter) evalExpr(expr ast.Expression, scope *Scope) (engine.V
 		}
 		return engine.Str(b.String()), nil
 	case *ast.RegexLit:
-		// Phase 1A: store as object with source/flags (no matching engine)
-		re := engine.NewObject()
-		_ = re.Set("source", engine.Str(e.Pattern))
-		_ = re.Set("flags", engine.Str(e.Flags))
-		return re, nil
+		// 正则字面量：构造真实 RegExp 实例（Go regexp 翻译层内核）。
+		return interp.makeRegexp(e.Pattern, e.Flags)
 	case *ast.Identifier:
 		if v, ok := scope.Get(e.Name); ok {
 			return v, nil
@@ -868,6 +866,11 @@ func (interp *Interpreter) evalObjectLit(e *ast.ObjectLit, scope *Scope) (engine
 		v, err := interp.evalExpr(prop.Value, scope)
 		if err != nil {
 			return nil, err
+		}
+		// get/set 访问器：注册为 accessor（而非普通属性）。
+		if prop.Kind == ast.PropertyGet || prop.Kind == ast.PropertySet {
+			engine.UpdateAccessor(obj, key, prop.Kind == ast.PropertyGet, v)
+			continue
 		}
 		_ = obj.Set(key, v)
 	}

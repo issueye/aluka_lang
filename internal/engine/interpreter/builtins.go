@@ -56,6 +56,8 @@ func (interp *Interpreter) setupBuiltins() {
 	interp.setupSet()
 	interp.setupWeakMap()
 	interp.setupWeakSet()
+	// RegExp（Go regexp 翻译层内核）
+	interp.setupRegexp()
 	// Proxy / Reflect
 	interp.setupProxy()
 	interp.setupReflect()
@@ -711,6 +713,15 @@ func (interp *Interpreter) setupStringProto() {
 		if len(args) == 0 || args[0].IsUndefined() {
 			return engine.NewArray([]engine.Value{engine.Str(s)}), nil
 		}
+		if r, ok := args[0].(*RegexpValue); ok {
+			limit := -1
+			if len(args) > 1 {
+				if n, ok := args[1].Float(); ok {
+					limit = int(n)
+				}
+			}
+			return regexpSplit(interp, r, s, limit)
+		}
 		sep := args[0].String()
 		if sep == "" {
 			elems := make([]engine.Value, 0, len(s))
@@ -730,13 +741,86 @@ func (interp *Interpreter) setupStringProto() {
 		if len(args) < 2 {
 			return engine.Str(this.String()), nil
 		}
+		if r, ok := args[0].(*RegexpValue); ok {
+			return regexpReplace(interp, r, this.String(), args[1], r.compiled.Flags.Global)
+		}
 		return engine.Str(strings.Replace(this.String(), args[0].String(), args[1].String(), 1)), nil
 	}))
 	_ = p.Set("replaceAll", interp.nativeMethod("replaceAll", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Str(this.String()), nil
 		}
+		if r, ok := args[0].(*RegexpValue); ok {
+			if !r.compiled.Flags.Global {
+				return engine.Undefined(), fmt.Errorf("%w: String.prototype.replaceAll called with a non-global RegExp", engine.ErrTypeError)
+			}
+			return regexpReplace(interp, r, this.String(), args[1], true)
+		}
 		return engine.Str(strings.ReplaceAll(this.String(), args[0].String(), args[1].String())), nil
+	}))
+	_ = p.Set("match", interp.nativeMethod("match", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		s := this.String()
+		if len(args) == 0 || args[0].IsUndefined() {
+			return engine.Null(), nil
+		}
+		if r, ok := args[0].(*RegexpValue); ok {
+			if !r.compiled.Flags.Global {
+				return r.execString(s)
+			}
+			matches := r.compiled.MatchAllIndex(s)
+			if len(matches) == 0 {
+				return engine.Null(), nil
+			}
+			elems := make([]engine.Value, 0, len(matches))
+			for _, m := range matches {
+				elems = append(elems, engine.Str(s[m[0]:m[1]]))
+			}
+			out := engine.NewArray(elems)
+			engine.SetProto(out, interp.arrayProto)
+			return out, nil
+		}
+		// 非正则：按规范，若存在 Symbol.match 则调用之；此处简化为字符串查找。
+		return engine.Null(), nil
+	}))
+	_ = p.Set("search", interp.nativeMethod("search", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		s := this.String()
+		if len(args) == 0 || args[0].IsUndefined() {
+			return engine.IntValue(-1), nil
+		}
+		if r, ok := args[0].(*RegexpValue); ok {
+			m := r.compiled.MatchIndex(s)
+			if m == nil {
+				return engine.IntValue(-1), nil
+			}
+			return engine.IntValue(m[0]), nil
+		}
+		idx := strings.Index(s, args[0].String())
+		return engine.IntValue(idx), nil
+	}))
+	_ = p.Set("matchAll", interp.nativeMethod("matchAll", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		s := this.String()
+		if len(args) == 0 || args[0].IsUndefined() {
+			return engine.Undefined(), fmt.Errorf("%w: String.prototype.matchAll requires a global RegExp", engine.ErrTypeError)
+		}
+		r, ok := args[0].(*RegexpValue)
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("%w: String.prototype.matchAll requires a RegExp", engine.ErrTypeError)
+		}
+		if !r.compiled.Flags.Global {
+			return engine.Undefined(), fmt.Errorf("%w: String.prototype.matchAll called with a non-global RegExp", engine.ErrTypeError)
+		}
+		matches := r.compiled.MatchAllIndex(s)
+		elems := make([]engine.Value, 0, len(matches))
+		for _, m := range matches {
+			v, err := r.execStringAt(s, m)
+			if err != nil {
+				return nil, err
+			}
+			elems = append(elems, v)
+		}
+		out := engine.NewArray(elems)
+		engine.SetProto(out, interp.arrayProto)
+		return out, nil
 	}))
 	_ = p.Set("trim", interp.nativeMethod("trim", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		return engine.Str(strings.TrimSpace(this.String())), nil
@@ -1405,6 +1489,11 @@ func (interp *Interpreter) setupSymbol() {
 	_ = symbolFn.Set("hasInstance", engine.SymbolHasInstance)
 	_ = symbolFn.Set("toPrimitive", engine.SymbolToPrimitive)
 	_ = symbolFn.Set("toStringTag", engine.SymbolToStringTag)
+	_ = symbolFn.Set("match", engine.SymbolMatch)
+	_ = symbolFn.Set("replace", engine.SymbolReplace)
+	_ = symbolFn.Set("search", engine.SymbolSearch)
+	_ = symbolFn.Set("split", engine.SymbolSplit)
+	_ = symbolFn.Set("species", engine.SymbolSpecies)
 	// Symbol.for(key) / Symbol.keyFor(symbol): global symbol registry.
 	_ = symbolFn.Set("for", interp.makeFunc("for", func(args []engine.Value) (engine.Value, error) {
 		key := ""
