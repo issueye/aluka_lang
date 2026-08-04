@@ -30,6 +30,14 @@ type Context interface {
 	RegisterFunc(name string, fn Func) error
 	// Close 释放上下文资源。
 	Close() error
+
+	// PostTask 将任务投递到 JS 执行线程（事件循环，可在任意 goroutine 调用）。
+	// 任务将在 JS 单线程上按序执行，用于定时器/I/O 回调等异步场景。
+	PostTask(fn func())
+
+	// AddRef/Release 跟踪"活跃句柄"（定时器、打开的 I/O 句柄等）。
+	// 所有句柄释放后事件循环退出。AddRef 返回 Release 函数。
+	AddRef() func()
 }
 
 // Value 是 JS 值的统一抽象。

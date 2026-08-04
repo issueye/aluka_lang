@@ -22,6 +22,7 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("stream", NewStream)
 	loader.RegisterBuiltin("querystring", NewQueryString)
 	loader.RegisterBuiltin("string_decoder", NewStringDecoder)
+	loader.RegisterBuiltin("http", NewHTTP)
 }
 
 // --- 公共辅助函数 -------------------------------------------------------

@@ -76,6 +76,12 @@ func (c *stubContext) RegisterFunc(name string, fn Func) error {
 
 func (c *stubContext) Close() error { return nil }
 
+// PostTask 投递任务到 JS 执行线程（stub 直接同步执行）。
+func (c *stubContext) PostTask(fn func()) { fn() }
+
+// AddRef 跟踪活跃句柄（stub no-op）。
+func (c *stubContext) AddRef() func() { return func() {} }
+
 // === 词法分析器 ============================================================
 
 type tokenType int

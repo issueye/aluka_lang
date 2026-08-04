@@ -83,27 +83,23 @@ func newEmitterInstance() engine.Value {
 			original := args[1]
 			// 创建 wrapper 并注册；wrapper 触发时调 original 并精确删除自身。
 			var wrapper engine.Value
-			wrapper = engine.NewFunction("onceWrapper", func(callArgs []engine.Value) (engine.Value, error) {
-				// 调用原始监听器。
-				if f, ok := original.AsFunction(); ok {
-					_, _ = f.Call(callArgs)
-				}
-				// 精确删除 wrapper 自身。
-				listeners := state.listeners[event]
-				for i, l := range listeners {
-					// engine.NewFunction 每次返回新对象，无法用 == 匹配。
-					// 改用：删除第一个与 original 不同的（即 wrapper）。
-					// 但更简单可靠：wrapper 是临时对象，这里用闭包变量直接引用。
-					if l == wrapper {
-						state.listeners[event] = append(listeners[:i], listeners[i+1:]...)
-						break
+				wrapper = engine.NewFunction("onceWrapper", func(callArgs []engine.Value) (engine.Value, error) {
+					// 调用原始监听器。
+					if f, ok := original.AsFunction(); ok {
+						_, _ = f.Call(callArgs)
 					}
-					_ = l
-				}
-				return engine.Undefined(), nil
-			})
-			wrapper = wrapper // 确保闭包捕获变量
-			state.listeners[event] = append(state.listeners[event], wrapper)
+					// 精确删除 wrapper 自身。
+					listeners := state.listeners[event]
+					for i, l := range listeners {
+						// 闭包捕获 wrapper 变量（var 声明在闭包外），触发后删除自身。
+						if l == wrapper {
+							state.listeners[event] = append(listeners[:i], listeners[i+1:]...)
+							break
+						}
+					}
+					return engine.Undefined(), nil
+				})
+				state.listeners[event] = append(state.listeners[event], wrapper)
 		}
 		return obj, nil
 	})

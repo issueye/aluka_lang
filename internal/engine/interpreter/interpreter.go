@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
@@ -69,6 +70,13 @@ type Interpreter struct {
 	// runModule). Used by native callbacks (Proxy traps, etc.) that need to
 	// invoke JS functions through the VM.
 	currentVM *VM
+
+	// 事件循环（node:http / 定时器基础设施）：
+	// taskCh 接收从任意 goroutine 投递的任务，由 RunLoop 在 JS 执行 goroutine 上执行。
+	taskCh   chan func()
+	taskWG   sync.WaitGroup // 跟踪活跃任务/定时器，事件循环据此判断是否退出
+	stopCh   chan struct{}
+	loopOnce sync.Once      // 确保 RunLoop 只启动一次
 }
 
 // NewInterpreter creates an interpreter with built-in globals set up.
@@ -78,6 +86,8 @@ func NewInterpreter() (*Interpreter, error) {
 		globalObj:          engine.NewObject(),
 		constructors:       make(map[string]engine.Object),
 		argumentsSupported: true,
+		taskCh:             make(chan func(), 64),
+		stopCh:             make(chan struct{}),
 	}
 	interp.setupBuiltins()
 	interp.setupGlobalThis()

@@ -72,6 +72,26 @@ func (v *VM) RegisterFunc(name string, fn engine.Func) error {
 	return v.interp.RegisterFunc(name, fn)
 }
 
+// PostTask 投递任务到 JS 执行线程（implements engine.Context）。
+func (v *VM) PostTask(fn func()) {
+	v.interp.PostTask(fn)
+}
+
+// AddRef 跟踪活跃句柄（implements engine.Context）。
+func (v *VM) AddRef() func() {
+	return v.interp.NewTaskHandle()
+}
+
+// RunLoop 启动事件循环（处理定时器/http 回调，直到无 pending 任务）。
+func (v *VM) RunLoop() {
+	v.interp.RunLoop()
+}
+
+// Stop 停止事件循环。
+func (v *VM) Stop() {
+	v.interp.Stop()
+}
+
 // Close releases context resources (implements engine.Context).
 func (v *VM) Close() error { return nil }
 
@@ -154,14 +174,15 @@ func (v *VM) runModule(mod *bytecode.Module) (engine.Value, error) {
 		// Clean up leftover stack values before draining microtasks
 		// (microtask callbacks reuse v.stack). Keep v.module alive —
 		// microtask callbacks (Promise reactions, async continuations)
+		// AND event-loop tasks (timers, http handlers, user closures)
 		// may call back into the VM and need the module's templates.
+		// module 在事件循环（RunLoop）结束后才允许被 GC 回收。
 		v.stack = v.stack[:0]
 		v.frames = v.frames[:0]
 		// Drain the microtask queue (Promise reactions, queueMicrotask
 		// callbacks). Errors from microtasks are handled internally by
 		// Promise reactions; any uncaught error is silently ignored here.
 		v.interp.drainMicrotasks()
-		v.module = nil
 	} else {
 		// Restore the caller's execution state so its run() loop continues.
 		v.stack = savedStack

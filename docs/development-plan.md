@@ -1,6 +1,6 @@
 # Aluka 运行时 — 开发计划文档
 
-> 项目代号：`aluka` ｜ 文档版本：v1.8 ｜ 日期：2026-08-04
+> 项目代号：`aluka` ｜ 文档版本：v1.9 ｜ 日期：2026-08-04
 > 配套文档：[需求分析文档](./requirements-analysis.md)
 
 ---
@@ -625,7 +625,7 @@ internal/runtime/module/
 
 | ID | 任务 | 输出 |
 |----|------|------|
-| 2.1 | 设计模块注册机制（`builtin.Register("fs", NewFS)`） | `internal/builtin/registry.go` |
+| 2.1 | 设计模块注册机制（`builtin.Register("fs", NewFS)`） | ✅ `internal/builtin/registry.go` |
 | 2.2 | 实现 `console` 完整版（`table`/`group`/`time`/`dir`/`trace`/`assert`） | `internal/runtime/globals/console.go` |
 | 2.3 | 实现 `process` 完整版（`stdout`/`stderr`/`stdin`/`on`/`kill`/`exit`/`hrtime`） | `internal/runtime/globals/process.go` |
 | 2.4 | 实现 `Buffer`（基于 `[]byte`，Node API 完整） | `internal/runtime/globals/buffer.go` |
@@ -633,19 +633,19 @@ internal/runtime/module/
 | 2.6 | 实现 `URL`/`URLSearchParams`（WHATWG） | `internal/runtime/globals/url.go` |
 | 2.7 | 实现 `AbortController`/`AbortSignal` | `internal/runtime/globals/abort.go` |
 | 2.8 | 实现 `Event`/`EventTarget`/`CustomEvent` | `internal/runtime/globals/event.go` |
-| 2.9 | 实现完整 Timers（`setTimeout`/`setInterval`/`setImmediate`/`queueMicrotask`） | `internal/runtime/globals/timers.go` |
-| 2.10 | 实现 `node:fs`（sync/async/promises + `createReadStream/WriteStream`） | `internal/builtin/node/fs/` |
-| 2.11 | 实现 `node:path`（`posix`+`win32` 双实现） | `internal/builtin/node/path/` |
-| 2.12 | 实现 `node:os` | `internal/builtin/node/os/` |
-| 2.13 | 实现 `node:url`/`node:querystring` | `internal/builtin/node/url/` |
-| 2.14 | 实现 `node:events`（`EventEmitter` 完整 API） | `internal/builtin/node/events/` |
-| 2.15 | 实现 `node:util`（`inspect`/`promisify`/`format`/`types`/`deprecate`） | `internal/builtin/node/util/` |
-| 2.16 | 实现 `node:assert`（strict + loose） | `internal/builtin/node/assert/` |
-| 2.17 | 实现 `node:stream`（`Readable`/`Writable`/`Duplex`/`Transform`/`pipeline`/`finished`） | `internal/builtin/node/stream/` |
+| 2.9 | 实现完整 Timers（`setTimeout`/`setInterval`/`setImmediate`/`queueMicrotask`） | ✅ `internal/runtime/globals/timers.go` |
+| 2.10 | 实现 `node:fs`（sync/async/promises + `createReadStream/WriteStream`） | ✅ `internal/builtin/fs.go`（同步 API；async/promises 待补） |
+| 2.11 | 实现 `node:path`（`posix`+`win32` 双实现） | ✅ `internal/builtin/path.go` |
+| 2.12 | 实现 `node:os` | ✅ `internal/builtin/os.go` |
+| 2.13 | 实现 `node:url`/`node:querystring` | ✅ `internal/builtin/url.go` + `internal/builtin/querystring.go` |
+| 2.14 | 实现 `node:events`（`EventEmitter` 完整 API） | ✅ `internal/builtin/events.go` |
+| 2.15 | 实现 `node:util`（`inspect`/`promisify`/`format`/`types`/`deprecate`） | ✅ `internal/builtin/util.go` |
+| 2.16 | 实现 `node:assert`（strict + loose） | ✅ `internal/builtin/assert.go` |
+| 2.17 | 实现 `node:stream`（`Readable`/`Writable`/`Duplex`/`Transform`/`pipeline`/`finished`） | ✅ `internal/builtin/stream.go` |
 | 2.18 | 实现 `node:buffer`（与全局 `Buffer` 同源） | 复用 2.4 |
-| 2.19 | 实现 `node:crypto`（`createHash`/`createHmac`/`randomBytes`/`scrypt`/`pbkdf2`/`createCipheriv`） | `internal/builtin/node/crypto/` |
-| 2.20 | 实现 `node:string_decoder` | `internal/builtin/node/string_decoder/` |
-| 2.21 | 实现 `node:http`（基于 Go `net/http`，完整 API） | `internal/builtin/node/http/` |
+| 2.19 | 实现 `node:crypto`（`createHash`/`createHmac`/`randomBytes`/`scrypt`/`pbkdf2`/`createCipheriv`） | 🔶 `internal/builtin/crypto.go`（已实现 `createHash`/`randomBytes`；HMAC/对称加密/pbkdf2/scrypt 待补） |
+| 2.20 | 实现 `node:string_decoder` | ✅ `internal/builtin/string_decoder.go` |
+| 2.21 | 实现 `node:http`（基于 Go `net/http`，完整 API） | ✅ `internal/builtin/http.go` |
 | 2.22 | 实现 `node:https` | `internal/builtin/node/http/https.go` |
 | 2.23 | 实现 `node:net`（TCP） | `internal/builtin/node/net/` |
 | 2.24 | 实现 `node:tls` | `internal/builtin/node/tls/` |
@@ -1276,3 +1276,4 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 | v1.6 | 2026-08-04 | **Phase 2 启动**：内置模块注册机制 + 4 个 P0 模块。**架构层**——`Loader` 新增 `builtins`/`builtinFns` 字段与 `RegisterBuiltin` 方法；`require` 在 `resolver.Resolve` 之前拦截 `node:` 前缀 specifier（`loadBuiltin` 去前缀后查注册表，首次调工厂构造、之后缓存）；CJS `require()` 与 ESM `import` 均自动走内置模块（ESM 经 `transformESMToCJS` 的 `require()` 调用原样透传）；新建 `internal/builtin/` 包（`registry.go` 的 `RegisterAll` 一次性注册所有模块，工厂签名 `func(engine.Context) (engine.Value, error)`，仅用 `engine.*` 构造函数避免循环依赖）。**node:path**（`path.go`）——`join`/`resolve`/`normalize`/`dirname`/`basename`（含 ext 去除）/`extname`（Node.js 隐藏文件语义）/`relative`/`isAbsolute`/`parse`/`format` + `sep`/`delimiter` 属性 + `posix`/`win32` 子对象（平台固定语义）；基于 Go `path`/`path/filepath`。**node:os**（`os.go`）——`platform()`/`arch()`/`type()`/`hostname()`/`homedir()`/`tmpdir()`/`cpus()`/`networkInterfaces()`/`freemem()`/`endianness()` + `EOL` 属性 + `constants`（信号常量）；基于 Go `os`/`runtime`/`net`。**node:url**（`url.go`）——`parse`/`format`/`resolve`/`fileURLToPath`/`pathToFileURL`/`domainToASCII`/`domainToUnicode`；基于 Go `net/url`。**node:util**（`util.go`）——`inspect`/`format`（`%s`/`%d`/`%j`/`%o` 占位符）/`promisify`/`callbackify`/`deprecate`/`isDeepStrictEqual`/`styleText` + `types` 子对象（`isNumber`/`isString`/`isPromise`/`isArray`/`isMap`/`isSet` 等 15 个判断）。新增 `builtin_test.go` 15 个测试（path join/dirname/basename/extname/posix-win32/parse、os platform/cpus/EOL、url parse/resolve/fileConversion、util format/inspect/types/isDeepStrictEqual）；测试总数 423→438 |
 | v1.7 | 2026-08-04 | Phase 2 第二批模块：4 个 P0 内置模块。**node:events**（`events.go`）——`EventEmitter` 构造器（支持 `new EventEmitter()`，绕过 `engine.Func` 无 this 绑定的限制——实例方法通过闭包捕获 `emitterState` 实现状态隔离）；`on`/`once`（wrapper 触发后精确自删）/`off`/`removeListener`/`emit`/`listeners`/`listenerCount`/`eventNames`/`removeAllListeners`/`setMaxListeners`/`getMaxListeners`/`prependListener`/`prependOnceListener` + 模块级静态方法 `EventEmitter.on`/`.once`/`.off`/`.listenerCount`。**node:fs**（`fs.go`）——同步 API `readFileSync`（支持 utf8 编码选项）/`writeFileSync`/`appendFileSync`/`existsSync`/`statSync`/`lstatSync`（返回 Stats 对象含 isFile()/isDirectory() 方法）/`mkdirSync`（支持 recursive）/`rmdirSync`/`rmSync`/`readdirSync`（支持 withFileTypes）/`unlinkSync`/`renameSync`/`copyFileSync`/`realpathSync`/`mkdirpSync` + `constants`；基于 Go `os`/`io/fs`。**node:assert**（`assert.go`）——`ok`/`strictEqual`/`notStrictEqual`/`deepEqual`/`deepStrictEqual`/`throws`/`doesNotThrow`/`ifError`/`fail` + `assert.strict` 子对象（严格模式别名）；新增 `ErrAssertion` 错误类型。**node:crypto**（`crypto.go`）——`createHash`（md5/sha1/sha256/sha512，返回 Hash 对象含 update/digest 链式 API）/`randomBytes`（同步，返回 hex 编码）；基于 Go `crypto/*`。端到端验证全部通过（fs 读写/stat/append/unlink、assert ok/strictEqual/deepStrictEqual/throws、crypto sha256/md5/randomBytes、events on/once/emit 链式） |
 | v1.8 | 2026-08-04 | Phase 2 第三批模块：node:stream + node:querystring + node:string_decoder。**node:stream**（`stream.go`）——Readable/Writable/Duplex/Transform 构造器，均继承自 EventEmitter（通过 `newEmitterInstance` 获得事件能力，在其上追加流方法）；Readable 支持 `push`/`read`/`pipe`/`pause`/`resume`/`destroy` + flowing 模式（注册 'data' 监听器时自动切换）+ `Readable.from` 工厂 + `push(null)` 结束流并触发 'end'/'close'；Writable 支持 `write`/`end`（触发 'finish'/'close'）/`cork`/`uncork`/`destroy` + 自定义 write 函数；Transform 覆盖 write（写入时调 transform 函数，结果 push 到可读端）；`pipeline(s1, s2, ..., callback)` 串联流（基于 `pipe`）；`finished(stream, cb)` 监听 finish/end/error。**node:querystring**（`querystring.go`）——`parse`（支持多值 key 转数组）/`stringify`/`escape`/`unescape`；基于 Go `net/url`。**node:string_decoder**（`string_decoder.go`）——`StringDecoder` 构造器（`write` 处理多字节字符跨边界、`end` 刷新剩余数据）；基于 Go `unicode/utf8`。端到端验证全部通过（stream data/end/pipe、querystring parse/stringify、string_decoder write/end）；内置模块总数达 11 个 |
+| v1.9 | 2026-08-04 | **事件循环基础设施 + node:http 完成**（Phase 2 第四批）。**事件循环**——`Interpreter` 新增 `taskCh`（缓冲 64）/`taskWG`/`stopCh`/`loopOnce` 字段与 `PostTask`/`RunLoop`/`Stop`/`AddRef` 方法（`eventloop.go`）；设计：JS 只在 RunLoop 所在 goroutine 执行（单线程语义），任意 Go goroutine（net/http 回调、定时器到期）经 `PostTask` 投递闭包，任务执行后排空 microtask 队列；`WaitGroup` 跟踪活跃句柄（已投递任务 + 活跃定时器 + AddRef 资源），计数归零时 RunLoop 自动退出；`engine.Context` 接口新增 `PostTask`/`AddRef`，`VM` 转发实现，`stubContext` 同步兜底。**定时器 globals**（`timers.go`）——`setTimeout`/`setInterval`/`setImmediate`/`clearTimeout`/`clearInterval`/`clearImmediate`；基于 `time.AfterFunc`/`Ticker` + `PostTask` 回 JS 线程，创建时 `AddRef`、单次触发/clear 时释放。**CLI 接入**——`loader.Run` 后调 `RunLoop()` 进入事件循环，无 pending 任务自动退出。**node:http**（`http.go`）——`createServer`/`server.listen`（动态端口 0、真实端口经 `net.Listen` 后 `ln.Addr()` 获取）/`server.close`/`server.address`（含 地址对象）/`request`/`get`/`STATUS_CODES`；服务器用 Go `net/http.Server` 在 goroutine 监听，请求到达时构造 JS `IncomingMessage`（method/url/httpVersion/headers + 'data'/'end' 事件）与 `ServerResponse`（writeHead/write/end/setHeader/getHeader/statusCode），`handleRequest` 阻塞等待 JS handler 完成保证响应写入时序；客户端 `newClientRequest` 用 Go `http.Client` 发请求、响应 PostTask 回调；关键修复——(1) 服务器 `listen` 时 `AddRef` 计入活跃度、`close` 时延迟到 close 回调执行后再释放（否则事件循环提前退出）；(2) 'data'/'end' 事件延迟到 handler/回调注册完监听器后发射（否则 body 丢失）；(3) `flushHeadersOnce` 避免重复 WriteHeader；(4) nil URL 容错。新增 `http_test.go` 5 个测试（服务器+客户端完整闭环、请求体 echo、setTimeout/setInterval+clear/setImmediate）；内置模块总数达 12 个，测试总数 438→443；CLI 端到端验证通过（STATUS 200 / METHOD / URL / BODY / CLOSED / EXIT 0） |
