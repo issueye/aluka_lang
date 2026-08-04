@@ -845,6 +845,12 @@ func (c *Compiler) compileForOf(left ast.Node, right ast.Expression, body ast.St
 	c.pushLoop(loopStart, 0)
 	defer c.popLoop()
 
+	// ES2015 语义：for (let/const x of ...) 每次迭代创建新的块作用域绑定，
+	// 使闭包捕获每次迭代的值（而非共享同一槽位的最终值）。
+	// 实现：循环体包在新的 pushBlock 内，left 在该 block 声明。
+	c.pushBlock()
+	defer c.popBlock()
+
 	// Get value and bind to left.
 	c.emit(bytecode.OpLoadLocal, uint32(tmpResult))
 	c.emit(bytecode.OpGetProp, uint32(nameValue))

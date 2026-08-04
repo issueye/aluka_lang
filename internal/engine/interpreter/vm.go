@@ -1382,6 +1382,14 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 		ar := newAsyncRunner(v, tmpl, cl.upvalues, thisVal, args)
 		return ar.start(), nil
 	}
+	// 切换到闭包定义时的 module，使函数体内 OpMakeClosure/OpMakeClass 的
+	// fnIdx/classIdx 解析到正确的 Functions/Classes（跨模块闭包，如 CJS
+	// getter 在另一模块上下文调用）。
+	savedModule := v.module
+	if cl.module != nil {
+		v.module = cl.module
+	}
+	defer func() { v.module = savedModule }()
 	if asNew {
 		// Create a new object with proto from cl.prototype.
 		newObj := engine.NewObject()
@@ -1963,6 +1971,7 @@ type vmClosure struct {
 	vm       *VM
 	tmpl     *bytecode.FuncTemplate
 	upvalues []*upvalue
+	module   *bytecode.Module // 定义时的 module（OpMakeClosure 内部创建子闭包时用）
 }
 
 // newVMClosure creates a vmClosure with a fresh function object.
@@ -1972,6 +1981,7 @@ func newVMClosure(vm *VM, tmpl *bytecode.FuncTemplate, upvalues []*upvalue) *vmC
 		vm:       vm,
 		tmpl:     tmpl,
 		upvalues: upvalues,
+		module:   vm.module,
 	}
 }
 
@@ -2000,4 +2010,9 @@ func (c *vmClosure) Delete(key string) bool                 { return c.obj.Delet
 // Call implements engine.Function — calls the closure with this=undefined.
 func (c *vmClosure) Call(args []engine.Value) (engine.Value, error) {
 	return c.vm.callClosure(c, engine.Undefined(), args, false)
+}
+
+// InvokeFn 以指定 this 和参数调用函数值（供外部包调用 JS 函数，如 loadCJS 触发 getter）。
+func (v *VM) InvokeFn(fn, this engine.Value, args []engine.Value) (engine.Value, error) {
+	return v.invoke(fn, this, args, false)
 }

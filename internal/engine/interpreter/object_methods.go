@@ -53,8 +53,7 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 	}))
 
 	// defineProperty(obj, prop, descriptor) 定义/修改一个属性。
-	// 简化：descriptor.value 直接写入；get/set 访问器暂不建模为真访问器，
-	// 而是若提供 value 则写入 value，忽略访问器字段（记录在已知限制中）。
+	// 支持 value/writable 数据属性与 get/set 访问器属性（真访问器，经 SetAccessor）。
 	_ = obj.Set("defineProperty", interp.makeFunc("defineProperty", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 3 {
 			return nil, fmt.Errorf("%w: Object.defineProperty requires (obj, prop, descriptor)", engine.ErrTypeError)
@@ -68,24 +67,35 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 		if !ok {
 			return nil, fmt.Errorf("%w: Property descriptor must be an object", engine.ErrTypeError)
 		}
-		// 既有 value 又有 get/set：按规范应报错，这里简化为优先 value。
+		// 访问器属性：get/set 装为真访问器（每次访问调用 getter，this=接收者）。
+		hasGet := hasOwn(desc, "get")
+		hasSet := hasOwn(desc, "set")
+		if hasGet || hasSet {
+			var getter, setter engine.Value = engine.Undefined(), engine.Undefined()
+			if hasGet {
+				if gv, err := desc.Get("get"); err == nil && !gv.IsUndefined() {
+					getter = gv
+				}
+			}
+			if hasSet {
+				if sv, err := desc.Get("set"); err == nil && !sv.IsUndefined() {
+					setter = sv
+				}
+			}
+			engine.SetAccessor(o, key, getter, setter)
+			return args[0], nil
+		}
+		// 数据属性：value 直接写入（默认 undefined）。
 		if hasOwn(desc, "value") {
 			v, _ := desc.Get("value")
 			_ = o.Set(key, v)
-		} else if hasOwn(desc, "get") {
-			// 简化：将访问器结果求值并写入（非真正访问器）。
-			getFn, err := desc.Get("get")
-			if err == nil && !getFn.IsUndefined() {
-				if cv, err := asCallable(getFn); err == nil {
-					v, _ := cv.callWith(engine.Undefined(), nil)
-					_ = o.Set(key, v)
-				}
-			}
+		} else {
+			_ = o.Set(key, engine.Undefined())
 		}
 		return args[0], nil
 	}))
 
-	// defineProperties(obj, descriptors) 批量定义属性。
+	// defineProperties(obj, descriptors) 批量定义属性（复用 defineProperty 语义）。
 	_ = obj.Set("defineProperties", interp.makeFunc("defineProperties", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("%w: Object.defineProperties requires (obj, descriptors)", engine.ErrTypeError)
@@ -104,6 +114,25 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 			if !ok {
 				continue
 			}
+			// 访问器属性。
+			hasGet := hasOwn(desc, "get")
+			hasSet := hasOwn(desc, "set")
+			if hasGet || hasSet {
+				var getter, setter engine.Value = engine.Undefined(), engine.Undefined()
+				if hasGet {
+					if gv, err := desc.Get("get"); err == nil && !gv.IsUndefined() {
+						getter = gv
+					}
+				}
+				if hasSet {
+					if sv, err := desc.Get("set"); err == nil && !sv.IsUndefined() {
+						setter = sv
+					}
+				}
+				engine.SetAccessor(o, k, getter, setter)
+				continue
+			}
+			// 数据属性。
 			if hasOwn(desc, "value") {
 				v, _ := desc.Get("value")
 				_ = o.Set(k, v)

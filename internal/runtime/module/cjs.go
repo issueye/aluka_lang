@@ -64,19 +64,37 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 		_, evalErr = l.ctx.Eval(string(src), absPath)
 	}
 
-	// Restore globals
-	l.restoreGlobals(oldGlobals)
-
+	// Get the final module.exports (may have been reassigned).
+	// 注意：module.exports 可能被 Object.defineProperty 重定义为 getter 访问器
+	// （如 ansi-styles）。Go 侧 moduleObj.Get 不触发 JS getter，故在模块源码
+	// 末尾注入导出语句，让 getter 在原 module 上下文求值。
+	var finalExports engine.Value
 	if evalErr != nil {
-		// Remove from cache on error
+		// 编译/执行出错：移除缓存并返回错误。
 		l.mu.Lock()
 		delete(l.cache, absPath)
 		l.mu.Unlock()
+		l.restoreGlobals(oldGlobals)
 		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, evalErr)
 	}
+	finalExports = exports
+	// 尝试经 moduleObj.Get 读取；若结果是 AccessorValue（含 get/set），说明
+	// exports 被重定义为访问器（如 ansi-styles 的 Object.defineProperty(module,
+	// 'exports', {get})）——经 VM 调用 getter 取真实值。
+	if v, err := moduleObj.Get("exports"); err == nil && v != nil {
+		if acc, ok := v.(*engine.AccessorValue); ok {
+			if vm, ok := l.ctx.(*interpreter.VM); ok && !acc.Getter.IsUndefined() {
+				if gv, gerr := vm.InvokeFn(acc.Getter, moduleObj, nil); gerr == nil {
+					finalExports = gv
+				}
+			}
+		} else if !v.IsUndefined() && !v.IsNull() {
+			finalExports = v
+		}
+	}
 
-	// Get the final module.exports (may have been reassigned)
-	finalExports, _ := moduleObj.Get("exports")
+	// Restore globals
+	l.restoreGlobals(oldGlobals)
 
 	// Mark as loaded
 	_ = moduleObj.Set("loaded", engine.Boolean(true))

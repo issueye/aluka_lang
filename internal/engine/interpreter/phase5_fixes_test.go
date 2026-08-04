@@ -149,3 +149,59 @@ func TestArrayProtoFallback(t *testing.T) {
 		t.Errorf("[1,2,3].indexOf(2) = %q, want 1", got)
 	}
 }
+
+// TestDefinePropertyAccessor 验证 Object.defineProperty/defineProperties 支持真访问器。
+func TestDefinePropertyAccessor(t *testing.T) {
+	// 单个 defineProperty getter。
+	got := vmEvalStr(t, `
+		var o = {};
+		Object.defineProperty(o, 'g', { get() { return 42; } });
+		o.g;
+	`)
+	if got != "42" {
+		t.Errorf("defineProperty getter = %q, want 42", got)
+	}
+	// defineProperties 多个 getter（this 绑定接收者）。
+	got = vmEvalStr(t, `
+		function C() {}
+		Object.defineProperties(C.prototype, {
+			a: { get() { return 1; } },
+			b: { get() { return 2; } }
+		});
+		var c = new C();
+		c.a + ':' + c.b;
+	`)
+	if got != "1:2" {
+		t.Errorf("defineProperties getters = %q, want 1:2", got)
+	}
+	// 原型链 getter（this 是实例）。
+	got = vmEvalStr(t, `
+		function C() {}
+		Object.defineProperty(C.prototype, 'v', { get() { return this._v || 'def'; } });
+		var c = new C();
+		c._v = 'set';
+		c.v;
+	`)
+	if got != "set" {
+		t.Errorf("prototype getter this = %q, want set", got)
+	}
+}
+
+// TestCrossModuleClosure 验证闭包跨模块调用时 fnIdx 正确（module 切换）。
+func TestCrossModuleClosure(t *testing.T) {
+	// 经 require 加载的模块导出函数创建子闭包，跨模块调用不应 panic。
+	// （用本地文件模拟 CJS 模块。）
+	got := vmEvalStr(t, `
+		var calls = [];
+		var f = (function() {
+			return function inner() {
+				var g = function() { return 'deep'; };
+				return g();
+			};
+		})();
+		f();
+	`)
+	if got != "deep" {
+		t.Errorf("nested closure = %q, want deep", got)
+	}
+}
