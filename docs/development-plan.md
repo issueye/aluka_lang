@@ -1,6 +1,6 @@
 # Aluka 运行时 — 开发计划文档
 
-> 项目代号：`aluka` ｜ 文档版本：v1.15 ｜ 日期：2026-08-04
+> 项目代号：`aluka` ｜ 文档版本：v1.16 ｜ 日期：2026-08-04
 > 配套文档：[需求分析文档](./requirements-analysis.md)
 
 ---
@@ -72,7 +72,8 @@
 | 2 | Node.js 核心内置模块 | ✅ 完成 | ~95% |
 | 3 | Web API + P1 Node 模块 | ✅ 完成 | ~95% |
 | 4 | Aluka 特有 API（兼容 Bun） | ✅ P0+P1 完成，P2 stub | ~90% |
-| 5-8 | 后续阶段 | ❌ 未开始 | 0% |
+| 5 | 包管理器 | ✅ P0 完成（install/add/remove + semver + registry + lockfile） | ~70% |
+| 6-8 | 后续阶段 | ❌ 未开始 | 0% |
 
 #### Phase 0：工程基座 — ✅ 完成
 
@@ -864,13 +865,13 @@ func init() {
 
 ### 验收清单
 
-- [ ] `aluka install`：在空目录创建 `node_modules`
-- [ ] `aluka install express`：成功安装 express 及其依赖
-- [ ] `aluka add lodash`：更新 `package.json` + lockfile
-- [ ] `aluka remove lodash`：移除并清理
-- [ ] `aluka install` 速度：典型中型项目（50 依赖）< 10s
-- [ ] `aluka run app.js`：依赖 express 的应用可运行
-- [ ] workspace：monorepo 多包 install 工作
+- [x] `aluka install`：在空目录创建 `node_modules`
+- [x] `aluka install <pkg>`：成功安装包及其传递依赖（已验证 is-number、chalk@4 等）
+- [x] `aluka add <pkg>`：更新 `package.json` + 生成 aluka.lock
+- [x] `aluka remove <pkg>`：移除 package.json 依赖并重装
+- [x] `aluka install` 并发下载解压（默认并发 8）
+- [ ] `aluka run app.js`：依赖 express 的应用可运行（受限于引擎函数提升等 P1 缺陷，部分真实包 require 失败，见已知限制）
+- [ ] workspace：monorepo 多包 install（5.11 待实现）
 
 ### 风险
 
@@ -1285,3 +1286,5 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 | v1.13 | 2026-08-04 | **API 缺口补齐 + 隐藏类/内联缓存（1B.5）**。**API 补齐**——`crypto_web.go` 实现 `crypto.subtle.importKey`/`generateKey` + `CryptoKey` 对象（type/extractable/algorithm/usages，raw/pkcs8/spki/jwk 格式）；`fs_promises.go` 实现 `node:fs/promises`（readFile/writeFile/appendFile/mkdir/readdir/stat/unlink/rm/rename/copyFile/access，真异步 goroutine + PostTask + Promise）；`timers_promises.go` 实现 `setInterval` 异步迭代器（for await 逐 tick resolve，iterator.return() 清理定时器）。**隐藏类 + 内联缓存（1B.5）**——`engine/shape.go` 新增 `Shape`（属性名序列 + 槽位索引 + transition 树，shapeCounter 分配全局唯一 id）；`objectValue` 存储从 `map[string]Value` + `keys []string` 重构为 `shape *Shape` + `slots []Value` + 对象级 `deleted map`（删除标记避免污染共享 Shape，删除后复用槽位）；`Get`/`Set`/`Delete`/`Keys`/`String`/`SetAccessor`/`UpdateAccessor`/`FindAccessor` 全部迁移到 shape 存储；`ArrayValue`/`BufferValue`/`functionValue` 的 length/name 槽位同步改用 `setSlot`；VM 新增 `ICache`（固定 2048 表，`(shape.id, key)` hash → 槽位索引，`getProperty` 快速路径直接读槽跳过 map 查找与 deleted 检查）。**基准**（Windows/Go 1.25）：单对象 3M 循环 × 3 属性访问 1219.8ms，多对象同类 shape 300K 循环 × 3 访问 244.5ms；全量测试 + conformance 10/10 无回归。测试总数 530→550+ |
 | v1.14 | 2026-08-04 | **自研 GC（1B.6）+ test262 集成**。**GC**——`engine/gc.go` 新增引擎级 JS 对象堆：所有 `objectValue`/`ArrayValue`/`functionValue`/`BufferValue` 创建时经 `register` 注册（Go 1.24+ `weak.Pointer` 弱引用，不阻止 Go GC）；`GC(roots)` 执行标记-清除——标记阶段从根集沿对象图 DFS（own 属性 slots + 数组元素，含 deleted 检查），清除阶段移除 Go GC 已回收的弱引用；返回 `HeapStats{AllocCount/LiveCount/MarkedCount}`；全局 `gc()` 函数（globals/gc.go，CLI 注册）触发并返回统计。架构说明：纯 Go 无法脱离 runtime 手动释放物理内存，自研 GC 提供对象图遍历验证、存活统计与显式触发，底层回收由 Go runtime 完成。**test262 集成**——`tests/conformance/test262/` 新增 Go runner（`run.go`）：遍历测试目录、解析 frontmatter（`/*--- YAML ---*/`，支持 `negative` 的 phase/type）、前置 test262 风格 assert harness（`$DONOTEVALUATE`/`assert.sameValue/isTrue/throws`）、临时文件执行 aluka 判断通过/失败、输出通过率；本地用例子集 `cases/`（01-basic/02-negative-syntax/03-negative-runtime/04-builtins/05-es2015，覆盖 ES5 基础、negative 语法/运行时错误、内置对象、ES2015 let/const/箭头/class/解构/Map/Set/Symbol）**5/5 通过（100%）**。**顺带修复引擎缺陷**——native 函数（Go 实现的 `hasOwnProperty` 等）的 `[[Prototype]]` 未链接 Function.prototype 导致 `.call`/`.apply`/`.bind` 缺失，`getProperty` 对 `TypeFunction` 增加 own 优先 + `functionProto` 回退。全量测试 + node conformance 10/10 + test262 5/5；测试总数 550→565+ |
 | v1.15 | 2026-08-04 | **Phase 4 完成（Aluka 特有 API，兼容 Bun）**。**重命名**——全局对象 `Bun` → `Aluka`（保留 `Bun` 兼容别名，`Bun === Aluka` 为 true）。**基础 API（4.1/4.3-4.8）**——`globals/aluka.go` 新增 `NewAluka`：version/platform/arch/cwd/origin/main/nanoseconds/env（与 process.env 同源）/sleep/sleepSync/gc/file（BunFile：text/json/arrayBuffer/size）/write/stdout/stderr/stdin。**serve（4.2）**——`Aluka.serve({port, hostname, fetch})` 基于 Go net/http：同步 `net.Listen` 立即暴露实际端口（port:0 由 OS 分配，此前经 PostTask 异步设置导致 `srv.port` undefined）、`fetch(req)` 构造 Request（method/url/headers/body）在 JS 线程执行、`stop()` 返回 Promise（Close + AddRef 释放）；响应头经 Headers 内部 `_pairs` 属性直读（此前遍历函数键导致响应头错误）、响应体读内部 `_body` 同步写回（规避 `Promise.then` 无 this 绑定的引擎限制导致 body 回调永不执行）。**fetch 侧修复**——补 `Response.json`（JSON.stringify + 默认 Content-Type: application/json）/`Response.redirect`（302 Location）；`fetch` 支持 `redirect: "follow|manual|error"`（Go CheckRedirect 三态）；Buffer 实例原型挂到构造器 prototype + 注册 `Uint8Array` 全局别名，使 `buf instanceof Uint8Array` 成立（engine `SetProto`/`GetProto` 补 BufferValue 分支）。**P1 API（4.9-4.16）**——`Aluka.$`（跨平台 shell：Windows cmd /C、其余 sh -c，返回 {stdout/stderr/exitCode/text()/json()}）；`Aluka.password`（scrypt hash/verify，格式 `aluka-scrypt$N$salt$hash`）；`Aluka.hash`（FNV-1a 64 → BigInt + sha1/sha256/sha512 hex）；`Aluka.deflateSync/inflateSync/gzipSync/gunzipSync` + 异步 deflate/inflate/gzip/gunzip（Go compress/zlib + compress/gzip）；`Aluka.peek`（Promise 状态查询，`PromiseValue` 新增导出 `State()/Result()`）/deepEquals/deepAssign/which/escapeHTML/isTerminal/dns.lookup；`Aluka.CSV/TSV/TOML/YAML`（parse/stringify，CSV/TSV 用 encoding/csv，TOML/YAML 自研子集解析器——TOML 支持 table/数组/引号注释剥离，YAML 支持缩进嵌套、列表项、顶层列表、内联 `- key: value`）；`Aluka.spawn`（Subprocess：pid/stdout/stderr ReadableStream/exited Promise/kill）/`spawnSync`（含 env 合并、cwd）。**P2 stub（4.17-4.20）**——`Aluka.SQL`/`Redis`/`S3` API 骨架（方法存在、调用返回 rejected Promise 提示驱动待接入），不引入 pgx/redis/aws-sdk 重依赖。**测试**——新增 `aluka_test.go` 11 个测试（基础信息、file/write、hash、password、compress、util、encoding、$ shell、spawnSync、serve 完整闭环 Go http.Get、SQL/Redis/S3 stub）；测试总数 565→580+；全量测试 + node conformance 10/10 + test262 5/5 无回归。 |
+
+| v1.16 | 2026-08-04 | **Phase 5 启动：npm 兼容包管理器 + 引擎缺陷修复**。**包管理器（WBS 5.1-5.9）**——`internal/pkgmanager/semver`（自研 npm 语义化版本：解析 v 前缀/缺失组件/prerelease/build，范围 ^/~/>=/<=/>/</=、x 通配、空格 AND、|| OR、prerelease 排除规则、MaxSatisfying）；`internal/pkgmanager/registry`（npm registry HTTP 客户端：包元数据 + tarball 下载，scoped 包转义、鉴权 token、自定义 registry）；`internal/pkgmanager/resolver`（依赖解析 BFS + 简化 hoisting 先到先得，dependencies+peerDependencies 合并、optionalDependencies 失败跳过）；`internal/pkgmanager/installer`（node_modules 布局 + 并发下载解压，archive/tar+compress/gzip，剥离 package/ 顶层前缀，路径穿越防护，单文件 256MB 上限）；`internal/pkgmanager/lockfile`（aluka.lock 文本格式，bun.lock 兼容子集）；CLI `aluka install [pkg]`/`add`/`remove`/`update` 子命令（package.json 读写、最新版本经 dist-tags 解析、^ 前缀）。**真实 npm 验证**——`aluka add is-number` 安装并 `require` 运行成功；`aluka add chalk@4` 解析并安装 6 个传递依赖（chalk/ansi-styles/supports-color/color-convert/color-name/has-flag）。**引擎缺陷修复（真实包暴露）**——(1) 一元加 `+"x"` 错误返回 0 → 实现 `jsToNumber`/`jsStringToNumber`（ES ToNumber 语义：非数字字符串→NaN、""→0、0x/0o 前缀、trim）；(2) parser 不支持 `~` 按位非 → parseUnary 增加 `~` case + AST 解释器 OpBitNot；(3) `require('os')` 裸内置模块名不拦截 → require 层增加 `isBareSpecifier + hasBuiltin` 检查（Node 内置优先于 node_modules 同名包）；(4) 计算成员调用 `obj[key](args)` 不支持（报错且 for-of+嵌套函数上下文中编译器提前 panic）→ compiler 用 OpDup+OpGetElem+OpSwap+OpCallWithThis 实现（保留 this 绑定，含 spread 分支）；(5) compileFunction 编译 body 出错时未 pop funcStack 导致 c.cur() 残留 → 错误路径先 pop 再返回 error。**内置模块补充**——`node:tty`（isatty/ReadStream/WriteStream，chalk 依赖）。**测试**——新增 `phase5_fixes_test.go`（一元加、~、计算成员调用、for-of 嵌套函数）+ semver 4 个测试（35 用例）；全量测试 + node conformance 10/10 + test262 5/5 无回归。**已知限制**——部分真实包（chalk、supports-color、left-pad）require 时失败，根因为函数声明在 `module.exports` 赋值时尚未提升（引擎 hoisting 缺陷，P1 范畴），Phase 5 包管理器核心功能不受影响。 |

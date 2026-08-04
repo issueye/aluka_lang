@@ -28,3 +28,6 @@ Thumbs.db
 # 项目缓存
 .aluka-cache/
 node_modules/
+
+# ZCode plan/agent workspace
+.zcode/

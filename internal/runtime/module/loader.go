@@ -75,9 +75,13 @@ func (l *Loader) Run(path string) error {
 // It resolves the specifier, checks the cache, and loads the module.
 func (l *Loader) require(specifier, parentPath string) (engine.Value, error) {
 	// 内置模块拦截：node: 前缀（如 node:fs、node:path、node:fs/promises）。
-	// 同时支持无前缀的旧形式（require('path')），只要名字在注册表中。
 	if isBuiltinSpecifier(specifier) {
 		return l.loadBuiltin(specifier)
+	}
+	// 无前缀裸名（如 require('path')）：若注册表中有同名内置模块则优先内置
+	// （Node.js 语义，内置模块优先于 node_modules 同名包）。
+	if isBareSpecifier(specifier) && l.hasBuiltin(specifier) {
+		return l.loadBuiltin("node:" + specifier)
 	}
 
 	resolved, err := l.resolver.Resolve(specifier, parentPath)
@@ -245,15 +249,31 @@ func (l *Loader) rejectImport(err error) (engine.Value, error) {
 	return engine.Undefined(), err
 }
 
-// isBuiltinSpecifier 判断 specifier 是否为内置模块。
-// 支持 node: 前缀（node:fs）和无前缀旧形式（path、fs），后者仅在注册表中存在时才算内置。
+// isBuiltinSpecifier 判断 specifier 是否为内置模块（node: 前缀形式）。
 func isBuiltinSpecifier(specifier string) bool {
-	if strings.HasPrefix(specifier, "node:") {
-		return true
+	return strings.HasPrefix(specifier, "node:")
+}
+
+// isBareSpecifier 判断是否为裸模块名（非相对/绝对/盘符路径）。
+func isBareSpecifier(spec string) bool {
+	if spec == "" {
+		return false
 	}
-	// 无前缀形式仅在调用方检查注册表时才确定，这里只做 node: 前缀判断。
-	// 无前缀的裸名（如 "path"）可能是 node_modules 里的包，不应在 require 层拦截。
-	return false
+	if strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../") || strings.HasPrefix(spec, "/") {
+		return false
+	}
+	if len(spec) >= 2 && spec[1] == ':' {
+		return false // Windows 盘符（如 C:\...）。
+	}
+	return true
+}
+
+// hasBuiltin 判断注册表中是否存在指定内置模块。
+func (l *Loader) hasBuiltin(name string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, ok := l.builtinFns[name]
+	return ok
 }
 
 // loadBuiltin 加载内置模块。specifier 形如 "node:path" 或 "node:fs/promises"。

@@ -509,8 +509,7 @@ func (v *VM) run() (engine.Value, error) {
 				val, _ := v.interp.globalObj.Get(name)
 				v.push(engine.Str(val.Type().String()))
 			case bytecode.OpUnaryPlus:
-				n, _ := v.pop().Float()
-				v.push(engine.Number(n))
+				v.push(engine.Number(jsToNumber(v.pop())))
 
 			// --- Comparisons ---
 			case bytecode.OpEq:

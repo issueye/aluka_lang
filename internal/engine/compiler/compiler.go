@@ -1905,10 +1905,39 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 		return nil
 	}
 
-	// Method call: foo.bar(args) or foo?.bar(args) — keep receiver as `this`.
+	// Method call: foo.bar(args) or foo?.bar(args) or foo[expr](args) — keep receiver as `this`.
 	if m, ok := n.Callee.(*ast.MemberExpr); ok {
+		// 计算成员调用 obj[expr](args)：编译 obj，dup，取 method，swap 使栈为
+		// [method, obj(this), args]，用 OpCallWithThis 调用（保留 this 绑定）。
 		if m.Computed {
-			return fmt.Errorf("computed method call not supported in 1B MVP")
+			if err := c.compileExpr(m.Object); err != nil {
+				return err
+			}
+			if m.Optional {
+				c.emitOptionalJump()
+			}
+			c.emit(bytecode.OpDup, 0) // [obj, obj]
+			if err := c.compileExpr(m.Property); err != nil {
+				return err
+			}
+			// [obj, obj, key]
+			c.emit(bytecode.OpGetElem, 0) // [obj, method]
+			c.emit(bytecode.OpSwap, 0)    // [method, obj(this)]
+			if !hasSpread {
+				for _, a := range n.Arguments {
+					if err := c.compileExpr(a); err != nil {
+						return err
+					}
+				}
+				c.emit(bytecode.OpCallWithThis, uint32(len(n.Arguments)))
+			} else {
+				c.compileArgsArray(n.Arguments)
+				c.emit(bytecode.OpCallWithThisArgs, 0)
+			}
+			if chainHead {
+				c.endOptionalChain()
+			}
+			return nil
 		}
 		if err := c.compileExpr(m.Object); err != nil {
 			return err
@@ -2127,17 +2156,24 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 		c.patchJumpToHere(jSkip)
 	}
 
-	switch b := body.(type) {
-	case *ast.BlockStmt:
-		c.hoistFunc(b)
-		if err := c.compileStmts(b.Body); err != nil {
-			return err
+	// body 编译可能失败（语法/语义错误）；出错时必须先 pop funcStack，
+	// 否则 c.cur() 残留该函数帧，后续编译在错误的 scopes 上操作。
+	bodyErr := func() error {
+		switch b := body.(type) {
+		case *ast.BlockStmt:
+			c.hoistFunc(b)
+			return c.compileStmts(b.Body)
+		case ast.Expression:
+			if err := c.compileExpr(b); err != nil {
+				return err
+			}
+			c.emit(bytecode.OpReturn, 0)
 		}
-	case ast.Expression:
-		if err := c.compileExpr(b); err != nil {
-			return err
-		}
-		c.emit(bytecode.OpReturn, 0)
+		return nil
+	}()
+	if bodyErr != nil {
+		c.funcStack = c.funcStack[:len(c.funcStack)-1]
+		return bodyErr
 	}
 	c.emit(bytecode.OpReturnUndef, 0)
 	c.funcStack = c.funcStack[:len(c.funcStack)-1]

@@ -57,6 +57,8 @@ func main() {
 		runFile(args[1], useVM(args[1:]), noCache(args[1:]))
 	case first == "repl":
 		startREPL(useVM(args[1:]))
+	case first == "install" || first == "add" || first == "remove" || first == "update":
+		cmdPkg(first, args[1:])
 	case strings.HasPrefix(first, "-"):
 		fatalErr("aluka: unknown option " + first)
 	default:
@@ -305,7 +307,10 @@ SUBCOMMANDS:
     -e, --eval <code>    Execute inline JS code
     (none) <file>        Shorthand for 'run'
     repl                 Start interactive REPL
-    install              Install dependencies (Phase 5+)
+    install [pkg]        Install dependencies (Phase 5)
+    add <pkg>            Add a dependency to package.json
+    remove <pkg>         Remove a dependency from package.json
+    update               Re-resolve and reinstall dependencies
     test                 Run tests (Phase 6+)
     build                Bundle project (Phase 7+)
 

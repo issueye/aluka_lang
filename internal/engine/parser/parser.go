@@ -1260,7 +1260,7 @@ func (p *Parser) parseUnary() (ast.Expression, error) {
 	t := p.peek()
 	if t.Type == lexer.TokenPunct {
 		switch t.Value {
-		case "!", "+", "-":
+		case "!", "+", "-", "~":
 			p.next()
 			arg, err := p.parseUnary()
 			if err != nil {

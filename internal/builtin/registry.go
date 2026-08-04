@@ -42,6 +42,7 @@ func RegisterAll(loader *module.Loader) {
 		return NewModule(ctx, loader)
 	})
 	loader.RegisterBuiltin("buffer", globals.NewBufferModule)
+	loader.RegisterBuiltin("tty", NewTTY)
 }
 
 // --- 公共辅助函数 -------------------------------------------------------

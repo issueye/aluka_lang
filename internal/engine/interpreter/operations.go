@@ -231,6 +231,60 @@ func toNumber(v engine.Value) float64 {
 	return f
 }
 
+// jsToNumber 实现 JS ToNumber 语义（ES 规范 §7.1.3）。
+// 修正：非数字字符串返回 NaN（而非 0），undefined → NaN，null → 0。
+func jsToNumber(v engine.Value) float64 {
+	if v == nil {
+		return math.NaN()
+	}
+	switch v.Type() {
+	case engine.TypeNumber:
+		f, _ := v.Float()
+		return f
+	case engine.TypeBoolean:
+		b, _ := v.Bool()
+		if b {
+			return 1
+		}
+		return 0
+	case engine.TypeString:
+		return jsStringToNumber(v.String())
+	case engine.TypeNull:
+		return 0
+	case engine.TypeUndefined:
+		return math.NaN()
+	default:
+		// 对象：简化经 String() 转字符串再解析。
+		return jsStringToNumber(v.String())
+	}
+}
+
+// jsStringToNumber 解析字符串为 JS 数字（Number("") == 0，Number("0xFF") 十六进制，
+// 非法 → NaN）。
+func jsStringToNumber(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	if len(s) > 2 && (s[:2] == "0x" || s[:2] == "0X") {
+		if n, err := strconv.ParseInt(s[2:], 16, 64); err == nil {
+			return float64(n)
+		}
+		return math.NaN()
+	}
+	if len(s) > 2 && (s[:2] == "0o" || s[:2] == "0O") {
+		if n, err := strconv.ParseInt(s[2:], 8, 64); err == nil {
+			return float64(n)
+		}
+		return math.NaN()
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return math.NaN()
+	}
+	return f
+}
+
 // toInt32 converts a value to a 32-bit integer (JS ToInt32).
 func toInt32(v engine.Value) int32 {
 	f, _ := v.Float()

@@ -1056,8 +1056,10 @@ func (interp *Interpreter) evalUnary(e *ast.UnaryExpr, scope *Scope) (engine.Val
 		f, _ := arg.Float()
 		return engine.Number(-f), nil
 	case "+":
-		f, _ := arg.Float()
-		return engine.Number(f), nil
+		return engine.Number(jsToNumber(arg)), nil
+	case "~":
+		n := toInt32(arg)
+		return engine.Number(float64(^n)), nil
 	case "typeof":
 		return engine.Str(arg.Type().String()), nil
 	case "void":
