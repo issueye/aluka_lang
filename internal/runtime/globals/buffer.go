@@ -29,9 +29,18 @@ import (
 // BufferConfig 配置 Buffer 全局（当前无可用选项，保留类型以备扩展）。
 type BufferConfig struct{}
 
-// NewBuffer 注册全局 Buffer 构造器。
+// bufferProto 是 Buffer.prototype（Uint8Array 兼容）。实例以它作原型，
+// 使 buf instanceof Buffer / Uint8Array 成立。
+var bufferProto engine.Object
+
+// NewBuffer 注册全局 Buffer 构造器（并注册 Uint8Array 兼容别名）。
 func NewBuffer(ctx engine.Context, cfg BufferConfig) error {
-	return ctx.Global().Set("Buffer", newBufferExports())
+	ctor := newBufferExports()
+	if err := ctx.Global().Set("Buffer", ctor); err != nil {
+		return err
+	}
+	// Bun/Web API 中 Buffer 是 Uint8Array 子类：复用同一构造器。
+	return ctx.Global().Set("Uint8Array", ctor)
 }
 
 // NewBufferModule 构造 node:buffer 模块导出对象。
@@ -72,10 +81,11 @@ func newBufferExports() engine.Value {
 	})
 
 	co, _ := ctor.AsObject()
-	// prototype 占位（实例方法以 own property 安装，prototype 仅作标识）。
+	// prototype 占位（实例方法以 own property 安装，prototype 仅作标识/instanceof）。
 	proto := engine.NewObject()
 	_ = proto.Set("constructor", ctor)
 	_ = co.Set("prototype", proto)
+	bufferProto = proto
 
 	// --- 静态方法 ----------------------------------------------------------
 	_ = co.Set("from", engine.NewFunction("from", bufferFromArgs))
@@ -194,6 +204,10 @@ func NewBufferInstance(data []byte) engine.Value {
 // newBufferInstance 创建 Buffer 实例并安装实例方法（闭包捕获底层数据）。
 func newBufferInstance(data []byte) engine.Object {
 	buf := engine.NewBuffer(data)
+	// 实例原型指向 Buffer.prototype（instanceof Buffer/Uint8Array 成立）。
+	if bufferProto != nil {
+		engine.SetProto(buf, bufferProto)
+	}
 	d := data
 
 	// toString([encoding[, start[, end]]])

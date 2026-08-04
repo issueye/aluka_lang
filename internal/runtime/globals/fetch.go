@@ -32,6 +32,82 @@ func NewFetch(ctx engine.Context, cfg FetchConfig) error {
 	_ = ctx.Global().Set("Response", engine.NewFunction("Response", func(args []engine.Value) (engine.Value, error) {
 		return newResponseInstance(ctx, args), nil
 	}))
+	respCtor, _ := ctx.Global().Get("Response")
+	if f, ok := respCtor.AsFunction(); ok {
+		fo, _ := f.AsObject()
+		// Response.json(data, init?)：JSON.stringify + Content-Type: application/json。
+		_ = fo.Set("json", engine.NewFunction("json", func(a []engine.Value) (engine.Value, error) {
+			var body engine.Value = engine.Str("")
+			if len(a) > 0 && !a[0].IsUndefined() {
+				jsonGlobal, err := ctx.Global().Get("JSON")
+				if err != nil || !jsonGlobal.IsObject() {
+					return engine.Undefined(), fmt.Errorf("Response.json: JSON not available")
+				}
+				jo, _ := jsonGlobal.AsObject()
+				sf, err := jo.Get("stringify")
+				if err != nil || !sf.IsFunction() {
+					return engine.Undefined(), fmt.Errorf("Response.json: JSON.stringify not available")
+				}
+				if sf, ok := sf.AsFunction(); ok {
+					v, verr := sf.Call([]engine.Value{a[0]})
+					if verr != nil {
+						return engine.Undefined(), verr
+					}
+					body = v
+				}
+			}
+			var init engine.Value = engine.Undefined()
+			if len(a) > 1 {
+				init = a[1]
+			}
+			res := buildResponse(ctx, []engine.Value{body, init}, 0, "", engine.Undefined())
+			// 未显式提供 Content-Type 时补默认值。
+			if ro, ok := res.AsObject(); ok {
+				if h, ok := ro.Get("headers"); ok == nil {
+					if ho, ok := h.AsObject(); ok {
+						hasCT := false
+						if hf, err := ho.Get("has"); err == nil && hf.IsFunction() {
+							if hfn, ok := hf.AsFunction(); ok {
+								if r, err := hfn.Call([]engine.Value{engine.Str("Content-Type")}); err == nil {
+									if b, ok := r.Bool(); ok {
+										hasCT = b
+									}
+								}
+							}
+						}
+						if !hasCT {
+							if sf, err := ho.Get("set"); err == nil && sf.IsFunction() {
+								if sfn, ok := sf.AsFunction(); ok {
+									_, _ = sfn.Call([]engine.Value{engine.Str("Content-Type"), engine.Str("application/json")})
+								}
+							}
+						}
+					}
+				}
+			}
+			return res, nil
+		}))
+		// Response.redirect(url, status?)：302 Location 响应。
+		_ = fo.Set("redirect", engine.NewFunction("redirect", func(a []engine.Value) (engine.Value, error) {
+			status := 302
+			if len(a) > 1 {
+				if n, ok := a[1].Int(); ok {
+					status = n
+				}
+			}
+			url := ""
+			if len(a) > 0 {
+				url = a[0].String()
+			}
+			return buildResponse(ctx, []engine.Value{
+				engine.Null(),
+				engine.NewObjectFrom(map[string]engine.Value{
+					"status":  engine.IntValue(status),
+					"headers": engine.NewObjectFrom(map[string]engine.Value{"Location": engine.Str(url)}),
+				}),
+			}, 0, "", engine.Undefined()), nil
+		}))
+	}
 	_ = ctx.Global().Set("FormData", engine.NewFunction("FormData", func(args []engine.Value) (engine.Value, error) {
 		return newFormDataInstance(), nil
 	}))
@@ -164,6 +240,14 @@ func newHeadersInstance(args []engine.Value) engine.Value {
 		}
 		return engine.Undefined(), nil
 	}))
+	// 内部属性：全部键值对（供 Go 侧 Aluka.serve 写响应头用）。
+	{
+		pairsArr := make([]engine.Value, 0, len(state.pairs))
+		for _, p := range state.pairs {
+			pairsArr = append(pairsArr, engine.NewArray([]engine.Value{engine.Str(p.key), engine.Str(p.val)}))
+		}
+		_ = obj.Set("_pairs", engine.NewArray(pairsArr))
+	}
 	_ = obj.Set("keys", engine.NewFunction("keys", func(a []engine.Value) (engine.Value, error) {
 		keys := make([]engine.Value, 0, len(state.pairs))
 		for _, p := range state.pairs {
@@ -250,7 +334,11 @@ func newRequestInstance(ctx engine.Context, args []engine.Value) engine.Value {
 
 	_ = req.Set("url", engine.Str(urlStr))
 	_ = req.Set("method", engine.Str(method))
-	_ = req.Set("headers", newHeadersInstance([]engine.Value{headers}))
+	hdrs := headers
+	if hdrs == nil {
+		hdrs = engine.Undefined()
+	}
+	_ = req.Set("headers", newHeadersInstance([]engine.Value{hdrs}))
 	if bodyStr != "" {
 		_ = req.Set("body", engine.Str(bodyStr))
 	} else {
@@ -311,9 +399,15 @@ func buildResponse(ctx engine.Context, args []engine.Value, status int, statusTe
 	_ = res.Set("status", engine.IntValue(initStatus))
 	_ = res.Set("statusText", engine.Str(initStatusText))
 	_ = res.Set("ok", engine.Boolean(initStatus >= 200 && initStatus < 300))
-	_ = res.Set("headers", newHeadersInstance([]engine.Value{initHeaders}))
+	hdrs := initHeaders
+	if hdrs == nil {
+		hdrs = engine.Undefined()
+	}
+	_ = res.Set("headers", newHeadersInstance([]engine.Value{hdrs}))
 	_ = res.Set("bodyUsed", engine.Boolean(false))
 	_ = res.Set("url", engine.Str(""))
+	// 内部同步 body（供 Go 侧 Aluka.serve 等直接读取，避免 Promise this 绑定问题）。
+	_ = res.Set("_body", engine.Str(bodyStr))
 
 	// body 属性：ReadableStream（推入 body 后关闭）。
 	if bodyStr != "" {
@@ -474,6 +568,7 @@ func doFetch(ctx engine.Context, args []engine.Value) (engine.Value, error) {
 	method := "GET"
 	var headersInit engine.Value
 	bodyStr := ""
+	redirectMode := "follow"
 
 	// input：字符串或 Request。
 	if args[0].Type() == engine.TypeString {
@@ -502,6 +597,9 @@ func doFetch(ctx engine.Context, args []engine.Value) (engine.Value, error) {
 			if v, err := o.Get("body"); err == nil && !v.IsUndefined() && !v.IsNull() {
 				bodyStr = v.String()
 			}
+			if v, err := o.Get("redirect"); err == nil && !v.IsUndefined() && v.String() != "" {
+				redirectMode = v.String()
+			}
 		}
 	}
 
@@ -527,6 +625,17 @@ func doFetch(ctx engine.Context, args []engine.Value) (engine.Value, error) {
 			h := headersToGo(headersInit)
 			req.Header = h
 			client := &http.Client{}
+			switch redirectMode {
+			case "manual":
+				// 返回 3xx 原始响应（Go 的 ErrUseLastResponse 语义）。
+				client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+					return http.ErrUseLastResponse
+				}
+			case "error":
+				client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+					return fmt.Errorf("fetch: redirect to %s rejected", req.URL)
+				}
+			}
 			resp, err := client.Do(req)
 			if err != nil {
 				ctx.PostTask(func() {

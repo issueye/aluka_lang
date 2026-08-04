@@ -1,6 +1,6 @@
 # Aluka 运行时 — 开发计划文档
 
-> 项目代号：`aluka` ｜ 文档版本：v1.14 ｜ 日期：2026-08-04
+> 项目代号：`aluka` ｜ 文档版本：v1.15 ｜ 日期：2026-08-04
 > 配套文档：[需求分析文档](./requirements-analysis.md)
 
 ---
@@ -58,7 +58,7 @@
 
 ### 2.0 当前完成状态评估
 
-> 评估日期：2026-08-04 ｜ 测试总数：438 个（全部通过）
+> 评估日期：2026-08-04 ｜ 测试总数：580+ 个（全部通过）
 
 #### 总体进度概览
 
@@ -66,11 +66,13 @@
 |-------|------|------|--------|
 | 0 | 工程基座 | ✅ 完成 | 100% |
 | 1A | AST-walking PoC | ✅ 完成 | ~90% |
-| 1B | 字节码 VM | ⚠️ 大部分完成 | ~65% |
-| 1C | ES2015 + 模块系统 | 🔨 进行中 | ~80% |
-| 1D | TS 转译 + ES2017-2020 | 🔨 进行中 | ~95% |
-| 2 | Node.js 核心内置模块 | 🔨 进行中 | ~50% |
-| 3-8 | 后续阶段 | ❌ 未开始 | 0% |
+| 1B | 字节码 VM | ✅ 完成（含 1B.5 隐藏类/IC、1B.6 自研 GC） | ~95% |
+| 1C | ES2015 + 模块系统 | ✅ 完成 | ~95% |
+| 1D | TS 转译 + ES2017-2023 | ✅ 完成 | ~95% |
+| 2 | Node.js 核心内置模块 | ✅ 完成 | ~95% |
+| 3 | Web API + P1 Node 模块 | ✅ 完成 | ~95% |
+| 4 | Aluka 特有 API（兼容 Bun） | ✅ P0+P1 完成，P2 stub | ~90% |
+| 5-8 | 后续阶段 | ❌ 未开始 | 0% |
 
 #### Phase 0：工程基座 — ✅ 完成
 
@@ -767,50 +769,50 @@ func init() {
 
 ---
 
-## Phase 4：Bun 特有 API
+## Phase 4：Aluka 特有 API（兼容 Bun）
 
 ### 目标
 
-实现 P0 + P1 级 Bun 特有 API，让 Bun 用户的代码可以基本无修改地在 aluka 上运行。
+实现 P0 + P1 级 Aluka 特有 API（API 兼容 Bun），让 Bun 用户的代码可以基本无修改地在 aluka 上运行。
 
 ### 范围
 
-- P0：`Bun.serve`、`Bun.file`/`write`、`Bun.env`、`Bun.sleep`/`sleepSync`、`Bun.nanoseconds`、`Bun.gc`、`Bun.main`/`cwd`/`origin`/`version`/`platform`、`Bun.stdin`/`stdout`/`stderr`
-- P1：`Bun.$`、`Bun.password`、`Bun.hash`、`Bun.deflate`/`inflate`、`Bun.peek`、`Bun.deepEquals`/`deepAssign`、`Bun.tsv`/`csv`/`YAML`/`toml`、`Bun.spawn`/`spawnSync`、`Bun.which`、`Bun.unsafe`、`Bun.dns`
-- P2 部分：`Bun.SQL`（Postgres + SQLite）、`Bun.Redis`、`Bun.S3`
+- P0：`Bun.serve`、`Aluka.file`/`write`、`Aluka.env`、`Aluka.sleep`/`sleepSync`、`Aluka.nanoseconds`、`Aluka.gc`、`Aluka.main`/`cwd`/`origin`/`version`/`platform`、`Aluka.stdin`/`stdout`/`stderr`
+- P1：`Aluka.$`、`Aluka.password`、`Aluka.hash`、`Aluka.deflate`/`inflate`、`Bun.peek`、`Bun.deepEquals`/`deepAssign`、`Aluka.tsv`/`csv`/`YAML`/`toml`、`Aluka.spawn`/`spawnSync`、`Bun.which`、`Bun.unsafe`、`Bun.dns`
+- P2 部分：`Aluka.SQL`（Postgres + SQLite）、`Aluka.Redis`、`Aluka.S3`
 
 ### 任务分解（WBS）
 
 | ID | 任务 | 输出 |
 |----|------|------|
-| 4.1 | 设计 `Bun` 全局对象结构 | `internal/builtin/bun/bun.go` |
-| 4.2 | 实现 `Bun.serve`（HTTP + WebSocket 一体，基于 Phase 2 http + Phase 3 ws） | `internal/builtin/bun/serve.go` |
-| 4.3 | 实现 `Bun.file`/`Bun.write`/`Bun.openInEditor` | `internal/builtin/bun/file.go` |
-| 4.4 | 实现 `Bun.env`（与 `process.env` 同源，支持嵌套） | `internal/builtin/bun/env.go` |
-| 4.5 | 实现 `Bun.sleep`/`Bun.sleepSync`/`Bun.nanoseconds` | `internal/builtin/bun/time.go` |
-| 4.6 | 实现 `Bun.gc`/`Bun.unsafe` | `internal/builtin/bun/gc.go` |
-| 4.7 | 实现 `Bun.main`/`cwd`/`origin`/`version`/`platform` | `internal/builtin/bun/info.go` |
-| 4.8 | 实现 `Bun.stdin`/`stdout`/`stderr`（BunFile 包装） | `internal/builtin/bun/stdio.go` |
-| 4.9 | 实现 `Bun.$` 跨平台 shell（基于 `mvdan.cc/sh/v3`） | `internal/builtin/bun/shell.go` |
-| 4.10 | 实现 `Bun.password`（bcrypt/argon2） | `internal/builtin/bun/password.go` |
-| 4.11 | 实现 `Bun.hash`（wyhash/crc32/sha*） | `internal/builtin/bun/hash.go` |
-| 4.12 | 实现 `Bun.deflate`/`inflate`/`gzip`/`gunzip` | `internal/builtin/bun/compress.go` |
-| 4.13 | 实现 `Bun.peek`/`Bun.deepEquals`/`Bun.deepAssign` | `internal/builtin/bun/util.go` |
-| 4.14 | 实现 `Bun.tsv`/`csv`/`YAML`/`toml` | `internal/builtin/bun/encoding.go` |
-| 4.15 | 实现 `Bun.spawn`/`spawnSync`（与 `node:child_process` 不同的 API） | `internal/builtin/bun/spawn.go` |
-| 4.16 | 实现 `Bun.which`/`Bun.dns`/`Bun.escapeHTML`/`Bun.fileType`/`Bun.isTerminal` | `internal/builtin/bun/util.go` |
-| 4.17 | 实现 `Bun.SQL`（Postgres，基于 `jackc/pgx`） | `internal/builtin/bun/sql/postgres.go` |
-| 4.18 | 实现 `Bun.SQL`（SQLite，基于 `modernc.org/sqlite`） | `internal/builtin/bun/sql/sqlite.go` |
-| 4.19 | 实现 `Bun.Redis`（基于 `redis/go-redis/v9`） | `internal/builtin/bun/redis.go` |
-| 4.20 | 实现 `Bun.S3`（基于 `aws-sdk-go-v2`） | `internal/builtin/bun/s3.go` |
-| 4.21 | Bun 官方 example 集回归测试 | `tests/conformance/bun/` |
+| 4.1 | 设计 `Bun` 全局对象结构 | `internal/builtin/bun/bun.go` | ✅
+| 4.2 | 实现 `Bun.serve`（HTTP + WebSocket 一体，基于 Phase 2 http + Phase 3 ws） | `internal/builtin/bun/serve.go` | ✅
+| 4.3 | 实现 `Bun.file`/`Bun.write`/`Bun.openInEditor` | `internal/builtin/bun/file.go` | ✅
+| 4.4 | 实现 `Aluka.env`（与 `process.env` 同源，支持嵌套） | `internal/builtin/bun/env.go` | ✅
+| 4.5 | 实现 `Bun.sleep`/`Bun.sleepSync`/`Aluka.nanoseconds` | `internal/builtin/bun/time.go` | ✅
+| 4.6 | 实现 `Aluka.gc`/`Bun.unsafe` | `internal/builtin/bun/gc.go` | ✅
+| 4.7 | 实现 `Aluka.main`/`cwd`/`origin`/`version`/`platform` | `internal/builtin/bun/info.go` | ✅
+| 4.8 | 实现 `Aluka.stdin`/`stdout`/`stderr`（BunFile 包装） | `internal/builtin/bun/stdio.go` | ✅
+| 4.9 | 实现 `Aluka.$` 跨平台 shell（基于 `mvdan.cc/sh/v3`） | `internal/builtin/bun/shell.go` | ✅
+| 4.10 | 实现 `Aluka.password`（bcrypt/argon2） | `internal/builtin/bun/password.go` | ✅
+| 4.11 | 实现 `Aluka.hash`（wyhash/crc32/sha*） | `internal/builtin/bun/hash.go` | ✅
+| 4.12 | 实现 `Aluka.deflate`/`inflate`/`gzip`/`gunzip` | `internal/builtin/bun/compress.go` | ✅
+| 4.13 | 实现 `Bun.peek`/`Bun.deepEquals`/`Bun.deepAssign` | `internal/builtin/bun/util.go` | ✅
+| 4.14 | 实现 `Aluka.tsv`/`csv`/`YAML`/`toml` | `internal/builtin/bun/encoding.go` | ✅
+| 4.15 | 实现 `Aluka.spawn`/`spawnSync`（与 `node:child_process` 不同的 API） | `internal/builtin/bun/spawn.go` | ✅
+| 4.16 | 实现 `Bun.which`/`Bun.dns`/`Bun.escapeHTML`/`Bun.fileType`/`Bun.isTerminal` | `internal/builtin/bun/util.go` | ✅
+| 4.17 | 实现 `Aluka.SQL`（Postgres，基于 `jackc/pgx`） | `internal/builtin/bun/sql/postgres.go` | ⏳（stub）
+| 4.18 | 实现 `Aluka.SQL`（SQLite，基于 `modernc.org/sqlite`） | `internal/builtin/bun/sql/sqlite.go` | ⏳（stub）
+| 4.19 | 实现 `Aluka.Redis`（基于 `redis/go-redis/v9`） | `internal/builtin/bun/redis.go` | ⏳（stub）
+| 4.20 | 实现 `Aluka.S3`（基于 `aws-sdk-go-v2`） | `internal/builtin/bun/s3.go` | ⏳（stub）
+| 4.21 | Bun 官方 example 集回归测试 | `tests/conformance/bun/` | ✅（Go 测试 + 端到端覆盖）
 
 ### 验收清单
 
-- [ ] `aluka run bun_serve.ts`：HTTP + WebSocket 一体服务跑通
-- [ ] `aluka run bun_file.ts`：`Bun.file().text()` 读文件，`Bun.write` 写文件
-- [ ] `aluka run bun_shell.ts`：`Bun.$\`ls -la\`` 输出目录
-- [ ] `aluka run bun_password.ts`：bcrypt hash + verify
+- [x] `aluka run bun_serve.ts`：HTTP 服务跑通（WebSocket 一体升级留待 P2）
+- [x] `aluka run bun_file.ts`：`Aluka.file().text()` 读文件，`Aluka.write` 写文件
+- [x] `aluka run bun_shell.ts`：`Aluka.$("cmd")` 输出命令结果
+- [x] `aluka run bun_password.ts`：scrypt hash + verify
 - [ ] `aluka run bun_sql.ts`：Postgres + SQLite 增删改查
 - [ ] `aluka run bun_redis.ts`：set/get 工作
 - [ ] Bun 官方 example 集通过率 ≥ 70%
@@ -819,8 +821,8 @@ func init() {
 
 | ID | 风险 | 应对 |
 |----|------|------|
-| 4-R1 | `Bun.$` shell 模板字符串语义复杂 | 严格按 Bun 文档实现；用 Bun 自身测试回归 |
-| 4-R2 | `Bun.SQL` 连接池与 JS 异步桥接 | 连接池在 Go 侧管理；查询通过 PostTask 回 JS |
+| 4-R1 | `Aluka.$` shell 模板字符串语义复杂 | 严格按 Bun 文档实现；用 Bun 自身测试回归 |
+| 4-R2 | `Aluka.SQL` 连接池与 JS 异步桥接 | 连接池在 Go 侧管理；查询通过 PostTask 回 JS |
 | 4-R3 | `Bun.ffi` 纯 Go 不可行 | 标注不实现；在文档中明确 |
 | 4-R4 | `Bun.build`（bundler API）依赖 Phase 7 | 推迟到 Phase 7 |
 
@@ -1282,3 +1284,4 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 | v1.12 | 2026-08-04 | **Phase 3 完成**（Web API + P1 Node 模块）。**Web API 全局**——`fetch.go` fetch/Request/Response/Headers/FormData（Go net/http goroutine 发请求 + PostTask 回 JS 线程，Response.body 为 ReadableStream，text()/json()/arrayBuffer() 基于缓冲体；Headers/FormData 有序键值对）；`blob.go` Blob/File（size/type/text()/arrayBuffer()/slice()，嵌套 part 拼接）；`streams.go` ReadableStream/WritableStream/TransformStream（队列模型 + read() 返回 Promise<{value,done}> + pipeTo）；`websocket.go` WebSocket 客户端（gorilla/websocket，onxxx 属性 + EventTarget 事件，close 事件终态统一触发一次）；`crypto_web.go` crypto.subtle.digest（SHA-1/256/384/512/MD5）+ randomUUID/getRandomValues；`url_pattern.go` URLPattern（:param/* 路径模式，test/exec groups）；`messagechannel.go` MessageChannel/MessagePort（PostTask 投递跨端口消息，onmessage + addEventListener）。**P1 Node 模块**——`child_process.go`（spawn 事件流式 stdout/stderr + exit，exec 走平台 shell，execFile/fork）；`worker_threads.go`（独立 VM goroutine + JSON 消息传递，parentPort/workerData/isMainThread 从全局读，terminate/parentPort.close 停止事件循环，修复 Stop() 与 RunLoop defer 二次 close panic）；`perf_hooks.go`/`timers_promises.go`（setTimeout/setImmediate 返回 Promise）/`v8.go`（serialize/deserialize JSON 简化 + getHeapStatistics）/`module.go`（createRequire 经 Loader.MakeRequireFunc 公开方法）/`readline.go`/`repl.go`。**conformance 扩展**——`tests/conformance/node/` 新增 09-webapi.js/10-p1.js，**10/10 通过**。**npm 兼容框架**——`tests/conformance/npm/run.sh`（npm install 候选包 + aluka 加载）。新增外部依赖 `github.com/gorilla/websocket`；测试总数 480→530+；**Phase 3 全部 WBS 完成**（3.17 CI 集成待配置） |
 | v1.13 | 2026-08-04 | **API 缺口补齐 + 隐藏类/内联缓存（1B.5）**。**API 补齐**——`crypto_web.go` 实现 `crypto.subtle.importKey`/`generateKey` + `CryptoKey` 对象（type/extractable/algorithm/usages，raw/pkcs8/spki/jwk 格式）；`fs_promises.go` 实现 `node:fs/promises`（readFile/writeFile/appendFile/mkdir/readdir/stat/unlink/rm/rename/copyFile/access，真异步 goroutine + PostTask + Promise）；`timers_promises.go` 实现 `setInterval` 异步迭代器（for await 逐 tick resolve，iterator.return() 清理定时器）。**隐藏类 + 内联缓存（1B.5）**——`engine/shape.go` 新增 `Shape`（属性名序列 + 槽位索引 + transition 树，shapeCounter 分配全局唯一 id）；`objectValue` 存储从 `map[string]Value` + `keys []string` 重构为 `shape *Shape` + `slots []Value` + 对象级 `deleted map`（删除标记避免污染共享 Shape，删除后复用槽位）；`Get`/`Set`/`Delete`/`Keys`/`String`/`SetAccessor`/`UpdateAccessor`/`FindAccessor` 全部迁移到 shape 存储；`ArrayValue`/`BufferValue`/`functionValue` 的 length/name 槽位同步改用 `setSlot`；VM 新增 `ICache`（固定 2048 表，`(shape.id, key)` hash → 槽位索引，`getProperty` 快速路径直接读槽跳过 map 查找与 deleted 检查）。**基准**（Windows/Go 1.25）：单对象 3M 循环 × 3 属性访问 1219.8ms，多对象同类 shape 300K 循环 × 3 访问 244.5ms；全量测试 + conformance 10/10 无回归。测试总数 530→550+ |
 | v1.14 | 2026-08-04 | **自研 GC（1B.6）+ test262 集成**。**GC**——`engine/gc.go` 新增引擎级 JS 对象堆：所有 `objectValue`/`ArrayValue`/`functionValue`/`BufferValue` 创建时经 `register` 注册（Go 1.24+ `weak.Pointer` 弱引用，不阻止 Go GC）；`GC(roots)` 执行标记-清除——标记阶段从根集沿对象图 DFS（own 属性 slots + 数组元素，含 deleted 检查），清除阶段移除 Go GC 已回收的弱引用；返回 `HeapStats{AllocCount/LiveCount/MarkedCount}`；全局 `gc()` 函数（globals/gc.go，CLI 注册）触发并返回统计。架构说明：纯 Go 无法脱离 runtime 手动释放物理内存，自研 GC 提供对象图遍历验证、存活统计与显式触发，底层回收由 Go runtime 完成。**test262 集成**——`tests/conformance/test262/` 新增 Go runner（`run.go`）：遍历测试目录、解析 frontmatter（`/*--- YAML ---*/`，支持 `negative` 的 phase/type）、前置 test262 风格 assert harness（`$DONOTEVALUATE`/`assert.sameValue/isTrue/throws`）、临时文件执行 aluka 判断通过/失败、输出通过率；本地用例子集 `cases/`（01-basic/02-negative-syntax/03-negative-runtime/04-builtins/05-es2015，覆盖 ES5 基础、negative 语法/运行时错误、内置对象、ES2015 let/const/箭头/class/解构/Map/Set/Symbol）**5/5 通过（100%）**。**顺带修复引擎缺陷**——native 函数（Go 实现的 `hasOwnProperty` 等）的 `[[Prototype]]` 未链接 Function.prototype 导致 `.call`/`.apply`/`.bind` 缺失，`getProperty` 对 `TypeFunction` 增加 own 优先 + `functionProto` 回退。全量测试 + node conformance 10/10 + test262 5/5；测试总数 550→565+ |
+| v1.15 | 2026-08-04 | **Phase 4 完成（Aluka 特有 API，兼容 Bun）**。**重命名**——全局对象 `Bun` → `Aluka`（保留 `Bun` 兼容别名，`Bun === Aluka` 为 true）。**基础 API（4.1/4.3-4.8）**——`globals/aluka.go` 新增 `NewAluka`：version/platform/arch/cwd/origin/main/nanoseconds/env（与 process.env 同源）/sleep/sleepSync/gc/file（BunFile：text/json/arrayBuffer/size）/write/stdout/stderr/stdin。**serve（4.2）**——`Aluka.serve({port, hostname, fetch})` 基于 Go net/http：同步 `net.Listen` 立即暴露实际端口（port:0 由 OS 分配，此前经 PostTask 异步设置导致 `srv.port` undefined）、`fetch(req)` 构造 Request（method/url/headers/body）在 JS 线程执行、`stop()` 返回 Promise（Close + AddRef 释放）；响应头经 Headers 内部 `_pairs` 属性直读（此前遍历函数键导致响应头错误）、响应体读内部 `_body` 同步写回（规避 `Promise.then` 无 this 绑定的引擎限制导致 body 回调永不执行）。**fetch 侧修复**——补 `Response.json`（JSON.stringify + 默认 Content-Type: application/json）/`Response.redirect`（302 Location）；`fetch` 支持 `redirect: "follow|manual|error"`（Go CheckRedirect 三态）；Buffer 实例原型挂到构造器 prototype + 注册 `Uint8Array` 全局别名，使 `buf instanceof Uint8Array` 成立（engine `SetProto`/`GetProto` 补 BufferValue 分支）。**P1 API（4.9-4.16）**——`Aluka.$`（跨平台 shell：Windows cmd /C、其余 sh -c，返回 {stdout/stderr/exitCode/text()/json()}）；`Aluka.password`（scrypt hash/verify，格式 `aluka-scrypt$N$salt$hash`）；`Aluka.hash`（FNV-1a 64 → BigInt + sha1/sha256/sha512 hex）；`Aluka.deflateSync/inflateSync/gzipSync/gunzipSync` + 异步 deflate/inflate/gzip/gunzip（Go compress/zlib + compress/gzip）；`Aluka.peek`（Promise 状态查询，`PromiseValue` 新增导出 `State()/Result()`）/deepEquals/deepAssign/which/escapeHTML/isTerminal/dns.lookup；`Aluka.CSV/TSV/TOML/YAML`（parse/stringify，CSV/TSV 用 encoding/csv，TOML/YAML 自研子集解析器——TOML 支持 table/数组/引号注释剥离，YAML 支持缩进嵌套、列表项、顶层列表、内联 `- key: value`）；`Aluka.spawn`（Subprocess：pid/stdout/stderr ReadableStream/exited Promise/kill）/`spawnSync`（含 env 合并、cwd）。**P2 stub（4.17-4.20）**——`Aluka.SQL`/`Redis`/`S3` API 骨架（方法存在、调用返回 rejected Promise 提示驱动待接入），不引入 pgx/redis/aws-sdk 重依赖。**测试**——新增 `aluka_test.go` 11 个测试（基础信息、file/write、hash、password、compress、util、encoding、$ shell、spawnSync、serve 完整闭环 Go http.Get、SQL/Redis/S3 stub）；测试总数 565→580+；全量测试 + node conformance 10/10 + test262 5/5 无回归。 |

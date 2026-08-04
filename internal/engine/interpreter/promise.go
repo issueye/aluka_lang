@@ -80,6 +80,13 @@ func NewPromiseValue(interp *Interpreter) *PromiseValue {
 	return p
 }
 
+// State 返回 promise 状态（0 pending / 1 fulfilled / 2 rejected）。
+// 供 Aluka.peek 等外部查询，避免直接依赖 promiseState 类型。
+func (p *PromiseValue) State() int { return int(p.state) }
+
+// Result 返回 promise 已定值结果（pending 时为 undefined）。
+func (p *PromiseValue) Result() engine.Value { return p.result }
+
 // fulfill transitions the promise to fulfilled and schedules reactions.
 // Unlike resolve, fulfill does NOT unwrap Promise/thenable values.
 func (p *PromiseValue) fulfill(value engine.Value) {

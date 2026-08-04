@@ -334,6 +334,10 @@ func SetProto(obj Value, proto Object) {
 		if f.objectValue != nil {
 			f.objectValue.proto = proto
 		}
+	} else if b, ok := obj.(*BufferValue); ok {
+		if b.objectValue != nil {
+			b.objectValue.proto = proto
+		}
 	}
 }
 
@@ -350,6 +354,11 @@ func GetProto(obj Value) Object {
 	if f, ok := obj.(*functionValue); ok {
 		if f.objectValue != nil {
 			return f.objectValue.proto
+		}
+	}
+	if b, ok := obj.(*BufferValue); ok {
+		if b.objectValue != nil {
+			return b.objectValue.proto
 		}
 	}
 	return nil
