@@ -131,4 +131,5 @@ var (
 	ErrSyntaxError    = errors.New("aluka: syntax error")
 	ErrReferenceError = errors.New("aluka: reference error")
 	ErrRangeError     = errors.New("aluka: range error")
+	ErrAssertion      = errors.New("aluka: assertion error")
 )

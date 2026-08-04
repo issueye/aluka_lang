@@ -6,6 +6,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
+	"github.com/aluka-lang/aluka/internal/engine/bytecode"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/engine/parser"
 )
@@ -62,8 +63,17 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	oldGlobals := l.saveGlobals(absPath)
 	l.setGlobals(absPath, moduleObj, exports)
 
-	// Evaluate the transformed program
-	_, evalErr := vm.EvalProgram(transformed, absPath)
+	// 编译转换后的 AST（优先字节码缓存），然后执行。
+	// 字节码缓存（1C.14）：缓存键基于源文件元数据（转换是确定性的）。
+	mod, compileErr := l.bcCache.compileOrLoad(absPath, func() (*bytecode.Module, error) {
+		return vm.CompileAST(transformed, absPath)
+	})
+	var evalErr error
+	if compileErr != nil {
+		evalErr = compileErr
+	} else {
+		_, evalErr = vm.RunModule(mod)
+	}
 
 	// Restore globals
 	l.restoreGlobals(oldGlobals)

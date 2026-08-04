@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/bytecode"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // loadCJS loads and executes a CommonJS module.
@@ -45,8 +47,22 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 	oldGlobals := l.saveGlobals(absPath)
 	l.setGlobals(absPath, moduleObj, exports)
 
-	// Evaluate the module source
-	_, evalErr := l.ctx.Eval(string(src), absPath)
+	// 编译源码（优先字节码缓存），然后执行。
+	// 字节码缓存（1C.14）：命中则跳过 parse+compile，未命中则编译并写盘。
+	var evalErr error
+	if vm, ok := l.ctx.(*interpreter.VM); ok {
+		mod, err := l.bcCache.compileOrLoad(absPath, func() (*bytecode.Module, error) {
+			return vm.Compile(string(src), absPath)
+		})
+		if err != nil {
+			evalErr = err
+		} else {
+			_, evalErr = vm.RunModule(mod)
+		}
+	} else {
+		// 非 VM 引擎（AST 解释器）：退化为直接 Eval。
+		_, evalErr = l.ctx.Eval(string(src), absPath)
+	}
 
 	// Restore globals
 	l.restoreGlobals(oldGlobals)

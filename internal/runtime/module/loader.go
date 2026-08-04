@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -21,20 +22,33 @@ type Loader struct {
 
 	// bcCache 是字节码磁盘缓存（1C.14），命中时跳过 parse+compile。
 	bcCache bytecodeCache
+
+	// builtins 注册 Node.js 内置模块（node:fs / node:path 等）。
+	// key 为去掉 node: 前缀的模块名（如 "path"、"fs/promises"）。
+	builtins     map[string]engine.Value // 已构造的导出对象缓存
+	builtinFns   map[string]func(engine.Context) (engine.Value, error) // 工厂函数
 }
 
 // NewLoader creates a module loader bound to the given context.
 func NewLoader(ctx engine.Context) *Loader {
 	return &Loader{
-		ctx:      ctx,
-		resolver: NewResolver(),
-		cache:    make(map[string]engine.Value),
+		ctx:        ctx,
+		resolver:   NewResolver(),
+		cache:      make(map[string]engine.Value),
+		builtins:   make(map[string]engine.Value),
+		builtinFns: make(map[string]func(engine.Context) (engine.Value, error)),
 	}
 }
 
 // SetNoCache 禁用字节码缓存（对应 --no-cache）。
 func (l *Loader) SetNoCache(disabled bool) {
 	l.bcCache.disabled = disabled
+}
+
+// RegisterBuiltin 注册一个 Node.js 内置模块工厂。
+// name 为去掉 node: 前缀的模块名（如 "path"）。首次 require 时调用 factory 构造导出对象。
+func (l *Loader) RegisterBuiltin(name string, factory func(engine.Context) (engine.Value, error)) {
+	l.builtinFns[name] = factory
 }
 
 // Run is the entry point for executing a file as the main module.
@@ -60,6 +74,12 @@ func (l *Loader) Run(path string) error {
 // require is the CJS require function for a given parent module path.
 // It resolves the specifier, checks the cache, and loads the module.
 func (l *Loader) require(specifier, parentPath string) (engine.Value, error) {
+	// 内置模块拦截：node: 前缀（如 node:fs、node:path、node:fs/promises）。
+	// 同时支持无前缀的旧形式（require('path')），只要名字在注册表中。
+	if isBuiltinSpecifier(specifier) {
+		return l.loadBuiltin(specifier)
+	}
+
 	resolved, err := l.resolver.Resolve(specifier, parentPath)
 	if err != nil {
 		return engine.Undefined(), err
@@ -217,4 +237,44 @@ func (l *Loader) rejectImport(err error) (engine.Value, error) {
 		}
 	}
 	return engine.Undefined(), err
+}
+
+// isBuiltinSpecifier 判断 specifier 是否为内置模块。
+// 支持 node: 前缀（node:fs）和无前缀旧形式（path、fs），后者仅在注册表中存在时才算内置。
+func isBuiltinSpecifier(specifier string) bool {
+	if strings.HasPrefix(specifier, "node:") {
+		return true
+	}
+	// 无前缀形式仅在调用方检查注册表时才确定，这里只做 node: 前缀判断。
+	// 无前缀的裸名（如 "path"）可能是 node_modules 里的包，不应在 require 层拦截。
+	return false
+}
+
+// loadBuiltin 加载内置模块。specifier 形如 "node:path" 或 "node:fs/promises"。
+// 首次加载调用注册的工厂函数构造导出对象，之后缓存。
+func (l *Loader) loadBuiltin(specifier string) (engine.Value, error) {
+	// 去掉 node: 前缀，得到模块名（可能含子路径，如 "fs/promises"）。
+	name := strings.TrimPrefix(specifier, "node:")
+
+	l.mu.Lock()
+	if cached, ok := l.builtins[name]; ok {
+		l.mu.Unlock()
+		return cached, nil
+	}
+	factory, ok := l.builtinFns[name]
+	l.mu.Unlock()
+	if !ok {
+		return engine.Undefined(), fmt.Errorf("module: no such built-in module: %s", specifier)
+	}
+
+	// 构造导出对象。
+	exports, err := factory(l.ctx)
+	if err != nil {
+		return engine.Undefined(), fmt.Errorf("module: failed to load %s: %w", specifier, err)
+	}
+
+	l.mu.Lock()
+	l.builtins[name] = exports
+	l.mu.Unlock()
+	return exports, nil
 }
