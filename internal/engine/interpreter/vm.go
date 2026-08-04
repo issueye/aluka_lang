@@ -1617,6 +1617,10 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 		// （native 函数的 [[Prototype]] 未链接 functionProto）。
 		if o, ok := obj.(engine.Object); ok {
 			if val, _ := o.Get(key); !val.IsUndefined() {
+				// 访问器属性：调用 getter（this=函数对象）。
+				if acc, ok := val.(*engine.AccessorValue); ok && !acc.Getter.IsUndefined() {
+					return v.invoke(acc.Getter, obj, nil, false)
+				}
 				return val, nil
 			}
 		}

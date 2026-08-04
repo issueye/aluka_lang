@@ -658,13 +658,31 @@ func (a *AccessorValue) AsFunction() (Function, bool) { return nil, false }
 
 // SetAccessor installs a getter/setter pair as an own property on obj.
 func SetAccessor(obj Object, key string, getter, setter Value) {
-	ov, ok := obj.(*objectValue)
-	if !ok {
-		// Fall back to plain set (accessors unsupported on this type).
-		_ = obj.Set(key, NewAccessor(getter, setter))
+	// 直接 objectValue。
+	if ov, ok := obj.(*objectValue); ok {
+		ov.setSlot(key, NewAccessor(getter, setter))
 		return
 	}
-	ov.setSlot(key, NewAccessor(getter, setter))
+	// 嵌入 objectValue 的类型（functionValue/ArrayValue/BufferValue）。
+	if embedded := embeddedObjectValue(obj); embedded != nil {
+		embedded.setSlot(key, NewAccessor(getter, setter))
+		return
+	}
+	// Fall back to plain set (accessors unsupported on this type).
+	_ = obj.Set(key, NewAccessor(getter, setter))
+}
+
+// embeddedObjectValue 从嵌入 objectValue 的类型中取出其 *objectValue。
+func embeddedObjectValue(obj Object) *objectValue {
+	switch v := obj.(type) {
+	case *functionValue:
+		return v.objectValue
+	case *ArrayValue:
+		return v.objectValue
+	case *BufferValue:
+		return v.objectValue
+	}
+	return nil
 }
 
 // UpdateAccessor installs or updates a single getter or setter on obj. If an

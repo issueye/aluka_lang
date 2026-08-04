@@ -205,3 +205,26 @@ func TestCrossModuleClosure(t *testing.T) {
 		t.Errorf("nested closure = %q, want deep", got)
 	}
 }
+
+// TestFunctionObjectAccessor 验证函数对象上的访问器属性（如 chalk 的 prototype getter）。
+func TestFunctionObjectAccessor(t *testing.T) {
+	got := vmEvalStr(t, `
+		var f = function() {};
+		Object.defineProperty(f, 'g', { get() { return 42; } });
+		f.g;
+	`)
+	if got != "42" {
+		t.Errorf("function accessor = %q, want 42", got)
+	}
+	// defineProperties 在箭头函数上装多个 getter。
+	got = vmEvalStr(t, `
+		var proto = Object.defineProperties(() => {}, {
+			a: { get() { return 1; } },
+			b: { get() { return 2; } }
+		});
+		proto.a + proto.b;
+	`)
+	if got != "3" {
+		t.Errorf("function defineProperties getters = %q, want 3", got)
+	}
+}
