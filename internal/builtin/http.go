@@ -12,6 +12,7 @@ package builtin
 // 从 Go goroutine 出发的 JS 调用必须经 PostTask。
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -66,6 +67,7 @@ type httpServerState struct {
 	ctx           engine.Context
 	handler       engine.Value // 用户 handler
 	httpSrv       *http.Server
+	tlsConfig     *tls.Config // 非 nil 时启用 HTTPS
 	mu            sync.Mutex
 	listening     bool
 	addr          string
@@ -74,10 +76,15 @@ type httpServerState struct {
 	closed        bool
 }
 
-// newHTTPServer 创建 Server 对象（基于 EventEmitter）。
+// newHTTPServer 创建明文 HTTP Server 对象（基于 EventEmitter）。
 func newHTTPServer(ctx engine.Context, handler engine.Value) engine.Value {
+	return newHTTPServerWithTLS(ctx, handler, nil)
+}
+
+// newHTTPServerWithTLS 创建 Server 对象；tlsConfig 非 nil 时启用 HTTPS。
+func newHTTPServerWithTLS(ctx engine.Context, handler engine.Value, tlsConfig *tls.Config) engine.Value {
 	server := newEmitterInstance().(engine.Object)
-	state := &httpServerState{ctx: ctx, handler: handler}
+	state := &httpServerState{ctx: ctx, handler: handler, tlsConfig: tlsConfig}
 
 	// server.listen(port[, hostname][, callback])
 	_ = server.Set("listen", engine.NewFunction("listen", func(args []engine.Value) (engine.Value, error) {
@@ -141,7 +148,12 @@ func newHTTPServer(ctx engine.Context, handler engine.Value) engine.Value {
 			ctx.PostTask(func() {
 				emitEvent(server, "listening")
 			})
-			err = srv.Serve(ln)
+			if state.tlsConfig != nil {
+				// HTTPS：用 TLS listener 包装。
+				err = srv.Serve(tls.NewListener(ln, state.tlsConfig))
+			} else {
+				err = srv.Serve(ln)
+			}
 			if err != nil && err != http.ErrServerClosed {
 				ctx.PostTask(func() {
 					emitEvent(server, "error", engine.Str(err.Error()))
@@ -439,18 +451,25 @@ func httpStatusCodes() engine.Value {
 
 // clientReqState 是 ClientRequest 的内部状态。
 type clientReqState struct {
-	ctx      engine.Context
-	method   string
-	url      string
-	headers  map[string]string
-	body     strings.Builder
-	callback engine.Value // 响应回调
-	ended    bool
+	ctx          engine.Context
+	method       string
+	url          string
+	headers      map[string]string
+	body         strings.Builder
+	callback     engine.Value // 响应回调
+	ended        bool
+	insecureTLS  bool // rejectUnauthorized: false（跳过自签名证书校验）
 }
 
-// newClientRequest 创建 ClientRequest 对象。
-// options: 字符串 URL 或对象 {host, port, path, method, headers}。
+// newClientRequest 创建 ClientRequest 对象（HTTP）。
 func newClientRequest(ctx engine.Context, args []engine.Value) engine.Value {
+	return newClientRequestProto(ctx, args, "http")
+}
+
+// newClientRequestProto 创建 ClientRequest 对象。
+// proto 为 URL 协议前缀（"http"/"https"）。https 模块复用本函数。
+// options: 字符串 URL 或对象 {host, port, path, method, headers}。
+func newClientRequestProto(ctx engine.Context, args []engine.Value, proto string) engine.Value {
 	req := newEmitterInstance().(engine.Object)
 
 	state := &clientReqState{
@@ -468,25 +487,30 @@ func newClientRequest(ctx engine.Context, args []engine.Value) engine.Value {
 			state.url = opt.String()
 		default:
 			if o, ok := opt.AsObject(); ok {
-				if m, err := o.Get("method"); err == nil && m.String() != "" {
+				if m, err := o.Get("method"); err == nil && !m.IsUndefined() && !m.IsNull() && m.String() != "" {
 					state.method = m.String()
 				}
-				if h, err := o.Get("host"); err == nil && h.String() != "" {
-					state.url = "http://" + h.String()
+				if h, err := o.Get("host"); err == nil && !h.IsUndefined() && !h.IsNull() && h.String() != "" {
+					state.url = proto + "://" + h.String()
 				}
-				if p, err := o.Get("port"); err == nil && p.String() != "" {
+				if p, err := o.Get("port"); err == nil && !p.IsUndefined() && !p.IsNull() && p.String() != "" {
 					state.url = strings.TrimSuffix(state.url, "/") + ":" + p.String()
 				}
-				if pa, err := o.Get("path"); err == nil && pa.String() != "" {
+				if pa, err := o.Get("path"); err == nil && !pa.IsUndefined() && !pa.IsNull() && pa.String() != "" {
 					state.url = strings.TrimSuffix(state.url, "/") + pa.String()
 				}
-				if hdrs, err := o.Get("headers"); err == nil {
+				if hdrs, err := o.Get("headers"); err == nil && !hdrs.IsUndefined() && !hdrs.IsNull() {
 					if hObj, ok := hdrs.AsObject(); ok {
 						for _, k := range hObj.Keys() {
 							if v, err := hObj.Get(k); err == nil {
 								state.headers[k] = v.String()
 							}
 						}
+					}
+				}
+				if r, err := o.Get("rejectUnauthorized"); err == nil {
+					if b, ok := r.Bool(); ok && !b {
+						state.insecureTLS = true // 跳过自签名证书校验
 					}
 				}
 			}
@@ -551,6 +575,11 @@ func (s *clientReqState) send() {
 			req.Header.Set(k, v)
 		}
 		client := &http.Client{}
+		if s.insecureTLS {
+			client.Transport = &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // 自签名证书（本地开发）
+			}
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			s.ctx.PostTask(func() {

@@ -6,6 +6,7 @@ package builtin
 // 实现：顶层方法使用当前平台语义；posix/win32 子对象分别固定为对应平台语义。
 
 import (
+	"os"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -91,8 +92,14 @@ func newPathImpl(platform string) pathImpl {
 		delimiter: `:`,
 		join:      path.Join,
 		resolve: func(elem ...string) string {
-			abs, _ := filepath.Abs(path.Join(elem...))
-			return abs
+			resolved := path.Join(elem...)
+			if !path.IsAbs(resolved) {
+				// 相对路径基于当前工作目录（转成 posix 形式）。
+				if wd, err := os.Getwd(); err == nil {
+					resolved = path.Join(filepath.ToSlash(wd), resolved)
+				}
+			}
+			return path.Clean(resolved)
 		},
 		normalize: path.Clean,
 		dirname:   path.Dir,

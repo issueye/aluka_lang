@@ -45,6 +45,22 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 		return engine.Undefined(), nil
 	}))
 
+	// assert.equal(actual, expected, message)（宽松 == 比较）
+	_ = m.Set("equal", engine.NewFunction("equal", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 || !looseEqual(args[0], args[1]) {
+			return engine.Undefined(), fmt.Errorf("%w: expected %s but got %s", engine.ErrAssertion, argString(args, 1), argString(args, 0))
+		}
+		return engine.Undefined(), nil
+	}))
+
+	// assert.notEqual(actual, expected, message)
+	_ = m.Set("notEqual", engine.NewFunction("notEqual", func(args []engine.Value) (engine.Value, error) {
+		if len(args) >= 2 && looseEqual(args[0], args[1]) {
+			return engine.Undefined(), fmt.Errorf("%w: values should not be loosely equal", engine.ErrAssertion)
+		}
+		return engine.Undefined(), nil
+	}))
+
 	// assert.deepEqual(actual, expected, message)（非严格，== 比较）
 	_ = m.Set("deepEqual", engine.NewFunction("deepEqual", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 || !deepEqual(args[0], args[1], false) {
@@ -181,6 +197,52 @@ func strictEqual(a, b engine.Value) bool {
 	default:
 		return a == b // 对象引用相等
 	}
+}
+
+// looseEqual 实现 JS == 宽松比较（简化：null==undefined、number/string 互转、
+// bool→number）。
+func looseEqual(a, b engine.Value) bool {
+	if a.Type() == b.Type() {
+		return strictEqual(a, b)
+	}
+	if (a.IsNull() && b.IsUndefined()) || (a.IsUndefined() && b.IsNull()) {
+		return true
+	}
+	if a.Type() == engine.TypeNumber && b.Type() == engine.TypeString {
+		if rf, ok := b.Float(); ok {
+			af, _ := a.Float()
+			return af == rf
+		}
+	}
+	if a.Type() == engine.TypeString && b.Type() == engine.TypeNumber {
+		if lf, ok := a.Float(); ok {
+			bf, _ := b.Float()
+			return lf == bf
+		}
+	}
+	if a.Type() == engine.TypeBoolean {
+		bv := 0
+		if ab, _ := a.Bool(); ab {
+			bv = 1
+		}
+		return looseEqual(engine.IntValue(bv), b)
+	}
+	if b.Type() == engine.TypeBoolean {
+		bv := 0
+		if bb, _ := b.Bool(); bb {
+			bv = 1
+		}
+		return looseEqual(a, engine.IntValue(bv))
+	}
+	return false
+}
+
+// argString 安全取第 i 个参数的字符串表示。
+func argString(args []engine.Value, i int) string {
+	if i < len(args) {
+		return args[i].String()
+	}
+	return "undefined"
 }
 
 // deepEqual 深度相等。strict 为 true 时用严格比较。

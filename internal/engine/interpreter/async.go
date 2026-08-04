@@ -31,6 +31,11 @@ type asyncRunner struct {
 	savedPC       int
 	savedTryStack []*vmTryHandler
 	hasState      bool
+
+	// closedUps 记录挂起时被关闭的 upvalues（闭包捕获的局部变量）。
+	// 恢复时把 upvalue 的 closed 值写回函数体读写的栈槽，保证挂起期间
+	// 闭包（如定时器回调）对变量的修改对函数体可见。
+	closedUps []upvalueClose
 }
 
 // newAsyncRunner creates an async function runner. Call start() to begin
@@ -154,6 +159,15 @@ func (ar *asyncRunner) restoreFrame() {
 	ar.vm.stack = append(ar.vm.stack, ar.savedStack...)
 	ar.savedStack = nil
 	ar.savedTryStack = nil
+	// 恢复被闭包捕获的局部变量：挂起期间闭包（如定时器回调）可能修改了
+	// upvalue 的 closed 值，写回函数体读写的栈槽保持共享语义。
+	for _, cu := range ar.closedUps {
+		relIdx := cu.absIdx - frame.base
+		if relIdx >= 0 && relIdx < len(ar.vm.stack)-frame.base {
+			ar.vm.stack[frame.base+relIdx] = cu.uv.closed
+		}
+	}
+	ar.closedUps = nil
 	ar.vm.frames = append(ar.vm.frames, frame)
 }
 
@@ -168,7 +182,8 @@ func (ar *asyncRunner) suspendAtAwait(awaitedVal engine.Value) {
 	ar.savedPC = frame.pc
 	ar.savedTryStack = frame.tryStack
 	// Close upvalues and pop the frame (same as generator suspension).
-	ar.vm.closeUpvalues(frame.base)
+	// 记录被关闭的 upvalues，恢复时同步捕获的局部变量。
+	ar.closedUps = ar.vm.closeUpvalues(frame.base)
 	ar.vm.stack = ar.vm.stack[:frame.base]
 	ar.vm.frames = ar.vm.frames[:len(ar.vm.frames)-1]
 

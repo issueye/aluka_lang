@@ -145,6 +145,17 @@ func runModule(path string, vm, disableCache bool) error {
 		return fmt.Errorf("register encoding: %w", err)
 	}
 
+	// 注册 Web API 全局：URL/URLSearchParams、AbortController、Event/EventTarget。
+	if err := globals.NewURL(ctx, globals.URLConfig{}); err != nil {
+		return fmt.Errorf("register URL: %w", err)
+	}
+	if err := globals.NewAbort(ctx, globals.AbortConfig{}); err != nil {
+		return fmt.Errorf("register Abort: %w", err)
+	}
+	if err := globals.NewEvent(ctx, globals.EventConfig{}); err != nil {
+		return fmt.Errorf("register Event: %w", err)
+	}
+
 	// 使用模块加载器执行文件
 	loader := modmodule.NewLoader(ctx)
 	loader.SetNoCache(disableCache)
@@ -194,6 +205,17 @@ func execute(code string, filename string, vm bool) error {
 	}
 	if err := globals.NewEncoding(ctx, globals.EncodingConfig{}); err != nil {
 		return fmt.Errorf("register encoding: %w", err)
+	}
+
+	// 注册 Web API 全局（-e 模式同样需要）。
+	if err := globals.NewURL(ctx, globals.URLConfig{}); err != nil {
+		return fmt.Errorf("register URL: %w", err)
+	}
+	if err := globals.NewAbort(ctx, globals.AbortConfig{}); err != nil {
+		return fmt.Errorf("register Abort: %w", err)
+	}
+	if err := globals.NewEvent(ctx, globals.EventConfig{}); err != nil {
+		return fmt.Errorf("register Event: %w", err)
 	}
 
 	// 执行

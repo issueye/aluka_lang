@@ -25,7 +25,7 @@ type httpTestEnv struct {
 	loader *modmodule.Loader
 }
 
-// newHTTPEnv 创建带事件循环与内置模块（http/timers）的测试环境。
+// newHTTPEnv 创建带事件循环与内置模块（http/timers/buffer）的测试环境。
 func newHTTPEnv(t *testing.T) *httpTestEnv {
 	t.Helper()
 	eng := interpreter.NewVMEngine()
@@ -35,6 +35,9 @@ func newHTTPEnv(t *testing.T) *httpTestEnv {
 	}
 	t.Cleanup(func() { ctx.Close() })
 	if err := globals.NewTimers(ctx, globals.TimerConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := globals.NewBuffer(ctx, globals.BufferConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())

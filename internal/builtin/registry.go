@@ -24,6 +24,11 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("querystring", NewQueryString)
 	loader.RegisterBuiltin("string_decoder", NewStringDecoder)
 	loader.RegisterBuiltin("http", NewHTTP)
+	loader.RegisterBuiltin("https", NewHTTPS)
+	loader.RegisterBuiltin("net", NewNet)
+	loader.RegisterBuiltin("tls", NewTLS)
+	loader.RegisterBuiltin("dns", NewDNS)
+	loader.RegisterBuiltin("zlib", NewZlib)
 	loader.RegisterBuiltin("buffer", globals.NewBufferModule)
 }
 

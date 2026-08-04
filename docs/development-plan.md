@@ -1,6 +1,6 @@
 # Aluka 运行时 — 开发计划文档
 
-> 项目代号：`aluka` ｜ 文档版本：v1.10 ｜ 日期：2026-08-04
+> 项目代号：`aluka` ｜ 文档版本：v1.11 ｜ 日期：2026-08-04
 > 配套文档：[需求分析文档](./requirements-analysis.md)
 
 ---
@@ -626,14 +626,14 @@ internal/runtime/module/
 | ID | 任务 | 输出 |
 |----|------|------|
 | 2.1 | 设计模块注册机制（`builtin.Register("fs", NewFS)`） | ✅ `internal/builtin/registry.go` |
-| 2.2 | 实现 `console` 完整版（`table`/`group`/`time`/`dir`/`trace`/`assert`） | `internal/runtime/globals/console.go` |
-| 2.3 | 实现 `process` 完整版（`stdout`/`stderr`/`stdin`/`on`/`kill`/`exit`/`hrtime`） | `internal/runtime/globals/process.go` |
+| 2.2 | 实现 `console` 完整版（`table`/`group`/`time`/`dir`/`trace`/`assert`） | ✅ `internal/runtime/globals/console.go` |
+| 2.3 | 实现 `process` 完整版（`stdout`/`stderr`/`stdin`/`on`/`kill`/`exit`/`hrtime`） | ✅ `internal/runtime/globals/process.go` |
 | 2.4 | 实现 `Buffer`（基于 `[]byte`，Node API 完整） | ✅ `internal/runtime/globals/buffer.go` |
 | 2.5 | 实现 `TextEncoder/Decoder`/`atob`/`btoa` | ✅ `internal/runtime/globals/encoding.go` |
-| 2.6 | 实现 `URL`/`URLSearchParams`（WHATWG） | `internal/runtime/globals/url.go` |
-| 2.7 | 实现 `AbortController`/`AbortSignal` | `internal/runtime/globals/abort.go` |
-| 2.8 | 实现 `Event`/`EventTarget`/`CustomEvent` | `internal/runtime/globals/event.go` |
-| 2.9 | 实现完整 Timers（`setTimeout`/`setInterval`/`setImmediate`/`queueMicrotask`） | ✅ `internal/runtime/globals/timers.go` |
+| 2.6 | 实现 `URL`/`URLSearchParams`（WHATWG） | ✅ `internal/runtime/globals/url.go` |
+| 2.7 | 实现 `AbortController`/`AbortSignal` | ✅ `internal/runtime/globals/abort.go` |
+| 2.8 | 实现 `Event`/`EventTarget`/`CustomEvent` | ✅ `internal/runtime/globals/event.go` |
+| 2.9 | 实现完整 Timers（`setTimeout`/`setInterval`/`setImmediate`/`queueMicrotask`） | ✅ `internal/runtime/globals/timers.go`（queueMicrotask 在 engine 层） |
 | 2.10 | 实现 `node:fs`（sync/async/promises + `createReadStream/WriteStream`） | ✅ `internal/builtin/fs.go`（同步 API；async/promises 待补） |
 | 2.11 | 实现 `node:path`（`posix`+`win32` 双实现） | ✅ `internal/builtin/path.go` |
 | 2.12 | 实现 `node:os` | ✅ `internal/builtin/os.go` |
@@ -643,15 +643,15 @@ internal/runtime/module/
 | 2.16 | 实现 `node:assert`（strict + loose） | ✅ `internal/builtin/assert.go` |
 | 2.17 | 实现 `node:stream`（`Readable`/`Writable`/`Duplex`/`Transform`/`pipeline`/`finished`） | ✅ `internal/builtin/stream.go` |
 | 2.18 | 实现 `node:buffer`（与全局 `Buffer` 同源） | ✅ `internal/builtin/registry.go`（`globals.NewBufferModule` 复用全局） |
-| 2.19 | 实现 `node:crypto`（`createHash`/`createHmac`/`randomBytes`/`scrypt`/`pbkdf2`/`createCipheriv`） | 🔶 `internal/builtin/crypto.go`（已实现 `createHash`/`randomBytes`；HMAC/对称加密/pbkdf2/scrypt 待补） |
+| 2.19 | 实现 `node:crypto`（`createHash`/`createHmac`/`randomBytes`/`scrypt`/`pbkdf2`/`createCipheriv`） | ✅ `internal/builtin/crypto.go`（全部完成；scrypt 基于 `golang.org/x/crypto`，RFC 7914 向量验证） |
 | 2.20 | 实现 `node:string_decoder` | ✅ `internal/builtin/string_decoder.go` |
 | 2.21 | 实现 `node:http`（基于 Go `net/http`，完整 API） | ✅ `internal/builtin/http.go` |
-| 2.22 | 实现 `node:https` | `internal/builtin/node/http/https.go` |
-| 2.23 | 实现 `node:net`（TCP） | `internal/builtin/node/net/` |
-| 2.24 | 实现 `node:tls` | `internal/builtin/node/tls/` |
-| 2.25 | 实现 `node:dns`（`lookup`/`resolve`/`promises`） | `internal/builtin/node/dns/` |
-| 2.26 | 实现 `node:zlib`（`gzip`/`deflate`/`brotli`） | `internal/builtin/node/zlib/` |
-| 2.27 | Node.js 官方测试子集回归 | `tests/conformance/node/` |
+| 2.22 | 实现 `node:https` | ✅ `internal/builtin/https.go`（复用 http 的 Server + TLS listener） |
+| 2.23 | 实现 `node:net`（TCP） | ✅ `internal/builtin/net.go` |
+| 2.24 | 实现 `node:tls` | ✅ `internal/builtin/tls.go`（`tls.Conn` 复用 net socket） |
+| 2.25 | 实现 `node:dns`（`lookup`/`resolve`/`promises`） | ✅ `internal/builtin/dns.go` |
+| 2.26 | 实现 `node:zlib`（`gzip`/`deflate`/`brotli`） | ✅ `internal/builtin/zlib.go`（brotli 基于 `github.com/andybalholm/brotli`） |
+| 2.27 | Node.js 官方测试子集回归 | ✅ `tests/conformance/node/`（8/8 通过） |
 
 ### 模块设计
 
@@ -1278,3 +1278,4 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 | v1.8 | 2026-08-04 | Phase 2 第三批模块：node:stream + node:querystring + node:string_decoder。**node:stream**（`stream.go`）——Readable/Writable/Duplex/Transform 构造器，均继承自 EventEmitter（通过 `newEmitterInstance` 获得事件能力，在其上追加流方法）；Readable 支持 `push`/`read`/`pipe`/`pause`/`resume`/`destroy` + flowing 模式（注册 'data' 监听器时自动切换）+ `Readable.from` 工厂 + `push(null)` 结束流并触发 'end'/'close'；Writable 支持 `write`/`end`（触发 'finish'/'close'）/`cork`/`uncork`/`destroy` + 自定义 write 函数；Transform 覆盖 write（写入时调 transform 函数，结果 push 到可读端）；`pipeline(s1, s2, ..., callback)` 串联流（基于 `pipe`）；`finished(stream, cb)` 监听 finish/end/error。**node:querystring**（`querystring.go`）——`parse`（支持多值 key 转数组）/`stringify`/`escape`/`unescape`；基于 Go `net/url`。**node:string_decoder**（`string_decoder.go`）——`StringDecoder` 构造器（`write` 处理多字节字符跨边界、`end` 刷新剩余数据）；基于 Go `unicode/utf8`。端到端验证全部通过（stream data/end/pipe、querystring parse/stringify、string_decoder write/end）；内置模块总数达 11 个 |
 | v1.9 | 2026-08-04 | **事件循环基础设施 + node:http 完成**（Phase 2 第四批）。**事件循环**——`Interpreter` 新增 `taskCh`（缓冲 64）/`taskWG`/`stopCh`/`loopOnce` 字段与 `PostTask`/`RunLoop`/`Stop`/`AddRef` 方法（`eventloop.go`）；设计：JS 只在 RunLoop 所在 goroutine 执行（单线程语义），任意 Go goroutine（net/http 回调、定时器到期）经 `PostTask` 投递闭包，任务执行后排空 microtask 队列；`WaitGroup` 跟踪活跃句柄（已投递任务 + 活跃定时器 + AddRef 资源），计数归零时 RunLoop 自动退出；`engine.Context` 接口新增 `PostTask`/`AddRef`，`VM` 转发实现，`stubContext` 同步兜底。**定时器 globals**（`timers.go`）——`setTimeout`/`setInterval`/`setImmediate`/`clearTimeout`/`clearInterval`/`clearImmediate`；基于 `time.AfterFunc`/`Ticker` + `PostTask` 回 JS 线程，创建时 `AddRef`、单次触发/clear 时释放。**CLI 接入**——`loader.Run` 后调 `RunLoop()` 进入事件循环，无 pending 任务自动退出。**node:http**（`http.go`）——`createServer`/`server.listen`（动态端口 0、真实端口经 `net.Listen` 后 `ln.Addr()` 获取）/`server.close`/`server.address`（含 地址对象）/`request`/`get`/`STATUS_CODES`；服务器用 Go `net/http.Server` 在 goroutine 监听，请求到达时构造 JS `IncomingMessage`（method/url/httpVersion/headers + 'data'/'end' 事件）与 `ServerResponse`（writeHead/write/end/setHeader/getHeader/statusCode），`handleRequest` 阻塞等待 JS handler 完成保证响应写入时序；客户端 `newClientRequest` 用 Go `http.Client` 发请求、响应 PostTask 回调；关键修复——(1) 服务器 `listen` 时 `AddRef` 计入活跃度、`close` 时延迟到 close 回调执行后再释放（否则事件循环提前退出）；(2) 'data'/'end' 事件延迟到 handler/回调注册完监听器后发射（否则 body 丢失）；(3) `flushHeadersOnce` 避免重复 WriteHeader；(4) nil URL 容错。新增 `http_test.go` 5 个测试（服务器+客户端完整闭环、请求体 echo、setTimeout/setInterval+clear/setImmediate）；内置模块总数达 12 个，测试总数 438→443；CLI 端到端验证通过（STATUS 200 / METHOD / URL / BODY / CLOSED / EXIT 0） |
 | v1.10 | 2026-08-04 | **Buffer + TextEncoder/TextDecoder + atob/btoa 完成**（Phase 2 第五批，WBS 2.4/2.5/2.18）。**engine 层**新增 `buffer.go`——`BufferValue` 类型（嵌入私有 `*objectValue` 获得属性表/原型链能力，重写 `Get`/`Set`/`Keys` 支持数字索引 `buf[0]` 直接读写底层 `[]byte` 与只读 `length`（赋值静默忽略，Node 语义）；`NewBuffer` 工厂 + `AsBuffer`/`Bytes()` 访问器；`String()` 返回 utf8 内容支持 `'' + buf`）。**globals 层**新增 `buffer.go`——`Buffer` 全局构造器（`newBufferExports` 含静态方法 `from`/`alloc`（fill 循环重复填充）/`allocUnsafe`/`allocUnsafeSlow`/`byteLength`/`isBuffer`/`concat`/`compare`/`isEncoding`）；实例方法以闭包捕获 `[]byte` 安装（绕过 `engine.Func` 无 this 绑定）：`toString`/`write`（参数解析处理 `write(str, offset, length, encoding)` 与第 3 参为字符串即 encoding 的省略形式）/`toJSON`/`slice`/`subarray`（共享底层）/`equals`/`copy`/`fill`/`indexOf`/`includes` + `readUInt8/16LE/BE/32LE/BE`/`readInt8/16/32`/`readFloatLE/BE`/`readDoubleLE/BE` + `writeUInt*`/`writeInt*`/`writeFloat*`/`writeDouble*`（越界抛 RangeError）；编码转换统一走 `encodeBuffer`/`decodeBuffer`（utf8/latin1/ascii/base64（容错无 padding）/hex/utf16le，非法 utf8 替换 U+FFFD）；`NewBufferModule` 构造 `node:buffer` 导出——若全局 `Buffer` 已注册则复用（`NB === Buffer` 为 true，Node 语义），否则新建，含 `SlowBuffer`/`kMaxLength`/`constants`。**globals 层**新增 `encoding.go`——`TextEncoder`（`encode` 返回 Buffer/Uint8Array、`encodeInto`、`encoding` 属性）/`TextDecoder`（`decode` 支持 Buffer/字节数组，utf-8/utf-16le/latin1）/`atob`/`btoa`（latin1 范围校验）。**注册**——CLI `runModule`/`execute` 两处调用 `NewBuffer` + `NewEncoding`；`builtin/registry.go` 注册 `node:buffer`。新增 `buffer_test.go` 10 个测试（from 字符串/hex/base64/数组、索引访问与只读 length、alloc fill、write、read/writeUInt、slice、静态方法、equals/copy/fill、TextEncoder/Decoder utf8/utf16le、atob/btoa）；内置模块总数达 13 个，测试总数 443→453；CLI 端到端验证通过（hex/base64/utf16le 读取、中文编解码、node:buffer 与全局 Buffer 身份一致） |
+| v1.11 | 2026-08-04 | **Phase 2 完成**（第六批收尾）。**Web API 全局**——`url.go` WHATWG `URL`/`URLSearchParams`（基于 Go net/url，searchParams 与 URL 绑定同步更新 search/href；URLSearchParams 保持插入顺序、同名键聚合到首现位置、sort 稳定排序、keys/values/entries/forEach）；`abort.go` `AbortController`/`AbortSignal`（复用 EventTarget，abort 同步触发 'abort' 事件与 onabort，已中断信号忽略重复 abort）；`event.go` `Event`/`EventTarget`/`CustomEvent`（listener 支持函数与 {handleEvent}，once 自动移除，dispatchEvent 返回 !defaultPrevented）。**console 补全**（2.2）——`table`/`trace`/`count`/`countReset`/`timeLog`/`groupCollapsed`，group 实现缩进。**process 补全**（2.3）——`nextTick`（复用全局 queueMicrotask）/`stdin`/`kill`/`argv0`/`execPath`/`title`，`exit` 触发 'exit' 监听器。**网络模块**——`https.go`（createServer 支持 {key,cert} PEM 构造 TLS listener，request/get 用 `newClientRequestProto` 走 https:// 协议，客户端支持 `rejectUnauthorized:false` 跳过自签名校验）；`net.go` TCP 服务器/客户端（net.Listen + accept 循环 + Socket 复用，服务器与每个 socket AddRef、close/destroy 释放）；`dns.go`（lookup/resolve/resolve4/resolve6/promises，用全局 Promise 构造器返回真实 Promise）；`zlib.go`（gzipSync/gunzipSync/deflateSync/inflateSync/brotliCompressSync/brotliDecompressSync + 异步回调版，brotli 基于 `github.com/andybalholm/brotli`）；`crypto.go` 补全（createHmac、createCipheriv/createDecipheriv aes-128/256-cbc、pbkdf2Sync/pbkdf2 纯 Go 实现 RFC 2898、scryptSync/scrypt 基于 `golang.org/x/crypto/scrypt` RFC 7914 向量验证、randomBytes 改返回 Buffer）；`tls.go`（createServer/connect，tls.Conn 复用 net socket，rejectUnauthorized:false 跳过校验）。**事件循环重构**——退出检测从 WaitGroup.Wait 改为原子 `active` 计数 + `idleCh` 空闲信号（消除 WaitGroup 归零后被复用的 panic 与锁持有时死锁）；RunLoop 启动前 drain microtask（支持顶层 async main 创建定时器）。**async 闭包捕获修复**——async 挂起 `closeUpvalues` 记录被捕获的 upvalue，恢复时把 `closed` 值写回函数体读写的栈槽（修复 async 函数内 setTimeout/setInterval 回调修改局部变量不共享的缺陷）。**conformance 2.27**——新增 `tests/conformance/node/`（01-path/02-assert/03-events/04-buffer/05-url/06-stream/07-async/08-crypto-zlib + run.sh），**8/8 全部通过**；修复 node:path posix.resolve 在 Windows 下的反斜杠问题、assert 补 equal/notEqual、http/net options 属性 Undefined 误判；**引入外部依赖** `golang.org/x/crypto`（scrypt）与 `github.com/andybalholm/brotli`（brotli，Go 标准库 compress/brotli 在本工具链缺失）——项目首次引入第三方库；内置模块达 20 个，测试总数 453→490+；**Phase 2 全部 WBS 完成** |

@@ -1493,10 +1493,19 @@ func (v *VM) captureUpvalues(tmpl *bytecode.FuncTemplate) []*upvalue {
 	return uvs
 }
 
+// upvalueClose 记录被关闭的 upvalue 及其栈槽绝对索引（async 恢复时用于
+// 把闭包修改的值同步回函数体读写的栈槽）。
+type upvalueClose struct {
+	uv     *upvalue
+	absIdx int
+}
+
 // closeUpvalues closes all open upvalues pointing at stack slots >= threshold.
-func (v *VM) closeUpvalues(threshold int) {
+// 返回被关闭的 upvalue 列表（供 async 挂起/恢复时同步捕获的局部变量）。
+func (v *VM) closeUpvalues(threshold int) []upvalueClose {
 	frame := v.cur()
 	kept := frame.openUpvalues[:0]
+	var closed []upvalueClose
 	for _, uv := range frame.openUpvalues {
 		if uv.slot == nil {
 			continue
@@ -1512,11 +1521,13 @@ func (v *VM) closeUpvalues(threshold int) {
 		if idx >= threshold {
 			uv.closed = *uv.slot
 			uv.slot = nil
+			closed = append(closed, upvalueClose{uv: uv, absIdx: idx})
 		} else {
 			kept = append(kept, uv)
 		}
 	}
 	frame.openUpvalues = kept
+	return closed
 }
 
 // === Property access =====================================================

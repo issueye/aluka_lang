@@ -185,6 +185,12 @@ func newBufferExports() engine.Value {
 	return ctor
 }
 
+// NewBufferInstance 创建带完整方法的 Buffer 实例。
+// 供 builtin 包模块（zlib 等）构造返回给 JS 的 Buffer 值。
+func NewBufferInstance(data []byte) engine.Value {
+	return newBufferInstance(data)
+}
+
 // newBufferInstance 创建 Buffer 实例并安装实例方法（闭包捕获底层数据）。
 func newBufferInstance(data []byte) engine.Object {
 	buf := engine.NewBuffer(data)

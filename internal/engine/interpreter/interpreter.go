@@ -73,10 +73,15 @@ type Interpreter struct {
 
 	// 事件循环（node:http / 定时器基础设施）：
 	// taskCh 接收从任意 goroutine 投递的任务，由 RunLoop 在 JS 执行 goroutine 上执行。
-	taskCh   chan func()
-	taskWG   sync.WaitGroup // 跟踪活跃任务/定时器，事件循环据此判断是否退出
+	taskCh chan func()
+	// active 是活跃句柄计数（已投递任务 + 活跃定时器/服务器）；归零时
+	// idleCh 收到信号，RunLoop 据此退出。loopDone 标记循环已结束。
+	active   int
+	idleCh   chan struct{}
 	stopCh   chan struct{}
-	loopOnce sync.Once      // 确保 RunLoop 只启动一次
+	loopOnce sync.Once // 确保 RunLoop 只启动一次
+	loopMu   sync.Mutex
+	loopDone bool
 }
 
 // NewInterpreter creates an interpreter with built-in globals set up.
@@ -87,6 +92,7 @@ func NewInterpreter() (*Interpreter, error) {
 		constructors:       make(map[string]engine.Object),
 		argumentsSupported: true,
 		taskCh:             make(chan func(), 64),
+		idleCh:             make(chan struct{}, 1),
 		stopCh:             make(chan struct{}),
 	}
 	interp.setupBuiltins()

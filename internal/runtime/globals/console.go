@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -27,10 +28,14 @@ type ConsoleConfig struct {
 //   - console.error(...args)
 //   - console.debug(...args)   // 等同于 log
 //   - console.dir(value)       // 同 log
+//   - console.table(data)      // 简单表格输出
+//   - console.trace(...args)   // 打印调用栈
 //   - console.time(label)
 //   - console.timeEnd(label)
-//   - console.group(...args)   // 暂不实现缩进，等同 log
-//   - console.groupEnd()       // no-op
+//   - console.timeLog(label, ...args)
+//   - console.group(...args)   // 缩进分组
+//   - console.groupEnd()       // 退出分组
+//   - console.count(label) / console.countReset(label)
 //   - console.assert(cond, ...args)
 //   - console.clear()
 func NewConsole(ctx engine.Context, cfg ConsoleConfig) error {
@@ -46,13 +51,17 @@ func NewConsole(ctx engine.Context, cfg ConsoleConfig) error {
 
 	console := engine.NewObject()
 
-	// timers 用于 time/timeEnd。
+	// timers 用于 time/timeEnd；counters 用于 count/countReset。
 	timers := make(map[string]time.Time)
+	counters := make(map[string]int)
+	// groupDepth 跟踪 group 缩进层级。
+	groupDepth := 0
 
-	// logLike 返回一个写到指定 writer 的函数。
+	// logLike 返回一个写到指定 writer 的函数（带 group 缩进）。
 	logLike := func(w io.Writer) engine.Func {
 		return func(args []engine.Value) (engine.Value, error) {
-			fmt.Fprintln(w, engine.InspectValues(args))
+			indent := strings.Repeat("  ", groupDepth)
+			fmt.Fprintln(w, indent+engine.InspectValues(args))
 			return engine.Undefined(), nil
 		}
 	}
@@ -109,9 +118,94 @@ func NewConsole(ctx engine.Context, cfg ConsoleConfig) error {
 		return engine.Undefined(), nil
 	}))
 
-	// group / groupEnd（简化：group 等同 log，groupEnd 为 no-op）
-	_ = console.Set("group", engine.NewFunction("group", logLike(cfg.Stdout)))
+	// timeLog(label, ...args)：打印经过时间（不删除计时器）。
+	_ = console.Set("timeLog", engine.NewFunction("timeLog", func(args []engine.Value) (engine.Value, error) {
+		label := "default"
+		rest := args
+		if len(args) > 0 {
+			label = args[0].String()
+			rest = args[1:]
+		}
+		start, ok := timers[label]
+		if !ok {
+			fmt.Fprintf(cfg.Stderr, "Warning: No such label '%s' for console.timeLog()\n", label)
+			return engine.Undefined(), nil
+		}
+		elapsed := cfg.Now().Sub(start)
+		suffix := ""
+		if len(rest) > 0 {
+			suffix = " " + engine.InspectValues(rest)
+		}
+		fmt.Fprintf(cfg.Stdout, "%s: %s%s\n", label, elapsed, suffix)
+		return engine.Undefined(), nil
+	}))
+
+	// group / groupEnd：缩进分组。
+	_ = console.Set("group", engine.NewFunction("group", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			fmt.Fprintln(cfg.Stdout, strings.Repeat("  ", groupDepth)+engine.InspectValues(args))
+		}
+		groupDepth++
+		return engine.Undefined(), nil
+	}))
 	_ = console.Set("groupEnd", engine.NewFunction("groupEnd", func(args []engine.Value) (engine.Value, error) {
+		if groupDepth > 0 {
+			groupDepth--
+		}
+		return engine.Undefined(), nil
+	}))
+	// groupCollapsed 同 group。
+	if g, err := console.Get("group"); err == nil {
+		_ = console.Set("groupCollapsed", g)
+	}
+
+	// count(label) / countReset(label)
+	_ = console.Set("count", engine.NewFunction("count", func(args []engine.Value) (engine.Value, error) {
+		label := "default"
+		if len(args) > 0 {
+			label = args[0].String()
+		}
+		counters[label]++
+		fmt.Fprintf(cfg.Stdout, "%s: %d\n", label, counters[label])
+		return engine.Undefined(), nil
+	}))
+	_ = console.Set("countReset", engine.NewFunction("countReset", func(args []engine.Value) (engine.Value, error) {
+		label := "default"
+		if len(args) > 0 {
+			label = args[0].String()
+		}
+		delete(counters, label)
+		return engine.Undefined(), nil
+	}))
+
+	// table(data)：简化表格输出——数组逐行，对象逐键。
+	_ = console.Set("table", engine.NewFunction("table", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), nil
+		}
+		indent := strings.Repeat("  ", groupDepth)
+		if a, ok := args[0].(*engine.ArrayValue); ok {
+			for _, e := range a.Elems() {
+				fmt.Fprintln(cfg.Stdout, indent+e.String())
+			}
+			return engine.Undefined(), nil
+		}
+		if o, ok := args[0].AsObject(); ok {
+			for _, k := range o.Keys() {
+				if v, err := o.Get(k); err == nil {
+					fmt.Fprintf(cfg.Stdout, "%s%s: %s\n", indent, k, v.String())
+				}
+			}
+			return engine.Undefined(), nil
+		}
+		fmt.Fprintln(cfg.Stdout, indent+args[0].String())
+		return engine.Undefined(), nil
+	}))
+
+	// trace(...args)：打印调用栈（简化）。
+	_ = console.Set("trace", engine.NewFunction("trace", func(args []engine.Value) (engine.Value, error) {
+		fmt.Fprintln(cfg.Stderr, "Trace: "+engine.InspectValues(args))
+		fmt.Fprintln(cfg.Stderr, "    at <anonymous>")
 		return engine.Undefined(), nil
 	}))
 

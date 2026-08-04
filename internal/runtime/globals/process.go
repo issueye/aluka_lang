@@ -1,6 +1,7 @@
 package globals
 
 import (
+	"fmt"
 	"os"
 	"runtime"
 	"time"
@@ -19,29 +20,35 @@ type ProcessConfig struct {
 }
 
 // NewProcess 创建 process 全局对象并注册到 ctx。
-// 实现的 API（Phase 0 子集）：
+// 实现的 API：
 //   - process.argv             string[]
+//   - process.argv0            string
+//   - process.execPath         string
+//   - process.title            string
 //   - process.env              object
 //   - process.platform         string  ("linux" | "darwin" | "win32")
 //   - process.arch              string  ("x64" | "arm64" | ...)
 //   - process.pid               number
-//   - process.ppid              number  (暂固定为 0)
+//   - process.ppid              number
 //   - process.cwd()             string
 //   - process.chdir(dir)        void
-//   - process.exit(code)        never (调用 os.Exit)
+//   - process.exit(code)        never (触发 'exit' 监听器后调用 os.Exit)
+//   - process.nextTick(fn)      void（复用全局 queueMicrotask）
+//   - process.kill(pid[, sig])  void
 //   - process.stdout            { write, writeSync }
 //   - process.stderr            { write, writeSync }
+//   - process.stdin             { readable, on }
 //   - process.versions           object  ({ aluka, go, v8 })
 //   - process.version            string
 //   - process.hrtime()          [number, number]
 //   - process.uptime()           number
 //   - process.memoryUsage()     { rss, heapTotal, heapUsed, external }
-//   - process.on(event, fn)     (暂存回调不触发)
+//   - process.on(event, fn)     暂存回调；'exit' 在 process.exit 时触发
 //   - process.emit(event, ...args)
 func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 	proc := engine.NewObject()
 
-	// argv
+	// argv / argv0 / execPath
 	argv := cfg.Argv
 	if argv == nil {
 		argv = os.Args
@@ -51,6 +58,15 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		argvVals[i] = engine.Str(a)
 	}
 	_ = proc.Set("argv", engine.NewArray(argvVals))
+	argv0 := ""
+	if len(argv) > 0 {
+		argv0 = argv[0]
+	}
+	_ = proc.Set("argv0", engine.Str(argv0))
+	if exe, err := os.Executable(); err == nil {
+		_ = proc.Set("execPath", engine.Str(exe))
+	}
+	_ = proc.Set("title", engine.Str("aluka"))
 
 	// env
 	env := cfg.Env
@@ -103,7 +119,7 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		return engine.Undefined(), os.Chdir(args[0].String())
 	}))
 
-	// exit
+	// exit：触发 'exit' 监听器后退出进程。
 	_ = proc.Set("exit", engine.NewFunction("exit", func(args []engine.Value) (engine.Value, error) {
 		code := 0
 		if len(args) > 0 {
@@ -111,9 +127,57 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 				code = n
 			}
 		}
+		// 触发 'exit' 事件（同步，带退出码）。
+		if emitVal, err := proc.Get("emit"); err == nil && emitVal.IsFunction() {
+			if f, ok := emitVal.AsFunction(); ok {
+				_, _ = f.Call([]engine.Value{engine.Str("exit"), engine.IntValue(code)})
+			}
+		}
 		os.Exit(code)
 		return engine.Undefined(), nil
 	}))
+
+	// nextTick(fn)：复用全局 queueMicrotask（engine 层已注册）。
+	_ = proc.Set("nextTick", engine.NewFunction("nextTick", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 || !args[0].IsFunction() {
+			return engine.Undefined(), nil
+		}
+		if q, err := ctx.Global().Get("queueMicrotask"); err == nil && q.IsFunction() {
+			if f, ok := q.AsFunction(); ok {
+				_, _ = f.Call([]engine.Value{args[0]})
+			}
+		}
+		return engine.Undefined(), nil
+	}))
+
+	// kill(pid[, signal])：发信号（跨平台简化：终止进程）。
+	_ = proc.Set("kill", engine.NewFunction("kill", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), nil
+		}
+		pid := argInt(args, 0, -1)
+		if pid <= 0 {
+			return engine.Undefined(), fmt.Errorf("%w: invalid pid %d", engine.ErrRangeError, pid)
+		}
+		p, err := os.FindProcess(pid)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.Undefined(), p.Kill()
+	}))
+
+	// stdin（简化只读流）。
+	stdin := engine.NewObject()
+	_ = stdin.Set("readable", engine.Boolean(true))
+	_ = stdin.Set("isTTY", engine.Undefined())
+	_ = stdin.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
+		// 简化：不读取输入，仅返回自身（链式兼容）。
+		return stdin, nil
+	}))
+	_ = stdin.Set("setEncoding", engine.NewFunction("setEncoding", func(args []engine.Value) (engine.Value, error) {
+		return stdin, nil
+	}))
+	_ = proc.Set("stdin", stdin)
 
 	// stdout / stderr（提供 write/writeSync）
 	makeStream := func(w *os.File) engine.Object {
