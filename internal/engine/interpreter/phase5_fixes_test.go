@@ -246,3 +246,31 @@ func TestFunctionObjectAccessor(t *testing.T) {
 		t.Errorf("function defineProperties getters = %q, want 3", got)
 	}
 }
+
+// TestFunctionPrototypeAccessorChain 验证 Object.setPrototypeOf 能修改源码函数
+// 对象的 [[Prototype]]，并从原型链调用 getter，保持接收者 this。
+func TestFunctionPrototypeAccessorChain(t *testing.T) {
+	code := `
+		const chalkProto = {};
+		Object.defineProperty(chalkProto, 'green', {
+			get() { return this._marker; }
+		});
+		const chalk = {};
+		Object.setPrototypeOf(chalk, chalkProto);
+		const template = () => {};
+		template._marker = 'ok';
+		Object.setPrototypeOf(template, chalk);
+		template.green;
+	`
+	if got := vmEvalStr(t, code); got != "ok" {
+		t.Errorf("VM function prototype getter = %q, want ok", got)
+	}
+	if got := evalStr(t, `
+		const proto = {marker: 'ok'};
+		const fn = () => {};
+		Object.setPrototypeOf(fn, proto);
+		fn.marker;
+	`); got != "ok" {
+		t.Errorf("AST function prototype property = %q, want ok", got)
+	}
+}

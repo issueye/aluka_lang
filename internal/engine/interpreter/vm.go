@@ -2061,6 +2061,8 @@ func (c *vmClosure) Get(key string) (engine.Value, error)   { return c.obj.Get(k
 func (c *vmClosure) Set(key string, val engine.Value) error { return c.obj.Set(key, val) }
 func (c *vmClosure) Keys() []string                         { return c.obj.Keys() }
 func (c *vmClosure) Delete(key string) bool                 { return c.obj.Delete(key) }
+func (c *vmClosure) Proto() engine.Object                   { return engine.GetProto(c.obj) }
+func (c *vmClosure) SetProto(proto engine.Object)           { engine.SetProto(c.obj, proto) }
 
 // Call implements engine.Function — calls the closure with this=undefined.
 func (c *vmClosure) Call(args []engine.Value) (engine.Value, error) {

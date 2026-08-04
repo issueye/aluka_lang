@@ -79,6 +79,8 @@ func (c *Closure) Get(key string) (engine.Value, error) { return c.obj.Get(key) 
 func (c *Closure) Set(key string, v engine.Value) error { return c.obj.Set(key, v) }
 func (c *Closure) Keys() []string                       { return c.obj.Keys() }
 func (c *Closure) Delete(key string) bool               { return c.obj.Delete(key) }
+func (c *Closure) Proto() engine.Object                 { return engine.GetProto(c.obj) }
+func (c *Closure) SetProto(proto engine.Object)         { engine.SetProto(c.obj, proto) }
 
 // --- engine.Function ---
 

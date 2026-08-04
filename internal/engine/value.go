@@ -324,42 +324,15 @@ func (o *objectValue) SetProto(p Object) { o.proto = p }
 
 // SetProto sets the [[Prototype]] on any value whose concrete type supports it.
 func SetProto(obj Value, proto Object) {
-	if o, ok := obj.(*objectValue); ok {
-		o.proto = proto
-	} else if a, ok := obj.(*ArrayValue); ok {
-		if a.objectValue != nil {
-			a.objectValue.proto = proto
-		}
-	} else if f, ok := obj.(*functionValue); ok {
-		if f.objectValue != nil {
-			f.objectValue.proto = proto
-		}
-	} else if b, ok := obj.(*BufferValue); ok {
-		if b.objectValue != nil {
-			b.objectValue.proto = proto
-		}
+	if setter, ok := obj.(interface{ SetProto(Object) }); ok {
+		setter.SetProto(proto)
 	}
 }
 
 // GetProto returns the [[Prototype]] of the value, or nil if not available.
 func GetProto(obj Value) Object {
-	if o, ok := obj.(*objectValue); ok {
-		return o.proto
-	}
-	if a, ok := obj.(*ArrayValue); ok {
-		if a.objectValue != nil {
-			return a.objectValue.proto
-		}
-	}
-	if f, ok := obj.(*functionValue); ok {
-		if f.objectValue != nil {
-			return f.objectValue.proto
-		}
-	}
-	if b, ok := obj.(*BufferValue); ok {
-		if b.objectValue != nil {
-			return b.objectValue.proto
-		}
+	if getter, ok := obj.(interface{ Proto() Object }); ok {
+		return getter.Proto()
 	}
 	return nil
 }
