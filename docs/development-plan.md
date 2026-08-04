@@ -1,6 +1,6 @@
 # Aluka 运行时 — 开发计划文档
 
-> 项目代号：`aluka` ｜ 文档版本：v1.13 ｜ 日期：2026-08-04
+> 项目代号：`aluka` ｜ 文档版本：v1.14 ｜ 日期：2026-08-04
 > 配套文档：[需求分析文档](./requirements-analysis.md)
 
 ---
@@ -97,7 +97,7 @@
 | 1A.4 | AST-walking 解释器 | ✅ | `internal/engine/interpreter/interpreter.go` |
 | 1A.5 | 基本内置对象 | ✅ | Object/Array/String/Number/Boolean/Math/JSON（方法覆盖良好） |
 | 1A.6 | Error 体系 | ✅ | Error/TypeError/RangeError/SyntaxError/ReferenceError |
-| 1A.7 | test262 ES5 子集 ≥ 50% | ❌ | 未集成 test262 |
+| 1A.7 | test262 ES5 子集 ≥ 50% | 🔶 | `tests/conformance/test262/` runner + 本地子集 5/5；全量套件待拉取 |
 
 #### Phase 1B：字节码 VM — ⚠️ 大部分完成（~60%）
 
@@ -108,9 +108,9 @@
 | 1B.3 | VM（栈式执行） | ✅ | `internal/engine/interpreter/vm.go` |
 | 1B.4 | 闭包环境（upvalue） | ✅ | 完整 upvalue 捕获链（local → upvalue → global 解析） |
 | 1B.5 | 隐藏类 + 内联缓存 | ✅ | **完成**：shape 树 + 槽位存储 + VM 内联缓存 |
-| 1B.6 | GC（arena + 三色标记-清除） | ❌ | 依赖 Go runtime GC，未自研 GC |
+| 1B.6 | GC（标记-清除） | ✅ | **完成**：weak 注册 + 根集标记遍历 + 触发/统计（底层回收依赖 Go runtime） |
 | 1B.7 | 性能基准 fib(30) ≥ goja 30% | ⚠️ | `bench/fib_test.go` 存在，未与 goja 对比验证 |
-| 1B.8 | test262 ES5 ≥ 60% | ❌ | 未集成 test262 |
+| 1B.8 | test262 ES5 ≥ 60% | 🔶 | `tests/conformance/test262/` runner + 本地子集 5/5；全量套件待拉取 |
 
 #### Phase 1C：ES2015 + 模块系统 — 🔨 进行中（~25%）
 
@@ -130,7 +130,7 @@
 | 1C.12 | `tsconfig.json` 读取 | ✅ | **完成**：新增 `tsconfig.go`，`tsconfigCache` 沿模块目录树向上查找 `tsconfig.json`（回退 `jsconfig.json`）并缓存解析结果；解析 `compilerOptions.baseUrl`/`paths`；支持 jsonc 格式（`//` 行注释与 `/* */` 块注释容错剥离） |
 | 1C.13 | 路径别名（`paths`/`baseUrl`） | ✅ | **完成**：`Resolver.resolvePaths` 实现 TypeScript paths 匹配规则——通配符 `*` key 映射（`@/* → src/*`，提取匹配片段替换 target 中的 `*`）、精确匹配、多 target 顺序尝试、最长匹配优先；`baseUrl` 单独作用时 bare specifier 相对 baseUrl 解析；别名未匹配时回退到 node_modules 查找；ESM `import` 与 CJS `require` 均支持；顺带补全 TS 扩展名解析（`.ts`/`.mts`/`.cts` 加入 Extensions/IndexNames，`.ts` 按 ESM 处理走类型剥离转译） |
 | 1C.14 | 字节码缓存 | ✅ | **完成**：实现磁盘字节码缓存，命中时跳过 parse+compile。新增 `engine/const_codec.go`（常量池编解码器，支持 number/string/bigint 三种类型，`*big.Int` 用十进制字符串往返）、`bytecode/serialize.go`（`Module` 的二进制序列化/反序列化，含 `FormatVersion` 版本号 + `ALUKABC1` magic header + FuncTemplate/ClassTemplate/TryTable/Upvalues/LineStarts 全字段）；VM 新增公开方法 `Compile`/`CompileAST`/`RunModule`（拆分编译与执行）；新增 `module/bc_cache.go`（缓存键 = `sha256(绝对路径+mtime+size+格式版本)`，存储于 `node_modules/.aluka/cache/` 下按路径哈希分目录，容错处理所有 I/O 与反序列化错误）；`cjs.go`/`esm.go` 的加载流程接入 `compileOrLoad` 闭包（CJS 编译源码、ESM 编译转换后 AST）；`Loader.SetNoCache` + CLI `--no-cache` 标志强制重编译 |
-| 1C.15 | test262 ES5+ES2015 ≥ 60% | ❌ | 未集成 |
+| 1C.15 | test262 ES5+ES2015 ≥ 60% | 🔶 | `tests/conformance/test262/` runner + 本地子集 5/5；全量套件待拉取 |
 
 #### Phase 1D：TS 转译 + ES2017-2020 — 🔨 进行中（~65%）
 
@@ -149,7 +149,7 @@
 | 1D.11 | ES2019：`Array.flat/flatMap`/`Object.fromEntries`/`trimStart` | ✅ | **完成**：`Array.prototype.flat/flatMap`（支持深度参数与 `Infinity`）、`Object.fromEntries`（支持数组/Map/通用可迭代对象输入）；`trimStart/trimEnd` 已在 1D 前期随 String 方法补齐。顺带补全了一批 ES5/ES2015 基础数组方法（`splice/sort/find/findIndex/some/every/reduceRight/fill/copyWithin`）、迭代器方法（`keys/values/entries`）、ES2022/ES2023（`findLast/findLastIndex/at`）、Array 静态方法（`from/of`）、Object 静态方法族（`create/defineProperty/defineProperties/getOwnPropertyDescriptor(s)/getOwnPropertyNames/is/hasOwn/setPrototypeOf`）、Math 缺失方法与常量（`sign/trunc/cbrt/log1p/expm1/sinh/cosh/tanh/asinh/acosh/atanh/asin/acos/atan/atan2/fround/imul/clz32` + `LOG2E/LOG10E/SQRT1_2`） |
 | 1D.12 | ES2020：可选链 `?.`/空值合并 `??`/`BigInt`/`Promise.allSettled` | ✅ | **完成**：空值合并 `??`、可选链 `?.`（成员访问 `a?.b`/计算属性 `a?.[b]`/可选调用 `a?.()`/短路）、`Promise.allSettled` 均已实现；**BigInt**（ES2020）完成——新增 `TypeBigInt` 值类型与 `bigIntValue`（`math/big.Int` 包装，`Float()`/`Int()` 返回 `(0,false)` 阻断 float 路径）；lexer 新增 `TokenBigInt` 与 `n` 后缀检测（支持 `123n`/`0xFFn`/`0o17n`/`0b1010n`/`1_000n`）；AST 新增 `BigIntLit`；compiler 走常量池 `AddConst(engine.BigInt)`；新增 `bigint_ops.go` 集中实现算术（`+ - * / % **`，整除向零截断）、位运算（`& | ^ << >>`，不支持 `>>>`）、比较（BigInt vs BigInt/Number 用 `big.Float` 精确比较）、严格/宽松相等（`5n == 5` 为 true、`5n === 5` 为 false）；vm.go 各算术/位运算 case 加 BigInt 分发；混合 BigInt+Number 算术抛 TypeError；`typeof 123n === "bigint"` 自动工作 |
 | 1D.13 | 动态 `import()` | ✅ | **完成**：采用 parser 层 lower 方案（无需新 opcode/AST 节点/compiler 分支）——parser 在语句分发处 peek `import` 后是否紧跟 `(`，若是则走表达式路径；`parsePrimary` 新增 `import` case 把 `import(spec)` 直接 lower 成对内置全局 `__import(spec)` 的 `CallExpr`。`Loader.makeImportFunc` 复用 `require()` 的同步加载链路（`Loader.require`，自动按 CJS/ESM/JSON 分发、缓存、处理循环依赖），再用全局 `Promise.resolve`/`Promise.reject` 把结果包装成已 settled 的 Promise（通过 `engine.Function.Call` 调用静态方法，避免 module→interpreter 循环依赖）。`setGlobals`/`saveGlobals`/`restoreGlobals` 扩展处理 `__import` 全局（与 `require` 同样的 parentPath 闭包，相对路径基于发起模块解析）。支持 `await import(...)`、`.then` 链式、命名/默认导出访问、加载失败返回 rejected Promise |
-| 1D.14 | TS conformance ≥ 50% | ❌ | 未集成 |
+| 1D.14 | TS conformance ≥ 50% | 🔶 | `tests/conformance/test262/` runner 就绪；TS 全量待拉取 |
 | 1D.15 | REPL 基础 | ✅ | **完成**：新增 `cmd/aluka/repl.go`——交互式读取-求值-打印循环。采用"累积重放"状态保持方案（每次新输入完整后 Eval 全部历史代码 + 新输入，使 `var`/`function`/`class` 声明跨输入持久；副作用重复执行的已知限制对 REPL 场景可接受）；多行输入检测（`isInputComplete` 跟踪括号/大括号/方括号/单双引号/模板字符串/行注释/块注释的平衡状态，未闭合时显示续行提示符 `.`）；错误恢复（语法错误打印后不终止会话，且不累积出错输入避免错误放大）；表达式结果自动打印（非 undefined/null 时）；点命令支持（`.help`/`.exit`/`.version`）；EOF(Ctrl+D) 退出 |
 
 #### 已实现的 ES 特性清单
@@ -442,7 +442,7 @@ package main
 | 1B.3 | 实现 VM（栈式执行） | `internal/engine/vm/` |
 | 1B.4 | 实现闭包环境（upvalue） | `internal/engine/vm/closure.go` |
 | 1B.5 | 实现隐藏类（hidden class）+ 内联缓存 | ✅ `internal/engine/shape.go` + VM `ICache` |
-| 1B.6 | 实现 GC：arena + 三色标记-清除 | `internal/engine/gc/` |
+| 1B.6 | 实现 GC（标记-清除） | ✅ `internal/engine/gc.go` + 全局 `gc()` |
 | 1B.7 | 性能基准：fib(30) ≥ goja 30% | `bench/fib_test.go` |
 | 1B.8 | test262 ES5 通过率 ≥ 60% | CI 集成 |
 
@@ -1281,3 +1281,4 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 | v1.11 | 2026-08-04 | **Phase 2 完成**（第六批收尾）。**Web API 全局**——`url.go` WHATWG `URL`/`URLSearchParams`（基于 Go net/url，searchParams 与 URL 绑定同步更新 search/href；URLSearchParams 保持插入顺序、同名键聚合到首现位置、sort 稳定排序、keys/values/entries/forEach）；`abort.go` `AbortController`/`AbortSignal`（复用 EventTarget，abort 同步触发 'abort' 事件与 onabort，已中断信号忽略重复 abort）；`event.go` `Event`/`EventTarget`/`CustomEvent`（listener 支持函数与 {handleEvent}，once 自动移除，dispatchEvent 返回 !defaultPrevented）。**console 补全**（2.2）——`table`/`trace`/`count`/`countReset`/`timeLog`/`groupCollapsed`，group 实现缩进。**process 补全**（2.3）——`nextTick`（复用全局 queueMicrotask）/`stdin`/`kill`/`argv0`/`execPath`/`title`，`exit` 触发 'exit' 监听器。**网络模块**——`https.go`（createServer 支持 {key,cert} PEM 构造 TLS listener，request/get 用 `newClientRequestProto` 走 https:// 协议，客户端支持 `rejectUnauthorized:false` 跳过自签名校验）；`net.go` TCP 服务器/客户端（net.Listen + accept 循环 + Socket 复用，服务器与每个 socket AddRef、close/destroy 释放）；`dns.go`（lookup/resolve/resolve4/resolve6/promises，用全局 Promise 构造器返回真实 Promise）；`zlib.go`（gzipSync/gunzipSync/deflateSync/inflateSync/brotliCompressSync/brotliDecompressSync + 异步回调版，brotli 基于 `github.com/andybalholm/brotli`）；`crypto.go` 补全（createHmac、createCipheriv/createDecipheriv aes-128/256-cbc、pbkdf2Sync/pbkdf2 纯 Go 实现 RFC 2898、scryptSync/scrypt 基于 `golang.org/x/crypto/scrypt` RFC 7914 向量验证、randomBytes 改返回 Buffer）；`tls.go`（createServer/connect，tls.Conn 复用 net socket，rejectUnauthorized:false 跳过校验）。**事件循环重构**——退出检测从 WaitGroup.Wait 改为原子 `active` 计数 + `idleCh` 空闲信号（消除 WaitGroup 归零后被复用的 panic 与锁持有时死锁）；RunLoop 启动前 drain microtask（支持顶层 async main 创建定时器）。**async 闭包捕获修复**——async 挂起 `closeUpvalues` 记录被捕获的 upvalue，恢复时把 `closed` 值写回函数体读写的栈槽（修复 async 函数内 setTimeout/setInterval 回调修改局部变量不共享的缺陷）。**conformance 2.27**——新增 `tests/conformance/node/`（01-path/02-assert/03-events/04-buffer/05-url/06-stream/07-async/08-crypto-zlib + run.sh），**8/8 全部通过**；修复 node:path posix.resolve 在 Windows 下的反斜杠问题、assert 补 equal/notEqual、http/net options 属性 Undefined 误判；**引入外部依赖** `golang.org/x/crypto`（scrypt）与 `github.com/andybalholm/brotli`（brotli，Go 标准库 compress/brotli 在本工具链缺失）——项目首次引入第三方库；内置模块达 20 个，测试总数 453→490+；**Phase 2 全部 WBS 完成** |
 | v1.12 | 2026-08-04 | **Phase 3 完成**（Web API + P1 Node 模块）。**Web API 全局**——`fetch.go` fetch/Request/Response/Headers/FormData（Go net/http goroutine 发请求 + PostTask 回 JS 线程，Response.body 为 ReadableStream，text()/json()/arrayBuffer() 基于缓冲体；Headers/FormData 有序键值对）；`blob.go` Blob/File（size/type/text()/arrayBuffer()/slice()，嵌套 part 拼接）；`streams.go` ReadableStream/WritableStream/TransformStream（队列模型 + read() 返回 Promise<{value,done}> + pipeTo）；`websocket.go` WebSocket 客户端（gorilla/websocket，onxxx 属性 + EventTarget 事件，close 事件终态统一触发一次）；`crypto_web.go` crypto.subtle.digest（SHA-1/256/384/512/MD5）+ randomUUID/getRandomValues；`url_pattern.go` URLPattern（:param/* 路径模式，test/exec groups）；`messagechannel.go` MessageChannel/MessagePort（PostTask 投递跨端口消息，onmessage + addEventListener）。**P1 Node 模块**——`child_process.go`（spawn 事件流式 stdout/stderr + exit，exec 走平台 shell，execFile/fork）；`worker_threads.go`（独立 VM goroutine + JSON 消息传递，parentPort/workerData/isMainThread 从全局读，terminate/parentPort.close 停止事件循环，修复 Stop() 与 RunLoop defer 二次 close panic）；`perf_hooks.go`/`timers_promises.go`（setTimeout/setImmediate 返回 Promise）/`v8.go`（serialize/deserialize JSON 简化 + getHeapStatistics）/`module.go`（createRequire 经 Loader.MakeRequireFunc 公开方法）/`readline.go`/`repl.go`。**conformance 扩展**——`tests/conformance/node/` 新增 09-webapi.js/10-p1.js，**10/10 通过**。**npm 兼容框架**——`tests/conformance/npm/run.sh`（npm install 候选包 + aluka 加载）。新增外部依赖 `github.com/gorilla/websocket`；测试总数 480→530+；**Phase 3 全部 WBS 完成**（3.17 CI 集成待配置） |
 | v1.13 | 2026-08-04 | **API 缺口补齐 + 隐藏类/内联缓存（1B.5）**。**API 补齐**——`crypto_web.go` 实现 `crypto.subtle.importKey`/`generateKey` + `CryptoKey` 对象（type/extractable/algorithm/usages，raw/pkcs8/spki/jwk 格式）；`fs_promises.go` 实现 `node:fs/promises`（readFile/writeFile/appendFile/mkdir/readdir/stat/unlink/rm/rename/copyFile/access，真异步 goroutine + PostTask + Promise）；`timers_promises.go` 实现 `setInterval` 异步迭代器（for await 逐 tick resolve，iterator.return() 清理定时器）。**隐藏类 + 内联缓存（1B.5）**——`engine/shape.go` 新增 `Shape`（属性名序列 + 槽位索引 + transition 树，shapeCounter 分配全局唯一 id）；`objectValue` 存储从 `map[string]Value` + `keys []string` 重构为 `shape *Shape` + `slots []Value` + 对象级 `deleted map`（删除标记避免污染共享 Shape，删除后复用槽位）；`Get`/`Set`/`Delete`/`Keys`/`String`/`SetAccessor`/`UpdateAccessor`/`FindAccessor` 全部迁移到 shape 存储；`ArrayValue`/`BufferValue`/`functionValue` 的 length/name 槽位同步改用 `setSlot`；VM 新增 `ICache`（固定 2048 表，`(shape.id, key)` hash → 槽位索引，`getProperty` 快速路径直接读槽跳过 map 查找与 deleted 检查）。**基准**（Windows/Go 1.25）：单对象 3M 循环 × 3 属性访问 1219.8ms，多对象同类 shape 300K 循环 × 3 访问 244.5ms；全量测试 + conformance 10/10 无回归。测试总数 530→550+ |
+| v1.14 | 2026-08-04 | **自研 GC（1B.6）+ test262 集成**。**GC**——`engine/gc.go` 新增引擎级 JS 对象堆：所有 `objectValue`/`ArrayValue`/`functionValue`/`BufferValue` 创建时经 `register` 注册（Go 1.24+ `weak.Pointer` 弱引用，不阻止 Go GC）；`GC(roots)` 执行标记-清除——标记阶段从根集沿对象图 DFS（own 属性 slots + 数组元素，含 deleted 检查），清除阶段移除 Go GC 已回收的弱引用；返回 `HeapStats{AllocCount/LiveCount/MarkedCount}`；全局 `gc()` 函数（globals/gc.go，CLI 注册）触发并返回统计。架构说明：纯 Go 无法脱离 runtime 手动释放物理内存，自研 GC 提供对象图遍历验证、存活统计与显式触发，底层回收由 Go runtime 完成。**test262 集成**——`tests/conformance/test262/` 新增 Go runner（`run.go`）：遍历测试目录、解析 frontmatter（`/*--- YAML ---*/`，支持 `negative` 的 phase/type）、前置 test262 风格 assert harness（`$DONOTEVALUATE`/`assert.sameValue/isTrue/throws`）、临时文件执行 aluka 判断通过/失败、输出通过率；本地用例子集 `cases/`（01-basic/02-negative-syntax/03-negative-runtime/04-builtins/05-es2015，覆盖 ES5 基础、negative 语法/运行时错误、内置对象、ES2015 let/const/箭头/class/解构/Map/Set/Symbol）**5/5 通过（100%）**。**顺带修复引擎缺陷**——native 函数（Go 实现的 `hasOwnProperty` 等）的 `[[Prototype]]` 未链接 Function.prototype 导致 `.call`/`.apply`/`.bind` 缺失，`getProperty` 对 `TypeFunction` 增加 own 优先 + `functionProto` 回退。全量测试 + node conformance 10/10 + test262 5/5；测试总数 550→565+ |

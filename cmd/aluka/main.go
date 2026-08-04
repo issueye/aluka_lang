@@ -180,6 +180,9 @@ func runModule(path string, vm, disableCache bool) error {
 	if err := globals.NewWebSocket(ctx, globals.WebSocketConfig{}); err != nil {
 		return fmt.Errorf("register WebSocket: %w", err)
 	}
+	if err := globals.NewGC(ctx, globals.GCConfig{}); err != nil {
+		return fmt.Errorf("register gc: %w", err)
+	}
 
 	// 使用模块加载器执行文件
 	loader := modmodule.NewLoader(ctx)
@@ -266,6 +269,9 @@ func execute(code string, filename string, vm bool) error {
 	}
 	if err := globals.NewWebSocket(ctx, globals.WebSocketConfig{}); err != nil {
 		return fmt.Errorf("register WebSocket: %w", err)
+	}
+	if err := globals.NewGC(ctx, globals.GCConfig{}); err != nil {
+		return fmt.Errorf("register gc: %w", err)
 	}
 
 	// 执行

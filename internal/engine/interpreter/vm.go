@@ -1594,6 +1594,17 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 		if v.interp.booleanProto != nil {
 			return v.interp.booleanProto.Get(key)
 		}
+	case engine.TypeFunction:
+		// 函数对象：先查 own（name/length 等），miss 后回退 Function.prototype
+		// （native 函数的 [[Prototype]] 未链接 functionProto）。
+		if o, ok := obj.(engine.Object); ok {
+			if val, _ := o.Get(key); !val.IsUndefined() {
+				return val, nil
+			}
+		}
+		if v.interp.functionProto != nil {
+			return v.interp.functionProto.Get(key)
+		}
 	}
 	// Accessor (getter/setter) interception: if an accessor is found on the
 	// prototype chain for this key, invoke the getter with this = obj.

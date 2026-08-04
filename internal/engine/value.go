@@ -302,7 +302,9 @@ type objectValue struct {
 
 // NewObject creates an empty JS object.
 func NewObject() Object {
-	return &objectValue{shape: rootShape}
+	o := &objectValue{shape: rootShape}
+	register(o)
+	return o
 }
 
 // NewObjectFrom creates an object from a map (random order).
@@ -481,6 +483,7 @@ func NewArray(elems []Value) *ArrayValue {
 		objectValue: &objectValue{shape: rootShape},
 		elems:       elems,
 	}
+	register(a.objectValue)
 	// 同步 length 属性
 	a.objectValue.setSlot("length", IntValue(len(elems)))
 	return a
@@ -584,6 +587,7 @@ func NewFunction(name string, fn Func) Function {
 		fn:          fn,
 		name:        name,
 	}
+	register(f.objectValue)
 	_ = f.objectValue.Set("name", Str(name))
 	_ = f.objectValue.Set("length", IntValue(0)) // 形参数量，Phase 0 固定 0
 	return f

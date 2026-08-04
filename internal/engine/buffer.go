@@ -24,10 +24,12 @@ type BufferValue struct {
 // NewBuffer 创建包装给定字节数据的 Buffer 值。
 // 返回 Object 接口，调用方可继续 Set 实例方法。
 func NewBuffer(data []byte) Object {
-	return &BufferValue{
+	b := &BufferValue{
 		objectValue: &objectValue{shape: rootShape},
 		data:        data,
 	}
+	register(b.objectValue)
+	return b
 }
 
 // Bytes 返回底层字节切片（只读视图，调用方不应修改）。
