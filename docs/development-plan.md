@@ -1,6 +1,6 @@
 # Aluka 运行时 — 开发计划文档
 
-> 项目代号：`aluka` ｜ 文档版本：v1.11 ｜ 日期：2026-08-04
+> 项目代号：`aluka` ｜ 文档版本：v1.12 ｜ 日期：2026-08-04
 > 配套文档：[需求分析文档](./requirements-analysis.md)
 
 ---
@@ -729,23 +729,23 @@ func init() {
 
 | ID | 任务 | 输出 |
 |----|------|------|
-| 3.1 | 实现 `fetch` + `Request`/`Response`/`Headers`/`FormData` | `internal/builtin/web/fetch/` |
-| 3.2 | 实现 `WebSocket` + `WebSocketServer`（基于 `gorilla/websocket`） | `internal/builtin/web/websocket/` |
-| 3.3 | 实现 `ReadableStream`/`WritableStream`/`TransformStream` | `internal/builtin/web/streams/` |
-| 3.4 | 实现 `Blob`/`File` | `internal/builtin/web/blob/` |
-| 3.5 | 实现 `crypto.subtle`（Web Crypto subset） | `internal/builtin/web/crypto/` |
-| 3.6 | 实现 `URLPattern` | `internal/builtin/web/url_pattern/` |
-| 3.7 | 实现 `MessageChannel`/`MessagePort` | `internal/builtin/web/messagechannel/` |
-| 3.8 | 实现 `node:child_process`（`spawn`/`exec`/`execFile`/`fork`） | `internal/builtin/node/child_process/` |
-| 3.9 | 实现 `node:worker_threads`（基于 Go goroutine + SharedArrayBuffer） | `internal/builtin/node/worker_threads/` |
-| 3.10 | 实现 `node:perf_hooks` | `internal/builtin/node/perf_hooks/` |
-| 3.11 | 实现 `node:timers/promises` | `internal/builtin/node/timers/promises.go` |
-| 3.12 | 实现 `node:readline` | `internal/builtin/node/readline/` |
-| 3.13 | 实现 `node:repl`（内部 REPL API） | `internal/builtin/node/repl/` |
-| 3.14 | 实现 `node:module`（`createRequire`/`register`） | `internal/builtin/node/module/` |
-| 3.15 | 实现 `node:v8`（subset：`serialize`/`deserialize`） | `internal/builtin/node/v8/` |
-| 3.16 | 搭建 npm 包兼容性测试框架 | `tests/conformance/npm/` |
-| 3.17 | 自动化拉取 Top 100 npm 包并加载测试 | CI 集成 |
+| 3.1 | 实现 `fetch` + `Request`/`Response`/`Headers`/`FormData` | ✅ `internal/runtime/globals/fetch.go` |
+| 3.2 | 实现 `WebSocket` + `WebSocketServer`（基于 `gorilla/websocket`） | ✅ `internal/runtime/globals/websocket.go` |
+| 3.3 | 实现 `ReadableStream`/`WritableStream`/`TransformStream` | ✅ `internal/runtime/globals/streams.go` |
+| 3.4 | 实现 `Blob`/`File` | ✅ `internal/runtime/globals/blob.go` |
+| 3.5 | 实现 `crypto.subtle`（Web Crypto subset） | ✅ `internal/runtime/globals/crypto_web.go`（digest/randomUUID/getRandomValues；importKey/generateKey 未实现） |
+| 3.6 | 实现 `URLPattern` | ✅ `internal/runtime/globals/url_pattern.go` |
+| 3.7 | 实现 `MessageChannel`/`MessagePort` | ✅ `internal/runtime/globals/messagechannel.go` |
+| 3.8 | 实现 `node:child_process`（`spawn`/`exec`/`execFile`/`fork`） | ✅ `internal/builtin/child_process.go` |
+| 3.9 | 实现 `node:worker_threads`（独立 VM goroutine + JSON 消息） | ✅ `internal/builtin/worker_threads.go` |
+| 3.10 | 实现 `node:perf_hooks` | ✅ `internal/builtin/perf_hooks.go` |
+| 3.11 | 实现 `node:timers/promises` | ✅ `internal/builtin/timers_promises.go`（setTimeout/setImmediate；setInterval 迭代器待补） |
+| 3.12 | 实现 `node:readline` | ✅ `internal/builtin/readline.go` |
+| 3.13 | 实现 `node:repl`（内部 REPL API） | ✅ `internal/builtin/repl.go` |
+| 3.14 | 实现 `node:module`（`createRequire`/`register`） | ✅ `internal/builtin/module.go`（createRequire；register 待补） |
+| 3.15 | 实现 `node:v8`（subset：`serialize`/`deserialize`） | ✅ `internal/builtin/v8.go` |
+| 3.16 | 搭建 npm 包兼容性测试框架 | ✅ `tests/conformance/npm/run.sh` |
+| 3.17 | 自动化拉取 Top 100 npm 包并加载测试 | 🔶 框架就绪（`tests/conformance/npm/`），CI 集成待配置 |
 
 ### 验收清单
 
@@ -1279,3 +1279,4 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 | v1.9 | 2026-08-04 | **事件循环基础设施 + node:http 完成**（Phase 2 第四批）。**事件循环**——`Interpreter` 新增 `taskCh`（缓冲 64）/`taskWG`/`stopCh`/`loopOnce` 字段与 `PostTask`/`RunLoop`/`Stop`/`AddRef` 方法（`eventloop.go`）；设计：JS 只在 RunLoop 所在 goroutine 执行（单线程语义），任意 Go goroutine（net/http 回调、定时器到期）经 `PostTask` 投递闭包，任务执行后排空 microtask 队列；`WaitGroup` 跟踪活跃句柄（已投递任务 + 活跃定时器 + AddRef 资源），计数归零时 RunLoop 自动退出；`engine.Context` 接口新增 `PostTask`/`AddRef`，`VM` 转发实现，`stubContext` 同步兜底。**定时器 globals**（`timers.go`）——`setTimeout`/`setInterval`/`setImmediate`/`clearTimeout`/`clearInterval`/`clearImmediate`；基于 `time.AfterFunc`/`Ticker` + `PostTask` 回 JS 线程，创建时 `AddRef`、单次触发/clear 时释放。**CLI 接入**——`loader.Run` 后调 `RunLoop()` 进入事件循环，无 pending 任务自动退出。**node:http**（`http.go`）——`createServer`/`server.listen`（动态端口 0、真实端口经 `net.Listen` 后 `ln.Addr()` 获取）/`server.close`/`server.address`（含 地址对象）/`request`/`get`/`STATUS_CODES`；服务器用 Go `net/http.Server` 在 goroutine 监听，请求到达时构造 JS `IncomingMessage`（method/url/httpVersion/headers + 'data'/'end' 事件）与 `ServerResponse`（writeHead/write/end/setHeader/getHeader/statusCode），`handleRequest` 阻塞等待 JS handler 完成保证响应写入时序；客户端 `newClientRequest` 用 Go `http.Client` 发请求、响应 PostTask 回调；关键修复——(1) 服务器 `listen` 时 `AddRef` 计入活跃度、`close` 时延迟到 close 回调执行后再释放（否则事件循环提前退出）；(2) 'data'/'end' 事件延迟到 handler/回调注册完监听器后发射（否则 body 丢失）；(3) `flushHeadersOnce` 避免重复 WriteHeader；(4) nil URL 容错。新增 `http_test.go` 5 个测试（服务器+客户端完整闭环、请求体 echo、setTimeout/setInterval+clear/setImmediate）；内置模块总数达 12 个，测试总数 438→443；CLI 端到端验证通过（STATUS 200 / METHOD / URL / BODY / CLOSED / EXIT 0） |
 | v1.10 | 2026-08-04 | **Buffer + TextEncoder/TextDecoder + atob/btoa 完成**（Phase 2 第五批，WBS 2.4/2.5/2.18）。**engine 层**新增 `buffer.go`——`BufferValue` 类型（嵌入私有 `*objectValue` 获得属性表/原型链能力，重写 `Get`/`Set`/`Keys` 支持数字索引 `buf[0]` 直接读写底层 `[]byte` 与只读 `length`（赋值静默忽略，Node 语义）；`NewBuffer` 工厂 + `AsBuffer`/`Bytes()` 访问器；`String()` 返回 utf8 内容支持 `'' + buf`）。**globals 层**新增 `buffer.go`——`Buffer` 全局构造器（`newBufferExports` 含静态方法 `from`/`alloc`（fill 循环重复填充）/`allocUnsafe`/`allocUnsafeSlow`/`byteLength`/`isBuffer`/`concat`/`compare`/`isEncoding`）；实例方法以闭包捕获 `[]byte` 安装（绕过 `engine.Func` 无 this 绑定）：`toString`/`write`（参数解析处理 `write(str, offset, length, encoding)` 与第 3 参为字符串即 encoding 的省略形式）/`toJSON`/`slice`/`subarray`（共享底层）/`equals`/`copy`/`fill`/`indexOf`/`includes` + `readUInt8/16LE/BE/32LE/BE`/`readInt8/16/32`/`readFloatLE/BE`/`readDoubleLE/BE` + `writeUInt*`/`writeInt*`/`writeFloat*`/`writeDouble*`（越界抛 RangeError）；编码转换统一走 `encodeBuffer`/`decodeBuffer`（utf8/latin1/ascii/base64（容错无 padding）/hex/utf16le，非法 utf8 替换 U+FFFD）；`NewBufferModule` 构造 `node:buffer` 导出——若全局 `Buffer` 已注册则复用（`NB === Buffer` 为 true，Node 语义），否则新建，含 `SlowBuffer`/`kMaxLength`/`constants`。**globals 层**新增 `encoding.go`——`TextEncoder`（`encode` 返回 Buffer/Uint8Array、`encodeInto`、`encoding` 属性）/`TextDecoder`（`decode` 支持 Buffer/字节数组，utf-8/utf-16le/latin1）/`atob`/`btoa`（latin1 范围校验）。**注册**——CLI `runModule`/`execute` 两处调用 `NewBuffer` + `NewEncoding`；`builtin/registry.go` 注册 `node:buffer`。新增 `buffer_test.go` 10 个测试（from 字符串/hex/base64/数组、索引访问与只读 length、alloc fill、write、read/writeUInt、slice、静态方法、equals/copy/fill、TextEncoder/Decoder utf8/utf16le、atob/btoa）；内置模块总数达 13 个，测试总数 443→453；CLI 端到端验证通过（hex/base64/utf16le 读取、中文编解码、node:buffer 与全局 Buffer 身份一致） |
 | v1.11 | 2026-08-04 | **Phase 2 完成**（第六批收尾）。**Web API 全局**——`url.go` WHATWG `URL`/`URLSearchParams`（基于 Go net/url，searchParams 与 URL 绑定同步更新 search/href；URLSearchParams 保持插入顺序、同名键聚合到首现位置、sort 稳定排序、keys/values/entries/forEach）；`abort.go` `AbortController`/`AbortSignal`（复用 EventTarget，abort 同步触发 'abort' 事件与 onabort，已中断信号忽略重复 abort）；`event.go` `Event`/`EventTarget`/`CustomEvent`（listener 支持函数与 {handleEvent}，once 自动移除，dispatchEvent 返回 !defaultPrevented）。**console 补全**（2.2）——`table`/`trace`/`count`/`countReset`/`timeLog`/`groupCollapsed`，group 实现缩进。**process 补全**（2.3）——`nextTick`（复用全局 queueMicrotask）/`stdin`/`kill`/`argv0`/`execPath`/`title`，`exit` 触发 'exit' 监听器。**网络模块**——`https.go`（createServer 支持 {key,cert} PEM 构造 TLS listener，request/get 用 `newClientRequestProto` 走 https:// 协议，客户端支持 `rejectUnauthorized:false` 跳过自签名校验）；`net.go` TCP 服务器/客户端（net.Listen + accept 循环 + Socket 复用，服务器与每个 socket AddRef、close/destroy 释放）；`dns.go`（lookup/resolve/resolve4/resolve6/promises，用全局 Promise 构造器返回真实 Promise）；`zlib.go`（gzipSync/gunzipSync/deflateSync/inflateSync/brotliCompressSync/brotliDecompressSync + 异步回调版，brotli 基于 `github.com/andybalholm/brotli`）；`crypto.go` 补全（createHmac、createCipheriv/createDecipheriv aes-128/256-cbc、pbkdf2Sync/pbkdf2 纯 Go 实现 RFC 2898、scryptSync/scrypt 基于 `golang.org/x/crypto/scrypt` RFC 7914 向量验证、randomBytes 改返回 Buffer）；`tls.go`（createServer/connect，tls.Conn 复用 net socket，rejectUnauthorized:false 跳过校验）。**事件循环重构**——退出检测从 WaitGroup.Wait 改为原子 `active` 计数 + `idleCh` 空闲信号（消除 WaitGroup 归零后被复用的 panic 与锁持有时死锁）；RunLoop 启动前 drain microtask（支持顶层 async main 创建定时器）。**async 闭包捕获修复**——async 挂起 `closeUpvalues` 记录被捕获的 upvalue，恢复时把 `closed` 值写回函数体读写的栈槽（修复 async 函数内 setTimeout/setInterval 回调修改局部变量不共享的缺陷）。**conformance 2.27**——新增 `tests/conformance/node/`（01-path/02-assert/03-events/04-buffer/05-url/06-stream/07-async/08-crypto-zlib + run.sh），**8/8 全部通过**；修复 node:path posix.resolve 在 Windows 下的反斜杠问题、assert 补 equal/notEqual、http/net options 属性 Undefined 误判；**引入外部依赖** `golang.org/x/crypto`（scrypt）与 `github.com/andybalholm/brotli`（brotli，Go 标准库 compress/brotli 在本工具链缺失）——项目首次引入第三方库；内置模块达 20 个，测试总数 453→490+；**Phase 2 全部 WBS 完成** |
+| v1.12 | 2026-08-04 | **Phase 3 完成**（Web API + P1 Node 模块）。**Web API 全局**——`fetch.go` fetch/Request/Response/Headers/FormData（Go net/http goroutine 发请求 + PostTask 回 JS 线程，Response.body 为 ReadableStream，text()/json()/arrayBuffer() 基于缓冲体；Headers/FormData 有序键值对）；`blob.go` Blob/File（size/type/text()/arrayBuffer()/slice()，嵌套 part 拼接）；`streams.go` ReadableStream/WritableStream/TransformStream（队列模型 + read() 返回 Promise<{value,done}> + pipeTo）；`websocket.go` WebSocket 客户端（gorilla/websocket，onxxx 属性 + EventTarget 事件，close 事件终态统一触发一次）；`crypto_web.go` crypto.subtle.digest（SHA-1/256/384/512/MD5）+ randomUUID/getRandomValues；`url_pattern.go` URLPattern（:param/* 路径模式，test/exec groups）；`messagechannel.go` MessageChannel/MessagePort（PostTask 投递跨端口消息，onmessage + addEventListener）。**P1 Node 模块**——`child_process.go`（spawn 事件流式 stdout/stderr + exit，exec 走平台 shell，execFile/fork）；`worker_threads.go`（独立 VM goroutine + JSON 消息传递，parentPort/workerData/isMainThread 从全局读，terminate/parentPort.close 停止事件循环，修复 Stop() 与 RunLoop defer 二次 close panic）；`perf_hooks.go`/`timers_promises.go`（setTimeout/setImmediate 返回 Promise）/`v8.go`（serialize/deserialize JSON 简化 + getHeapStatistics）/`module.go`（createRequire 经 Loader.MakeRequireFunc 公开方法）/`readline.go`/`repl.go`。**conformance 扩展**——`tests/conformance/node/` 新增 09-webapi.js/10-p1.js，**10/10 通过**。**npm 兼容框架**——`tests/conformance/npm/run.sh`（npm install 候选包 + aluka 加载）。新增外部依赖 `github.com/gorilla/websocket`；测试总数 480→530+；**Phase 3 全部 WBS 完成**（3.17 CI 集成待配置） |

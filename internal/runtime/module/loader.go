@@ -179,6 +179,12 @@ func (l *Loader) makeRequireFunc(modulePath string) engine.Function {
 	})
 }
 
+// MakeRequireFunc 创建基于指定模块路径的 require 函数（公开版，供
+// node:module.createRequire 使用）。
+func (l *Loader) MakeRequireFunc(modulePath string) engine.Function {
+	return l.makeRequireFunc(modulePath)
+}
+
 // makeImportFunc creates a JS dynamic-import function for the given module
 // path. It implements ES2020 dynamic import(): always returns a Promise that
 // resolves to the module's namespace (exports) or rejects on load failure.

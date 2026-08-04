@@ -81,7 +81,17 @@ func (interp *Interpreter) decActive() {
 // 必须在与 VM 相同的 goroutine 调用（此处即 JS 执行线程）。
 func (interp *Interpreter) RunLoop() {
 	interp.loopOnce.Do(func() {
-		defer close(interp.stopCh)
+		defer func() {
+			// 幂等关闭 stopCh（Stop() 可能已关闭）。
+			select {
+			case <-interp.stopCh:
+			default:
+				close(interp.stopCh)
+			}
+			interp.loopMu.Lock()
+			interp.loopDone = true
+			interp.loopMu.Unlock()
+		}()
 		// 先处理挂起的 microtask：顶层 async 调用（fire-and-forget）可能
 		// 在此创建定时器/投递任务，否则事件循环会误判为空闲立即退出。
 		interp.drainMicrotasks()

@@ -156,6 +156,31 @@ func runModule(path string, vm, disableCache bool) error {
 		return fmt.Errorf("register Event: %w", err)
 	}
 
+	// 注册 Web API 全局：fetch/Request/Response、Blob/File、Streams。
+	if err := globals.NewFetch(ctx, globals.FetchConfig{}); err != nil {
+		return fmt.Errorf("register fetch: %w", err)
+	}
+	if err := globals.NewBlob(ctx, globals.BlobConfig{}); err != nil {
+		return fmt.Errorf("register Blob: %w", err)
+	}
+	if err := globals.NewStream(ctx, globals.StreamConfig{}); err != nil {
+		return fmt.Errorf("register Streams: %w", err)
+	}
+
+	// 注册 Web API 全局：crypto.subtle、URLPattern、MessageChannel。
+	if err := globals.NewWebCrypto(ctx, globals.WebCryptoConfig{}); err != nil {
+		return fmt.Errorf("register WebCrypto: %w", err)
+	}
+	if err := globals.NewURLPattern(ctx, globals.URLPatternConfig{}); err != nil {
+		return fmt.Errorf("register URLPattern: %w", err)
+	}
+	if err := globals.NewMessageChannel(ctx, globals.MessageConfig{}); err != nil {
+		return fmt.Errorf("register MessageChannel: %w", err)
+	}
+	if err := globals.NewWebSocket(ctx, globals.WebSocketConfig{}); err != nil {
+		return fmt.Errorf("register WebSocket: %w", err)
+	}
+
 	// 使用模块加载器执行文件
 	loader := modmodule.NewLoader(ctx)
 	loader.SetNoCache(disableCache)
@@ -216,6 +241,31 @@ func execute(code string, filename string, vm bool) error {
 	}
 	if err := globals.NewEvent(ctx, globals.EventConfig{}); err != nil {
 		return fmt.Errorf("register Event: %w", err)
+	}
+
+	// 注册 Web API 全局（-e 模式同样需要）。
+	if err := globals.NewFetch(ctx, globals.FetchConfig{}); err != nil {
+		return fmt.Errorf("register fetch: %w", err)
+	}
+	if err := globals.NewBlob(ctx, globals.BlobConfig{}); err != nil {
+		return fmt.Errorf("register Blob: %w", err)
+	}
+	if err := globals.NewStream(ctx, globals.StreamConfig{}); err != nil {
+		return fmt.Errorf("register Streams: %w", err)
+	}
+
+	// 注册 Web API 全局（-e 模式同样需要）。
+	if err := globals.NewWebCrypto(ctx, globals.WebCryptoConfig{}); err != nil {
+		return fmt.Errorf("register WebCrypto: %w", err)
+	}
+	if err := globals.NewURLPattern(ctx, globals.URLPatternConfig{}); err != nil {
+		return fmt.Errorf("register URLPattern: %w", err)
+	}
+	if err := globals.NewMessageChannel(ctx, globals.MessageConfig{}); err != nil {
+		return fmt.Errorf("register MessageChannel: %w", err)
+	}
+	if err := globals.NewWebSocket(ctx, globals.WebSocketConfig{}); err != nil {
+		return fmt.Errorf("register WebSocket: %w", err)
 	}
 
 	// 执行

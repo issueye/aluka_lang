@@ -29,6 +29,17 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("tls", NewTLS)
 	loader.RegisterBuiltin("dns", NewDNS)
 	loader.RegisterBuiltin("zlib", NewZlib)
+	loader.RegisterBuiltin("perf_hooks", NewPerfHooks)
+	loader.RegisterBuiltin("timers/promises", NewTimersPromises)
+	loader.RegisterBuiltin("v8", NewV8)
+	loader.RegisterBuiltin("readline", NewReadline)
+	loader.RegisterBuiltin("repl", NewReplModule)
+	loader.RegisterBuiltin("child_process", NewChildProcess)
+	loader.RegisterBuiltin("worker_threads", NewWorkerThreads)
+	// node:module 需要 loader（createRequire 基于 loader 的 require 链路）。
+	loader.RegisterBuiltin("module", func(ctx engine.Context) (engine.Value, error) {
+		return NewModule(ctx, loader)
+	})
 	loader.RegisterBuiltin("buffer", globals.NewBufferModule)
 }
 
