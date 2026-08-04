@@ -45,6 +45,7 @@ type vmFrame struct {
 // value is copied into `closed`).
 type upvalue struct {
 	slot   *engine.Value // non-nil while open
+	index  int           // absolute stack index while open (for stack growth rebasing)
 	closed engine.Value  // set when closed
 }
 
@@ -202,7 +203,57 @@ func (v *VM) cur() *vmFrame {
 
 // === Stack helpers ========================================================
 
-func (v *VM) push(val engine.Value) { v.stack = append(v.stack, val) }
+func (v *VM) push(val engine.Value) {
+	v.ensureStack(1)
+	v.stack = append(v.stack, val)
+}
+
+// ensureStack grows the value stack without leaving open upvalues pointing at
+// the old backing array. Upvalues also retain an absolute slot index so they
+// can be rebound after a grow; this matters because function-frame setup can
+// append many locals in one operation, independently of push().
+func (v *VM) ensureStack(extra int) {
+	if extra <= 0 || len(v.stack)+extra <= cap(v.stack) {
+		return
+	}
+	newCap := cap(v.stack) * 2
+	if newCap < len(v.stack)+extra {
+		newCap = len(v.stack) + extra
+	}
+	if newCap < 16 {
+		newCap = 16
+	}
+	next := make([]engine.Value, len(v.stack), newCap)
+	copy(next, v.stack)
+	v.stack = next
+	for _, frame := range v.frames {
+		for _, uv := range frame.openUpvalues {
+			if uv.slot != nil && uv.index >= 0 && uv.index < len(v.stack) {
+				uv.slot = &v.stack[uv.index]
+			}
+		}
+	}
+}
+
+func (v *VM) reserveUndefined(n int) {
+	if n <= 0 {
+		return
+	}
+	oldLen := len(v.stack)
+	v.ensureStack(n)
+	v.stack = v.stack[:oldLen+n]
+	for i := oldLen; i < len(v.stack); i++ {
+		v.stack[i] = engine.Undefined()
+	}
+}
+
+func (v *VM) appendValues(values []engine.Value) {
+	if len(values) == 0 {
+		return
+	}
+	v.ensureStack(len(values))
+	v.stack = append(v.stack, values...)
+}
 
 func (v *VM) pop() engine.Value {
 	last := len(v.stack) - 1
@@ -1272,9 +1323,7 @@ func (v *VM) callClosureThis(cl *vmClosure, thisVal engine.Value, args []engine.
 		base:     len(v.stack),
 		upvalues: cl.upvalues,
 	}
-	for i := 0; i < tmpl.NumLocals; i++ {
-		v.stack = append(v.stack, engine.Undefined())
-	}
+	v.reserveUndefined(tmpl.NumLocals)
 	v.stack[frame.base] = thisVal // reuse the caller's this
 	for i := 0; i < tmpl.NumParams && i < len(args); i++ {
 		v.stack[frame.base+1+i] = args[i]
@@ -1409,9 +1458,7 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 		upvalues: cl.upvalues,
 	}
 	// Reserve local slots: slot 0 = this, 1..N = params, rest = undefined.
-	for i := 0; i < tmpl.NumLocals; i++ {
-		v.stack = append(v.stack, engine.Undefined())
-	}
+	v.reserveUndefined(tmpl.NumLocals)
 	v.stack[frame.base] = thisVal
 	for i := 0; i < tmpl.NumParams && i < len(args); i++ {
 		v.stack[frame.base+1+i] = args[i]
@@ -1477,13 +1524,14 @@ func (v *VM) captureUpvalues(tmpl *bytecode.FuncTemplate) []*upvalue {
 	for i, cap := range tmpl.Upvalues {
 		if cap.IsLocal {
 			// Open upvalue: point at the parent frame's local slot.
-			slot := &v.stack[frame.base+cap.Index]
+			absIndex := frame.base + cap.Index
+			slot := &v.stack[absIndex]
 			// Reuse an existing open upvalue for the same slot so that
 			// multiple closures capturing the same variable share state
 			// (writes by one closure are visible to others).
 			var existing *upvalue
 			for _, ou := range frame.openUpvalues {
-				if ou.slot == slot {
+				if ou.slot == slot || (ou.slot != nil && ou.index == absIndex) {
 					existing = ou
 					break
 				}
@@ -1491,7 +1539,7 @@ func (v *VM) captureUpvalues(tmpl *bytecode.FuncTemplate) []*upvalue {
 			if existing != nil {
 				uvs[i] = existing
 			} else {
-				uv := &upvalue{slot: slot}
+				uv := &upvalue{slot: slot, index: absIndex}
 				frame.openUpvalues = append(frame.openUpvalues, uv)
 				uvs[i] = uv
 			}
@@ -1520,12 +1568,15 @@ func (v *VM) closeUpvalues(threshold int) []upvalueClose {
 		if uv.slot == nil {
 			continue
 		}
-		// Find the index of the slot this upvalue points to.
-		idx := -1
-		for i := range v.stack {
-			if &v.stack[i] == uv.slot {
-				idx = i
-				break
+		idx := uv.index
+		if idx < 0 || idx >= len(v.stack) {
+			// Defensive fallback for upvalues created before index tracking.
+			idx = -1
+			for i := range v.stack {
+				if &v.stack[i] == uv.slot {
+					idx = i
+					break
+				}
 			}
 		}
 		if idx >= threshold {

@@ -157,9 +157,7 @@ func (g *GeneratorValue) resume(sendVal engine.Value) (engine.Value, error) {
 			base:     len(g.vm.stack),
 			upvalues: g.upvalues,
 		}
-		for i := 0; i < g.tmpl.NumLocals; i++ {
-			g.vm.stack = append(g.vm.stack, engine.Undefined())
-		}
+		g.vm.reserveUndefined(g.tmpl.NumLocals)
 		g.vm.stack[frame.base] = g.thisVal
 		for i := 0; i < g.tmpl.NumParams && i < len(g.args); i++ {
 			g.vm.stack[frame.base+1+i] = g.args[i]
@@ -188,7 +186,7 @@ func (g *GeneratorValue) resume(sendVal engine.Value) (engine.Value, error) {
 			pc:       g.savedPC,
 		}
 		// Restore saved stack segment (locals + operands).
-		g.vm.stack = append(g.vm.stack, g.savedStack...)
+		g.vm.appendValues(g.savedStack)
 		g.savedStack = nil
 		g.vm.frames = append(g.vm.frames, frame)
 		// Push the send value — it becomes the result of the suspended

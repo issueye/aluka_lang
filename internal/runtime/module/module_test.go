@@ -70,6 +70,25 @@ func TestCJSBasicRequire(t *testing.T) {
 	}
 }
 
+func TestCJSRequiredModuleClosureSurvivesStackGrowth(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.cjs": `var F = require('./f.cjs'); globalThis.__result = F()();`,
+		"f.cjs": `
+			require('./dep.cjs');
+			function F(){ return factory; }
+			function growStack(){ var a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t; }
+			growStack();
+			const factory = function(){ return 42; };
+			module.exports = F;
+		`,
+		"dep.cjs": `module.exports = {};`,
+	})
+	env.run(t, "main.cjs")
+	if got := env.globalGet("__result"); got != "42" {
+		t.Errorf("CJS function closure over const after require: got %q, want 42", got)
+	}
+}
+
 func TestCJSModuleExportsObject(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
 		"main.cjs": `var m = require('./mod.cjs'); globalThis.__result = m.x + ':' + m.y;`,

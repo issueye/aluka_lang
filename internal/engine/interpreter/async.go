@@ -126,9 +126,7 @@ func (ar *asyncRunner) setupFrame() {
 		base:     len(ar.vm.stack),
 		upvalues: ar.upvalues,
 	}
-	for i := 0; i < ar.tmpl.NumLocals; i++ {
-		ar.vm.stack = append(ar.vm.stack, engine.Undefined())
-	}
+	ar.vm.reserveUndefined(ar.tmpl.NumLocals)
 	ar.vm.stack[frame.base] = ar.thisVal
 	for i := 0; i < ar.tmpl.NumParams && i < len(ar.args); i++ {
 		ar.vm.stack[frame.base+1+i] = ar.args[i]
@@ -156,7 +154,7 @@ func (ar *asyncRunner) restoreFrame() {
 		pc:       ar.savedPC,
 		tryStack: ar.savedTryStack,
 	}
-	ar.vm.stack = append(ar.vm.stack, ar.savedStack...)
+	ar.vm.appendValues(ar.savedStack)
 	ar.savedStack = nil
 	ar.savedTryStack = nil
 	// 恢复被闭包捕获的局部变量：挂起期间闭包（如定时器回调）可能修改了

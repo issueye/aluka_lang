@@ -141,6 +141,24 @@ func TestFunctionDeclHoisting(t *testing.T) {
 	}
 }
 
+// TestOpenUpvalueSurvivesStackGrowth 验证函数声明捕获的顶层槽位在 VM 栈扩容后
+// 仍指向当前栈。复杂 CJS 模块（如 chalk）会在 const 初始化前调用拥有大量
+// locals 的函数；旧实现保存裸栈指针，扩容后闭包会继续读取旧栈中的 undefined。
+func TestOpenUpvalueSurvivesStackGrowth(t *testing.T) {
+	got := vmEvalStr(t, `
+		function readFactory() { return factory; }
+		function growStack() {
+			var a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t;
+		}
+		growStack();
+		const factory = () => 42;
+		readFactory()();
+	`)
+	if got != "42" {
+		t.Errorf("captured const after stack growth = %q, want 42", got)
+	}
+}
+
 // TestArrayProtoFallback 验证 Go 侧创建的数组（process.argv 等）能访问 Array.prototype 方法。
 func TestArrayProtoFallback(t *testing.T) {
 	// 经 new Array 创建的数组有原型方法。
