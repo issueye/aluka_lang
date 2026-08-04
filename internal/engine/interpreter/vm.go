@@ -26,6 +26,9 @@ type VM struct {
 
 	stack  []engine.Value // value stack: holds locals + operands
 	frames []vmFrame      // call-frame stack
+
+	// ic 是属性访问内联缓存（隐藏类 shape 缓存，1B.5）。
+	ic engine.ICache
 }
 
 type vmFrame struct {
@@ -1604,7 +1607,13 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 		return engine.Undefined(), nil
 	}
 	if o, ok := obj.AsObject(); ok {
-		return o.Get(key)
+		// 内联缓存快速路径（隐藏类 own 属性直接读槽）。
+		if cv, hit := v.ic.GetCached(obj, key); hit {
+			return cv, nil
+		}
+		val, err := o.Get(key)
+		v.ic.CachePut(obj, key)
+		return val, err
 	}
 	return engine.Undefined(), nil
 }

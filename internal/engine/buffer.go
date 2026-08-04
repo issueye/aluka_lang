@@ -25,7 +25,7 @@ type BufferValue struct {
 // 返回 Object 接口，调用方可继续 Set 实例方法。
 func NewBuffer(data []byte) Object {
 	return &BufferValue{
-		objectValue: &objectValue{values: make(map[string]Value)},
+		objectValue: &objectValue{shape: rootShape},
 		data:        data,
 	}
 }

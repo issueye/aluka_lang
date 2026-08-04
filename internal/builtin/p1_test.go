@@ -3,6 +3,7 @@ package builtin
 // Phase 3 P1 Node 模块测试：perf_hooks / timers/promises / v8 / module。
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -89,5 +90,76 @@ globalThis.__r = (typeof iface.question) + ':' + (typeof iface.on) + ':' + (type
 	}
 	if got := env.globalGet("__r"); got != "function:function:function" {
 		t.Errorf("readline/repl = %q", got)
+	}
+}
+
+// TestCryptoSubtleKeys 验证 importKey/generateKey。
+func TestCryptoSubtleKeys(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt']).then(function(key) {
+  globalThis.__g = key.type + ':' + key.algorithm.name + ':' + key.extractable + ':' + key.usages.length;
+  return crypto.subtle.importKey('raw', Buffer.from('0123456789abcdef'), 'AES-GCM', false, ['decrypt']);
+}).then(function(k2) {
+  globalThis.__i = k2.type + ':' + k2.algorithm.name;
+});
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__g"); got != "secret:AES-GCM:true:1" {
+		t.Errorf("generateKey = %q", got)
+	}
+	if got := env.globalGet("__i"); got != "secret:AES-GCM" {
+		t.Errorf("importKey = %q", got)
+	}
+}
+
+// TestFSPromises 验证 fs/promises 异步读写。
+func TestFSPromises(t *testing.T) {
+	env := newHTTPEnv(t)
+	dir := strings.ReplaceAll(t.TempDir(), "\\", "/")
+	filePath := dir + "/data.txt"
+	err := env.runWithLoop(t, `
+var fsp = require('node:fs/promises');
+(async function() {
+  await fsp.writeFile('`+filePath+`', 'async data');
+  var data = await fsp.readFile('`+filePath+`', 'utf8');
+  globalThis.__r = data;
+  var list = await fsp.readdir('`+dir+`');
+  globalThis.__n = list.length;
+  await fsp.unlink('`+filePath+`');
+})();
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "async data" {
+		t.Errorf("fs/promises = %q, want async data", got)
+	}
+	if got := env.globalGet("__n"); got != "1" {
+		t.Errorf("readdir = %q, want 1", got)
+	}
+}
+
+// TestTimersPromisesInterval 验证 setInterval 异步迭代器。
+func TestTimersPromisesInterval(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var { setInterval } = require('node:timers/promises');
+(async function() {
+  var count = 0;
+  for await (var v of setInterval(5, 'tick')) {
+    count++;
+    if (count >= 3) break;
+  }
+  globalThis.__r = count;
+})();
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "3" {
+		t.Errorf("setInterval iterator = %q, want 3", got)
 	}
 }

@@ -291,26 +291,25 @@ func (s *SymbolValue) IsWellKnown() bool { return s.id < 100 }
 
 // --- object ----------------------------------------------------------------
 
-// objectValue is the minimal JS Object implementation: map + insertion order.
+// objectValue 是 JS Object 的实现：隐藏类（Shape）+ 槽位数组。
+// 同类对象共享 Shape，属性访问经 shape.index 映射 O(1)。
 type objectValue struct {
-	keys   []string         // insertion order
-	values map[string]Value // property table
-	proto  Object           // [[Prototype]]
+	shape   *Shape
+	slots   []Value
+	deleted map[string]bool // 对象级已删除属性（避免污染共享 Shape）
+	proto   Object          // [[Prototype]]
 }
 
 // NewObject creates an empty JS object.
 func NewObject() Object {
-	return &objectValue{
-		values: make(map[string]Value),
-	}
+	return &objectValue{shape: rootShape}
 }
 
 // NewObjectFrom creates an object from a map (random order).
 func NewObjectFrom(m map[string]Value) Object {
-	o := &objectValue{values: make(map[string]Value, len(m))}
+	o := NewObject()
 	for k, v := range m {
-		o.keys = append(o.keys, k)
-		o.values[k] = v
+		_ = o.Set(k, v)
 	}
 	return o
 }
@@ -358,18 +357,24 @@ func (o *objectValue) Type() ValueType { return TypeObject }
 
 // String 返回对象的字符串表示（简化版，类似 Node util.inspect）。
 func (o *objectValue) String() string {
-	if len(o.keys) == 0 {
+	names := o.shape.names
+	if len(names) == 0 {
 		return "{}"
 	}
 	var b strings.Builder
 	b.WriteString("{ ")
-	for i, k := range o.keys {
-		if i > 0 {
+	first := true
+	for i, name := range names {
+		if o.deleted[name] {
+			continue
+		}
+		if !first {
 			b.WriteString(", ")
 		}
-		b.WriteString(k)
+		first = false
+		b.WriteString(name)
 		b.WriteString(": ")
-		b.WriteString(inspectValue(o.values[k]))
+		b.WriteString(inspectValue(o.slots[i]))
 	}
 	b.WriteString(" }")
 	return b.String()
@@ -385,11 +390,41 @@ func (o *objectValue) IsFunction() bool             { return false }
 func (o *objectValue) AsObject() (Object, bool)     { return o, true }
 func (o *objectValue) AsFunction() (Function, bool) { return nil, false }
 
+// getSlot 读取本对象 own 属性（含 deleted 检查）。
+func (o *objectValue) getSlot(key string) (Value, bool) {
+	if o.deleted != nil && o.deleted[key] {
+		return Undefined(), false
+	}
+	idx, ok := o.shape.lookup(key)
+	if !ok {
+		return Undefined(), false
+	}
+	return o.slots[idx], true
+}
+
+// setSlot 写入本对象 own 属性；不存在时经 Shape transition 添加。
+func (o *objectValue) setSlot(key string, value Value) {
+	if o.deleted != nil && o.deleted[key] {
+		// 复用原槽位。
+		if idx, ok := o.shape.lookup(key); ok {
+			delete(o.deleted, key)
+			o.slots[idx] = value
+			return
+		}
+	}
+	if idx, ok := o.shape.lookup(key); ok {
+		o.slots[idx] = value
+		return
+	}
+	o.shape = o.shape.transition(key)
+	o.slots = append(o.slots, value)
+}
+
 func (o *objectValue) Get(key string) (Value, error) {
 	// Walk own + prototype chain.
 	cur := o
 	for cur != nil {
-		if v, ok := cur.values[key]; ok {
+		if v, ok := cur.getSlot(key); ok {
 			return v, nil
 		}
 		if p, ok := cur.proto.(*objectValue); ok {
@@ -402,16 +437,19 @@ func (o *objectValue) Get(key string) (Value, error) {
 }
 
 func (o *objectValue) Set(key string, value Value) error {
-	if _, exists := o.values[key]; !exists {
-		o.keys = append(o.keys, key)
-	}
-	o.values[key] = value
+	o.setSlot(key, value)
 	return nil
 }
 
 func (o *objectValue) Keys() []string {
-	out := make([]string, len(o.keys))
-	copy(out, o.keys)
+	names := o.shape.names
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if o.deleted != nil && o.deleted[name] {
+			continue
+		}
+		out = append(out, name)
+	}
 	return out
 }
 
@@ -419,16 +457,13 @@ func (o *objectValue) Keys() []string {
 // did not exist; false only if the property is non-configurable (not modelled
 // here, so always true).
 func (o *objectValue) Delete(key string) bool {
-	if _, exists := o.values[key]; !exists {
+	if _, ok := o.getSlot(key); !ok {
 		return true // property doesn't exist — delete returns true
 	}
-	delete(o.values, key)
-	for i, k := range o.keys {
-		if k == key {
-			o.keys = append(o.keys[:i], o.keys[i+1:]...)
-			break
-		}
+	if o.deleted == nil {
+		o.deleted = make(map[string]bool)
 	}
+	o.deleted[key] = true
 	return true
 }
 
@@ -443,11 +478,11 @@ type ArrayValue struct {
 // NewArray 创建数组对象。
 func NewArray(elems []Value) *ArrayValue {
 	a := &ArrayValue{
-		objectValue: &objectValue{values: make(map[string]Value)},
+		objectValue: &objectValue{shape: rootShape},
 		elems:       elems,
 	}
 	// 同步 length 属性
-	a.values["length"] = IntValue(len(elems))
+	a.objectValue.setSlot("length", IntValue(len(elems)))
 	return a
 }
 
@@ -492,24 +527,24 @@ func (a *ArrayValue) Set(key string, value Value) error {
 		if !ok {
 			return fmt.Errorf("%w: invalid length", ErrTypeError)
 		}
-		if n >= 0 {
-			if n < len(a.elems) {
-				a.elems = a.elems[:n]
-			} else {
-				for i := len(a.elems); i < n; i++ {
-					a.elems = append(a.elems, Undefined())
+			if n >= 0 {
+				if n < len(a.elems) {
+					a.elems = a.elems[:n]
+				} else {
+					for i := len(a.elems); i < n; i++ {
+						a.elems = append(a.elems, Undefined())
+					}
 				}
+				a.objectValue.setSlot("length", IntValue(n))
 			}
-			a.values["length"] = IntValue(n)
-		}
-		return nil
+			return nil
 	}
 	if idx, err := strconv.Atoi(key); err == nil && idx >= 0 {
 		for len(a.elems) <= idx {
 			a.elems = append(a.elems, Undefined())
 		}
 		a.elems[idx] = value
-		a.values["length"] = IntValue(len(a.elems))
+		a.objectValue.setSlot("length", IntValue(len(a.elems)))
 		return nil
 	}
 	return a.objectValue.Set(key, value)
@@ -530,7 +565,7 @@ func (a *ArrayValue) Elems() []Value { return a.elems }
 // Append appends a value to the array and updates the length property.
 func (a *ArrayValue) Append(v Value) {
 	a.elems = append(a.elems, v)
-	a.values["length"] = IntValue(len(a.elems))
+	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
 // --- function --------------------------------------------------------------
@@ -545,7 +580,7 @@ type functionValue struct {
 // NewFunction 创建函数对象。
 func NewFunction(name string, fn Func) Function {
 	f := &functionValue{
-		objectValue: &objectValue{values: make(map[string]Value)},
+		objectValue: &objectValue{shape: rootShape},
 		fn:          fn,
 		name:        name,
 	}
@@ -616,10 +651,7 @@ func SetAccessor(obj Object, key string, getter, setter Value) {
 		_ = obj.Set(key, NewAccessor(getter, setter))
 		return
 	}
-	if _, exists := ov.values[key]; !exists {
-		ov.keys = append(ov.keys, key)
-	}
-	ov.values[key] = NewAccessor(getter, setter)
+	ov.setSlot(key, NewAccessor(getter, setter))
 }
 
 // UpdateAccessor installs or updates a single getter or setter on obj. If an
@@ -631,7 +663,7 @@ func UpdateAccessor(obj Object, key string, isGetter bool, fn Value) {
 	if !ok {
 		return
 	}
-	if existing, exists := ov.values[key]; exists {
+	if existing, exists := ov.getSlot(key); exists {
 		if acc, ok := existing.(*AccessorValue); ok {
 			if isGetter {
 				acc.Getter = fn
@@ -647,10 +679,7 @@ func UpdateAccessor(obj Object, key string, isGetter bool, fn Value) {
 	} else {
 		setter = fn
 	}
-	if _, exists := ov.values[key]; !exists {
-		ov.keys = append(ov.keys, key)
-	}
-	ov.values[key] = NewAccessor(getter, setter)
+	ov.setSlot(key, NewAccessor(getter, setter))
 }
 
 // FindAccessor walks the prototype chain of obj looking for an accessor
@@ -659,7 +688,7 @@ func FindAccessor(obj Value, key string) (*AccessorValue, bool) {
 	cur := obj
 	for cur != nil {
 		if o, ok := cur.(*objectValue); ok {
-			if v, exists := o.values[key]; exists {
+			if v, exists := o.getSlot(key); exists {
 				if acc, ok := v.(*AccessorValue); ok {
 					return acc, true
 				}
@@ -673,7 +702,7 @@ func FindAccessor(obj Value, key string) (*AccessorValue, bool) {
 			}
 		} else if a, ok := cur.(*ArrayValue); ok {
 			if a.objectValue != nil {
-				if v, exists := a.objectValue.values[key]; exists {
+				if v, exists := a.objectValue.getSlot(key); exists {
 					if acc, ok := v.(*AccessorValue); ok {
 						return acc, true
 					}
@@ -683,7 +712,7 @@ func FindAccessor(obj Value, key string) (*AccessorValue, bool) {
 			cur = GetProto(cur)
 		} else if f, ok := cur.(*functionValue); ok {
 			if f.objectValue != nil {
-				if v, exists := f.objectValue.values[key]; exists {
+				if v, exists := f.objectValue.getSlot(key); exists {
 					if acc, ok := v.(*AccessorValue); ok {
 						return acc, true
 					}

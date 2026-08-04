@@ -81,14 +81,112 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 		return promiseResolveValue(ctx, NewBufferInstance(sum))
 	}))
 	_ = subtle.Set("importKey", engine.NewFunction("importKey", func(args []engine.Value) (engine.Value, error) {
-		return promiseRejectValue(ctx, "importKey: not implemented (Web Crypto subset)")
+		if len(args) < 3 {
+			return promiseRejectValue(ctx, "importKey: format, keyData and algorithm required")
+		}
+		format := args[0].String()
+		var keyData []byte
+		if b, ok := engine.AsBuffer(args[1]); ok {
+			keyData = b
+		} else {
+			keyData = []byte(args[1].String())
+		}
+		algName := webAlgoName(args[2])
+		extractable := false
+		if len(args) > 3 {
+			if b, ok := args[3].Bool(); ok {
+				extractable = b
+			}
+		}
+		usages := webKeyUsages(args, 4)
+		switch format {
+		case "raw", "pkcs8", "spki", "jwk":
+		default:
+			return promiseRejectValue(ctx, "importKey: unsupported format "+format)
+		}
+		return promiseResolveValue(ctx, newCryptoKey("secret", extractable, algName, usages, keyData))
 	}))
 	_ = subtle.Set("generateKey", engine.NewFunction("generateKey", func(args []engine.Value) (engine.Value, error) {
-		return promiseRejectValue(ctx, "generateKey: not implemented (Web Crypto subset)")
+		if len(args) < 1 {
+			return promiseRejectValue(ctx, "generateKey: algorithm required")
+		}
+		algName, length := webAlgoAndLength(args[0])
+		extractable := false
+		if len(args) > 1 {
+			if b, ok := args[1].Bool(); ok {
+				extractable = b
+			}
+		}
+		usages := webKeyUsages(args, 2)
+		if length <= 0 {
+			length = 256
+		}
+		keyData := make([]byte, length/8)
+		_, _ = rand.Read(keyData)
+		return promiseResolveValue(ctx, newCryptoKey("secret", extractable, algName, usages, keyData))
 	}))
 
 	_ = crypto.Set("subtle", subtle)
 	return ctx.Global().Set("crypto", crypto)
+}
+
+// newCryptoKey 构造 CryptoKey 对象。
+func newCryptoKey(typeStr string, extractable bool, algorithmName string, usages []string, keyData []byte) engine.Value {
+	key := engine.NewObject()
+	_ = key.Set("type", engine.Str(typeStr))
+	_ = key.Set("extractable", engine.Boolean(extractable))
+	algo := engine.NewObject()
+	_ = algo.Set("name", engine.Str(algorithmName))
+	_ = key.Set("algorithm", algo)
+	usagesVals := make([]engine.Value, len(usages))
+	for i, u := range usages {
+		usagesVals[i] = engine.Str(u)
+	}
+	_ = key.Set("usages", engine.NewArray(usagesVals))
+	_ = key.Set("_keyData", NewBufferInstance(keyData))
+	return key
+}
+
+// webAlgoName 从算法参数提取名字（对象 {name} 或字符串）。
+func webAlgoName(v engine.Value) string {
+	if v.Type() == engine.TypeString {
+		return v.String()
+	}
+	if o, ok := v.AsObject(); ok {
+		if name, err := o.Get("name"); err == nil && !name.IsUndefined() {
+			return name.String()
+		}
+	}
+	return ""
+}
+
+// webAlgoAndLength 提取算法名与长度。
+func webAlgoAndLength(v engine.Value) (string, int) {
+	name := webAlgoName(v)
+	length := 0
+	if o, ok := v.AsObject(); ok {
+		if l, err := o.Get("length"); err == nil {
+			if n, ok := l.Int(); ok {
+				length = n
+			}
+		}
+	}
+	return name, length
+}
+
+// webKeyUsages 从参数数组提取 key usages。
+func webKeyUsages(args []engine.Value, i int) []string {
+	if i >= len(args) {
+		return nil
+	}
+	if a, ok := args[i].(*engine.ArrayValue); ok {
+		out := make([]string, 0, len(a.Elems()))
+		for _, e := range a.Elems() {
+			out = append(out, e.String())
+		}
+		return out
+	}
+	return nil
 }
 
 // randomUUID 生成 UUID v4。
