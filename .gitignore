@@ -5,7 +5,7 @@
 *.dll
 *.so
 *.dylib
-aluka
+/aluka
 aluka.exe
 
 # 测试与覆盖率

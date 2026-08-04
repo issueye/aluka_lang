@@ -5,6 +5,7 @@ package builtin
 
 import (
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/runtime/globals"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
@@ -23,6 +24,7 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("querystring", NewQueryString)
 	loader.RegisterBuiltin("string_decoder", NewStringDecoder)
 	loader.RegisterBuiltin("http", NewHTTP)
+	loader.RegisterBuiltin("buffer", globals.NewBufferModule)
 }
 
 // --- 公共辅助函数 -------------------------------------------------------
