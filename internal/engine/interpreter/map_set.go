@@ -885,6 +885,16 @@ func forEachIterable(interp *Interpreter, iterable engine.Value, fn func(engine.
 		}
 		return nil
 	}
+	// Fast path: string——字符串是内置可迭代（按码点迭代，与
+	// String 迭代器一致）。primitive 不是对象，走不了下面的 AsObject。
+	if iterable.Type() == engine.TypeString {
+		for _, r := range iterable.String() {
+			if err := fn(engine.Str(string(r))); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	// Generic path: get [Symbol.iterator] and call .next().
 	obj, ok := iterable.AsObject()
 	if !ok {

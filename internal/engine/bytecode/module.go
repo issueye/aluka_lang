@@ -112,7 +112,7 @@ const (
 
 // ClassMethodTemplate describes one member of a class (method/accessor/ctor).
 type ClassMethodTemplate struct {
-	Name    string         // property name (empty for computed keys — not supported in MVP)
+	Name    string         // property name（计算键方法为占位名，实际键运行时求值）
 	Kind    MethodKindValue
 	Static  bool
 	TmplIdx int            // function-template index
@@ -127,6 +127,9 @@ type ClassTemplate struct {
 	HasSuper bool
 	CtorIdx  int                  // function-template index for the constructor
 	Methods  []ClassMethodTemplate
+	// ComputedIdx 是 Methods 中带计算键（[expr]() {}）的方法索引。
+	// 编译时这些键表达式按方法顺序求值压栈，OpMakeClass 时弹出使用。
+	ComputedIdx []int
 }
 
 // === Instruction encoding =================================================

@@ -131,8 +131,9 @@ func Compile(source, flagsStr string) (*Compiled, error) {
 	}
 	goSrc, err := translate(source, f)
 	if err != nil {
-		// RE2 不支持前瞻/后行断言与反向引用：回退到自研回溯匹配器。
-		if errors.Is(err, errLookaround) || errors.Is(err, errBackref) {
+		// RE2 不支持前瞻/后行断言、反向引用与类内补集成员（[\S]）：
+		// 回退到自研回溯匹配器。
+		if errors.Is(err, errLookaround) || errors.Is(err, errBackref) || errors.Is(err, errClassSubset) {
 			bt, berr := compileBacktrack(source, f)
 			if berr != nil {
 				return nil, err

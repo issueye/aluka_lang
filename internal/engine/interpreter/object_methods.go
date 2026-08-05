@@ -62,7 +62,8 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 		if !ok {
 			return nil, fmt.Errorf("%w: Object.defineProperty target must be object", engine.ErrTypeError)
 		}
-		key := args[1].String()
+		// Symbol 键必须用 SymbolKey()（内部唯一键），不能 String() 化。
+		key := propertyKeyOf(args[1])
 		desc, ok := args[2].AsObject()
 		if !ok {
 			return nil, fmt.Errorf("%w: Property descriptor must be an object", engine.ErrTypeError)
@@ -150,7 +151,7 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 		if !ok {
 			return engine.Undefined(), nil
 		}
-		key := args[1].String()
+		key := propertyKeyOf(args[1])
 		v, err := o.Get(key)
 		if err != nil || !hasOwn(o, key) {
 			return engine.Undefined(), nil
@@ -265,7 +266,7 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 		if !ok {
 			return engine.Boolean(false), nil
 		}
-		return engine.Boolean(hasOwn(o, args[1].String())), nil
+		return engine.Boolean(hasOwn(o, propertyKeyOf(args[1]))), nil
 	}))
 
 	// 以下为常用但当前缺失的辅助静态方法（冻结/密封族，简化实现）。

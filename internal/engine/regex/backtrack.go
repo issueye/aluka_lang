@@ -99,6 +99,26 @@ type btRegexp struct {
 type btState struct {
 	captures []int
 	pos      int
+	frames   []btFrame // 本序列及内层序列的重复回退帧（LIFO）
+	// 当前"打开中"的捕获组（其子序列正在匹配）。帧压入时若处于组内，
+	// 记录组索引与起始位置，回退恢复后按新位置重算该组的捕获终点——
+	// 否则组捕获（在组完成时才写入）会停留在旧值。
+	openGroupIdx   int
+	openGroupStart int
+}
+
+// btFrame 是序列内重复量词的回退帧。贪心重复在"少吃一次"时压帧；
+// 懒重复在"多吃一次"时压帧。帧保存压入时刻的位置与捕获组。
+type btFrame struct {
+	nodes []btNode // 所属序列（判断 pc 是否可解释为当前序列的索引）
+	pc    int      // 重复节点后继节点在所属序列中的索引
+	pos   int
+	caps  []int
+	more  bool     // lazy：弹帧后先多吃一个子节点再继续
+	child *btNode
+	// 帧压入时处于打开状态的捕获组（-1 = 无）。恢复时重算其捕获终点。
+	grpIdx   int
+	grpStart int
 }
 
 // exec finds the first match at or after a given start byte offset.
@@ -111,7 +131,7 @@ func (r *btRegexp) exec(s string, start int) []int {
 		for i := range caps {
 			caps[i] = -1
 		}
-		st := &btState{captures: caps, pos: p}
+		st := &btState{captures: caps, pos: p, openGroupIdx: -1}
 		ok := r.matchSeq(s, st, r.root) && matchEnd(r, s, st)
 		if ok {
 			out := make([]int, len(caps))
@@ -153,27 +173,35 @@ func (r *btRegexp) matchNode(s string, st *btState, n *btNode) bool {
 		return r.matchAnchor(s, st.pos, n.anchor)
 	case btBackref:
 		return r.matchBackref(s, st, n)
-	case btGroup:
-		switch n.grpKind {
-		case grpCapture, grpNoncap:
-			start := st.pos
-			if !r.matchSeq(s, st, n.sub) {
-				return false
-			}
-			if n.grpKind == grpCapture {
-				r.setCapture(st, n.groupIdx, start, st.pos)
-			}
-			return true
+		case btGroup:
+			switch n.grpKind {
+			case grpCapture, grpNoncap:
+				start := st.pos
+				// 记录打开中的捕获组（仅 grpCapture），供回退帧恢复时
+				// 重算捕获终点；嵌套组保存并恢复外层上下文。
+				savedGrpIdx, savedGrpStart := st.openGroupIdx, st.openGroupStart
+				if n.grpKind == grpCapture {
+					st.openGroupIdx, st.openGroupStart = n.groupIdx, start
+				}
+				if !r.matchSeq(s, st, n.sub) {
+					st.openGroupIdx, st.openGroupStart = savedGrpIdx, savedGrpStart
+					return false
+				}
+				st.openGroupIdx, st.openGroupStart = savedGrpIdx, savedGrpStart
+				if n.grpKind == grpCapture {
+					r.setCapture(st, n.groupIdx, start, st.pos)
+				}
+				return true
 		case grpLookahead:
 			// V8 语义：前瞻内的捕获组会写入整体匹配结果（如 /(?=(a))b/ 组1 = "a"）。
-			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos}
+			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos, openGroupIdx: -1}
 			if r.matchSeq(s, sub, n.sub) {
 				copy(st.captures, sub.captures)
 				return true
 			}
 			return false
 		case grpNegLookahead:
-			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos}
+			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos, openGroupIdx: -1}
 			return !r.matchSeq(s, sub, n.sub)
 		case grpLookbehind, grpNegLookbehind:
 			return r.matchLookbehind(s, st, n)
@@ -195,25 +223,147 @@ func (r *btRegexp) matchNode(s string, st *btState, n *btNode) bool {
 	return false
 }
 
-// matchSeq matches a sequence of nodes.
+// matchSeq matches a sequence of nodes. 重复量词在此展开为迭代消费 +
+// 显式回退帧：贪心重复先吃满（每吃一个压一个"停在此处"帧），当后续
+// 节点失败时按 LIFO 弹帧恢复更少的迭代次数重试；懒重复默认停住（压一个
+// "多吃一个"帧），后续失败时多吃一个再重试。
 func (r *btRegexp) matchSeq(s string, st *btState, nodes []btNode) bool {
-	for i := range nodes {
-		if !r.matchNode(s, st, &nodes[i]) {
+	base := len(st.frames)
+	startPos := st.pos
+	startCaps := cloneCaps(st.captures)
+	pc := 0
+	for pc < len(nodes) {
+		n := &nodes[pc]
+		if n.kind == btRepeat {
+			if !r.repeatInSeq(s, st, n, nodes, pc) {
+				st.pos = startPos
+				copy(st.captures, startCaps)
+				st.frames = st.frames[:base]
+				return false
+			}
+			pc++
+			continue
+		}
+		if r.matchNode(s, st, n) {
+			pc++
+			continue
+		}
+		// 当前节点失败：弹帧回退（恢复更少/更多迭代后重试）。
+		if !r.backtrackSeq(s, st, nodes, &pc, base) {
+			st.pos = startPos
+			copy(st.captures, startCaps)
+			st.frames = st.frames[:base]
 			return false
 		}
 	}
 	return true
 }
 
+// repeatInSeq 在序列上下文匹配一个重复节点：满足 min 次后按贪心/懒
+// 压回退帧。pc 是该重复节点在 nodes 中的索引（后继为 pc+1）。
+func (r *btRegexp) repeatInSeq(s string, st *btState, n *btNode, nodes []btNode, pc int) bool {
+	count := 0
+	// 先满足 min 次（不可回退）。
+	for count < n.min {
+		before := st.pos
+		if !r.matchNode(s, st, n.child) {
+			return false
+		}
+		if st.pos == before {
+			break // 空迭代（如 (?=a)+）：无法推进，视为已满足
+		}
+		count++
+	}
+	if n.greedy {
+		// 贪心：每多吃一个就压一个"停在此处"帧（帧状态 = 少吃一次）。
+		for n.max < 0 || count < n.max {
+			before := st.pos
+			st.frames = append(st.frames, btFrame{
+				nodes: nodes, pc: pc + 1, pos: st.pos, caps: cloneCaps(st.captures),
+				grpIdx: st.openGroupIdx, grpStart: st.openGroupStart,
+			})
+			if !r.matchNode(s, st, n.child) {
+				break
+			}
+			if st.pos == before {
+				break // 空迭代：不能再推进
+			}
+			count++
+		}
+		return true
+	}
+	// 懒：默认停在此处，压一个"多吃一个"帧；后续失败时补吃。
+	if n.max < 0 || count < n.max {
+		st.frames = append(st.frames, btFrame{
+			nodes: nodes, pc: pc + 1, pos: st.pos, caps: cloneCaps(st.captures),
+			more: true, child: n.child,
+			grpIdx: st.openGroupIdx, grpStart: st.openGroupStart,
+		})
+	}
+	return true
+}
+
+// backtrackSeq 弹出最近的回退帧恢复状态并让序列重试。返回 false 表示
+// 无更多回退点（序列失败）。
+func (r *btRegexp) backtrackSeq(s string, st *btState, nodes []btNode, pc *int, base int) bool {
+	for len(st.frames) > base {
+		f := st.frames[len(st.frames)-1]
+		st.frames = st.frames[:len(st.frames)-1]
+		st.pos = f.pos
+		copy(st.captures, f.caps)
+		// 帧压入时组捕获尚未写入（组在其子序列完成后才 setCapture）：
+		// 按恢复后的位置重算打开中捕获组的终点。
+		if f.grpIdx >= 0 {
+			r.setCapture(st, f.grpIdx, f.grpStart, st.pos)
+		}
+		if f.more {
+			// 懒重复：先多吃一个子节点，并压新的"再吃一个"帧。
+			if !r.matchNode(s, st, f.child) {
+				continue
+			}
+			st.frames = append(st.frames, btFrame{
+				nodes: f.nodes, pc: f.pc, pos: st.pos, caps: cloneCaps(st.captures),
+				more: true, child: f.child,
+				grpIdx: st.openGroupIdx, grpStart: st.openGroupStart,
+			})
+		}
+		if sameSeq(f.nodes, nodes) {
+			*pc = f.pc
+			return true
+		}
+		// 帧属于内层已完成的序列：仅恢复状态，重试当前失败节点。
+		return true
+	}
+	return false
+}
+
+// sameSeq 判断两个序列切片是否指向同一底层数组（同一序列实例）。
+func sameSeq(a, b []btNode) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	return &a[0] == &b[0]
+}
+
 // matchRepeat handles greedy/lazy quantifiers by backtracking.
+// 仅用于重复作为其他节点的直接子节点（如 (a*)*）的独立路径；
+// 序列内的重复由 matchSeq/repeatInSeq 的帧机制处理。失败时恢复进入时
+// 的 pos/captures（原子性）。
 func (r *btRegexp) matchRepeat(s string, st *btState, n *btNode) bool {
-	// Recursive count-based matching.
-	return r.repeatHelper(s, st, n, 0)
+	startPos := st.pos
+	startCaps := cloneCaps(st.captures)
+	ok := r.repeatHelper(s, st, n, 0)
+	if !ok {
+		st.pos = startPos
+		copy(st.captures, startCaps)
+	}
+	return ok
 }
 
 func (r *btRegexp) repeatHelper(s string, st *btState, n *btNode, count int) bool {
-	if count >= n.max+1 && n.max >= 0 { // guard
-	}
 	if n.greedy {
 		// Try consuming as much as possible first.
 		if count < n.min {
@@ -249,8 +399,13 @@ func (r *btRegexp) repeatHelper(s string, st *btState, n *btNode, count int) boo
 }
 
 func (r *btRegexp) consumeOne(s string, st *btState, child *btNode, n *btNode, count int) bool {
+	before := st.pos
 	if !r.matchNode(s, st, child) {
 		return false
+	}
+	if st.pos == before {
+		// 空迭代（如 (?=a)*）：继续递归会死循环，直接接受当前次数。
+		return true
 	}
 	return r.repeatHelper(s, st, n, count+1)
 }
@@ -322,9 +477,10 @@ func (r *btRegexp) matchClassAt(s string, pos int, n *btNode) bool {
 				break
 			}
 		}
+		// 取补成员（如 [\S]）：字符不在该 part 范围即匹配。
 		if part.neg {
-			if in {
-				m = false
+			if !in {
+				m = true
 			}
 		} else if in {
 			m = true
@@ -386,7 +542,7 @@ func (r *btRegexp) matchLookbehind(s string, st *btState, n *btNode) bool {
 	ok := false
 	// Try each possible start position up to st.pos.
 	for p := 0; p <= start; p++ {
-		sub := &btState{captures: cloneCaps(st.captures), pos: p}
+		sub := &btState{captures: cloneCaps(st.captures), pos: p, openGroupIdx: -1}
 		if r.matchSeq(s, sub, n.sub) && sub.pos == start {
 			ok = true
 			// 与前瞻一致：后行断言内的捕获组写入整体结果。
@@ -960,4 +1116,18 @@ func ctrl(e byte) rune {
 }
 
 var wordRanges = []btRange{{'a', 'z'}, {'A', 'Z'}, {'0', '9'}, {'_', '_'}}
-var spaceRanges = []btRange{{' ', ' '}, {'\t', '\t'}, {'\n', '\n'}, {'\v', '\v'}, {'\f', '\f'}, {'\r', '\r'}}
+
+// spaceRanges 是 JS 的 \s 全集（WhiteSpace + LineTerminator），与
+// translate.go 的 jsWhiteSpaceClass 一致——Go 的 \s 只是 ASCII 子集。
+var spaceRanges = []btRange{
+	{'\t', '\r'},             // TAB LF VT FF CR（0x09-0x0D）
+	{' ', ' '},               // SP
+	{0x00A0, 0x00A0},         // NBSP
+	{0x1680, 0x1680},         // OGHAM SPACE MARK
+	{0x2000, 0x200A},         // EN QUAD .. HAIR SPACE
+	{0x2028, 0x2029},         // LS PS
+	{0x202F, 0x202F},         // NNBSP
+	{0x205F, 0x205F},         // MMSP
+	{0x3000, 0x3000},         // IDEOGRAPHIC SPACE
+	{0xFEFF, 0xFEFF},         // ZWNBSP
+}

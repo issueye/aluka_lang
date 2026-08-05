@@ -11,12 +11,39 @@ import (
 var (
 	errBackref      = errors.New("backreferences are not supported")
 	errLookaround   = errors.New("lookahead/lookbehind are not supported")
+	errClassSubset  = errors.New("character class subset complement is not supported")
 	errUnterminated = errors.New("invalid regular expression: unterminated pattern")
 )
 
 // jsWhiteSpaceClass 是 JS 的 \s（WhiteSpace + LineTerminator）全集：
 // TAB/VT/FF/SP/NBSP/ZWNBSP/USP + LF/CR/LS/PS。
 const jsWhiteSpaceClass = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+
+// jsWhiteSpaceGoRanges 将 JS 空白全集转成 Go 类内范围（\x{...} 形式，
+// 相邻字符合并为范围）。字符类内嵌 `\s` 必须内联展开——Go 不支持嵌套类，
+// `[[...]]` 会把 [ 当作类成员，导致 [^\s] 语义错误。
+func jsWhiteSpaceGoRanges() string {
+	runes := []rune(jsWhiteSpaceClass)
+	var b strings.Builder
+	i := 0
+	for i < len(runes) {
+		j := i
+		for j+1 < len(runes) && runes[j+1] == runes[j]+1 {
+			j++
+		}
+		if j-i >= 1 {
+			b.WriteString(goCodePoint(runes[i]))
+			b.WriteByte('-')
+			b.WriteString(goCodePoint(runes[j]))
+		} else {
+			for k := i; k <= j; k++ {
+				b.WriteString(goCodePoint(runes[k]))
+			}
+		}
+		i = j + 1
+	}
+	return b.String()
+}
 
 // translate 将 JS 正则 pattern 翻译为 Go RE2 语法。
 //
@@ -287,9 +314,12 @@ func translateClassEscape(pattern string, i int, f Flags) (string, int, error) {
 	switch {
 	case esc == 's' || esc == 'S':
 		if esc == 's' {
-			return "[" + jsWhiteSpaceClass + "]", i + 2, nil
+			// 内联展开：Go 无嵌套类，[[...]] 会把 [ 当类成员。
+			return jsWhiteSpaceGoRanges(), i + 2, nil
 		}
-		return "[^" + jsWhiteSpaceClass + "]", i + 2, nil
+		// 类内 \S 需"补集成员"语义（如 [^\S] = 空白），Go 类语法无法
+		// 内联表达；报错回退到回溯引擎（其类 part 支持逐项取补）。
+		return "", 0, errClassSubset
 	case esc == '/':
 		return "/", i + 2, nil
 	case esc == '\\':

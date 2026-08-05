@@ -428,6 +428,10 @@ func (interp *Interpreter) setupArrayProto() {
 				}
 			}
 		}
+		// start > end 时规范要求返回空数组（如 slice(2, 1)）。
+		if start > end {
+			start = end
+		}
 		result := engine.NewArray(append([]engine.Value{}, elems[start:end]...))
 		engine.SetProto(result, interp.arrayProto)
 		return result, nil
@@ -464,6 +468,20 @@ func (interp *Interpreter) setupArrayProto() {
 		}
 		return engine.IntValue(-1), nil
 	}))
+	_ = p.Set("lastIndexOf", interp.nativeMethod("lastIndexOf", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		arr, ok := this.(*engine.ArrayValue)
+		if !ok || len(args) == 0 {
+			return engine.IntValue(-1), nil
+		}
+		elems := arr.Elems()
+		target := args[0]
+		for i := len(elems) - 1; i >= 0; i-- {
+			if strictEqual(elems[i], target) {
+				return engine.IntValue(i), nil
+			}
+		}
+		return engine.IntValue(-1), nil
+	}))
 	_ = p.Set("includes", interp.nativeMethod("includes", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		arr, ok := this.(*engine.ArrayValue)
 		if !ok || len(args) == 0 {
@@ -485,8 +503,10 @@ func (interp *Interpreter) setupArrayProto() {
 		}
 		elems := arr.Elems()
 		for i, j := 0, len(elems)-1; i < j; i, j = i+1, j-1 {
-			_ = arr.Set(strconv.Itoa(i), elems[j])
-			_ = arr.Set(strconv.Itoa(j), elems[i])
+			// 先取出两侧值再写回（Elems() 是实时视图，先写会覆盖未读值）。
+			vi, vj := elems[i], elems[j]
+			_ = arr.Set(strconv.Itoa(i), vj)
+			_ = arr.Set(strconv.Itoa(j), vi)
 		}
 		return arr, nil
 	}))
@@ -668,6 +688,40 @@ func (interp *Interpreter) setupStringProto() {
 		n := len(s)
 		start, end := normalizeSubstringArgs(n, args)
 		return engine.Str(s[start:end]), nil
+	}))
+	_ = p.Set("substr", interp.nativeMethod("substr", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		s := this.String()
+		n := len(s)
+		// start：负值从末尾倒数（至少 0）；length：省略则取到末尾，
+		// 负值/NaN 视为 0。
+		start := 0
+		if len(args) > 0 {
+			if v, ok := args[0].Int(); ok {
+				start = v
+				if start < 0 {
+					start = n + start
+					if start < 0 {
+						start = 0
+					}
+				}
+				if start > n {
+					start = n
+				}
+			}
+		}
+		length := n - start
+		if len(args) > 1 && !args[1].IsUndefined() {
+			if v, ok := args[1].Int(); ok {
+				length = v
+				if length < 0 {
+					length = 0
+				}
+			}
+		}
+		if end := start + length; end < n {
+			n = end
+		}
+		return engine.Str(s[start:n]), nil
 	}))
 	_ = p.Set("indexOf", interp.nativeMethod("indexOf", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {

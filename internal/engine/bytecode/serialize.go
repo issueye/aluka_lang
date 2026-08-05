@@ -19,7 +19,7 @@ import (
 //
 // v4 → v5：新增 FuncTemplate.ArgumentsSlot（实现函数级 `arguments` 对象）。
 // v5 → v6：新增解构参数（ParamPatterns）编译语义。
-const FormatVersion = 6
+const FormatVersion = 7
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
@@ -287,10 +287,11 @@ func serializeClassTemplate(w io.Writer, cls *ClassTemplate) error {
 	if err := writeString(w, cls.Name); err != nil {
 		return err
 	}
-	var hdr [3 * 4]byte
+	var hdr [4 * 4]byte
 	binary.LittleEndian.PutUint32(hdr[0:4], boolToU32(cls.HasSuper))
 	binary.LittleEndian.PutUint32(hdr[4:8], uint32(cls.CtorIdx))
 	binary.LittleEndian.PutUint32(hdr[8:12], uint32(len(cls.Methods)))
+	binary.LittleEndian.PutUint32(hdr[12:16], uint32(len(cls.ComputedIdx)))
 	if _, err := w.Write(hdr[:]); err != nil {
 		return err
 	}
@@ -306,6 +307,13 @@ func serializeClassTemplate(w io.Writer, cls *ClassTemplate) error {
 			return err
 		}
 	}
+	for _, ci := range cls.ComputedIdx {
+		var buf [4]byte
+		binary.LittleEndian.PutUint32(buf[:], uint32(ci))
+		if _, err := w.Write(buf[:]); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -314,7 +322,7 @@ func deserializeClassTemplate(r io.Reader) (*ClassTemplate, error) {
 	if err != nil {
 		return nil, err
 	}
-	var hdr [3 * 4]byte
+	var hdr [4 * 4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return nil, err
 	}
@@ -341,6 +349,17 @@ func deserializeClassTemplate(r io.Reader) (*ClassTemplate, error) {
 				return nil, err
 			}
 			cls.Methods[i] = m
+		}
+	}
+	computedCount := binary.LittleEndian.Uint32(hdr[12:16])
+	if computedCount > 0 {
+		cls.ComputedIdx = make([]int, computedCount)
+		for i := uint32(0); i < computedCount; i++ {
+			var buf [4]byte
+			if _, err := io.ReadFull(r, buf[:]); err != nil {
+				return nil, err
+			}
+			cls.ComputedIdx[i] = int(binary.LittleEndian.Uint32(buf[:]))
 		}
 	}
 	return cls, nil

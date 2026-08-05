@@ -571,7 +571,37 @@ func (interp *Interpreter) setupArrayCtorExt(ctor engine.Object) {
 			return result, nil
 		}
 
-		// 路径 3：类数组对象（有 length 属性的数字索引对象）。
+		// 路径 3：可迭代对象（生成器/Set/Map/自定义 [Symbol.iterator]）。
+		// 规范顺序：先尝试迭代器协议，失败才走类数组路径。
+		if src.Type() != engine.TypeString {
+			if obj, ok := src.AsObject(); ok {
+				if iterMethod, err := obj.Get(engine.SymbolIterator.SymbolKey()); err == nil && !iterMethod.IsUndefined() {
+					out := []engine.Value(nil)
+					idx := 0
+					err := forEachIterable(interp, src, func(item engine.Value) error {
+						if mapFn != nil {
+							v, err := mapFn.callWith(thisArg, []engine.Value{item, engine.IntValue(idx)})
+							if err != nil {
+								return err
+							}
+							out = append(out, v)
+						} else {
+							out = append(out, item)
+						}
+						idx++
+						return nil
+					})
+					if err != nil {
+						return nil, err
+					}
+					result := engine.NewArray(out)
+					engine.SetProto(result, interp.arrayProto)
+					return result, nil
+				}
+			}
+		}
+
+		// 路径 4：类数组对象（有 length 属性的数字索引对象）。
 		if obj, ok := src.AsObject(); ok {
 			if lv, err := obj.Get("length"); err == nil {
 				if n, ok := lv.Int(); ok && n >= 0 {

@@ -599,6 +599,18 @@ func (a *ArrayValue) Keys() []string {
 		out = append(out, strconv.Itoa(i))
 	}
 	out = append(out, "length")
+	// 合并对象自有属性（负索引/非规范键，如 jsdiff 的 bestPath[-1]）。
+	// objectValue.Keys() 含 "length"（setSlot 写入），去重。
+	seen := make(map[string]bool, len(out))
+	for _, k := range out {
+		seen[k] = true
+	}
+	for _, k := range a.objectValue.Keys() {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
 	return out
 }
 

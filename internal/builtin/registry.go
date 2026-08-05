@@ -4,6 +4,8 @@ package builtin
 // 在 Loader 创建后调用 RegisterAll 注册所有内置模块。
 
 import (
+	"fmt"
+
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
@@ -44,6 +46,18 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("buffer", globals.NewBufferModule)
 	loader.RegisterBuiltin("tty", NewTTY)
 	loader.RegisterBuiltin("sqlite", NewSQLite)
+	// node:process —— 返回全局 process 对象（require('process') 语义，
+	// 与 Node 一致：裸名 process 解析为内置而非 node_modules 包）。
+	loader.RegisterBuiltin("process", NewProcessModule)
+}
+
+// NewProcessModule 返回全局 process 对象（require('process')）。
+func NewProcessModule(ctx engine.Context) (engine.Value, error) {
+	v, err := ctx.Global().Get("process")
+	if err != nil || v == nil || v.IsUndefined() {
+		return engine.Undefined(), fmt.Errorf("process: global process not initialized")
+	}
+	return v, nil
 }
 
 // --- 公共辅助函数 -------------------------------------------------------

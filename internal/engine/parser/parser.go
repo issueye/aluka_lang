@@ -1480,6 +1480,17 @@ func (p *Parser) parsePostfix() (ast.Expression, error) {
 func (p *Parser) parseMemberTail(expr ast.Expression) (ast.Expression, error) {
 	for {
 		t := p.peek()
+		// 私有名称成员访问：this.#field（'#' 前缀的 TokenIdent，不带点）。
+		if t.Type == lexer.TokenIdent && len(t.Value) > 0 && t.Value[0] == '#' {
+			p.next()
+			expr = &ast.MemberExpr{
+				Object:   expr,
+				Property: &ast.Identifier{Name: t.Value, Loc: posOf(t)},
+				Computed: false,
+				Loc:      posOf(t),
+			}
+			continue
+		}
 		if t.Type != lexer.TokenPunct {
 			return expr, nil
 		}
@@ -2393,6 +2404,18 @@ func (p *Parser) parseClassBody() (*ast.ClassBody, error) {
 
 // parseClassMember parses a single class member: an optional `static` prefix,
 // then either a `get`/`set` accessor, a `constructor`, or a normal method.
+// classKeyStart 判断 token 是否可作为类成员键名开头（ident/关键字/字符串/
+// 数字/计算键 [）。用于区分 `get x()` 访问器与名为 get 的字段（get; get = 1）。
+func classKeyStart(t lexer.Token) bool {
+	switch t.Type {
+	case lexer.TokenIdent, lexer.TokenKeyword, lexer.TokenString, lexer.TokenNumber:
+		return true
+	case lexer.TokenPunct:
+		return t.Value == "[" || t.Value == "*"
+	}
+	return false
+}
+
 func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 	// TypeScript: skip leading `@decorator` expressions (parsed and discarded).
 	if err := p.skipDecorators(); err != nil {
@@ -2428,6 +2451,14 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 		}
 	}
 
+	// `*name() {}` / `async *name() {}` / `static *name() {}`——生成器方法。
+	// `*` 不是合法属性名，出现即代表生成器标记。
+	isGenerator := false
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "*" {
+		p.next() // consume *
+		isGenerator = true
+	}
+
 	// get/set accessors are also contextual keywords.
 	// 注意：必须用当前 token（static/async 已消费后重新 peek），
 	// 不能用 parseClassMember 开头捕获的 t，否则 `static get x()` 会被
@@ -2438,8 +2469,8 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 	if ct := p.peek(); ct.Type == lexer.TokenIdent && (ct.Value == "get" || ct.Value == "set") {
 		nx := p.peekAt(1)
 		// Treat as accessor only if a real key follows. `get() {}` is a normal
-		// method named "get".
-		if nx.Type != lexer.TokenPunct || nx.Value != "(" {
+		// method named "get"; `get;` / `get = 1` / `get:` 是名为 get 的字段。
+		if classKeyStart(nx) {
 			if ct.Value == "get" {
 				kind = ast.MethodGetter
 			} else {
@@ -2515,8 +2546,10 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 	}
 
 	// Parse the method body using the standard function-params-and-body rule.
+	p.genStack = append(p.genStack, isGenerator)
 	p.asyncStack = append(p.asyncStack, isAsync)
 	params, patterns, defaults, rest, body, err := p.parseFuncParamsAndBody()
+	p.genStack = p.genStack[:len(p.genStack)-1]
 	p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
 	if err != nil {
 		return def, err
@@ -2528,6 +2561,7 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 		RestParam: rest,
 		Body:      body,
 		IsAsync:   isAsync,
+		IsGenerator: isGenerator,
 		Loc:       posOf(t),
 	}
 	def.Key = key

@@ -2807,14 +2807,22 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 	}
 
 	// Compile non-constructor, non-field methods.
-	for _, m := range body.Methods {
+	// 计算键方法（[expr]() {}）：键表达式按方法顺序求值压栈，供
+	// OpMakeClass 弹出使用；记录其在 Methods 中的索引。
+	for i, m := range body.Methods {
 		if m.Kind == ast.MethodConstructor || m.Kind == ast.MethodField {
 			continue
 		}
 		if m.Computed {
-			return fmt.Errorf("computed class method names not supported in 1C MVP")
+			if err := c.compileExpr(m.Key); err != nil {
+				return err
+			}
+			classTpl.ComputedIdx = append(classTpl.ComputedIdx, i)
 		}
 		methodName := propKey(m.Key)
+		if m.Computed {
+			methodName = "computed"
+		}
 		idx, err := c.compileMethod(methodName, m.Value)
 		if err != nil {
 			return err

@@ -23,6 +23,7 @@ type GeneratorValue struct {
 	obj      engine.Object
 	vm       *VM
 	tmpl     *bytecode.FuncTemplate
+	module   *bytecode.Module // 生成器定义所在模块（resume 时切回）
 	upvalues []*upvalue
 	thisVal  engine.Value
 	args     []engine.Value
@@ -45,10 +46,11 @@ const (
 )
 
 // NewGeneratorValue creates a generator object from a generator function template.
-func NewGeneratorValue(vm *VM, tmpl *bytecode.FuncTemplate, upvalues []*upvalue, thisVal engine.Value, args []engine.Value) *GeneratorValue {
+func NewGeneratorValue(vm *VM, tmpl *bytecode.FuncTemplate, module *bytecode.Module, upvalues []*upvalue, thisVal engine.Value, args []engine.Value) *GeneratorValue {
 	gen := &GeneratorValue{
 		vm:       vm,
 		tmpl:     tmpl,
+		module:   module,
 		upvalues: upvalues,
 		thisVal:  thisVal,
 		args:     args,
@@ -150,6 +152,15 @@ func (g *GeneratorValue) throwVal(throwVal engine.Value) (engine.Value, error) {
 func (g *GeneratorValue) resume(sendVal engine.Value) (engine.Value, error) {
 	g.state = genExecuting
 
+	// 切回生成器定义所在模块：生成器创建时（callClosure 立即返回）调用方
+	// 模块可能已变，若 resume 时仍用当前 v.module，OpMakeClosure 的 fnIdx
+	// 会索引到错误模块的 Functions 表（越界/错函数）。
+	savedModule := g.vm.module
+	if g.module != nil {
+		g.vm.module = g.module
+	}
+	defer func() { g.vm.module = savedModule }()
+
 	if !g.hasState {
 		// First call: set up a fresh frame.
 		frame := vmFrame{
@@ -212,7 +223,14 @@ func (g *GeneratorValue) resume(sendVal engine.Value) (engine.Value, error) {
 			g.state = genSuspended
 			return ys.value, ys
 		}
-		// Real error: generator is done.
+		// Real error: generator is done. 必须像 doReturn 一样弹出生成器
+		// 帧，否则调用方的 handleThrow 会对着残留的生成器帧（无 try 栈）
+		// 找 handler，导致 try/catch 无法捕获生成器内部抛出的异常。
+		if frame := g.vm.cur(); frame.tmpl == g.tmpl {
+			g.vm.closeUpvalues(frame.base)
+			g.vm.stack = g.vm.stack[:frame.base]
+			g.vm.frames = g.vm.frames[:len(g.vm.frames)-1]
+		}
 		g.state = genCompleted
 		g.hasState = false
 		return engine.Undefined(), err

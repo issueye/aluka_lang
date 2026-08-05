@@ -1128,6 +1128,12 @@ func (v *VM) doMakeClass(classIdx int) (engine.Value, error) {
 		superCtor = v.pop()
 	}
 
+	// 计算键方法：弹出编译时压栈的键值（方法顺序与 ComputedIdx 一致）。
+	computedKeys := make([]string, len(classTpl.ComputedIdx))
+	for i := len(classTpl.ComputedIdx) - 1; i >= 0; i-- {
+		computedKeys[i] = propertyKeyOf(v.pop())
+	}
+
 	// Create the constructor closure.
 	ctorTmpl := v.module.Functions[classTpl.CtorIdx]
 	ctor := newVMClosure(v, ctorTmpl, v.captureUpvalues(ctorTmpl))
@@ -1161,7 +1167,8 @@ func (v *VM) doMakeClass(classIdx int) (engine.Value, error) {
 	}
 
 	// Install methods / accessors.
-	for _, m := range classTpl.Methods {
+	computedPos := 0
+	for mi, m := range classTpl.Methods {
 		mTmpl := v.module.Functions[m.TmplIdx]
 		mClosure := newVMClosure(v, mTmpl, v.captureUpvalues(mTmpl))
 		engine.SetProto(mClosure.obj, v.interp.functionProto)
@@ -1181,13 +1188,20 @@ func (v *VM) doMakeClass(classIdx int) (engine.Value, error) {
 			target = proto
 		}
 
+		// 计算键方法：用运行时求值的键安装。
+		name := m.Name
+		if computedPos < len(classTpl.ComputedIdx) && classTpl.ComputedIdx[computedPos] == mi {
+			name = computedKeys[computedPos]
+			computedPos++
+		}
+
 		switch m.Kind {
 		case bytecode.MethodKindNormal:
-			_ = target.Set(m.Name, mClosure)
+			_ = target.Set(name, mClosure)
 		case bytecode.MethodKindGetter:
-			engine.UpdateAccessor(target, m.Name, true, mClosure)
+			engine.UpdateAccessor(target, name, true, mClosure)
 		case bytecode.MethodKindSetter:
-			engine.UpdateAccessor(target, m.Name, false, mClosure)
+			engine.UpdateAccessor(target, name, false, mClosure)
 		}
 	}
 
@@ -1449,14 +1463,14 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 	// Generator function: calling it returns a generator object rather than
 	// executing the body. The body runs lazily on each .next() call.
 	if tmpl.IsGenerator {
-		gen := NewGeneratorValue(v, tmpl, cl.upvalues, thisVal, args)
+		gen := NewGeneratorValue(v, tmpl, cl.module, cl.upvalues, thisVal, args)
 		return gen, nil
 	}
 	// Async function: calling it returns a Promise. The body runs with
 	// suspension at each OpAwait; the asyncRunner resolves/rejects the
 	// Promise when the body completes or throws.
 	if tmpl.IsAsync {
-		ar := newAsyncRunner(v, tmpl, cl.upvalues, thisVal, args)
+		ar := newAsyncRunner(v, tmpl, cl.module, cl.upvalues, thisVal, args)
 		return ar.start(), nil
 	}
 	// 切换到闭包定义时的 module，使函数体内 OpMakeClosure/OpMakeClass 的
@@ -1673,9 +1687,11 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 		if key == "length" {
 			return engine.IntValue(len(arr.Elems())), nil
 		}
-		if n, err := strconv.Atoi(key); err == nil {
+		// 仅非负规范索引走元素路径；负索引（如 jsdiff 的 bestPath[-1]）
+		// 是普通自有属性，须落到下方 own 属性查找。
+		if n, err := strconv.Atoi(key); err == nil && n >= 0 {
 			elems := arr.Elems()
-			if n >= 0 && n < len(elems) {
+			if n < len(elems) {
 				return elems[n], nil
 			}
 			return engine.Undefined(), nil

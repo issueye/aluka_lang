@@ -190,6 +190,23 @@ func TestBacktrackLookahead(t *testing.T) {
 		// V8 实测：a(?=(b))c 在 "abc" 上不匹配（前瞻零宽，c 需在 a 之后紧邻）。
 		{"lookahead capture", "a(?=(b))b", "", "abb", true},
 		{"lookbehind capture", "(?<=(a))b", "", "ab", true},
+		// 贪心重复回退：(?:(?!\{).)* 必须先吃满再逐次让出给末尾的 \}。
+		{"brace lookahead repeat", "\\{(?:(?!\\{).)*\\}", "", "pre {a} post", true},
+		{"brace no close", "\\{(?:(?!\\{).)*\\}", "", "{abc", false},
+		// 组捕获 + 回退：重复失败后位置/捕获必须原子恢复（\d{3} 吃到一半
+		// 会把 pos 停在错误位置，导致 (?!\d) 误判）。
+		{"thousand giveback", "(\\d{3})+(?!\\d)", "", "1234567.89", true},
+		// 反向引用触发回退：a+ 贪心吃满后 \1 需要让出。
+		{"backref giveback", "^(a+)\\1$", "", "aaaaaaaa", true},
+		{"backref giveback short", "^(a+)\\1$", "", "aaaaa", false},
+		{"backref giveback group", "(a+)\\1", "", "aaaa", true},
+		// 懒重复：先停住，后续失败时补吃。
+		{"lazy repeat", "a*?b", "", "aaab", true},
+		{"lazy repeat no b", "a*?b", "", "aaa", false},
+		// 类内 \s 内联展开（嵌套类 [[...]] 会让 [ 变成类成员）。
+		{"class s inline", "[^\\s]+@[^\\s]+", "", "mail a@b.c end", true},
+		{"class S fallback", "[\\S]+", "", "ab cd", true},
+		{"class S fallback no", "[\\S]+", "", "  ", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

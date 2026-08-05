@@ -152,6 +152,9 @@ func runModule(path string, vm, disableCache bool) error {
 	if err := globals.NewURL(ctx, globals.URLConfig{}); err != nil {
 		return fmt.Errorf("register URL: %w", err)
 	}
+	if err := globals.NewIntl(ctx, globals.IntlConfig{}); err != nil {
+		return err
+	}
 	if err := globals.NewAbort(ctx, globals.AbortConfig{}); err != nil {
 		return fmt.Errorf("register Abort: %w", err)
 	}
@@ -249,6 +252,9 @@ func execute(code string, filename string, vm bool) error {
 	// 注册 Web API 全局（-e 模式同样需要）。
 	if err := globals.NewURL(ctx, globals.URLConfig{}); err != nil {
 		return fmt.Errorf("register URL: %w", err)
+	}
+	if err := globals.NewIntl(ctx, globals.IntlConfig{}); err != nil {
+		return err
 	}
 	if err := globals.NewAbort(ctx, globals.AbortConfig{}); err != nil {
 		return fmt.Errorf("register Abort: %w", err)

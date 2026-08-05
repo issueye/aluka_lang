@@ -64,6 +64,12 @@ func (l *Lexer) Next() (Token, error) {
 		return l.readIdent(startLine, startCol)
 	}
 
+	// 私有名称（ECMAScript #field/#method）：'#' + 标识符。
+	// 词法上作为一个带 '#' 前缀的 TokenIdent 发出，语义解析在 parser。
+	if ch == '#' && l.pos+1 < len(l.src) && isIdentStart(l.src[l.pos+1]) {
+		return l.readPrivateName(startLine, startCol)
+	}
+
 	// regex 字面量（仅在特定上下文，须先于 punct 检测）
 	if ch == '/' && l.allowRegex {
 		return l.readRegex(startLine, startCol)
@@ -569,6 +575,23 @@ func (l *Lexer) readIdent(startLine, startCol int) (Token, error) {
 		return Token{Type: TokenKeyword, Value: word, Line: startLine, Col: startCol}, nil
 	}
 	return Token{Type: TokenIdent, Value: word, Line: startLine, Col: startCol}, nil
+}
+
+// readPrivateName 读取 ECMAScript 私有名称（#field / #method）。
+// 值为带 '#' 前缀的标识符（如 "#matchOne"），保证与公有名称不冲突。
+func (l *Lexer) readPrivateName(startLine, startCol int) (Token, error) {
+	start := l.pos
+	l.advance() // '#'
+	for l.pos < len(l.src) {
+		r, size := utf8.DecodeRuneInString(l.src[l.pos:])
+		if isIdentPartRune(r) {
+			l.pos += size
+			l.col++
+		} else {
+			break
+		}
+	}
+	return Token{Type: TokenIdent, Value: l.src[start:l.pos], Line: startLine, Col: startCol}, nil
 }
 
 func (l *Lexer) readPunct(startLine, startCol int) (Token, error) {

@@ -21,6 +21,7 @@ func (a *awaitSignal) Error() string { return "await" }
 type asyncRunner struct {
 	vm       *VM
 	tmpl     *bytecode.FuncTemplate
+	module   *bytecode.Module // 异步函数定义所在模块（每步运行前切回）
 	upvalues []*upvalue
 	thisVal  engine.Value
 	args     []engine.Value
@@ -40,10 +41,11 @@ type asyncRunner struct {
 
 // newAsyncRunner creates an async function runner. Call start() to begin
 // execution and obtain the result Promise.
-func newAsyncRunner(vm *VM, tmpl *bytecode.FuncTemplate, upvalues []*upvalue, thisVal engine.Value, args []engine.Value) *asyncRunner {
+func newAsyncRunner(vm *VM, tmpl *bytecode.FuncTemplate, module *bytecode.Module, upvalues []*upvalue, thisVal engine.Value, args []engine.Value) *asyncRunner {
 	return &asyncRunner{
 		vm:       vm,
 		tmpl:     tmpl,
+		module:   module,
 		upvalues: upvalues,
 		thisVal:  thisVal,
 		args:     args,
@@ -65,6 +67,14 @@ func (ar *asyncRunner) start() *PromiseValue {
 // the resumeVal is thrown into the frame at the await point (for rejected
 // awaited promises).
 func (ar *asyncRunner) runStep(resumeVal engine.Value, isThrow bool) {
+	// 切回异步函数定义所在模块（与生成器 resume 同理：await 挂起期间
+	// v.module 可能已切到其他模块，恢复执行时 fnIdx 必须解析到本模块）。
+	savedModule := ar.vm.module
+	if ar.module != nil {
+		ar.vm.module = ar.module
+	}
+	defer func() { ar.vm.module = savedModule }()
+
 	if !ar.hasState {
 		// First run: set up a fresh frame.
 		ar.setupFrame()
