@@ -9,6 +9,9 @@ package globals
 //   - AbortController.abort([reason]) 转发到 signal 的 abort。
 
 import (
+	"strconv"
+	"time"
+
 	"github.com/aluka-lang/aluka/internal/engine"
 )
 
@@ -32,9 +35,75 @@ func NewAbort(ctx engine.Context, cfg AbortConfig) error {
 		}))
 		return ctrl, nil
 	}))
-	_ = ctx.Global().Set("AbortSignal", engine.NewFunction("AbortSignal", func(args []engine.Value) (engine.Value, error) {
+
+	abortSignalCtor := engine.NewFunction("AbortSignal", func(args []engine.Value) (engine.Value, error) {
 		return newAbortSignalInstance(), nil
+	})
+	asObj, _ := abortSignalCtor.AsObject()
+
+	// AbortSignal.timeout(ms)：定时中断（reason 为 TimeoutError 语义）。
+	_ = asObj.Set("timeout", engine.NewFunction("timeout", func(args []engine.Value) (engine.Value, error) {
+		ms := 0
+		if len(args) > 0 {
+			if n, ok := args[0].Int(); ok {
+				ms = n
+			}
+		}
+		if ms < 0 {
+			ms = 0
+		}
+		signal := newAbortSignalInstance()
+		time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
+			ctx.PostTask(func() {
+				abortSignal(signal, engine.Str("TimeoutError"))
+			})
+		})
+		return signal, nil
 	}))
+
+	// AbortSignal.any([...signals])：任一信号中断则中断。
+	_ = asObj.Set("any", engine.NewFunction("any", func(args []engine.Value) (engine.Value, error) {
+		signal := newAbortSignalInstance()
+		if len(args) == 0 {
+			return signal, nil
+		}
+		if arr, ok := args[0].AsObject(); ok {
+			lv, err := arr.Get("length")
+			if err != nil || lv.IsUndefined() {
+				return signal, nil
+			}
+			n, _ := lv.Int()
+			for i := 0; i < n; i++ {
+				sv, err := arr.Get(strconv.Itoa(i))
+				if err != nil || !sv.IsObject() {
+					continue
+				}
+				src, _ := sv.AsObject()
+				// 已中断：立即传播。
+				if ab, err := src.Get("aborted"); err == nil {
+					if b, ok := ab.Bool(); ok && b {
+						reason, _ := src.Get("reason")
+						abortSignal(signal, reason)
+						continue
+					}
+				}
+				// 注册 abort 监听：源信号中断时传播。
+				if fn, err := src.Get("addEventListener"); err == nil && fn.IsFunction() {
+					if f, ok := fn.AsFunction(); ok {
+						listener := engine.NewFunction("abortListener", func(a []engine.Value) (engine.Value, error) {
+							reason, _ := src.Get("reason")
+							abortSignal(signal, reason)
+							return engine.Undefined(), nil
+						})
+						_, _ = f.Call([]engine.Value{engine.Str("abort"), listener})
+					}
+				}
+			}
+		}
+		return signal, nil
+	}))
+
+	_ = ctx.Global().Set("AbortSignal", abortSignalCtor)
 	return nil
 }
 

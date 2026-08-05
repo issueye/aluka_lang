@@ -7,11 +7,15 @@ package builtin
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/fsnotify/fsnotify"
 )
 
 // NewFS 构造 node:fs 模块的导出对象。
@@ -261,7 +265,282 @@ func NewFS(ctx engine.Context) (engine.Value, error) {
 	_ = constants.Set("X_OK", engine.IntValue(1))
 	_ = m.Set("constants", constants)
 
+	addFSStreamsAndWatch(ctx, m)
+
 	return m, nil
+}
+
+// addFSStreamsAndWatch 补全 fs.watch / createReadStream / createWriteStream
+// （Pi 的 footer-data-provider 监视 git HEAD、逐行读文件等场景）。
+func addFSStreamsAndWatch(ctx engine.Context, m engine.Object) {
+	// fs.watch(path[, options][, listener]) → FSWatcher（EventEmitter 风格：
+	// 'change'/'error' 事件 + close()）。基于 fsnotify。
+	_ = m.Set("watch", engine.NewFunction("watch", func(args []engine.Value) (engine.Value, error) {
+		path := ""
+		listener := engine.Undefined()
+		for _, a := range args {
+			switch a.Type() {
+			case engine.TypeString:
+				if path == "" {
+					path = a.String()
+				}
+			case engine.TypeFunction:
+				listener = a
+			default:
+				// options 对象（忽略）
+			}
+		}
+		if path == "" {
+			return engine.Undefined(), fmt.Errorf("watch: path required")
+		}
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		if err := watcher.Add(path); err != nil {
+			watcher.Close()
+			return engine.Undefined(), fmt.Errorf("watch %q: %w", path, err)
+		}
+		// 构造 FSWatcher 实例（EventEmitter 风格）。
+		instance := newEmitterLike()
+		release := ctx.AddRef()
+		closed := false
+		go func() {
+			for {
+				select {
+				case ev, ok := <-watcher.Events:
+					if !ok {
+						return
+					}
+					if closed {
+						return
+					}
+					ctx.PostTask(func() {
+						// 触发 'change' 事件（eventType, filename）。
+						// Node 语义：eventType 为 'change' 或 'rename'。
+						eventType := "change"
+						if ev.Op&fsnotify.Rename != 0 {
+							eventType = "rename"
+						}
+						if fn, err := instance.Get("emit"); err == nil && fn.IsFunction() {
+							if f, ok := fn.AsFunction(); ok {
+								// emit 首参为事件名，其余传给监听器 (eventType, filename)。
+								_, _ = f.Call([]engine.Value{
+									engine.Str("change"),
+									engine.Str(eventType),
+									engine.Str(filepath.Base(ev.Name)),
+								})
+							}
+						}
+					})
+				case werr, ok := <-watcher.Errors:
+					if !ok {
+						return
+					}
+					if closed {
+						return
+					}
+					ctx.PostTask(func() {
+						if fn, err := instance.Get("emit"); err == nil && fn.IsFunction() {
+							if f, ok := fn.AsFunction(); ok {
+								_, _ = f.Call([]engine.Value{engine.Str("error"), engine.Str(werr.Error())})
+							}
+						}
+					})
+				}
+			}
+		}()
+		_ = instance.Set("close", engine.NewFunction("close", func(args []engine.Value) (engine.Value, error) {
+			if !closed {
+				closed = true
+				release()
+				_ = watcher.Close()
+			}
+			return engine.Undefined(), nil
+		}))
+		_ = instance.Set("ref", engine.NewFunction("ref", func(args []engine.Value) (engine.Value, error) {
+			return instance, nil
+		}))
+		_ = instance.Set("unref", engine.NewFunction("unref", func(args []engine.Value) (engine.Value, error) {
+			return instance, nil
+		}))
+		// listener 简写：watch(path, listener) → watcher.on('change', listener)。
+		if listener.IsFunction() {
+			if fn, err := instance.Get("on"); err == nil && fn.IsFunction() {
+				if f, ok := fn.AsFunction(); ok {
+					_, _ = f.Call([]engine.Value{engine.Str("change"), listener})
+				}
+			}
+		}
+		return instance, nil
+	}))
+
+	// createReadStream(path[, options])：简化流——'data'/'end'/'error' 事件。
+	_ = m.Set("createReadStream", engine.NewFunction("createReadStream", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("createReadStream: path required")
+		}
+		path := args[0].String()
+		encoding := ""
+		if len(args) > 1 {
+			if o, ok := args[1].AsObject(); ok {
+				if v, err := o.Get("encoding"); err == nil && !v.IsUndefined() {
+					encoding = v.String()
+				}
+			}
+		}
+		stream := newEmitterLike()
+		release := ctx.AddRef()
+		go func() {
+			defer release()
+			file, err := os.Open(path)
+			if err != nil {
+				ctx.PostTask(func() {
+					emitOn(stream, "error", engine.Str(err.Error()))
+				})
+				return
+			}
+			defer file.Close()
+			buf := make([]byte, 64*1024)
+			for {
+				n, err := file.Read(buf)
+				if n > 0 {
+					chunk := make([]byte, n)
+					copy(chunk, buf[:n])
+					ctx.PostTask(func() {
+						var val engine.Value
+						if encoding != "" && encoding != "buffer" {
+							val = engine.Str(string(chunk))
+						} else {
+							val = globals.NewBufferInstance(chunk)
+						}
+						emitOn(stream, "data", val)
+					})
+				}
+				if err != nil {
+					if err != io.EOF {
+						ctx.PostTask(func() {
+							emitOn(stream, "error", engine.Str(err.Error()))
+						})
+					} else {
+						ctx.PostTask(func() {
+							emitOn(stream, "end")
+						})
+					}
+					break
+				}
+			}
+		}()
+		// 常用属性/方法。
+		_ = stream.Set("close", engine.NewFunction("close", func(args []engine.Value) (engine.Value, error) {
+			return engine.Undefined(), nil
+		}))
+		_ = stream.Set("destroy", engine.NewFunction("destroy", func(args []engine.Value) (engine.Value, error) {
+			return engine.Undefined(), nil
+		}))
+		_ = stream.Set("on", streamOn(stream))
+		return stream, nil
+	}))
+
+	// createWriteStream(path)：简化流——write()/end() 事件。
+	_ = m.Set("createWriteStream", engine.NewFunction("createWriteStream", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("createWriteStream: path required")
+		}
+		path := args[0].String()
+		stream := newEmitterLike()
+		_ = stream.Set("write", engine.NewFunction("write", func(args []engine.Value) (engine.Value, error) {
+			if len(args) == 0 {
+				return engine.Undefined(), nil
+			}
+			data := fsDataBytes(args[0])
+			if err := os.WriteFile(path, data, 0644); err != nil {
+				return engine.Undefined(), err
+			}
+			return engine.Boolean(true), nil
+		}))
+		_ = stream.Set("end", engine.NewFunction("end", func(args []engine.Value) (engine.Value, error) {
+			if len(args) > 0 {
+				data := fsDataBytes(args[0])
+				if err := os.WriteFile(path, data, 0644); err != nil {
+					return engine.Undefined(), err
+				}
+			}
+			emitOn(stream, "finish")
+			emitOn(stream, "close")
+			return engine.Undefined(), nil
+		}))
+		_ = stream.Set("on", streamOn(stream))
+		return stream, nil
+	}))
+}
+
+// newEmitterLike 构造最小 EventEmitter 风格对象（on/emit）。
+func newEmitterLike() engine.Object {
+	obj := engine.NewObject()
+	_ = obj.Set("on", streamOn(obj))
+	_ = obj.Set("emit", engine.NewFunction("emit", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Boolean(false), nil
+		}
+		event := args[0].String()
+		listeners, _ := obj.Get("__aluka_listeners")
+		lo, _ := listeners.AsObject()
+		if lo == nil {
+			return engine.Boolean(false), nil
+		}
+		lv, _ := lo.Get(event)
+		la, _ := lv.AsObject()
+		if la == nil {
+			return engine.Boolean(false), nil
+		}
+		lenV, _ := la.Get("length")
+		n, _ := lenV.Int()
+		for i := 0; i < n; i++ {
+			fv, _ := la.Get(strconv.Itoa(i))
+			if f, ok := fv.AsFunction(); ok {
+				_, _ = f.Call(args[1:])
+			}
+		}
+		return engine.Boolean(n > 0), nil
+	}))
+	// 初始化监听器表。
+	listeners := engine.NewObject()
+	_ = obj.Set("__aluka_listeners", listeners)
+	return obj
+}
+
+// streamOn 返回 on(event, listener) 函数（挂在对象上）。
+func streamOn(obj engine.Object) engine.Value {
+	return engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return obj, nil
+		}
+		event := args[0].String()
+		listeners, _ := obj.Get("__aluka_listeners")
+		lo, _ := listeners.AsObject()
+		lv, _ := lo.Get(event)
+		if lv.IsUndefined() {
+			lv = engine.NewArray(nil)
+			_ = lo.Set(event, lv)
+		}
+		la, _ := lv.AsObject()
+		lenV, _ := la.Get("length")
+		n, _ := lenV.Int()
+		_ = la.Set(strconv.Itoa(n), args[1])
+		_ = la.Set("length", engine.IntValue(n+1))
+		return obj, nil
+	})
+}
+
+// emitOn 在对象上触发事件（从 \x00listeners 表取监听器）。
+func emitOn(obj engine.Object, event string, args ...engine.Value) {
+	if fn, err := obj.Get("emit"); err == nil && fn.IsFunction() {
+		if f, ok := fn.AsFunction(); ok {
+			callArgs := append([]engine.Value{engine.Str(event)}, args...)
+			_, _ = f.Call(callArgs)
+		}
+	}
 }
 
 // statToObj 将 os.FileInfo 转为 Node.js Stats 对象。

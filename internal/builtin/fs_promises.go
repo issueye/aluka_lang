@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
@@ -190,6 +191,8 @@ func NewFSPromises(ctx engine.Context) (engine.Value, error) {
 		})
 	}))
 
+	addFSPromisesExtras(ctx, m)
+
 	return m, nil
 }
 
@@ -206,7 +209,7 @@ func fsPromise(ctx engine.Context, args []engine.Value, op func() (engine.Value,
 			ctx.PostTask(func() {
 				defer release()
 				if err != nil {
-					callBuiltinResolve(reject, engine.Str(err.Error()))
+					callBuiltinResolve(reject, builtinErrorValue(ctx, err.Error()))
 				} else {
 					callBuiltinResolve(resolve, val)
 				}
@@ -268,4 +271,132 @@ func copyFile(src, dst string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// addFSPromisesExtras 补全 fs/promises 常用方法（Pi 的 nodejs.ts 全量 API）。
+// mkdtemp / lstat / realpath / opendir。
+func addFSPromisesExtras(ctx engine.Context, m engine.Object) {
+	_ = m.Set("mkdtemp", engine.NewFunction("mkdtemp", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("mkdtemp: prefix required")
+		}
+		prefix := args[0].String()
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			dir, err := os.MkdirTemp("", prefix)
+			if err != nil {
+				return engine.Undefined(), err
+			}
+			return engine.Str(dir), nil
+		})
+	}))
+
+	_ = m.Set("lstat", engine.NewFunction("lstat", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("lstat: path required")
+		}
+		path := args[0].String()
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			info, err := os.Lstat(path)
+			if err != nil {
+				return engine.Undefined(), err
+			}
+			return fsStatToObject(info), nil
+		})
+	}))
+
+	_ = m.Set("realpath", engine.NewFunction("realpath", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("realpath: path required")
+		}
+		path := args[0].String()
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			real, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return engine.Undefined(), err
+			}
+			abs, err := filepath.Abs(real)
+			if err != nil {
+				return engine.Undefined(), err
+			}
+			return engine.Str(abs), nil
+		})
+	}))
+
+	_ = m.Set("opendir", engine.NewFunction("opendir", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("opendir: path required")
+		}
+		path := args[0].String()
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				return engine.Undefined(), err
+			}
+			out := make([]engine.Value, len(entries))
+			for i, e := range entries {
+				d := engine.NewObject()
+				_ = d.Set("name", engine.Str(e.Name()))
+				_ = d.Set("isDirectory", engine.NewFunction("isDirectory", func(args []engine.Value) (engine.Value, error) {
+					return engine.Boolean(e.IsDir()), nil
+				}))
+				_ = d.Set("isFile", engine.NewFunction("isFile", func(args []engine.Value) (engine.Value, error) {
+					return engine.Boolean(e.Type().IsRegular()), nil
+				}))
+				_ = d.Set("isSymbolicLink", engine.NewFunction("isSymbolicLink", func(args []engine.Value) (engine.Value, error) {
+					return engine.Boolean(e.Type()&os.ModeSymlink != 0), nil
+				}))
+				out[i] = d
+			}
+			dir := engine.NewObject()
+			_ = dir.Set("read", engine.NewFunction("read", func(args []engine.Value) (engine.Value, error) {
+				return engine.Null(), nil // 简化：一次返回全部（Dirent 对象）
+			}))
+			_ = dir.Set("readSync", engine.NewFunction("readSync", func(args []engine.Value) (engine.Value, error) {
+				return engine.Null(), nil
+			}))
+			_ = dir.Set("close", engine.NewFunction("close", func(args []engine.Value) (engine.Value, error) {
+				return engine.Undefined(), nil
+			}))
+			_ = dir.Set("closeSync", engine.NewFunction("closeSync", func(args []engine.Value) (engine.Value, error) {
+				return engine.Undefined(), nil
+			}))
+			_ = dir.Set("path", engine.Str(path))
+			_ = dir.Set("dirents", engine.NewArray(out))
+			return dir, nil
+		})
+	}))
+}
+
+// fsStatToObject 构造 Stat 对象（复用 fs.go 的字段集合）。
+func fsStatToObject(info os.FileInfo) engine.Value {
+	obj := engine.NewObject()
+	_ = obj.Set("size", engine.IntValue(int(info.Size())))
+	_ = obj.Set("mtime", engine.Number(float64(info.ModTime().UnixMilli())))
+	_ = obj.Set("mtimeMs", engine.Number(float64(info.ModTime().UnixMilli())))
+	_ = obj.Set("atimeMs", engine.Number(float64(info.ModTime().UnixMilli())))
+	_ = obj.Set("ctimeMs", engine.Number(float64(info.ModTime().UnixMilli())))
+	_ = obj.Set("birthtimeMs", engine.Number(float64(info.ModTime().UnixMilli())))
+	_ = obj.Set("mode", engine.IntValue(int(info.Mode())))
+	_ = obj.Set("isFile", engine.NewFunction("isFile", func(args []engine.Value) (engine.Value, error) {
+		return engine.Boolean(info.Mode().IsRegular()), nil
+	}))
+	_ = obj.Set("isDirectory", engine.NewFunction("isDirectory", func(args []engine.Value) (engine.Value, error) {
+		return engine.Boolean(info.IsDir()), nil
+	}))
+	_ = obj.Set("isSymbolicLink", engine.NewFunction("isSymbolicLink", func(args []engine.Value) (engine.Value, error) {
+		return engine.Boolean(info.Mode()&os.ModeSymlink != 0), nil
+	}))
+	return obj
+}
+
+// builtinErrorValue 构造 JS Error 对象（带 message）。回退为字符串。
+func builtinErrorValue(ctx engine.Context, msg string) engine.Value {
+	if ctor, err := ctx.Global().Get("Error"); err == nil && ctor.IsFunction() {
+		if f, ok := ctor.AsFunction(); ok {
+			if v, cerr := f.Call([]engine.Value{engine.Str(msg)}); cerr == nil {
+				return v
+			}
+		}
+	}
+	return engine.Str(msg)
 }
