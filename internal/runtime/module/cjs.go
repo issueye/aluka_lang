@@ -11,9 +11,13 @@ import (
 )
 
 // loadCJS loads and executes a CommonJS module.
-// It sets up require/module/exports/__filename/__dirname as globals
-// (with save/restore for nested requires), evaluates the source, and
-// returns module.exports.
+//
+// 实现（P0-1）：将模块源码包装为带模块作用域参数的函数
+//   (function(require, module, exports, __filename, __dirname, __import) { SRC })
+// 并以此为词法参数调用。这样 require/module 等是包装函数的局部参数，
+// 模块内的普通函数/箭头函数/async 函数闭包经 upvalue 链捕获它们，
+// 异步恢复后依然可用（修复原"全局属性 + save/restore"方案在 await 后
+// 丢失 require 的缺陷）。
 func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 	// Check cache (double-check after lock released)
 	l.mu.Lock()
@@ -43,25 +47,51 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 	l.cache[absPath] = exports
 	l.mu.Unlock()
 
-	// Set up module-scoped globals with save/restore
-	oldGlobals := l.saveGlobals(absPath)
-	l.setGlobals(absPath, moduleObj, exports)
+	vm, ok := l.ctx.(*interpreter.VM)
+	if !ok {
+		// 非 VM 引擎（AST 解释器）：退化为旧的全局 save/restore 方案。
+		return l.loadCJSViaGlobals(absPath, string(src), moduleObj, exports)
+	}
 
-	// 编译源码（优先字节码缓存），然后执行。
-	// 字节码缓存（1C.14）：命中则跳过 parse+compile，未命中则编译并写盘。
+	// 包装源码为模块函数（P0-1），保持行号与缓存键稳定（包装为固定前缀/后缀）。
+	wrapped := wrapCJSSource(string(src))
 	var evalErr error
-	if vm, ok := l.ctx.(*interpreter.VM); ok {
-		mod, err := l.bcCache.compileOrLoad(absPath, func() (*bytecode.Module, error) {
-			return vm.Compile(string(src), absPath)
-		})
-		if err != nil {
-			evalErr = err
-		} else {
-			_, evalErr = vm.RunModule(mod)
-		}
+	var wrapper engine.Value
+	if mod, err := l.bcCache.compileOrLoad(absPath, func() (*bytecode.Module, error) {
+		return vm.Compile(wrapped, absPath)
+	}); err != nil {
+		evalErr = err
 	} else {
-		// 非 VM 引擎（AST 解释器）：退化为直接 Eval。
-		_, evalErr = l.ctx.Eval(string(src), absPath)
+		wrapper, evalErr = vm.RunModule(mod)
+	}
+
+	if evalErr != nil {
+		l.mu.Lock()
+		delete(l.cache, absPath)
+		l.mu.Unlock()
+		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, evalErr)
+	}
+
+	// 以词法参数调用模块函数：require/module/exports/__filename/__dirname/__import。
+	// `this` 绑定为 module.exports（CJS 顶层 this 语义）。
+	requireFn := l.makeRequireFunc(absPath)
+	importFn := l.makeImportFunc(absPath)
+	_, evalErr = vm.InvokeFn(wrapper, exports, []engine.Value{
+		requireFn,
+		moduleObj,
+		exports,
+		engine.Str(absPath),
+		engine.Str(filepath.Dir(absPath)),
+		importFn,
+	})
+	// 模块函数执行完毕后在顶层排空微任务队列（Promise reactions/async 继续），
+	// 使 import().then(...) 等顶层异步回调在 loadCJS 返回前完成（P0-1）。
+	vm.DrainMicrotasks()
+	if evalErr != nil {
+		l.mu.Lock()
+		delete(l.cache, absPath)
+		l.mu.Unlock()
+		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, evalErr)
 	}
 
 	// Get the final module.exports (may have been reassigned).
@@ -69,21 +99,13 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 	// （如 ansi-styles）。Go 侧 moduleObj.Get 不触发 JS getter，故在模块源码
 	// 末尾注入导出语句，让 getter 在原 module 上下文求值。
 	var finalExports engine.Value
-	if evalErr != nil {
-		// 编译/执行出错：移除缓存并返回错误。
-		l.mu.Lock()
-		delete(l.cache, absPath)
-		l.mu.Unlock()
-		l.restoreGlobals(oldGlobals)
-		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, evalErr)
-	}
 	finalExports = exports
 	// 尝试经 moduleObj.Get 读取；若结果是 AccessorValue（含 get/set），说明
 	// exports 被重定义为访问器（如 ansi-styles 的 Object.defineProperty(module,
 	// 'exports', {get})）——经 VM 调用 getter 取真实值。
 	if v, err := moduleObj.Get("exports"); err == nil && v != nil {
 		if acc, ok := v.(*engine.AccessorValue); ok {
-			if vm, ok := l.ctx.(*interpreter.VM); ok && !acc.Getter.IsUndefined() {
+			if !acc.Getter.IsUndefined() {
 				if gv, gerr := vm.InvokeFn(acc.Getter, moduleObj, nil); gerr == nil {
 					finalExports = gv
 				}
@@ -93,9 +115,6 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 		}
 	}
 
-	// Restore globals
-	l.restoreGlobals(oldGlobals)
-
 	// Mark as loaded
 	_ = moduleObj.Set("loaded", engine.Boolean(true))
 
@@ -104,6 +123,37 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 	l.cache[absPath] = finalExports
 	l.mu.Unlock()
 
+	return finalExports, nil
+}
+
+// wrapCJSSource 将模块源码包装为带模块作用域参数的函数表达式。
+// 包装为常量前缀/后缀，保证字节码缓存的键（源文件 mtime/size）稳定。
+func wrapCJSSource(src string) string {
+	const prefix = "(function(require, module, exports, __filename, __dirname, __import) {\n"
+	const suffix = "\n});\n"
+	return prefix + src + suffix
+}
+
+// loadCJSViaGlobals 非 VM 引擎（AST 解释器）的 CJS 加载：沿用旧的
+// 全局属性 + save/restore 方案（受限于 AST 解释器不支持函数参数包装）。
+func (l *Loader) loadCJSViaGlobals(absPath, src string, moduleObj engine.Object, exports engine.Value) (engine.Value, error) {
+	oldGlobals := l.saveGlobals(absPath)
+	l.setGlobals(absPath, moduleObj, exports)
+	_, evalErr := l.ctx.Eval(src, absPath)
+	l.restoreGlobals(oldGlobals)
+	if evalErr != nil {
+		l.mu.Lock()
+		delete(l.cache, absPath)
+		l.mu.Unlock()
+		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, evalErr)
+	}
+	finalExports := exports
+	if v, err := moduleObj.Get("exports"); err == nil && !v.IsUndefined() && !v.IsNull() {
+		finalExports = v
+	}
+	l.mu.Lock()
+	l.cache[absPath] = finalExports
+	l.mu.Unlock()
 	return finalExports, nil
 }
 

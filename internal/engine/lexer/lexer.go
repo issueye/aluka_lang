@@ -21,6 +21,10 @@ type Lexer struct {
 
 // New 创建词法分析器。
 func New(src string) *Lexer {
+	// 剥离 UTF-8 BOM（EF BB BF），否则首字符被当作非法字符导致解析挂起/失败。
+	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
+		src = src[3:]
+	}
 	return &Lexer{
 		src:        src,
 		line:       1,
@@ -186,6 +190,13 @@ func (l *Lexer) skipWhitespaceAndComments() {
 			for l.pos < len(l.src) && l.src[l.pos] != '\n' {
 				l.advance()
 			}
+			continue
+		}
+		// UTF-8 BOM（仅文件首，防御非 New 入口解析路径）
+		if ch == 0xEF && l.pos == 0 && l.pos+2 < len(l.src) && l.src[l.pos+1] == 0xBB && l.src[l.pos+2] == 0xBF {
+			l.advance()
+			l.advance()
+			l.advance()
 			continue
 		}
 		break

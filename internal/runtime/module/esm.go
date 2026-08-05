@@ -3,6 +3,7 @@ package module
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
@@ -43,7 +44,6 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	transformed := transformESMToCJS(prog, absPath)
 
 	// Use the VM's EvalProgram to compile and run the transformed AST.
-	// We need to set up CJS globals (require/module/exports) first.
 	vm, ok := l.ctx.(*interpreter.VM)
 	if !ok {
 		return engine.Undefined(), fmt.Errorf("module: ESM requires the bytecode VM engine")
@@ -59,25 +59,41 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	l.cache[absPath] = exports
 	l.mu.Unlock()
 
-	// Set up CJS globals
-	oldGlobals := l.saveGlobals(absPath)
-	l.setGlobals(absPath, moduleObj, exports)
+	// 包装转换后的 AST 为模块函数（P0-1）：require/module/exports 等作为
+	// 词法参数注入，使 async/回调中的引用在异步恢复后依然可用。
+	prog2 := wrapESMAST(transformed, absPath)
 
 	// 编译转换后的 AST（优先字节码缓存），然后执行。
 	// 字节码缓存（1C.14）：缓存键基于源文件元数据（转换是确定性的）。
 	mod, compileErr := l.bcCache.compileOrLoad(absPath, func() (*bytecode.Module, error) {
-		return vm.CompileAST(transformed, absPath)
+		return vm.CompileAST(prog2, absPath)
 	})
 	var evalErr error
+	var wrapper engine.Value
 	if compileErr != nil {
 		evalErr = compileErr
 	} else {
-		_, evalErr = vm.RunModule(mod)
+		wrapper, evalErr = vm.RunModule(mod)
+	}
+	if evalErr != nil {
+		l.mu.Lock()
+		delete(l.cache, absPath)
+		l.mu.Unlock()
+		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, evalErr)
 	}
 
-	// Restore globals
-	l.restoreGlobals(oldGlobals)
-
+	// 以词法参数调用模块函数（this = exports）。
+	requireFn := l.makeRequireFunc(absPath)
+	importFn := l.makeImportFunc(absPath)
+	_, evalErr = vm.InvokeFn(wrapper, exports, []engine.Value{
+		requireFn,
+		moduleObj,
+		exports,
+		engine.Str(absPath),
+		engine.Str(filepath.Dir(absPath)),
+		importFn,
+	})
+	vm.DrainMicrotasks()
 	if evalErr != nil {
 		l.mu.Lock()
 		delete(l.cache, absPath)
@@ -92,6 +108,34 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	l.mu.Unlock()
 
 	return finalExports, nil
+}
+
+// wrapESMAST 将转换后的 ESM AST 包装为模块函数表达式：
+//   (function(require, module, exports, __filename, __dirname, __import) { <body> })
+func wrapESMAST(prog *ast.Program, filename string) *ast.Program {
+	params := []*ast.Identifier{
+		{Name: "require"},
+		{Name: "module"},
+		{Name: "exports"},
+		{Name: "__filename"},
+		{Name: "__dirname"},
+		{Name: "__import"},
+	}
+	fnExpr := &ast.FunctionExpr{
+		Name:     nil,
+		Params:   params,
+		Defaults: make([]ast.Expression, len(params)),
+		Body:     &ast.BlockStmt{Body: prog.Body, Loc: prog.Loc},
+		Loc:      prog.Loc,
+	}
+	// 顶层：返回模块函数（表达式），供 RunModule 求值为闭包。
+	return &ast.Program{
+		Body: []ast.Statement{
+			&ast.ExprStmt{Expr: fnExpr, Loc: prog.Loc},
+		},
+		SourceFile: prog.SourceFile,
+		Loc:        prog.Loc,
+	}
 }
 
 // hasESMDecls returns true if the program contains import/export declarations.

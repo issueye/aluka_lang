@@ -15,7 +15,7 @@ import (
 // 语义变化（如函数声明提升修复）时递增，使旧缓存自动失效。
 // v3：新增 OpMakeRegexp 指令（RegExp 引擎）；switch break 目标、前缀自增、
 //     标签 continue/break、正则字面量等编译器语义修复。
-const FormatVersion = 3
+const FormatVersion = 4
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
@@ -94,13 +94,14 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 	if err := writeString(w, fn.Name); err != nil {
 		return err
 	}
-	var scalars [6 * 4]byte // NumParams, NumLocals, IsVarArgs, IsGenerator, IsAsync, len(Code)
+	var scalars [7 * 4]byte // NumParams, NumLocals, IsVarArgs, IsGenerator, IsAsync, IsArrow, len(Code)
 	binary.LittleEndian.PutUint32(scalars[0:4], uint32(fn.NumParams))
 	binary.LittleEndian.PutUint32(scalars[4:8], uint32(fn.NumLocals))
 	binary.LittleEndian.PutUint32(scalars[8:12], boolToU32(fn.IsVarArgs))
 	binary.LittleEndian.PutUint32(scalars[12:16], boolToU32(fn.IsGenerator))
 	binary.LittleEndian.PutUint32(scalars[16:20], boolToU32(fn.IsAsync))
-	binary.LittleEndian.PutUint32(scalars[20:24], uint32(len(fn.Code)))
+	binary.LittleEndian.PutUint32(scalars[20:24], boolToU32(fn.IsArrow))
+	binary.LittleEndian.PutUint32(scalars[24:28], uint32(len(fn.Code)))
 	if _, err := w.Write(scalars[:]); err != nil {
 		return err
 	}
@@ -170,19 +171,20 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 	if err != nil {
 		return nil, err
 	}
-	var scalars [6 * 4]byte
+	var scalars [7 * 4]byte
 	if _, err := io.ReadFull(r, scalars[:]); err != nil {
 		return nil, err
 	}
 	fn := &FuncTemplate{
-		Name:       name,
-		NumParams:  int(binary.LittleEndian.Uint32(scalars[0:4])),
-		NumLocals:  int(binary.LittleEndian.Uint32(scalars[4:8])),
-		IsVarArgs:  u32ToBool(binary.LittleEndian.Uint32(scalars[8:12])),
+		Name:        name,
+		NumParams:   int(binary.LittleEndian.Uint32(scalars[0:4])),
+		NumLocals:   int(binary.LittleEndian.Uint32(scalars[4:8])),
+		IsVarArgs:   u32ToBool(binary.LittleEndian.Uint32(scalars[8:12])),
 		IsGenerator: u32ToBool(binary.LittleEndian.Uint32(scalars[12:16])),
-		IsAsync:    u32ToBool(binary.LittleEndian.Uint32(scalars[16:20])),
+		IsAsync:     u32ToBool(binary.LittleEndian.Uint32(scalars[16:20])),
+		IsArrow:     u32ToBool(binary.LittleEndian.Uint32(scalars[20:24])),
 	}
-	codeLen := binary.LittleEndian.Uint32(scalars[20:24])
+	codeLen := binary.LittleEndian.Uint32(scalars[24:28])
 	if codeLen > 0 {
 		fn.Code = make([]byte, codeLen)
 		if _, err := io.ReadFull(r, fn.Code); err != nil {

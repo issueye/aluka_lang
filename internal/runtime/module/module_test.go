@@ -119,7 +119,7 @@ func TestCJSCircularDependency(t *testing.T) {
 	})
 	env.run(t, "main.cjs")
 	got := env.globalGet("__result")
-	// a.val=1, b.val=2, a.bVal=b.val=2 (at time of a's execution, b.val was undefined → becomes 2 later but a already captured)
+	// a.val=1, b.val=2, a.bVal=b.val=2 (at time of a's execution, b.val was undefined 鈫?becomes 2 later but a already captured)
 	// In Node CJS, circular deps return unfinished exports. a.bVal may be undefined.
 	// The exact value depends on execution order. Let's check it doesn't crash.
 	_ = got
@@ -426,3 +426,53 @@ func TestModuleTypeJsWithPackageJson(t *testing.T) {
 		t.Error(".js with type:module should be module")
 	}
 }
+
+// TestRequireAfterAwait regression (P0-1): require/module usable after await
+// (module-scope vars are now lexical params, survive async suspension)
+func TestRequireAfterAwait(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.cjs": `
+(async function() {
+  await Promise.resolve('tick');
+  var m = require('./dep.cjs');
+  globalThis.__cont = 'ran';
+  globalThis.__r = m.val;
+  globalThis.__d = typeof module.exports;
+})();
+`,
+		"dep.cjs": `module.exports = { val: 42 };`,
+	})
+	env.run(t, "main.cjs")
+	if got := env.globalGet("__cont"); got != "ran" {
+		t.Fatalf("async continuation did not run, __cont = %q", got)
+	}
+	if got := env.globalGet("__r"); got != "42" {
+		t.Errorf("require after await = %q, want 42", got)
+	}
+	if got := env.globalGet("__d"); got != "object" {
+		t.Errorf("module.exports after await = %q, want object", got)
+	}
+}
+
+// TestLetConstClosureInModule regression (P0-1): const closure in module
+// (function decl referencing later const must capture it as upvalue)
+func TestLetConstClosureInModule(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.cjs": `var F = require('./f.cjs'); globalThis.__result = F()();`,
+		"f.cjs": `
+require('./dep.cjs');
+function F(){ return factory; }
+const factory = function(){ return 42; };
+module.exports = F;
+`,
+		"dep.cjs": `module.exports = {};`,
+	})
+	env.run(t, "main.cjs")
+	if got := env.globalGet("__result"); got != "42" {
+		t.Errorf("const closure in module = %q, want 42", got)
+	}
+}
+
+
+
+

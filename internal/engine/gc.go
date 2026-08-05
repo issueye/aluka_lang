@@ -94,6 +94,8 @@ func markFromRoots(roots []Value) map[*objectValue]bool {
 			o = t.objectValue
 		case *BufferValue:
 			o = t.objectValue
+		case *DateValue:
+			o = t.objectValue
 		default:
 			return
 		}

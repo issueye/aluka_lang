@@ -100,6 +100,18 @@ func newReadableStream(ctx engine.Context, args []engine.Value) (engine.Value, e
 
 	// stream.locked / stream.cancel() / getReader()。
 	_ = stream.Set("locked", engine.Boolean(false))
+	// 公开的 enqueue/close（P1-1）：供 TransformStream 的 writable 端把
+	// 数据推入 readable 内部队列（controller 上的同名方法仍存在）。
+	_ = stream.Set("enqueue", engine.NewFunction("enqueue", func(a []engine.Value) (engine.Value, error) {
+		if len(a) > 0 {
+			state.enqueue(a[0])
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = stream.Set("close", engine.NewFunction("close", func(a []engine.Value) (engine.Value, error) {
+		state.close()
+		return engine.Undefined(), nil
+	}))
 	_ = stream.Set("cancel", engine.NewFunction("cancel", func(a []engine.Value) (engine.Value, error) {
 		state.close()
 		if state.cancelFn != nil {
@@ -278,7 +290,13 @@ type wsState struct {
 	writeFn engine.Value
 	closeFn engine.Value
 	abortFn engine.Value
-	closed  bool
+	// writeOverride 是 TransformStream 等场景注入的写入处理函数：
+	// 优先于 writeFn（writer.write 与 stream.write 均走此路径，P1-1）。
+	writeOverride engine.Value
+	// closeOverride 是 TransformStream 等场景注入的关闭处理函数：
+	// writer.close / stream.close 时调用（把 readable 端一并关闭）。
+	closeOverride engine.Value
+	closed        bool
 }
 
 // newWritableStream 构造 WritableStream。
@@ -300,14 +318,44 @@ func newWritableStream(ctx engine.Context, args []engine.Value) engine.Value {
 		}
 	}
 
+	// setWriteOverride 由 TransformStream 注入写处理函数。
+	_ = stream.Set("_setWriteOverride", engine.NewFunction("_setWriteOverride", func(a []engine.Value) (engine.Value, error) {
+		if len(a) > 0 {
+			state.writeOverride = a[0]
+		}
+		return engine.Undefined(), nil
+	}))
+	// setCloseOverride 由 TransformStream 注入关闭处理函数。
+	_ = stream.Set("_setCloseOverride", engine.NewFunction("_setCloseOverride", func(a []engine.Value) (engine.Value, error) {
+		if len(a) > 0 {
+			state.closeOverride = a[0]
+		}
+		return engine.Undefined(), nil
+	}))
+	// getWriterOverride 供 TransformStream 读取当前写处理函数。
+	_ = stream.Set("_getWriteOverride", engine.NewFunction("_getWriteOverride", func(a []engine.Value) (engine.Value, error) {
+		if state.writeOverride != nil {
+			return state.writeOverride, nil
+		}
+		if state.writeFn != nil {
+			return state.writeFn, nil
+		}
+		return engine.Undefined(), nil
+	}))
+
 	_ = stream.Set("getWriter", engine.NewFunction("getWriter", func(a []engine.Value) (engine.Value, error) {
 		writer := engine.NewObject()
 		_ = writer.Set("write", engine.NewFunction("write", func(wa []engine.Value) (engine.Value, error) {
 			if state.closed {
 				return promiseRejectValue(ctx, "stream closed")
 			}
-			if state.writeFn != nil {
-				if f, ok := state.writeFn.AsFunction(); ok {
+			// 优先 writeOverride（TransformStream 转发到 readable），否则 writeFn。
+			handler := state.writeOverride
+			if handler == nil {
+				handler = state.writeFn
+			}
+			if handler != nil {
+				if f, ok := handler.AsFunction(); ok {
 					_, _ = f.Call(wa)
 				}
 			}
@@ -316,8 +364,13 @@ func newWritableStream(ctx engine.Context, args []engine.Value) engine.Value {
 		_ = writer.Set("close", engine.NewFunction("close", func(wa []engine.Value) (engine.Value, error) {
 			if !state.closed {
 				state.closed = true
-				if state.closeFn != nil {
-					if f, ok := state.closeFn.AsFunction(); ok {
+				// 优先 closeOverride（TransformStream 关闭 readable），否则 closeFn。
+				handler := state.closeOverride
+				if handler == nil {
+					handler = state.closeFn
+				}
+				if handler != nil {
+					if f, ok := handler.AsFunction(); ok {
 						_, _ = f.Call(nil)
 					}
 				}
@@ -328,8 +381,12 @@ func newWritableStream(ctx engine.Context, args []engine.Value) engine.Value {
 	}))
 	// 供 pipeTo 直接调用。
 	_ = stream.Set("write", engine.NewFunction("write", func(wa []engine.Value) (engine.Value, error) {
-		if state.writeFn != nil {
-			if f, ok := state.writeFn.AsFunction(); ok {
+		handler := state.writeOverride
+		if handler == nil {
+			handler = state.writeFn
+		}
+		if handler != nil {
+			if f, ok := handler.AsFunction(); ok {
 				_, _ = f.Call(wa)
 			}
 		}
@@ -338,8 +395,12 @@ func newWritableStream(ctx engine.Context, args []engine.Value) engine.Value {
 	_ = stream.Set("close", engine.NewFunction("close", func(wa []engine.Value) (engine.Value, error) {
 		if !state.closed {
 			state.closed = true
-			if state.closeFn != nil {
-				if f, ok := state.closeFn.AsFunction(); ok {
+			handler := state.closeOverride
+			if handler == nil {
+				handler = state.closeFn
+			}
+			if handler != nil {
+				if f, ok := handler.AsFunction(); ok {
 					_, _ = f.Call(nil)
 				}
 			}
@@ -379,30 +440,57 @@ func newTransformStream(ctx engine.Context, args []engine.Value) engine.Value {
 		enqueueFn = e
 	}
 
-	// writable：write 调 transform(chunk, controller)。
+	// writable：write 经 transform 转发到 readable。
 	writable := newWritableStream(ctx, nil)
 	_ = ts.Set("readable", rs)
 	_ = ts.Set("writable", writable)
 
-	// 覆盖 writable 的 write 行为：经 transform 转发到 readable。
-	wo, _ := writable.AsObject()
-	_ = wo.Set("write", engine.NewFunction("write", func(wa []engine.Value) (engine.Value, error) {
-		if len(wa) > 0 {
-			if transformFn != nil && transformFn.IsFunction() {
-				// 构造 transform controller（enqueue/close）。
-				tc := engine.NewObject()
-				_ = tc.Set("enqueue", enqueueFn)
-				if f, ok := transformFn.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{wa[0], tc})
-				}
-			} else if enqueueFn != nil && enqueueFn.IsFunction() {
-				if f, ok := enqueueFn.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{wa[0]})
-				}
+	// 注入写处理函数（P1-1）：writer.write 与 stream.write 均经此路径，
+	// 确保 getWriter().write() 的数据流向 readable 端。
+	if wo, ok := writable.AsObject(); ok {
+		if so, err := wo.Get("_setWriteOverride"); err == nil && so.IsFunction() {
+			if f, ok := so.AsFunction(); ok {
+				_, _ = f.Call([]engine.Value{engine.NewFunction("tsWrite", func(wa []engine.Value) (engine.Value, error) {
+					if len(wa) > 0 {
+						if transformFn != nil && transformFn.IsFunction() {
+							// 构造 transform controller（enqueue/close）。
+							tc := engine.NewObject()
+							_ = tc.Set("enqueue", enqueueFn)
+							if f2, ok := transformFn.AsFunction(); ok {
+								_, _ = f2.Call([]engine.Value{wa[0], tc})
+							}
+						} else if enqueueFn != nil && enqueueFn.IsFunction() {
+							if f2, ok := enqueueFn.AsFunction(); ok {
+								_, _ = f2.Call([]engine.Value{wa[0]})
+							}
+						}
+					}
+					return engine.Undefined(), nil
+				})})
 			}
 		}
-		return engine.Undefined(), nil
-	}))
+		// 注入关闭处理函数：writable 关闭时同时关闭 readable（P1-1）。
+		if co, err := wo.Get("_setCloseOverride"); err == nil && co.IsFunction() {
+			if f, ok := co.AsFunction(); ok {
+				_, _ = f.Call([]engine.Value{engine.NewFunction("tsClose", func(a []engine.Value) (engine.Value, error) {
+					// 经 readable 的公开 close 方法触发关闭。
+					if ro, ok := rs.AsObject(); ok {
+						if cl, err := ro.Get("close"); err == nil && cl.IsFunction() {
+							if f2, ok := cl.AsFunction(); ok {
+								_, _ = f2.Call(nil)
+							}
+						}
+					}
+					if flushFn != nil {
+						if f2, ok := flushFn.AsFunction(); ok {
+							_, _ = f2.Call(nil)
+						}
+					}
+					return engine.Undefined(), nil
+				})})
+			}
+		}
+	}
 	return ts
 }
 

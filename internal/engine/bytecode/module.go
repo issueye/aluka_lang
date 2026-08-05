@@ -20,6 +20,10 @@ type FuncTemplate struct {
 	// The body may use OpAwait, which suspends execution until the awaited
 	// promise settles, then resumes with the resolved value.
 	IsAsync bool
+	// IsArrow marks an arrow function — it has no own `this` binding.
+	// `this` resolves lexically via an upvalue captured from the enclosing
+	// function (P0-2), instead of the frame's slot 0.
+	IsArrow bool
 
 	// Code is the flat instruction stream. Fixed-width (InstrSize bytes each).
 	Code []byte

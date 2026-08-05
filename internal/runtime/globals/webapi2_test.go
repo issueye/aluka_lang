@@ -31,6 +31,23 @@ globalThis.__rng = crypto.getRandomValues(Buffer.alloc(16)).length;
 	}
 }
 
+// TestWebCryptoDigestByteLength 回归测试（P1-3）：digest 结果暴露
+// byteLength/length/数字索引（ArrayBuffer 兼容）。
+func TestWebCryptoDigestByteLength(t *testing.T) {
+	ctx := newFetchTestEnv(t)
+	err := fetchRun(t, ctx, `
+crypto.subtle.digest('SHA-256', Buffer.from('a')).then(function(d) {
+  globalThis.__bl = d.byteLength + '|' + d.length + '|' + (d[0] > 0);
+});
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := webGlobalGet(ctx, "__bl"); got != "32|32|true" {
+		t.Errorf("digest byteLength = %q, want 32|32|true", got)
+	}
+}
+
 // TestURLPattern 验证 URLPattern 匹配与参数提取。
 func TestURLPattern(t *testing.T) {
 	ctx := newFetchTestEnv(t)

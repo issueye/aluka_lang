@@ -58,6 +58,12 @@ func (interp *Interpreter) setupBuiltins() {
 	interp.setupWeakSet()
 	// RegExp（Go regexp 翻译层内核）
 	interp.setupRegexp()
+	// Date（P0-3）
+	interp.setupDate()
+	// URI 编码全局（P0-3）
+	interp.setupURI()
+	// structuredClone（P1-4）
+	interp.setupStructuredClone()
 	// Proxy / Reflect
 	interp.setupProxy()
 	interp.setupReflect()

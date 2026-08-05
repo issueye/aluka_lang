@@ -1337,7 +1337,17 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 	case *ast.Identifier:
 		return c.compileIdentifier(n)
 	case *ast.ThisExpr:
-		c.emit(bytecode.OpLoadLocal, 0)
+		// `this` 按词法解析 `__this__`：普通函数声明为 local slot 0；
+		// 箭头函数未声明，经 upvalue 链解析为外层函数的 `this`（P0-2）。
+		kind, idx := c.resolve("__this__")
+		switch kind {
+		case "local":
+			c.emit(bytecode.OpLoadLocal, uint32(idx))
+		case "upvalue":
+			c.emit(bytecode.OpLoadUpvalue, uint32(idx))
+		default:
+			c.emit(bytecode.OpPushUndefined, 0)
+		}
 		return nil
 	case *ast.ArrayLit:
 		// Fast path: no spread → use OpNewArray.
@@ -1434,9 +1444,9 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 	case *ast.MemberExpr:
 		return c.compileMember(n)
 	case *ast.FunctionExpr:
-		return c.compileFunction(funcNameFromExpr(n), n.Params, n.Defaults, n.RestParam, n.Body, n.IsAsync, n.IsGenerator)
+		return c.compileFunction(funcNameFromExpr(n), n.Params, n.Defaults, n.RestParam, n.Body, n.IsAsync, n.IsGenerator, false)
 	case *ast.ArrowFunc:
-		return c.compileFunction("", n.Params, n.Defaults, n.RestParam, n.Body, n.IsAsync, false)
+		return c.compileFunction("", n.Params, n.Defaults, n.RestParam, n.Body, n.IsAsync, false, true)
 	case *ast.ClassExpr:
 		return c.compileClassExpr(n)
 	case *ast.ConditionalExpr:
@@ -2281,9 +2291,11 @@ func (c *Compiler) compileConditional(n *ast.ConditionalExpr) error {
 // FuncTemplate and emits OpMakeClosure in the enclosing function.
 // `defaults[i]` is the default expression for params[i] (nil = no default).
 // `rest` is the ES2015 rest parameter name (or "" if none).
-func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaults []ast.Expression, rest *ast.Identifier, body ast.Node, isAsync, isGenerator bool) error {
-	// `this` slot = 0; params = slots 1..N; rest param (if any) = slot N+1;
-	// locals start after that.
+// `isArrow` 为 true 时编译箭头函数：不声明本函数级 `this` 槽位，
+// `this` 经 upvalue 链解析为外层函数的 `this`（P0-2）。
+func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaults []ast.Expression, rest *ast.Identifier, body ast.Node, isAsync, isGenerator, isArrow bool) error {
+	// 普通函数：`this` slot = 0；params = slots 1..N；rest 参数 = slot N+1。
+	// 箭头函数：无 own `this`（slot 0 仍保留以兼容 frame 布局，但不会被引用）。
 	numLocals := 1 + len(params)
 	if rest != nil {
 		numLocals++
@@ -2295,6 +2307,7 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 		IsVarArgs:   rest != nil,
 		IsAsync:     isAsync,
 		IsGenerator: isGenerator,
+		IsArrow:     isArrow,
 		SourceFile:  c.cur().tmpl.SourceFile,
 	}
 	funcIdx := c.module.AddFunction(tmpl)
@@ -2304,7 +2317,9 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 		upvalueIndex: make(map[string]int),
 	}
 	fc.scopes = []*scope{{decls: make(map[string]int), isFunc: true}}
-	fc.scopes[0].decls["__this__"] = 0
+	if !isArrow {
+		fc.scopes[0].decls["__this__"] = 0
+	}
 	for i, p := range params {
 		fc.scopes[0].decls[p.Name] = i + 1
 	}
@@ -2363,6 +2378,14 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 
 // hoistFunc pre-declares var/function declarations in the function scope.
 func (c *Compiler) hoistFunc(body *ast.BlockStmt) {
+	// 预声明函数体顶层的 let/const 绑定（P0-1 配套修复）：否则嵌套函数
+	// 在编译时引用后续声明的 let/const（如 `function F(){return f;} const f=...`）
+	// 会因尚未声明而被 resolve 为全局，导致闭包捕获失败（undefined）。
+	for _, s := range body.Body {
+		if vd, ok := s.(*ast.VarDecl); ok && (vd.Kind == "let" || vd.Kind == "const") {
+			c.hoistLetConst(vd.Decls)
+		}
+	}
 	var walk func(stmts []ast.Statement)
 	walk = func(stmts []ast.Statement) {
 		for _, s := range stmts {
@@ -2430,7 +2453,7 @@ func (c *Compiler) hoistFunctionDecls(stmts []ast.Statement) {
 	for _, s := range stmts {
 		if fd, ok := s.(*ast.FunctionDecl); ok && fd.Name != nil {
 			slot := c.declareVar(fd.Name.Name)
-			if err := c.compileFunction(fd.Name.Name, fd.Params, fd.Defaults, fd.RestParam, fd.Body, fd.IsAsync, fd.IsGenerator); err != nil {
+			if err := c.compileFunction(fd.Name.Name, fd.Params, fd.Defaults, fd.RestParam, fd.Body, fd.IsAsync, fd.IsGenerator, false); err != nil {
 				// 提升编译出错：推迟到正常编译路径报错（这里不中断）。
 				_ = err
 				_ = slot
@@ -2451,6 +2474,20 @@ func (c *Compiler) hoistVarDeclarators(decls []ast.VarDeclarator) {
 			}
 		} else {
 			c.declareVar(d.Name.Name)
+		}
+	}
+}
+
+// hoistLetConst 预声明 let/const 声明符中的绑定名到当前作用域。
+// 用于函数体顶层 let/const 的提前声明，使嵌套函数能正确闭包捕获。
+func (c *Compiler) hoistLetConst(decls []ast.VarDeclarator) {
+	for _, d := range decls {
+		if d.Pattern != nil {
+			for _, name := range patternNames(d.Pattern) {
+				c.declareLocal(name)
+			}
+		} else if d.Name != nil {
+			c.declareLocal(d.Name.Name)
 		}
 	}
 }

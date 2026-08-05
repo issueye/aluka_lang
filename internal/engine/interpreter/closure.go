@@ -204,6 +204,8 @@ func asCallable(v engine.Value) (callableValue, error) {
 		return cv, nil
 	case *NativeMethod:
 		return cv, nil
+	case *vmClosure:
+		return cv, nil
 	}
 	if f, ok := v.AsFunction(); ok {
 		return &goFunction{Function: f}, nil

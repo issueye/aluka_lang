@@ -28,6 +28,19 @@ func TestLexNumber(t *testing.T) {
 	}
 }
 
+// TestLexUTF8BOM 验证 UTF-8 BOM 被剥离，不导致解析挂起/失败。
+func TestLexUTF8BOM(t *testing.T) {
+	src := "\xef\xbb\xbfvar x = 1;"
+	l := New(src)
+	toks, err := l.Tokens()
+	if err != nil {
+		t.Fatalf("lex BOM source: %v", err)
+	}
+	if len(toks) == 0 || toks[0].Type != TokenKeyword || toks[0].Value != "var" {
+		t.Errorf("BOM stripped: first token = %v, want var", toks[0])
+	}
+}
+
 func TestLexString(t *testing.T) {
 	cases := map[string]string{
 		`"hello"`:       "hello",

@@ -56,7 +56,7 @@ func (b *BufferValue) AsObject() (Object, bool) { return b, true }
 
 // Get 重写：length 与数字索引直接读底层字节。
 func (b *BufferValue) Get(key string) (Value, error) {
-	if key == "length" {
+	if key == "length" || key == "byteLength" {
 		return IntValue(len(b.data)), nil
 	}
 	if idx, err := strconv.Atoi(key); err == nil && idx >= 0 && idx < len(b.data) {

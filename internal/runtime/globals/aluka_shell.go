@@ -21,9 +21,20 @@ import (
 func alukaRegisterShell(ctx engine.Context, aluka engine.Value) {
 	ao, _ := aluka.AsObject()
 	_ = ao.Set("$", engine.NewFunction("$", func(args []engine.Value) (engine.Value, error) {
+		// 同时支持两种形式（P1-2）：
+		//   Aluka.$("cmd arg")          函数调用形式
+		//   Aluka.$`cmd arg`            标记模板形式（args[0] 为 TemplateStringsArray）
 		script := ""
 		if len(args) > 0 {
-			script = args[0].String()
+			if arr, ok := args[0].(*engine.ArrayValue); ok {
+				// 模板数组：取第一个 quasis 字符串（无插值时）。
+				elems := arr.Elems()
+				if len(elems) > 0 {
+					script = elems[0].String()
+				}
+			} else {
+				script = args[0].String()
+			}
 		}
 		executor := engine.NewFunction("executor", func(ea []engine.Value) (engine.Value, error) {
 			if len(ea) == 0 {

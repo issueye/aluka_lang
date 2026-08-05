@@ -241,6 +241,26 @@ Aluka.$("echo hello from shell").then(function(out) {
 	}
 }
 
+// TestAlukaShellTaggedTemplate 验证 Aluka.$ 标记模板形式（P1-2）。
+func TestAlukaShellTaggedTemplate(t *testing.T) {
+	ctx := newAlukaTestEnv(t)
+	code := `
+Aluka.$` + "`echo tagged-shell-out`" + `.then(function(out) {
+  globalThis.__out = out.stdout.trim();
+  globalThis.__code = out.exitCode;
+});
+`
+	if err := fetchRun(t, ctx, code); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := webGlobalGet(ctx, "__out"); got != "tagged-shell-out" {
+		t.Errorf("$ tagged stdout = %q", got)
+	}
+	if got := webGlobalGet(ctx, "__code"); got != "0" {
+		t.Errorf("$ tagged exitCode = %q, want 0", got)
+	}
+}
+
 // TestAlukaSpawnSync 验证 spawnSync 同步执行。
 func TestAlukaSpawnSync(t *testing.T) {
 	ctx := newAlukaTestEnv(t)

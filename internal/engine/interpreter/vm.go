@@ -2086,7 +2086,27 @@ func (c *vmClosure) Call(args []engine.Value) (engine.Value, error) {
 	return c.vm.callClosure(c, engine.Undefined(), args, false)
 }
 
+// callWith 以指定 this 调用（实现 callableValue，供 Function.prototype
+// call/apply/bind 正确绑定 this；P0-2 配套修复）。
+func (c *vmClosure) callWith(thisVal engine.Value, args []engine.Value) (engine.Value, error) {
+	return c.vm.callClosure(c, thisVal, args, false)
+}
+
+// construct 以 new 语义调用（供 Function.prototype.call/apply 对构造器路径）。
+func (c *vmClosure) construct(args []engine.Value) (engine.Value, error) {
+	return c.vm.callClosure(c, engine.Undefined(), args, true)
+}
+
 // InvokeFn 以指定 this 和参数调用函数值（供外部包调用 JS 函数，如 loadCJS 触发 getter）。
 func (v *VM) InvokeFn(fn, this engine.Value, args []engine.Value) (engine.Value, error) {
 	return v.invoke(fn, this, args, false)
+}
+
+// DrainMicrotasks 排空微任务队列（Promise reactions、queueMicrotask、async
+// 继续）。仅当无活跃 JS 帧（顶层模块加载场景）时安全调用，供 Loader 在
+// 模块函数包装（P0-1）执行完毕后触发，模拟原 RunModule 顶层分支的排水行为。
+func (v *VM) DrainMicrotasks() {
+	if len(v.frames) == 0 {
+		v.interp.drainMicrotasks()
+	}
 }
