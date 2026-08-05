@@ -427,3 +427,13 @@ func (l *Loader) loadBuiltin(specifier string) (engine.Value, error) {
 	l.mu.Unlock()
 	return exports, nil
 }
+
+// GetBuiltin 加载内置模块（process.getBuiltinModule 使用，Node ≥ 22.3）。
+// specifier 可为 "node:fs" 或 "fs"；非内置 specifier 返回 undefined（不报错）。
+func (l *Loader) GetBuiltin(specifier string) (engine.Value, error) {
+	name := strings.TrimPrefix(specifier, "node:")
+	if !l.hasBuiltin(name) {
+		return engine.Undefined(), nil
+	}
+	return l.loadBuiltin("node:" + name)
+}

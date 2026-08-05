@@ -1,7 +1,7 @@
 # Aluka 运行时 — 开发计划文档
 
-> 项目代号：`aluka` ｜ 文档版本：v1.17 ｜ 日期：2026-08-04
-> 配套文档：[需求分析文档](./requirements-analysis.md)
+> 项目代号：`aluka` ｜ 文档版本：v1.19 ｜ 日期：2026-08-05
+> 配套文档：[需求分析文档](./requirements-analysis.md) / [Pi 兼容计划](./pi-compat-plan.md) / [缺陷修复计划](./defect-fixes-plan.md)
 
 ---
 
@@ -58,7 +58,8 @@
 
 ### 2.0 当前完成状态评估
 
-> 评估日期：2026-08-05 ｜ 测试总数：604 个（全部通过）｜ conformance：node 11/11、test262 8/8
+> 评估日期：2026-08-05 ｜ 测试总数：605 个（603 通过 + 2 环境门控 skip，0 失败）｜ conformance：node 11/11、test262 8/8
+> 真实世界验证：[Pi 兼容计划](./pi-compat-plan.md) 三阶段（加载/运行/测试）已完成；[缺陷修复计划](./defect-fixes-plan.md) P0/P1 全部修复
 
 #### 总体进度概览
 
@@ -72,8 +73,9 @@
 | 2 | Node.js 核心内置模块 | ✅ 完成 | ~95% |
 | 3 | Web API + P1 Node 模块 | ✅ 完成 | ~95% |
 | 4 | Aluka 特有 API（兼容 Bun） | ✅ P0+P1+P2 完成 | ~100% |
-| 5 | 包管理器 | ✅ P0 完成（+ workspace + .npmrc） | ~90% |
-| 6-8 | 后续阶段 | ❌ 未开始 | 0% |
+| 5 | 包管理器 | ✅ P0 完成（+ workspace + .npmrc；express 依赖树可完整安装运行） | ~95% |
+| Pi | 真实世界兼容（Pi Agent Harness 靶标） | ✅ 阶段 A/B/C 完成（.ts 导入/import attributes//v 正则/node:sqlite/TLA/fs/AbortSignal/Intl/worker/信号/node:test/yaml/minimatch/diff） | ~90% |
+| 6-8 | 后续阶段 | 🔨 Phase 6 启动（node:test 最小运行器完成） | ~5% |
 
 #### Phase 0：工程基座 — ✅ 完成
 
@@ -180,7 +182,7 @@
 5. ~~`for await...of`（1D.10）— 异步迭代器~~ ✅ 已完成
 6. ~~`BigInt`（1D.12）— ES2020 大整数~~ ✅ 已完成（ES2020 P0 特性全部齐备）
 7. ~~动态 `import()`（1D.13）— 模块系统已就绪，待接入~~ ✅ 已完成
-8. ~~自研 JS 正则引擎（1-R5/RM7，此前正则字面量仅解析为 `{source,flags}` 占位对象）~~ ✅ 已实现（v1.17，Go regexp 翻译层；反向引用/前瞻/后行断言不支持，自研 NFA+回溯匹配器为后续迭代）
+8. ~~自研 JS 正则引擎（1-R5/RM7，此前正则字面量仅解析为 `{source,flags}` 占位对象）~~ ✅ 已实现（v1.17 Go regexp 翻译层 + v1.19 自研回溯引擎：反向引用、前瞻/后行断言、lazy 量词、`/v` unicodeSets 全部支持）
 9. 隐藏类 + IC（1B.5）和自研 GC（1B.6）— 影响性能
 10. 普通函数 `this` 绑定：`Array.prototype.find/map` 等的 `thisArg` 第二参数未对非箭头函数生效（引擎既有缺陷，箭头函数闭包可绕过）
 11. CJS/ESM interop：`module.exports = func` 整体赋值的 CJS 模块，动态 import 返回的 namespace 不额外包装 `.default`（当前直接返回 exports，简化 interop）
@@ -1262,6 +1264,7 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v1.19 | 2026-08-05 | **Pi 兼容阶段（真实世界验证）+ 全量缺陷修复 + 包管理器/内置模块补强**。**阶段 A（加载）**——P0-1 `.ts` 扩展名相对导入（loader 解析候选扩展名加入 `.ts`）；P0-2 import attributes（静态 `with {type:"json"}` + 动态 `import(x, {with})`，loader 按 type 分发 JSON/常规模块）；P0-3 正则 `/v` unicodeSets（flag 修复：`v` 独立于 `u`；`\p{...}` Unicode 属性类映射；`[a-z--x]` 差集运算）；P0-4 `node:sqlite`（`internal/builtin/sqlite.go`：DatabaseSync——prepare/Statement(run/get/all/iterate)/exec/事务 BEGIN IMMEDIATE/close，值映射 null/number/string/bigint/Buffer）；P0-5 **top-level await**（parser 模块上下文允许顶层 await + 模块求值返回 Promise + 异步链）。**阶段 B（运行）**——P1-1 fs 补全（promises mkdtemp/lstat/realpath/opendir、createReadStream/WriteStream、fs.watch 目录/文件监视）；P1-2 `AbortSignal.timeout`/`AbortSignal.any`（AbortError DOMException）；P1-3 `Intl.Segmenter`（`intl.go`，grapheme/word/sentence 分割，自研 GB11 簇规则）；P1-4 worker_threads transferList（ArrayBuffer 所有权转移）+ eval 模式 + TypedArray.buffer；P1-5 信号处理补全（kill、SIGTSTP/SIGCONT、SIGTERM→SIGKILL 递进）。**阶段 C（测试）**——P2-1 `node:test`（`internal/builtin/test.go`：describe/it/test/beforeEach/afterEach/mock + CLI `aluka test` 目录递归发现 `*.test.{js,ts,mjs,cjs}`）；P2-2 zstd（zlib zstdCompress[Sync]/zstdDecompress[Sync]）；P2-3 第三方包 yaml/minimatch/diff 实跑通过。**引擎重大改进**——自研回溯正则引擎（`regex/backtrack.go` 1133 行：反向引用、前瞻/后行断言、lazy 量词，`regex.go` 回退机制）；完整 Date（`interpreter/date.go` 458 行 + engine date/datestr）；`encodeURI`/`decodeURI` 系列（`uri.go`）；`structuredClone`（循环引用深拷贝，`structured_clone.go`）；V8 风格错误堆栈（`v8_stack.go`）。**缺陷修复（defect-fixes-plan）**——CJS require 异步化（模块函数包装 + 词法参数）、箭头函数 `this` upvalue 化（`__this__`）、UTF-8 BOM 挂起崩溃、`--ast` 废弃为 CLI 引擎复用字节码 VM、TransformStream 数据流、`Aluka.$` 标记模板、crypto.subtle.digest、Date/URI 全局缺失。**express 真实运行验证**——`demo/express-demo`（路由/路径参数/JSON body/500 并发 Promise 全通过）。**补强（v1.19.1）**——semver 范围解析支持 `">= 2.1.2 < 3.0.0"` 空格分隔操作符形式（`parseSet` 裸操作符与版本 token 合并，`isBareOp`），`aluka install express` 依赖树（70 包）可完整解析安装并运行；`process.getBuiltinModule`（Node ≥ 22.3，`Loader.GetBuiltin` + `builtin.InstallGetBuiltinModule` CLI 注入，非内置返回 undefined）。**测试**——semver 范围空格形式用例、回溯正则 `bt_debug_test.go`、Date/structuredClone/arrow-this/streams 等测试；测试总数 588→605（603 通过 + 2 env 门控 skip）；conformance node 11/11、test262 8/8、install PASS。**已知限制**——`process.getBuiltinModule` 仅在 `run` 文件模式（模块上下文）可用；`-e` 模式无 `require`/内置模块；node:test 无 `expect`（需用 `node:assert`，vitest 语义未实现）；undici/@anthropic-ai/sdk 等重型包未验证；Pi 阶段 C 的 vitest 测试框架未覆盖。 |
 | v1.18 | 2026-08-05 | **Phase 4 P2 落地（SQL/Redis/S3）+ Phase 5 收尾（workspace/.npmrc）+ 引擎 tagged template**。**引擎——标记模板（ES2015）**：lexer `readTemplate` 并行构建 raw 文本写入 `Token.Raw`（转义原文逐字保留）；AST 新增 `RawQuasis` 与 `TaggedTemplateExpr{Tag, Template}`；parser `parseTemplateLit` 改为对 raw/cooked 并行扫描拆分（插值边界以 raw 为准，修复 `\${`/`\u0024{`/`\x24{` 在 cooked 中产生伪插值边界的既有 bug），`parseCallMember` 新增 `` ` `` 后缀分支；compiler 新增 `compileTaggedTemplate`（复用 `OpNewArray`/`OpSetPropObj`/`OpCall`/`OpCallMethod`/`OpCallWithThis`，无新 opcode——成员 tag 绑定 `this`、计算成员 tag 走 Dup/GetElem/Swap）；树遍历解释器同步支持。**CLI `-e` 增强**——`execute` 路径补注册 `NewTimers`（setTimeout/setInterval 此前在 `-e` 下未定义）并在求值后进入事件循环 RunLoop（异步 SQL/fetch/timers 可在 `-e` 下完成，与 node/bun 行为一致）。**Aluka.SQL（4.17/4.18）**——新建 `internal/runtime/globals/aluka_sql.go`：`database/sql` 统一驱动（`modernc.org/sqlite` 默认后端 `:memory:`/`SQLITE_PATH`，`DATABASE_URL` 以 postgres:// 开头切 `jackc/pgx/v5` stdlib），两种调用形式（函数式 `Aluka.SQL(sql, params)` + tagged template 自动占位符，SQLite `?`/Postgres `$N`，Postgres 函数式做字符串字面量安全的 `?`→`$N` 重写）；查询对象 `all/get/run/values` 全异步（Go goroutine + PostTask 桥）；SQLite 单连接池；NULL→null、[]byte→string、time→RFC3339。**Aluka.Redis（4.19）**——`aluka_redis.go` 基于 go-redis/v9：URL 字符串/对象/`REDIS_URL` env 配置，`connect/get/set/del/hget/hset/close` 异步。**Aluka.S3（4.20）**——`aluka_s3.go` 自研 AWS Signature V4（canonical request → HMAC-SHA256 密钥链，`crypto/hmac`，不引入 aws-sdk-go-v2），path-style 寻址兼容 AWS/MinIO/localstack，`get/put/delete/list/exists` 异步；`get` 返回 `{size, contentType, text(), json(), arrayBuffer()}`；list 解析 ListObjectsV2 XML。**外部依赖**：新增 `modernc.org/sqlite`（纯 Go，无 cgo）、`jackc/pgx/v5`、`redis/go-redis/v9`。**Phase 5 收尾**——`internal/pkgmanager/config`（5.12）：.npmrc ini 解析（项目 > 用户合并，registry + 主机级 `_authToken`），CLI `newRegistryClient` 接入（env > .npmrc > 默认，token 按主机匹配）；`internal/pkgmanager/workspace`（5.11）：`workspaces` 字段 glob 展开（自研 `**` 段匹配 + `!` 排除），`Discover` 读取各包依赖，`runInstall` 聚合依赖（本地包名跳过 registry）并链接本地包进根 node_modules（symlink 失败回退拷贝），workspace-only 场景生成占位 lockfile。**测试**——引擎 `TestVMTaggedTemplate`（cooked/raw/转义 `\${`/成员 tag/多插值）+ test262 `08-tagged-template.js`；globals `aluka_p2_test.go`（SQLite CRUD/tagged/类型转换、Redis 构造 + `TEST_REDIS_URL` 门控、S3 httptest 伪服务校验 SigV4 头与各方法、Postgres `TEST_DATABASE_URL` 门控）；`config_test.go` 3 组 + `workspace_test.go` 4 组；conformance 新增 `tests/conformance/install/run.sh`（离线 monorepo workspace install，ALUKA 相对路径自动转绝对）与 `node/11-bun-p2.js`（SQLite + tagged template）；测试总数 588→604；node conformance 11/11、test262 8/8。**已知限制**——Redis/Postgres 命令级测试需活服务（env 门控 skip）；`aluka run bun_redis.ts` 验收项待真实 Redis 验证；S3 无 presign/分片上传；workspace 暂不支持嵌套 node_modules 与生命周期脚本（5.7 未实现）。 |
 | v1.17 | 2026-08-04 | **RegExp 引擎落地（Go regexp 翻译层）**。新增 `internal/engine/regex` 包（`translate.go` JS→Go RE2 语法翻译 + `regex.go` flags 校验/编译包装/匹配索引）；完整 RegExp 内置对象（`internal/engine/interpreter/regexp.go`）：构造器（pattern 为 RegExp 时复制/覆盖 flags、无 new 调用）、原型 getters（source/flags/global/ignoreCase/multiline/dotAll/unicode/sticky）、exec/test/toString、`[Symbol.match/replace/search/split/species]`、g/y lastIndex 状态机、命名捕获组、`$` 替换串与函数替换；`String.prototype` 正则集成（split 含捕获组/replace+replaceAll 含 `$` 替换/match/search/matchAll）；正则字面量经新 `OpMakeRegexp` 指令构造；新增 well-known Symbols（match/replace/search/split/species）；`util.types.isRegExp` 修复。**引擎缺陷修复（真实 npm 包 semver/debug/chalk 暴露，Phase 5 v1.16 已知限制解除）**——模板字面量插值内字符串含 `{` 导致误配大括号（lexer/parser 双修，新增 `lexer.SkipTemplateExpr`）；数组追加索引赋值 `arr[i]=v` 写入丢失（VM setProperty 委托 `ArrayValue.Set`）；switch 内 break 报 illegal break（compileSwitch 提前 pushLoop）；前缀 `--i`/`++i` 结果未留栈（compileUpdate 前缀 Dup）；TS 泛型 `trySkipTypeArgs` 回溯不还原被改写的 `>=` token（token 快照恢复）；`static get/set` 类成员误判（parseClassMember 用当前 token）；标签语句 `OUTER: for(...)` + labeled break/continue（parser parseLabeled + compiler label 绑定）；对象字面量 getter/setter 未注册 accessor（新 `OpSetGetterObj`/`OpSetSetterObj`）；对象 spread 不调用 getter（VM getProperty 读取）；原型链遍历在函数对象原型处断链（objectValue.Get/FindAccessor 委托 GetProto）；VM 原生错误统一为 name=Error（`goErrorToValue` 复用 `goErrorToJSValue`，TypeError/SyntaxError 等 name 正确）。字节码缓存 FormatVersion 2→3（OpMakeRegexp/OpSetGetterObj/OpSetSetterObj 新指令）。**测试**——`internal/engine/regex/regex_test.go`（翻译/标志/匹配/命名组）+ `internal/engine/interpreter/regexp_test.go`（集成 10 组）+ test262 conformance 新增 `06-regexp.js`/`07-regexp-negative.js`；npm conformance 新增 chalk 入口回退与裸包名解析修复；**npm 包 5/5 全部通过（semver/ms/debug/is-odd/chalk@4）**；node conformance 10/10、test262 7/7 无回归。**已知限制**——反向引用/前瞻/后行断言不支持（编译期 SyntaxError）；`\s` 展开精确、`$` 结尾换行、u 模式按 UTF-8 码点等近似；正则字面量非法 pattern 为运行时 SyntaxError（非解析期）；`String` 方法走直接 isRegExp 分发而非完整 Symbol 协议；已知缺失 #9（thisArg）、#10（CJS/ESM `.default` 包装）、#12（语句开头 `/` 除法歧义）仍存在，留待后续迭代。 |
 | v0.1 | 2026-08-02 | 初稿，覆盖 Phase 0-8 全部规划 |

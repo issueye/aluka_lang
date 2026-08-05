@@ -61,6 +61,31 @@ func NewProcessModule(ctx engine.Context) (engine.Value, error) {
 	return v, nil
 }
 
+// InstallGetBuiltinModule 将 process.getBuiltinModule 注入全局 process 对象
+// （Node ≥ 22.3 API：按 specifier 返回内置模块导出对象，非内置返回 undefined）。
+// 在 RegisterAll 之后调用（此时 loader 已持有全部内置模块工厂）。
+func InstallGetBuiltinModule(ctx engine.Context, loader *module.Loader) error {
+	procV, err := ctx.Global().Get("process")
+	if err != nil || procV == nil || procV.IsUndefined() {
+		return nil
+	}
+	procObj, ok := procV.AsObject()
+	if !ok {
+		return nil
+	}
+	fn := engine.NewFunction("getBuiltinModule", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), nil
+		}
+		v, err := loader.GetBuiltin(args[0].String())
+		if err != nil {
+			return engine.Undefined(), nil
+		}
+		return v, nil
+	})
+	return procObj.Set("getBuiltinModule", fn)
+}
+
 // --- 公共辅助函数 -------------------------------------------------------
 
 // strArg 安全取第 i 个字符串参数（越界返回空串）。

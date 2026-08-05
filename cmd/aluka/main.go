@@ -135,6 +135,7 @@ func runModule(path string, vm, disableCache bool) error {
 	loader := modmodule.NewLoader(ctx)
 	loader.SetNoCache(disableCache)
 	builtin.RegisterAll(loader)
+	_ = builtin.InstallGetBuiltinModule(ctx, loader)
 	if err := loader.Run(path); err != nil {
 		return err
 	}
@@ -242,6 +243,7 @@ func runTestFile(path string) ([]builtin.TestResult, error) {
 
 	loader := modmodule.NewLoader(ctx)
 	builtin.RegisterAll(loader)
+	_ = builtin.InstallGetBuiltinModule(ctx, loader)
 	builtin.ResetTestRegistry()
 	if err := loader.Run(path); err != nil {
 		return nil, err

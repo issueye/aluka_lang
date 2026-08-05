@@ -180,8 +180,8 @@ type Range struct {
 
 // Comparator 是单个版本比较器。
 type Comparator struct {
-	Op   string // "", ">=", "<=", ">", "<", "~", "^"
-	Ver  Version
+	Op  string // "", ">=", "<=", ">", "<", "~", "^"
+	Ver Version
 	// 通配级别：0=精确，1=major，2=minor，3=patch（如 1.x → 2）。
 	wild int
 }
@@ -206,7 +206,18 @@ func ParseRange(s string) (Range, error) {
 // parseSet 解析一个空格分隔的比较器组（AND）。
 func parseSet(s string) ([]Comparator, error) {
 	var comps []Comparator
-	for _, tok := range strings.Fields(s) {
+	toks := strings.Fields(s)
+	i := 0
+	for i < len(toks) {
+		tok := toks[i]
+		// npm 允许操作符与版本间有空格（如 ">= 2.1.2 < 3.0.0"）：
+		// 裸操作符 token 与下一个版本 token 合并。
+		if isBareOp(tok) && i+1 < len(toks) {
+			tok += toks[i+1]
+			i += 2
+		} else {
+			i++
+		}
 		c, err := parseComparator(tok)
 		if err != nil {
 			return nil, err
@@ -217,6 +228,15 @@ func parseSet(s string) ([]Comparator, error) {
 		return []Comparator{{Op: "", Ver: Version{}, wild: 0}}, nil
 	}
 	return comps, nil
+}
+
+// isBareOp 判断 token 是否为不带动版本的操作符（需与下一个 token 合并）。
+func isBareOp(tok string) bool {
+	switch tok {
+	case ">=", "<=", "==", ">", "<", "~", "^", "=":
+		return true
+	}
+	return false
 }
 
 // parseComparator 解析单个比较器 token。
