@@ -2847,16 +2847,19 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 
 	// Static field initialization: `Class.field = init` after the class is
 	// created. The constructor (class function) is on top of the stack.
+	// 布局 [class, class, val] → OpSetPropObj（val 弹栈、写 class 属性、
+	// class 留在栈顶供后续字段/表达式继续使用）。
 	for _, f := range staticFields {
 		if f.Init == nil {
 			continue
 		}
 		fieldName := propKey(f.Key)
 		nameIdx := c.cur().tmpl.AddStringConst(fieldName)
+		c.emit(bytecode.OpDup, 0)
 		if err := c.compileExpr(f.Init); err != nil {
 			return err
 		}
-		c.emit(bytecode.OpSetPropTop, uint32(nameIdx))
+		c.emit(bytecode.OpSetPropObj, uint32(nameIdx))
 	}
 	return nil
 }

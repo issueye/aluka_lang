@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/builtin"
@@ -60,6 +61,8 @@ func main() {
 		startREPL(useVM(args[1:]))
 	case first == "install" || first == "add" || first == "remove" || first == "update":
 		cmdPkg(first, args[1:])
+	case first == "test":
+		cmdTest(args[1:])
 	case strings.HasPrefix(first, "-"):
 		fatalErr("aluka: unknown option " + first)
 	default:
@@ -123,32 +126,154 @@ func runModule(path string, vm, disableCache bool) error {
 	}
 	defer ctx.Close()
 
-	// 注册全局对象
+	// 注册全局对象（console/process/timers/Buffer/Web API 等）。
+	if err := registerRuntimeGlobals(ctx); err != nil {
+		return err
+	}
+
+	// 使用模块加载器执行文件
+	loader := modmodule.NewLoader(ctx)
+	loader.SetNoCache(disableCache)
+	builtin.RegisterAll(loader)
+	if err := loader.Run(path); err != nil {
+		return err
+	}
+
+	// 进入事件循环：处理定时器/http 回调等异步任务，直到无 pending 任务。
+	if vm, ok := ctx.(interface{ RunLoop() }); ok {
+		vm.RunLoop()
+	}
+	return nil
+}
+
+// cmdTest 实现 `aluka test` 子命令：发现并运行测试文件（node:test）。
+// 无参数时按 Node 约定发现测试：cwd 下递归匹配 *.test.{js,ts,mjs,cjs}。
+func cmdTest(args []string) {
+	files := discoverTestFiles(args)
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "aluka: no test files found")
+		os.Exit(1)
+	}
+	passed, failed := 0, 0
+	for _, f := range files {
+		results, err := runTestFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", f, err)
+			failed++
+			continue
+		}
+		for _, r := range results {
+			if r.Passed {
+				passed++
+				fmt.Printf("ok    %s\n", r.FullName)
+			} else {
+				failed++
+				fmt.Printf("not ok %s\n", r.FullName)
+				fmt.Printf("       %s\n", r.Error)
+			}
+		}
+	}
+	fmt.Printf("\nℹ tests %d\nℹ pass  %d\nℹ fail  %d\n", passed+failed, passed, failed)
+	if failed > 0 {
+		os.Exit(1)
+	}
+}
+
+// discoverTestFiles 收集测试文件：显式路径或递归发现。
+func discoverTestFiles(args []string) []string {
+	if len(args) > 0 {
+		var out []string
+		for _, a := range args {
+			info, err := os.Stat(a)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "aluka: %v\n", err)
+				continue
+			}
+			if !info.IsDir() {
+				out = append(out, a)
+				continue
+			}
+			out = append(out, findTestFilesIn(a)...)
+		}
+		return out
+	}
+	return findTestFilesIn(".")
+}
+
+// findTestFilesIn 递归查找 *.test.{js,ts,mjs,cjs}（跳过 node_modules/.git）。
+func findTestFilesIn(dir string) []string {
+	var out []string
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			if name == "node_modules" || name == ".git" || name == ".aluka" {
+				continue
+			}
+			out = append(out, findTestFilesIn(filepath.Join(dir, name))...)
+			continue
+		}
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, ".test.js") || strings.HasSuffix(lower, ".test.ts") ||
+			strings.HasSuffix(lower, ".test.mjs") || strings.HasSuffix(lower, ".test.cjs") {
+			out = append(out, filepath.Join(dir, name))
+		}
+	}
+	return out
+}
+
+// runTestFile 加载一个测试文件并执行其中注册的用例，返回结果列表。
+func runTestFile(path string) ([]builtin.TestResult, error) {
+	var eng engine.Engine = interpreter.NewVMEngine()
+	defer eng.Shutdown()
+
+	ctx, err := eng.NewContext()
+	if err != nil {
+		return nil, err
+	}
+	defer ctx.Close()
+
+	if err := registerRuntimeGlobals(ctx); err != nil {
+		return nil, err
+	}
+
+	loader := modmodule.NewLoader(ctx)
+	builtin.RegisterAll(loader)
+	builtin.ResetTestRegistry()
+	if err := loader.Run(path); err != nil {
+		return nil, err
+	}
+
+	vm, ok := ctx.(*interpreter.VM)
+	if !ok {
+		return nil, fmt.Errorf("aluka: test runner requires the VM engine")
+	}
+	vm.RunLoop()
+	return builtin.RunRegisteredTests(vm), nil
+}
+
+// registerRuntimeGlobals 注册全局对象（runModule 与测试运行器共用）。
+func registerRuntimeGlobals(ctx engine.Context) error {
 	if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
 		return fmt.Errorf("register console: %w", err)
 	}
 	if err := globals.NewProcess(ctx, globals.ProcessConfig{}); err != nil {
 		return fmt.Errorf("register process: %w", err)
 	}
-
-	// 注册 globalThis 引用
 	_ = ctx.Global().Set("globalThis", ctx.Global())
 	_ = ctx.Global().Set("global", ctx.Global())
-
-	// 注册定时器（事件循环基础设施）。
 	if err := globals.NewTimers(ctx, globals.TimerConfig{}); err != nil {
 		return fmt.Errorf("register timers: %w", err)
 	}
-
-	// 注册 Buffer 全局 + 文本编码 API（TextEncoder/TextDecoder/atob/btoa）。
 	if err := globals.NewBuffer(ctx, globals.BufferConfig{}); err != nil {
 		return fmt.Errorf("register Buffer: %w", err)
 	}
 	if err := globals.NewEncoding(ctx, globals.EncodingConfig{}); err != nil {
 		return fmt.Errorf("register encoding: %w", err)
 	}
-
-	// 注册 Web API 全局：URL/URLSearchParams、AbortController、Event/EventTarget。
 	if err := globals.NewURL(ctx, globals.URLConfig{}); err != nil {
 		return fmt.Errorf("register URL: %w", err)
 	}
@@ -161,8 +286,6 @@ func runModule(path string, vm, disableCache bool) error {
 	if err := globals.NewEvent(ctx, globals.EventConfig{}); err != nil {
 		return fmt.Errorf("register Event: %w", err)
 	}
-
-	// 注册 Web API 全局：fetch/Request/Response、Blob/File、Streams。
 	if err := globals.NewFetch(ctx, globals.FetchConfig{}); err != nil {
 		return fmt.Errorf("register fetch: %w", err)
 	}
@@ -172,8 +295,6 @@ func runModule(path string, vm, disableCache bool) error {
 	if err := globals.NewStream(ctx, globals.StreamConfig{}); err != nil {
 		return fmt.Errorf("register Streams: %w", err)
 	}
-
-	// 注册 Web API 全局：crypto.subtle、URLPattern、MessageChannel。
 	if err := globals.NewWebCrypto(ctx, globals.WebCryptoConfig{}); err != nil {
 		return fmt.Errorf("register WebCrypto: %w", err)
 	}
@@ -191,19 +312,6 @@ func runModule(path string, vm, disableCache bool) error {
 	}
 	if err := globals.NewAluka(ctx, globals.AlukaConfig{}); err != nil {
 		return fmt.Errorf("register Aluka: %w", err)
-	}
-
-	// 使用模块加载器执行文件
-	loader := modmodule.NewLoader(ctx)
-	loader.SetNoCache(disableCache)
-	builtin.RegisterAll(loader)
-	if err := loader.Run(path); err != nil {
-		return err
-	}
-
-	// 进入事件循环：处理定时器/http 回调等异步任务，直到无 pending 任务。
-	if vm, ok := ctx.(interface{ RunLoop() }); ok {
-		vm.RunLoop()
 	}
 	return nil
 }

@@ -152,24 +152,40 @@ func wrapCJSSource(src string) string {
 // hasESMSyntax 粗略检测源码是否含顶层 import/export 语法（Node 22 的
 // module-syntax detection 语义：typeless .js 若含 ESM 语法则按 ESM 加载）。
 // 排除动态 import(...)、import.meta、字符串/注释内容及 import/export 前缀标识符
-// （如 exported/imported）。
+// （如 exported/imported）。对整个文本扫描（minified 单行文件的关键字不在行首）。
 func hasESMSyntax(src string) bool {
 	cleaned := stripCommentsAndStrings(src)
-	for _, line := range strings.Split(cleaned, "\n") {
-		t := strings.TrimSpace(line)
-		if hasKeywordPrefix(t, "import") {
-			rest := t[len("import"):]
-			// import( 动态导入、import.meta 非静态导入。
-			if strings.HasPrefix(rest, "(") || strings.HasPrefix(rest, ".") {
-				continue
+	for _, kw := range []string{"import", "export"} {
+		for i := 0; i+len(kw) <= len(cleaned); {
+			j := strings.Index(cleaned[i:], kw)
+			if j < 0 {
+				break
 			}
-			return true
-		}
-		if hasKeywordPrefix(t, "export") {
-			return true
+			pos := i + j
+			// 前驱/后继字符必须是边界（非标识符字符），避免 exported 误判。
+			beforeOK := pos == 0 || !isIdentChar(cleaned[pos-1])
+			after := pos + len(kw)
+			afterOK := after >= len(cleaned) || !isIdentChar(cleaned[after])
+			if beforeOK && afterOK {
+				if kw == "import" {
+					// import( 动态导入、import.meta 非静态导入。
+					rest := cleaned[after:]
+					if !strings.HasPrefix(rest, "(") && !strings.HasPrefix(rest, ".") {
+						return true
+					}
+				} else {
+					return true
+				}
+			}
+			i = pos + len(kw)
 		}
 	}
 	return false
+}
+
+// isIdentChar 判断字符是否属于标识符字符集。
+func isIdentChar(c byte) bool {
+	return c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // hasKeywordPrefix 判断 t 是否以关键字 kw 开头且后随非标识符字符

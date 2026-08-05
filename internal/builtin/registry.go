@@ -49,6 +49,7 @@ func RegisterAll(loader *module.Loader) {
 	// node:process —— 返回全局 process 对象（require('process') 语义，
 	// 与 Node 一致：裸名 process 解析为内置而非 node_modules 包）。
 	loader.RegisterBuiltin("process", NewProcessModule)
+	loader.RegisterBuiltin("test", NewTest)
 }
 
 // NewProcessModule 返回全局 process 对象（require('process')）。

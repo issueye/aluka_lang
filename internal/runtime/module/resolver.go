@@ -63,8 +63,67 @@ func (r *Resolver) Resolve(specifier, parentPath string) (string, error) {
 		}
 	}
 
+	// 包内 imports 映射（#subpath）：从父模块目录向上找最近的 package.json，
+	// 解析其 "imports" 字段（支持 node/default 条件与条件对象）。
+	if strings.HasPrefix(specifier, "#") {
+		if resolved, ok := r.resolvePackageImports(specifier, parentPath); ok {
+			return resolved, nil
+		}
+	}
+
 	// Bare specifier: walk up node_modules
 	return r.resolveBare(specifier, parentPath)
+}
+
+// resolvePackageImports 解析 package.json 的 "imports" 映射（如 chalk 的
+// "#ansi-styles"）。返回解析后的绝对路径。
+func (r *Resolver) resolvePackageImports(specifier, parentPath string) (string, bool) {
+	dir := filepath.Dir(parentPath)
+	for {
+		pkgPath := filepath.Join(dir, "package.json")
+		data, err := os.ReadFile(pkgPath)
+		if err == nil {
+			var pkg struct {
+				Imports map[string]json.RawMessage `json:"imports"`
+			}
+			if json.Unmarshal(data, &pkg) == nil {
+				if raw, ok := pkg.Imports[specifier]; ok {
+					if target := importsTarget(raw); target != "" {
+						full := filepath.Join(dir, filepath.FromSlash(target))
+						if resolved, err := r.resolveFileOrDir(full); err == nil {
+							return resolved, true
+						}
+					}
+				}
+			}
+			return "", false // 已到最近 package.json：不再向上
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+// importsTarget 从 imports 条目中提取目标路径：字符串或条件对象
+// （node > default 优先级，与 Node 解析一致）。
+func importsTarget(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var cond map[string]json.RawMessage
+	if json.Unmarshal(raw, &cond) == nil {
+		for _, key := range []string{"node", "default"} {
+			if v, ok := cond[key]; ok {
+				if json.Unmarshal(v, &s) == nil {
+					return s
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // resolveFileOrDir tries the path as a file, then as a directory.

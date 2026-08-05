@@ -1155,6 +1155,22 @@ func (p *Parser) tryParseArrow() (ast.Expression, bool, error) {
 			}
 		}
 	}
+
+	// 泛型箭头：<T, U extends V>(key: K): T => body（表达式起始的 `<`
+	// 只能是泛型参数，不可能是小于号）。跳过泛型后按 (…) => 路径解析。
+	if t.Type == lexer.TokenPunct && t.Value == "<" {
+		save := p.pos
+		if err := p.skipTypeParameters(); err == nil {
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+				if endIdx, ok := p.findMatchingParen(p.pos); ok {
+					if p.arrowAfterParen(endIdx) {
+						return p.parseArrowWithParens()
+					}
+				}
+			}
+		}
+		p.pos = save // 回退
+	}
 	_ = start
 	return nil, false, nil
 }
@@ -1480,6 +1496,12 @@ func (p *Parser) parsePostfix() (ast.Expression, error) {
 func (p *Parser) parseMemberTail(expr ast.Expression) (ast.Expression, error) {
 	for {
 		t := p.peek()
+		// TS 非空断言：expr!（类型层操作，运行时无副作用）。
+		// 注意 != / !== 是独立 token，不会误入。
+		if t.Type == lexer.TokenPunct && t.Value == "!" {
+			p.next()
+			continue
+		}
 		// 私有名称成员访问：this.#field（'#' 前缀的 TokenIdent，不带点）。
 		if t.Type == lexer.TokenIdent && len(t.Value) > 0 && t.Value[0] == '#' {
 			p.next()
@@ -2270,6 +2292,19 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 			return &ast.ExportDecl{Declaration: cd, Loc: posOf(t)}, nil
 		}
 	}
+	// export abstract class Foo / export declare class Foo（abstract 是
+	// TokenIdent，不能进上面的关键字分支）。
+	if p.peek().Type == lexer.TokenIdent && p.peek().Value == "abstract" {
+		next := p.peekAt(1)
+		if next.Type == lexer.TokenKeyword && next.Value == "class" {
+			p.next() // consume abstract
+			cd, err := p.parseClassDecl()
+			if err != nil {
+				return nil, err
+			}
+			return &ast.ExportDecl{Declaration: cd, Loc: posOf(t)}, nil
+		}
+	}
 
 	return nil, p.errorf(p.peek(), "unexpected token %q after 'export'", p.peek().Value)
 }
@@ -2426,16 +2461,32 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 	var def ast.MethodDefinition
 	def.Loc = posOf(t)
 
-	// `static` is a contextual keyword: only treat as static when the next
-	// token is a valid method-name start (ident/string/number/[).
+	// TypeScript 可见性/修饰符前缀：private/protected/public/readonly/
+	// abstract/override/declare + static（任意顺序，如 `private static readonly`）。
+	// 仅当后随合法成员键时才作为修饰符消费，避免把普通方法名（如
+	// `public() {}` 或 `readonly()`）误判。
 	isStatic := false
-	if t.Type == lexer.TokenIdent && t.Value == "static" {
-		nx := p.peekAt(1)
-		if nx.Type == lexer.TokenIdent || nx.Type == lexer.TokenString || nx.Type == lexer.TokenNumber ||
-			(nx.Type == lexer.TokenPunct && (nx.Value == "[" || nx.Value == "{")) {
-			p.next() // consume static
-			isStatic = true
+	isAbstract := false
+	for {
+		tk := p.peek()
+		if tk.Type != lexer.TokenIdent && tk.Type != lexer.TokenKeyword {
+			break
 		}
+		v := tk.Value
+		if v == "static" || v == "private" || v == "protected" || v == "public" ||
+			v == "readonly" || v == "abstract" || v == "override" || v == "declare" {
+			if classKeyStart(p.peekAt(1)) {
+				if v == "static" {
+					isStatic = true
+				}
+				if v == "abstract" {
+					isAbstract = true
+				}
+				p.next() // consume modifier
+				continue
+			}
+		}
+		break
 	}
 	def.Static = isStatic
 
@@ -2518,6 +2569,24 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 	// markers after the key, before `(` / `:` / `=` / `;`.
 	if p.peek().Type == lexer.TokenPunct && (p.peek().Value == "?" || p.peek().Value == "!") {
 		p.next() // consume ? or !
+	}
+
+	// 抽象方法：abstract doRender(): void;——无函数体，跳过 (params) +
+	// 返回类型注解 + 分号。以 MethodField（无 init）返回，编译器全部跳过。
+	if isAbstract && p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+		if err := p.skipBalanced("(", ")"); err != nil {
+			return def, err
+		}
+		if err := p.parseTypeAnnotation(); err != nil {
+			return def, err
+		}
+		if err := p.consumeSemicolon(); err != nil {
+			return def, err
+		}
+		def.Key = key
+		def.Kind = ast.MethodField
+		def.Computed = computed
+		return def, nil
 	}
 
 	// Distinguish method (`(`) from field declaration (`:` / `=` / `;`).
@@ -3484,6 +3553,10 @@ func (p *Parser) skipType() error {
 // outermost atom was `(...)`, which determines whether a following `=>` is a
 // function-type return (consumed) or an arrow body separator (left alone).
 func (p *Parser) skipTypeInner() (bool, error) {
+	// 前导 union/intersection（多行风格 `type X =\n\t| "a" | "b"`）。
+	for p.peek().Type == lexer.TokenPunct && (p.peek().Value == "|" || p.peek().Value == "&") {
+		p.next()
+	}
 	if err := p.skipTypePrefix(); err != nil {
 		return false, err
 	}
@@ -3564,6 +3637,11 @@ func (p *Parser) skipTypePrefix() error {
 				p.next()
 				continue
 			}
+		}
+		// typeof 是词法关键字（其余前缀是 ident）。
+		if t.Type == lexer.TokenKeyword && t.Value == "typeof" {
+			p.next()
+			continue
 		}
 		if t.Type == lexer.TokenKeyword && t.Value == "new" {
 			p.next()

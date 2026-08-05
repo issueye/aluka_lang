@@ -548,6 +548,12 @@ func collectIterable(v engine.Value) ([]engine.Value, error) {
 	return nil, fmt.Errorf("%w: value is not iterable", engine.ErrTypeError)
 }
 
+// ExtractThrowValue 从 Go error 中提取 JS 抛出的值（供外部包如 builtin
+// 的 node:test 运行器使用）。
+func ExtractThrowValue(err error, interp *Interpreter) engine.Value {
+	return extractThrowValue(err, interp)
+}
+
 // extractThrowValue extracts the JS value from a Go error. Handles *jsThrow
 // (VM), *jsError (AST interpreter), and plain Go errors (wrapped as JS Error).
 func extractThrowValue(err error, interp *Interpreter) engine.Value {

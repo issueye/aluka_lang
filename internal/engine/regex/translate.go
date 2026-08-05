@@ -129,20 +129,27 @@ func translateEscape(pattern string, i int, f Flags) (string, int, error) {
 			// ID_Start / ID_Continue 是 ECMAScript 用于标识符检测的衍生属性，
 			// Go 的 regexp 不支持，这里展开为 Go 可识别的通用类别并集
 			// （覆盖绝大多数标识符字符，path-to-regexp 等依赖它）。
-			prop := pattern[i+3 : end]
-			if esc == 'p' {
-				if prop == "ID_Start" {
-					return `\p{L}\p{Nl}`, end + 1, nil
+				prop := pattern[i+3 : end]
+				if esc == 'p' {
+					if prop == "ID_Start" {
+						return `\p{L}\p{Nl}`, end + 1, nil
+					}
+					if prop == "ID_Continue" {
+						return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
+					}
+					// Go RE2 不支持的属性（Default_Ignorable_Code_Point / RGI_Emoji）：
+					// 展开为码点类或近似类；类外需包裹 [] 表示单字符匹配。
+					if s, ok := unicodePropToGo(prop); ok {
+						return "[" + s + "]", end + 1, nil
+					}
+					// Script_Extensions=X：Go 只支持 Script=X。近似映射到
+					// 同名声母（Script_Extensions 是 Script 的超集，常用
+					// 汉字/假名/谚文场景差异可忽略）。
+					if strings.HasPrefix(prop, "Script_Extensions=") {
+						name := prop[len("Script_Extensions="):]
+						return `\p{` + name + `}`, end + 1, nil
+					}
 				}
-				if prop == "ID_Continue" {
-					return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
-				}
-				// Go RE2 不支持的属性（Default_Ignorable_Code_Point / RGI_Emoji）：
-				// 展开为码点类或近似类；类外需包裹 [] 表示单字符匹配。
-				if s, ok := unicodePropToGo(prop); ok {
-					return "[" + s + "]", end + 1, nil
-				}
-			}
 			return pattern[i : end+1], end + 1, nil
 		}
 		return string(esc), i + 2, nil
@@ -371,20 +378,24 @@ func translateClassEscape(pattern string, i int, f Flags) (string, int, error) {
 			if end >= len(pattern) {
 				return "", 0, errors.New("invalid regular expression: unterminated \\p escape")
 			}
-			// 与 translateEscape 一致：展开 Go 不支持的 ECMAScript 标识符属性。
-			prop := pattern[i+3 : end]
-			if esc == 'p' {
-				if prop == "ID_Start" {
-					return `\p{L}\p{Nl}`, end + 1, nil
+				// 与 translateEscape 一致：展开 Go 不支持的 ECMAScript 标识符属性。
+				prop := pattern[i+3 : end]
+				if esc == 'p' {
+					if prop == "ID_Start" {
+						return `\p{L}\p{Nl}`, end + 1, nil
+					}
+					if prop == "ID_Continue" {
+						return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
+					}
+					// 类内直接输出展开串（无需包裹 []）。
+					if s, ok := unicodePropToGo(prop); ok {
+						return s, end + 1, nil
+					}
+					if strings.HasPrefix(prop, "Script_Extensions=") {
+						name := prop[len("Script_Extensions="):]
+						return `\p{` + name + `}`, end + 1, nil
+					}
 				}
-				if prop == "ID_Continue" {
-					return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
-				}
-				// 类内直接输出展开串（无需包裹 []）。
-				if s, ok := unicodePropToGo(prop); ok {
-					return s, end + 1, nil
-				}
-			}
 			return pattern[i : end+1], end + 1, nil
 		}
 		return string(esc), i + 2, nil
