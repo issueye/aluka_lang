@@ -42,6 +42,8 @@ func (interp *Interpreter) setupBuiltins() {
 	interp.setupNumberCtor()
 	interp.setupBooleanCtor()
 	interp.setupErrorCtors()
+	// V8 stack-trace API（Error.captureStackTrace/prepareStackTrace/stackTraceLimit）。
+	interp.setupErrorV8Stack()
 
 	// Math
 	interp.setupMath()
@@ -577,9 +579,9 @@ func (interp *Interpreter) setupArrayProto() {
 				return nil, err
 			}
 			acc = v
-			}
-			return acc, nil
-		}))
+		}
+		return acc, nil
+	}))
 
 	// ES5+ 基础方法与 ES2019/ES2022/ES2023 扩展（见 array_methods.go）。
 	interp.setupArrayProtoExt()
@@ -915,6 +917,11 @@ func (interp *Interpreter) setupStringProto() {
 	_ = p.Set("valueOf", interp.nativeMethod("valueOf", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		return engine.Str(this.String()), nil
 	}))
+	// [Symbol.iterator]() 字符串默认迭代器（逐码点产出）。缺失时
+	// `''[Symbol.iterator]()` 报 "undefined is not a function"。
+	_ = p.Set(engine.SymbolIterator.SymbolKey(), interp.nativeMethod("[Symbol.iterator]", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		return interp.currentVM.newStringIterator(this.String()), nil
+	}))
 }
 
 // normalizeSliceArgs computes start/end indices for slice() (supports negatives).
@@ -1127,6 +1134,9 @@ func (interp *Interpreter) setupBooleanCtor() {
 
 func (interp *Interpreter) setupFunctionProto() {
 	p := interp.functionProto
+	// Function.prototype 的原型是 Object.prototype，使函数对象可访问
+	// hasOwnProperty/toString 等对象方法（ECMAScript 语义）。
+	engine.SetProto(p, interp.objectProto)
 	_ = p.Set("call", interp.nativeMethod("call", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		callable, err := asCallable(this)
 		if err != nil {
@@ -1185,6 +1195,19 @@ func (interp *Interpreter) setupFunctionProto() {
 	_ = p.Set("toString", interp.nativeMethod("toString", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		return engine.Str(this.String()), nil
 	}))
+
+	// 注册全局 Function 构造器。npm 包常访问 Function.prototype.toString /
+	// bind 等（如 object-inspect 的 `Function.prototype.toString`）。
+	ctor := interp.makeFunc("Function", func(args []engine.Value) (engine.Value, error) {
+		// 简化实现：返回一个可调用占位函数（动态代码构造暂不支持）。
+		return interp.makeFunc("anonymous", func(_ []engine.Value) (engine.Value, error) {
+			return engine.Undefined(), nil
+		}), nil
+	})
+	_ = ctor.Set("prototype", p)
+	_ = p.Set("constructor", ctor)
+	_ = interp.globalObj.Set("Function", ctor)
+	interp.constructors["Function"] = ctor
 }
 
 // --- Error.prototype ---
@@ -1239,6 +1262,8 @@ func (interp *Interpreter) setupErrorCtors() {
 				}
 			}
 			_ = errObj.Set("name", engine.Str(ctorName))
+			// V8 stack：为新建的 Error 捕获调用栈（Error.<stack> 属性）。
+			interp.setErrorStack(errObj)
 			return errObj, nil
 		})
 		_ = ctor.Set("prototype", proto)
@@ -1354,52 +1379,78 @@ func (interp *Interpreter) setupJSON() {
 }
 
 func jsonValueToJSON(v engine.Value) (string, error) {
-	data := valueToJSON(v)
+	data, err := valueToJSON(v, make(map[engine.Object]bool))
+	if err != nil {
+		return "", err
+	}
 	b, err := json.Marshal(data)
 	return string(b), err
 }
 
-func valueToJSON(v engine.Value) interface{} {
+// valueToJSON 将 JS 值转为可 JSON 序列化的 Go 结构。
+// seen 记录当前递归路径上的对象，用于检测循环引用（命中返回 TypeError，
+// 避免无限递归导致 Go 栈溢出崩溃）。对象在完成自身序列化后从 seen 移除，
+// 因此共享但非循环的引用不会被误判。
+func valueToJSON(v engine.Value, seen map[engine.Object]bool) (interface{}, error) {
 	if v == nil || v.IsUndefined() {
-		return nil
+		return nil, nil
 	}
 	switch v.Type() {
 	case engine.TypeNull:
-		return nil
+		return nil, nil
 	case engine.TypeBoolean:
 		b, _ := v.Bool()
-		return b
+		return b, nil
 	case engine.TypeNumber:
 		f, _ := v.Float()
-		return f
+		return f, nil
 	case engine.TypeString:
-		return v.String()
+		return v.String(), nil
 	case engine.TypeObject, engine.TypeFunction:
 		if arr, ok := v.(*engine.ArrayValue); ok {
+			o, _ := arr.AsObject()
+			if seen[o] {
+				return nil, fmt.Errorf("%w: Converting circular structure to JSON", engine.ErrTypeError)
+			}
+			seen[o] = true
 			elems := arr.Elems()
 			result := make([]interface{}, len(elems))
 			for i, e := range elems {
 				if e.IsUndefined() {
 					result[i] = nil
-				} else {
-					result[i] = valueToJSON(e)
+					continue
 				}
+				r, err := valueToJSON(e, seen)
+				if err != nil {
+					return nil, err
+				}
+				result[i] = r
 			}
-			return result
+			delete(seen, o)
+			return result, nil
 		}
 		if o, ok := v.AsObject(); ok {
+			if seen[o] {
+				return nil, fmt.Errorf("%w: Converting circular structure to JSON", engine.ErrTypeError)
+			}
+			seen[o] = true
 			m := make(map[string]interface{})
 			for _, k := range o.Keys() {
 				val, _ := o.Get(k)
 				if val.IsFunction() || val.IsUndefined() {
 					continue
 				}
-				m[k] = valueToJSON(val)
+				r, err := valueToJSON(val, seen)
+				if err != nil {
+					return nil, err
+				}
+				m[k] = r
 			}
-			return m
+			delete(seen, o)
+			return m, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func jsonToValue(data interface{}) engine.Value {

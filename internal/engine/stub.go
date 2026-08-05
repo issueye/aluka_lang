@@ -82,6 +82,9 @@ func (c *stubContext) PostTask(fn func()) { fn() }
 // AddRef 跟踪活跃句柄（stub no-op）。
 func (c *stubContext) AddRef() func() { return func() {} }
 
+// FlushMicrotasks stub 无微任务队列，no-op。
+func (c *stubContext) FlushMicrotasks() bool { return false }
+
 // === 词法分析器 ============================================================
 
 type tokenType int

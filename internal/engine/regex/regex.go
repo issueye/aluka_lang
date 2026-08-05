@@ -9,6 +9,7 @@
 package regex
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -116,6 +117,8 @@ type Compiled struct {
 	Flags      Flags  // 解析后的标志
 	re         *regexp.Regexp
 	GroupNames []string // 捕获组名（索引 0 为整体匹配，无名组为空字符串）
+	// bt 在包含前瞻/后行/反向引用（RE2 不支持）时作为回退匹配器。
+	bt *btRegexp
 }
 
 // Compile 校验 flags、翻译 JS 语法并编译为 Go 正则。
@@ -127,6 +130,14 @@ func Compile(source, flagsStr string) (*Compiled, error) {
 	}
 	goSrc, err := translate(source, f)
 	if err != nil {
+		// RE2 不支持前瞻/后行断言与反向引用：回退到自研回溯匹配器。
+		if errors.Is(err, errLookaround) || errors.Is(err, errBackref) {
+			bt, berr := compileBacktrack(source, f)
+			if berr != nil {
+				return nil, err
+			}
+			return &Compiled{Source: source, Flags: f, bt: bt}, nil
+		}
 		return nil, err
 	}
 	// 全局修饰符以 (?i)(?m) 前缀注入；s（dotAll）由 translate 将 "." 翻译为
@@ -146,10 +157,23 @@ func Compile(source, flagsStr string) (*Compiled, error) {
 }
 
 // NumGroups 返回捕获组数量（不含整体匹配）。
-func (c *Compiled) NumGroups() int { return len(c.GroupNames) - 1 }
+func (c *Compiled) NumGroups() int {
+	if c.bt != nil {
+		return c.bt.numGroups
+	}
+	return len(c.GroupNames) - 1
+}
 
 // GroupName 返回第 i 个捕获组的名称（无名组为空字符串）。
 func (c *Compiled) GroupName(i int) string {
+	if c.bt != nil {
+		for name, idx := range c.bt.groupNames {
+			if idx == i {
+				return name
+			}
+		}
+		return ""
+	}
 	if i < 0 || i >= len(c.GroupNames) {
 		return ""
 	}
@@ -160,10 +184,34 @@ func (c *Compiled) GroupName(i int) string {
 // 返回值为 [整体 start, 整体 end, 组1 start, 组1 end, ...]，未参与的组为 -1；
 // 无匹配时返回 nil。
 func (c *Compiled) MatchIndex(s string) []int {
+	if c.bt != nil {
+		return c.bt.exec(s, 0)
+	}
 	return c.re.FindStringSubmatchIndex(s)
 }
 
 // MatchAllIndex 返回 s 中所有非重叠匹配的索引（整体匹配 + 捕获组）。
 func (c *Compiled) MatchAllIndex(s string) [][]int {
+	if c.bt != nil {
+		var out [][]int
+		search := 0
+		for {
+			m := c.bt.exec(s, search)
+			if m == nil {
+				break
+			}
+			out = append(out, m)
+			// 零宽匹配需前进，避免死循环。
+			if m[1] == m[0] {
+				if m[1] >= len(s) {
+					break
+				}
+				search = m[1] + 1
+			} else {
+				search = m[1]
+			}
+		}
+		return out
+	}
 	return c.re.FindAllStringSubmatchIndex(s, -1)
 }

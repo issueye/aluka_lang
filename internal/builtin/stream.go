@@ -15,7 +15,13 @@ import (
 
 // NewStream 构造 node:stream 模块的导出对象。
 func NewStream(ctx engine.Context) (engine.Value, error) {
-	m := engine.NewObject()
+	// Node 中 `module.exports = Stream`，导出本身是可调用的基类构造器，
+	// 同时挂载 Readable/Writable 等子类。send 等包执行 `Stream.call(this)`，
+	// 因此导出必须是可调用函数而非普通对象。
+	m := engine.NewFunction("Stream", func(args []engine.Value) (engine.Value, error) {
+		return newReadableStream(args), nil
+	})
+	mObj, _ := m.AsObject()
 
 	// Readable 构造器：new Readable(options) 创建可读流。
 	readableCtor := engine.NewFunction("Readable", func(args []engine.Value) (engine.Value, error) {
@@ -26,31 +32,31 @@ func NewStream(ctx engine.Context) (engine.Value, error) {
 	_ = rObj.Set("from", engine.NewFunction("from", func(args []engine.Value) (engine.Value, error) {
 		return newReadableFrom(args), nil
 	}))
-	_ = m.Set("Readable", readableCtor)
+	_ = mObj.Set("Readable", readableCtor)
 
 	// Writable 构造器：new Writable(options) 创建可写流。
 	writableCtor := engine.NewFunction("Writable", func(args []engine.Value) (engine.Value, error) {
 		return newWritableStream(args), nil
 	})
-	_ = m.Set("Writable", writableCtor)
+	_ = mObj.Set("Writable", writableCtor)
 
 	// Duplex 构造器：new Duplex(options) 创建双工流。
 	duplexCtor := engine.NewFunction("Duplex", func(args []engine.Value) (engine.Value, error) {
 		return newDuplexStream(args), nil
 	})
-	_ = m.Set("Duplex", duplexCtor)
+	_ = mObj.Set("Duplex", duplexCtor)
 
 	// Transform 构造器：new Transform(options) 创建转换流。
 	transformCtor := engine.NewFunction("Transform", func(args []engine.Value) (engine.Value, error) {
 		return newTransformStream(args), nil
 	})
-	_ = m.Set("Transform", transformCtor)
+	_ = mObj.Set("Transform", transformCtor)
 
 	// pipeline(...streams, callback)：串联流。
-	_ = m.Set("pipeline", engine.NewFunction("pipeline", makePipeline(ctx)))
+	_ = mObj.Set("pipeline", engine.NewFunction("pipeline", makePipeline(ctx)))
 
 	// finished(stream, callback)：流完成时调用回调。
-	_ = m.Set("finished", engine.NewFunction("finished", func(args []engine.Value) (engine.Value, error) {
+	_ = mObj.Set("finished", engine.NewFunction("finished", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Undefined(), nil
 		}
@@ -68,7 +74,7 @@ func NewStream(ctx engine.Context) (engine.Value, error) {
 		return engine.Undefined(), nil
 	}))
 
-	_ = m.Set("ReadableStream", readableCtor) // 别名
+	_ = mObj.Set("ReadableStream", readableCtor) // 别名
 
 	return m, nil
 }
@@ -83,11 +89,11 @@ func newReadableStream(args []engine.Value) engine.Value {
 	// 内部状态
 	// 注意：state 通过闭包捕获，实例间隔离。
 	state := &streamState{
-		buffer:      []engine.Value{},
-		encoding:    "",
-		flowing:     false,
-		ended:       false,
-		emitter:     stream, // 用于 emit
+		buffer:   []engine.Value{},
+		encoding: "",
+		flowing:  false,
+		ended:    false,
+		emitter:  stream, // 用于 emit
 	}
 
 	// 解析 options

@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -57,7 +58,36 @@ func NewHTTP(ctx engine.Context) (engine.Value, error) {
 	// 状态码常量（常用子集）。
 	_ = m.Set("STATUS_CODES", httpStatusCodes())
 
+	// HTTP 方法名列表（大写）。express 的 utils 依赖 `METHODS.map(...)`
+	// 生成小写方法名集合，缺失时 METHODS 为 undefined 导致 "reading 'map'"。
+	_ = m.Set("METHODS", httpMethods())
+
+	// http.IncomingMessage：express 在模块加载时 `Object.create(http.
+	// IncomingMessage.prototype)` 构造请求原型对象，缺失时读取 'prototype'
+	// 报 TypeError。实际请求对象由 newIncomingMessage 构造，且在 handler
+	// 派发时被 express 以 Object.setPrototypeOf 重新挂到 app.request 上。
+	_ = m.Set("IncomingMessage", newIncomingMessageCtor())
+
+	// http.ServerResponse：express 在 response.js 里 `Object.create(http.
+	// ServerResponse.prototype)` 构造响应原型对象，缺失时读取 'prototype'
+	// 报 TypeError。实际响应对象由 newServerResponse 构造，且在 handler
+	// 派发时被 express 以 Object.setPrototypeOf 重新挂到 app.response 上。
+	_ = m.Set("ServerResponse", newServerResponseCtor())
+
 	return m, nil
+}
+
+// newIncomingMessageCtor 构造 IncomingMessage 构造器（含可继承的 prototype）。
+func newIncomingMessageCtor() engine.Value {
+	ctor := engine.NewFunction("IncomingMessage", func(args []engine.Value) (engine.Value, error) {
+		return newIncomingMessage(nil, nil), nil
+	})
+	proto := engine.NewObject()
+	_ = proto.Set("constructor", ctor)
+	if co, ok := ctor.AsObject(); ok {
+		_ = co.Set("prototype", proto)
+	}
+	return ctor
 }
 
 // --- 服务器 --------------------------------------------------------------
@@ -260,11 +290,33 @@ func (s *httpServerState) handleRequest(w http.ResponseWriter, r *http.Request) 
 		if f, ok := s.handler.AsFunction(); ok {
 			_, _ = f.Call([]engine.Value{req, res})
 		}
+		// 异步 handler（Promise/async 链式 res.end）：同步返回后响应尚未
+		// 完成，需在 JS 线程持续排空微任务，直到 res.end 被调用（finished）。
+		// 否则 Go net/http 会在本次返回后发送空响应，丢失异步写入的 body。
+		for i := 0; i < 1000000 && !resFinished(res); i++ {
+			if !s.ctx.FlushMicrotasks() {
+				break // 无待执行微任务：handler 依赖定时器/IO 等，超出本层处理
+			}
+		}
 		// handler 注册完监听器后发射请求体事件（'data'/'end'）。
 		emitIncomingData(req, body)
 		close(done)
 	})
 	<-done
+}
+
+// resFinishedKey 记录响应是否已结束（res.end 调用）的隐藏属性。
+const resFinishedKey = "\x00<aluka>resFinished"
+
+// resFinished 判断响应是否已通过 res.end 结束。
+func resFinished(res engine.Value) bool {
+	if o, ok := res.AsObject(); ok {
+		if v, err := o.Get(resFinishedKey); err == nil && v.Type() == engine.TypeBoolean {
+			b, _ := v.Bool()
+			return b
+		}
+	}
+	return false
 }
 
 // newIncomingMessage 构造 IncomingMessage 对象（请求/响应消息）。
@@ -286,7 +338,17 @@ func newIncomingMessage(r *http.Request, body []byte) engine.Value {
 	_ = msg.Set("url", engine.Str(urlStr))
 	_ = msg.Set("httpVersion", engine.Str("1.1"))
 	if r != nil {
-		_ = msg.Set("headers", headersToObj(r.Header))
+		h := headersToObj(r.Header)
+		// Go 的 http.Request 把 content-length 存在 ContentLength 字段而非
+		// Header 里。body-parser 等依赖 req.headers['content-length']（或
+		// transfer-encoding）判断是否有请求体（typeis.hasBody），缺失会被
+		// 当作无 body 而跳过解析，导致 req.body 为 null。这里补上小写键。
+		if r.ContentLength > 0 {
+			if ho, ok := h.AsObject(); ok {
+				_ = ho.Set("content-length", engine.Str(strconv.FormatInt(r.ContentLength, 10)))
+			}
+		}
+		_ = msg.Set("headers", h)
 	} else {
 		_ = msg.Set("headers", engine.NewObject())
 	}
@@ -301,6 +363,19 @@ func emitIncomingData(msg engine.Value, body []byte) {
 		emitEvent(msg, "data", engine.Str(string(body)))
 	}
 	emitEvent(msg, "end")
+}
+
+// newServerResponseCtor 构造 ServerResponse 构造器（含可继承的 prototype）。
+func newServerResponseCtor() engine.Value {
+	ctor := engine.NewFunction("ServerResponse", func(args []engine.Value) (engine.Value, error) {
+		return newServerResponse(nil), nil
+	})
+	proto := engine.NewObject()
+	_ = proto.Set("constructor", ctor)
+	if co, ok := ctor.AsObject(); ok {
+		_ = co.Set("prototype", proto)
+	}
+	return ctor
 }
 
 // newServerResponse 构造 ServerResponse 对象（响应）。
@@ -352,6 +427,7 @@ func newServerResponse(w http.ResponseWriter) engine.Value {
 			_, _ = state.w.Write([]byte(args[0].String()))
 		}
 		state.finished = true
+		_ = res.Set(resFinishedKey, engine.Boolean(true))
 		emitEvent(res, "finish")
 		emitEvent(res, "close")
 		return res, nil
@@ -420,13 +496,14 @@ func (rs *respState) applyHeaders(h engine.Object) {
 	}
 }
 
-
 // headersToObj 将 http.Header 转为 JS 对象。
 func headersToObj(h http.Header) engine.Value {
 	obj := engine.NewObject()
 	for k, vals := range h {
 		if len(vals) > 0 {
-			_ = obj.Set(k, engine.Str(strings.Join(vals, ", ")))
+			// Node 约定 req.headers 键为小写；body-parser/type-is 等用
+			// req.headers['content-type'] 等下划线访问，大小写敏感。
+			_ = obj.Set(strings.ToLower(k), engine.Str(strings.Join(vals, ", ")))
 		}
 	}
 	return obj
@@ -447,18 +524,34 @@ func httpStatusCodes() engine.Value {
 	return obj
 }
 
+// httpMethods 返回标准 HTTP 方法名数组（与 Node 的 http.METHODS 一致）。
+func httpMethods() engine.Value {
+	methods := []string{
+		"ACL", "BIND", "CHECKOUT", "CONNECT", "COPY", "DELETE", "GET", "HEAD",
+		"LINK", "LOCK", "M-SEARCH", "MERGE", "MKACTIVITY", "MKCALENDAR", "MKCOL",
+		"MOVE", "NOTIFY", "OPTIONS", "PATCH", "POST", "PROPFIND", "PROPPATCH",
+		"PURGE", "PUT", "REBIND", "REPORT", "SEARCH", "SOURCE", "SUBSCRIBE",
+		"TRACE", "UNBIND", "UNLINK", "UNLOCK", "UNSUBSCRIBE",
+	}
+	vals := make([]engine.Value, len(methods))
+	for i, m := range methods {
+		vals[i] = engine.Str(m)
+	}
+	return engine.NewArray(vals)
+}
+
 // --- 客户端 --------------------------------------------------------------
 
 // clientReqState 是 ClientRequest 的内部状态。
 type clientReqState struct {
-	ctx          engine.Context
-	method       string
-	url          string
-	headers      map[string]string
-	body         strings.Builder
-	callback     engine.Value // 响应回调
-	ended        bool
-	insecureTLS  bool // rejectUnauthorized: false（跳过自签名证书校验）
+	ctx         engine.Context
+	method      string
+	url         string
+	headers     map[string]string
+	body        strings.Builder
+	callback    engine.Value // 响应回调
+	ended       bool
+	insecureTLS bool // rejectUnauthorized: false（跳过自签名证书校验）
 }
 
 // newClientRequest 创建 ClientRequest 对象（HTTP）。

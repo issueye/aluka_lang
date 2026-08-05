@@ -17,3 +17,13 @@ func (interp *Interpreter) drainMicrotasks() {
 		fn()
 	}
 }
+
+// drainMicrotasksReport 排空微任务队列，返回本次是否执行了微任务。
+// 若无待执行微任务返回 false（供调用方判断是否继续排空）。
+func (interp *Interpreter) drainMicrotasksReport() bool {
+	if len(interp.microtaskQueue) == 0 {
+		return false
+	}
+	interp.drainMicrotasks()
+	return true
+}

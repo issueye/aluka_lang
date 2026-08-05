@@ -30,6 +30,36 @@ func NewUtil(ctx engine.Context) (engine.Value, error) {
 		return engine.Str(utilFormat(args)), nil
 	}))
 
+	// util.formatWithOptions(options, ...args)：与 format 相同但忽略首参 options。
+	_ = m.Set("formatWithOptions", engine.NewFunction("formatWithOptions", func(args []engine.Value) (engine.Value, error) {
+		rest := args
+		if len(rest) > 0 {
+			rest = rest[1:]
+		}
+		return engine.Str(utilFormat(rest)), nil
+	}))
+
+	// util.inherits(ctor, superCtor)：令 ctor.prototype 的原型为
+	// superCtor.prototype（Node 语义）。send 等模块依赖它建立继承链。
+	_ = m.Set("inherits", engine.NewFunction("inherits", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), nil
+		}
+		ctor, cok := args[0].AsObject()
+		superCtor, sok := args[1].AsObject()
+		if !cok || !sok {
+			return engine.Undefined(), nil
+		}
+		ctorProto, _ := ctor.Get("prototype")
+		superProto, _ := superCtor.Get("prototype")
+		if cp, ok := ctorProto.(engine.Object); ok {
+			if sp, ok := superProto.(engine.Object); ok {
+				engine.SetProto(cp, sp)
+			}
+		}
+		return engine.Undefined(), nil
+	}))
+
 	_ = m.Set("promisify", engine.NewFunction("promisify", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Undefined(), fmt.Errorf("util.promisify: argument required")

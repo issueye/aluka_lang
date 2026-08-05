@@ -25,6 +25,11 @@ type FuncTemplate struct {
 	// function (P0-2), instead of the frame's slot 0.
 	IsArrow bool
 
+	// ArgumentsSlot is the local slot holding the `arguments` object for
+	// non-arrow functions, or -1 if the function has no arguments binding
+	// (arrow functions and the top-level program).
+	ArgumentsSlot int
+
 	// Code is the flat instruction stream. Fixed-width (InstrSize bytes each).
 	Code []byte
 

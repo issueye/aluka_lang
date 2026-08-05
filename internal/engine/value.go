@@ -5,7 +5,36 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+// stringifyGuard 跟踪当前正在格式化的对象。
+// 对象打印/字符串化（String()/console.log）沿对象图递归时，若遇自引用
+// （循环引用）会无限递归导致 Go 栈溢出崩溃。此处用"进行中"集合检测环，
+// 命中时返回 "[Circular]" 而非继续递归。
+// 引擎 JS 为单线程执行，String() 仅在 JS 线程被调用，故全局表安全。
+var (
+	stringifyMu         sync.Mutex
+	stringifyInProgress = map[*objectValue]bool{}
+)
+
+// markStringify 标记对象正在格式化；若已在格式化路径上（环）返回 false。
+func markStringify(o *objectValue) bool {
+	stringifyMu.Lock()
+	defer stringifyMu.Unlock()
+	if stringifyInProgress[o] {
+		return false
+	}
+	stringifyInProgress[o] = true
+	return true
+}
+
+// unmarkStringify 取消格式化标记（对象自身格式化完成后调用）。
+func unmarkStringify(o *objectValue) {
+	stringifyMu.Lock()
+	delete(stringifyInProgress, o)
+	stringifyMu.Unlock()
+}
 
 // === 值类型实现 ============================================================
 //
@@ -136,15 +165,15 @@ func BigIntVal(s string) (Value, bool) {
 	return bigIntValue{val: bi}, true
 }
 
-func (b bigIntValue) Type() ValueType        { return TypeBigInt }
-func (b bigIntValue) String() string         { return b.val.String() }
-func (b bigIntValue) Int() (int, bool)       { return 0, false } // 阻断 Int 路径
-func (b bigIntValue) Float() (float64, bool) { return 0, false } // 阻断 Float 路径
-func (b bigIntValue) Bool() (bool, bool)     { return b.val.Sign() != 0, true }
-func (b bigIntValue) IsUndefined() bool      { return false }
-func (b bigIntValue) IsNull() bool           { return false }
-func (b bigIntValue) IsObject() bool         { return false }
-func (b bigIntValue) IsFunction() bool       { return false }
+func (b bigIntValue) Type() ValueType              { return TypeBigInt }
+func (b bigIntValue) String() string               { return b.val.String() }
+func (b bigIntValue) Int() (int, bool)             { return 0, false } // 阻断 Int 路径
+func (b bigIntValue) Float() (float64, bool)       { return 0, false } // 阻断 Float 路径
+func (b bigIntValue) Bool() (bool, bool)           { return b.val.Sign() != 0, true }
+func (b bigIntValue) IsUndefined() bool            { return false }
+func (b bigIntValue) IsNull() bool                 { return false }
+func (b bigIntValue) IsObject() bool               { return false }
+func (b bigIntValue) IsFunction() bool             { return false }
 func (b bigIntValue) AsObject() (Object, bool)     { return nil, false }
 func (b bigIntValue) AsFunction() (Function, bool) { return nil, false }
 
@@ -356,6 +385,10 @@ func (o *objectValue) Type() ValueType { return TypeObject }
 
 // String 返回对象的字符串表示（简化版，类似 Node util.inspect）。
 func (o *objectValue) String() string {
+	if !markStringify(o) {
+		return "[Circular]"
+	}
+	defer unmarkStringify(o)
 	names := o.shape.names
 	if len(names) == 0 {
 		return "{}"
@@ -499,6 +532,10 @@ func (a *ArrayValue) Type() ValueType { return TypeObject }
 func (a *ArrayValue) AsObject() (Object, bool) { return a, true }
 
 func (a *ArrayValue) String() string {
+	if !markStringify(a.objectValue) {
+		return "[Circular]"
+	}
+	defer unmarkStringify(a.objectValue)
 	if len(a.elems) == 0 {
 		return "[]"
 	}
@@ -533,17 +570,17 @@ func (a *ArrayValue) Set(key string, value Value) error {
 		if !ok {
 			return fmt.Errorf("%w: invalid length", ErrTypeError)
 		}
-			if n >= 0 {
-				if n < len(a.elems) {
-					a.elems = a.elems[:n]
-				} else {
-					for i := len(a.elems); i < n; i++ {
-						a.elems = append(a.elems, Undefined())
-					}
+		if n >= 0 {
+			if n < len(a.elems) {
+				a.elems = a.elems[:n]
+			} else {
+				for i := len(a.elems); i < n; i++ {
+					a.elems = append(a.elems, Undefined())
 				}
-				a.objectValue.setSlot("length", IntValue(n))
 			}
-			return nil
+			a.objectValue.setSlot("length", IntValue(n))
+		}
+		return nil
 	}
 	if idx, err := strconv.Atoi(key); err == nil && idx >= 0 {
 		for len(a.elems) <= idx {
@@ -593,6 +630,12 @@ func NewFunction(name string, fn Func) Function {
 	register(f.objectValue)
 	_ = f.objectValue.Set("name", Str(name))
 	_ = f.objectValue.Set("length", IntValue(0)) // 形参数量，Phase 0 固定 0
+	// ES 语义：普通函数都有 .prototype 属性（一个对象，constructor 指向自身）。
+	// engine.NewFunction 常用于原生模块构造器（如 stream.Transform），npm 包常
+	// 访问 <Ctor>.prototype（iconv-lite 的 Object.create(Transform.prototype)）。
+	proto := NewObject()
+	_ = proto.Set("constructor", f)
+	_ = f.objectValue.Set("prototype", proto)
 	return f
 }
 
@@ -638,8 +681,8 @@ func NewAccessor(getter, setter Value) *AccessorValue {
 	return &AccessorValue{Getter: getter, Setter: setter}
 }
 
-func (a *AccessorValue) Type() ValueType { return TypeObject } // internal sentinel
-func (a *AccessorValue) String() string  { return "[Accessor]" }
+func (a *AccessorValue) Type() ValueType              { return TypeObject } // internal sentinel
+func (a *AccessorValue) String() string               { return "[Accessor]" }
 func (a *AccessorValue) Int() (int, bool)             { return 0, false }
 func (a *AccessorValue) Float() (float64, bool)       { return 0, false }
 func (a *AccessorValue) Bool() (bool, bool)           { return false, true }

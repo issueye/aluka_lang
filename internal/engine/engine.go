@@ -38,6 +38,11 @@ type Context interface {
 	// AddRef/Release 跟踪"活跃句柄"（定时器、打开的 I/O 句柄等）。
 	// 所有句柄释放后事件循环退出。AddRef 返回 Release 函数。
 	AddRef() func()
+
+	// FlushMicrotasks 在 JS 线程排空微任务队列（Promise reactions、async
+	// 续期等），返回本次是否执行了微任务。供 HTTP handler 等场景在同步
+	// handler 返回后驱动异步续期，直到响应完成。
+	FlushMicrotasks() bool
 }
 
 // Value 是 JS 值的统一抽象。

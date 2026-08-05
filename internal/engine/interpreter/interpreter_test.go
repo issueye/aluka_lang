@@ -690,6 +690,43 @@ func TestOptionalChainingComputed(t *testing.T) {
 	}
 }
 
+// === 循环引用防护（回归） ================================================
+//
+// 自引用结构在 JSON.stringify / 对象打印（String）时若无限递归会导致
+// Go 栈溢出崩溃、内存暴涨。此处验证已加环检测，且共享非循环引用不误判。
+
+func TestJSONStringifyCircularThrows(t *testing.T) {
+	code := `var a = {}; a.self = a; try { JSON.stringify(a); 'no-throw' } catch (e) { e.name }`
+	got := evalStr(t, code)
+	if got != "TypeError" {
+		t.Errorf("JSON.stringify(circular) err name = %q, want TypeError", got)
+	}
+}
+
+func TestJSONStringifySharedNotCircular(t *testing.T) {
+	code := `var x = {a: 1}; JSON.stringify({p: x, q: x})`
+	got := evalStr(t, code)
+	if got != `{"p":{"a":1},"q":{"a":1}}` {
+		t.Errorf("JSON.stringify(shared) = %q", got)
+	}
+}
+
+func TestObjectStringCircular(t *testing.T) {
+	code := `var a = {n: 1}; a.self = a; String(a)`
+	got := evalStr(t, code)
+	if !strings.Contains(got, "Circular") {
+		t.Errorf("String(circular) = %q, want contain [Circular]", got)
+	}
+}
+
+func TestArrayStringCircular(t *testing.T) {
+	code := `var a = [1, 2]; a.push(a); String(a)`
+	got := evalStr(t, code)
+	if !strings.Contains(got, "Circular") {
+		t.Errorf("String(circular array) = %q, want contain [Circular]", got)
+	}
+}
+
 func TestOptionalChainingCall(t *testing.T) {
 	cases := []struct {
 		code string

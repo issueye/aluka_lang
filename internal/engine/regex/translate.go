@@ -8,8 +8,8 @@ import (
 
 // 不支持的正则特性对应的错误。
 var (
-	errBackref     = errors.New("backreferences are not supported")
-	errLookaround  = errors.New("lookahead/lookbehind are not supported")
+	errBackref      = errors.New("backreferences are not supported")
+	errLookaround   = errors.New("lookahead/lookbehind are not supported")
 	errUnterminated = errors.New("invalid regular expression: unterminated pattern")
 )
 
@@ -97,6 +97,18 @@ func translateEscape(pattern string, i int, f Flags) (string, int, error) {
 			}
 			if end >= len(pattern) {
 				return "", 0, errors.New("invalid regular expression: unterminated \\p escape")
+			}
+			// ID_Start / ID_Continue 是 ECMAScript 用于标识符检测的衍生属性，
+			// Go 的 regexp 不支持，这里展开为 Go 可识别的通用类别并集
+			// （覆盖绝大多数标识符字符，path-to-regexp 等依赖它）。
+			prop := pattern[i+3 : end]
+			if esc == 'p' {
+				if prop == "ID_Start" {
+					return `\p{L}\p{Nl}`, end + 1, nil
+				}
+				if prop == "ID_Continue" {
+					return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
+				}
 			}
 			return pattern[i : end+1], end + 1, nil
 		}
@@ -300,6 +312,16 @@ func translateClassEscape(pattern string, i int, f Flags) (string, int, error) {
 			}
 			if end >= len(pattern) {
 				return "", 0, errors.New("invalid regular expression: unterminated \\p escape")
+			}
+			// 与 translateEscape 一致：展开 Go 不支持的 ECMAScript 标识符属性。
+			prop := pattern[i+3 : end]
+			if esc == 'p' {
+				if prop == "ID_Start" {
+					return `\p{L}\p{Nl}`, end + 1, nil
+				}
+				if prop == "ID_Continue" {
+					return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
+				}
 			}
 			return pattern[i : end+1], end + 1, nil
 		}

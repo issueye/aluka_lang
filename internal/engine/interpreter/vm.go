@@ -677,13 +677,13 @@ func (v *VM) run() (engine.Value, error) {
 				}
 				v.push(result)
 			case bytecode.OpCallMethod:
-			numArgs := int(operand >> 16)
-			nameIdx := int(operand & 0xFFFF)
-			result, err := v.doCallMethod(numArgs, nameIdx)
-			if err != nil {
-				return v.handleThrow(err)
-			}
-			v.push(result)
+				numArgs := int(operand >> 16)
+				nameIdx := int(operand & 0xFFFF)
+				result, err := v.doCallMethod(numArgs, nameIdx)
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(result)
 			case bytecode.OpNew:
 				numArgs := int(operand)
 				result, err := v.doNew(numArgs)
@@ -770,7 +770,7 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpGetElem:
 				key := v.pop()
 				obj := v.pop()
-				val, err := v.getProperty(obj, key.String())
+				val, err := v.getProperty(obj, propertyKeyOf(key))
 				if err != nil {
 					return v.handleThrow(err)
 				}
@@ -779,7 +779,7 @@ func (v *VM) run() (engine.Value, error) {
 				val := v.pop()
 				key := v.pop()
 				obj := v.pop()
-				if err := v.setProperty(obj, key.String(), val); err != nil {
+				if err := v.setProperty(obj, propertyKeyOf(key), val); err != nil {
 					return v.handleThrow(err)
 				}
 				v.push(val)
@@ -788,37 +788,37 @@ func (v *VM) run() (engine.Value, error) {
 				key := v.pop()
 				obj := v.pop()
 				val := v.pop()
-				if err := v.setProperty(obj, key.String(), val); err != nil {
+				if err := v.setProperty(obj, propertyKeyOf(key), val); err != nil {
 					return v.handleThrow(err)
 				}
 			case bytecode.OpDelProp:
-			// A: name-const index; pop obj, delete own prop, push bool result.
-			nameIdx := int(operand)
-			name := tmpl.Constants[nameIdx].String()
-			obj := v.pop()
-			// Proxy interception: dispatch to the deleteProperty trap if defined.
-			if p, ok := obj.(*ProxyValue); ok {
-				ok, err := p.proxyDelete(name)
-				if err != nil {
+				// A: name-const index; pop obj, delete own prop, push bool result.
+				nameIdx := int(operand)
+				name := tmpl.Constants[nameIdx].String()
+				obj := v.pop()
+				// Proxy interception: dispatch to the deleteProperty trap if defined.
+				if p, ok := obj.(*ProxyValue); ok {
+					ok, err := p.proxyDelete(name)
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					v.push(engine.Boolean(ok))
+					break
+				}
+				result := true
+				if o, ok := obj.AsObject(); ok {
+					result = o.Delete(name)
+				}
+				v.push(engine.Boolean(result))
+			case bytecode.OpSetPropComputedObj:
+				// Stack: [..., obj, key, value] → set obj[key] = value, obj stays.
+				val := v.pop()
+				key := v.pop()
+				keyStr := propertyKeyOf(key)
+				obj := v.peek()
+				if err := v.setProperty(obj, keyStr, val); err != nil {
 					return v.handleThrow(err)
 				}
-				v.push(engine.Boolean(ok))
-				break
-			}
-			result := true
-			if o, ok := obj.AsObject(); ok {
-				result = o.Delete(name)
-			}
-			v.push(engine.Boolean(result))
-		case bytecode.OpSetPropComputedObj:
-			// Stack: [..., obj, key, value] → set obj[key] = value, obj stays.
-			val := v.pop()
-			key := v.pop()
-			keyStr := propertyKeyOf(key)
-			obj := v.peek()
-			if err := v.setProperty(obj, keyStr, val); err != nil {
-				return v.handleThrow(err)
-			}
 
 			// --- Spread (ES2015) ---
 			case bytecode.OpBuildArray:
@@ -834,78 +834,78 @@ func (v *VM) run() (engine.Value, error) {
 				}
 				arr.Append(val)
 			case bytecode.OpArraySpread:
-			spreadVal := v.pop()
-			arrVal := v.peek()
-			arr, ok := arrVal.(*engine.ArrayValue)
-			if !ok {
-				return v.handleThrow(fmt.Errorf("%w: ARRAY_SPREAD target not an array", engine.ErrTypeError))
-			}
-			if sa, ok := spreadVal.(*engine.ArrayValue); ok {
-				for _, el := range sa.Elems() {
-					arr.Append(el)
+				spreadVal := v.pop()
+				arrVal := v.peek()
+				arr, ok := arrVal.(*engine.ArrayValue)
+				if !ok {
+					return v.handleThrow(fmt.Errorf("%w: ARRAY_SPREAD target not an array", engine.ErrTypeError))
 				}
-			} else {
-				// Use the iterator protocol for all other iterables
-				// (generators, strings, objects with [Symbol.iterator], etc.).
-				iter, err := v.getIterator(spreadVal)
-				if err != nil {
-					return v.handleThrow(err)
+				if sa, ok := spreadVal.(*engine.ArrayValue); ok {
+					for _, el := range sa.Elems() {
+						arr.Append(el)
+					}
+				} else {
+					// Use the iterator protocol for all other iterables
+					// (generators, strings, objects with [Symbol.iterator], etc.).
+					iter, err := v.getIterator(spreadVal)
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					for {
+						nextFn, err := v.getProperty(iter, "next")
+						if err != nil {
+							return v.handleThrow(err)
+						}
+						result, err := v.invoke(nextFn, iter, nil, false)
+						if err != nil {
+							return v.handleThrow(err)
+						}
+						doneVal, err := v.getProperty(result, "done")
+						if err != nil {
+							return v.handleThrow(err)
+						}
+						done, _ := doneVal.Bool()
+						if done {
+							break
+						}
+						valueVal, err := v.getProperty(result, "value")
+						if err != nil {
+							return v.handleThrow(err)
+						}
+						arr.Append(valueVal)
+					}
 				}
-				for {
-					nextFn, err := v.getProperty(iter, "next")
-					if err != nil {
-						return v.handleThrow(err)
-					}
-					result, err := v.invoke(nextFn, iter, nil, false)
-					if err != nil {
-						return v.handleThrow(err)
-					}
-					doneVal, err := v.getProperty(result, "done")
-					if err != nil {
-						return v.handleThrow(err)
-					}
-					done, _ := doneVal.Bool()
-					if done {
-						break
-					}
-					valueVal, err := v.getProperty(result, "value")
-					if err != nil {
-						return v.handleThrow(err)
-					}
-					arr.Append(valueVal)
-				}
-			}
 			case bytecode.OpSpreadObject:
-			src := v.pop()
-			dst := v.peek()
-			dstObj, ok := dst.AsObject()
-			if !ok {
-				return v.handleThrow(fmt.Errorf("%w: SPREAD_OBJECT target not an object", engine.ErrTypeError))
-			}
-			// Proxy interception: use ownKeys + get traps.
-			if p, ok := src.(*ProxyValue); ok {
-				keys, err := p.proxyOwnKeys()
-				if err != nil {
-					return v.handleThrow(err)
+				src := v.pop()
+				dst := v.peek()
+				dstObj, ok := dst.AsObject()
+				if !ok {
+					return v.handleThrow(fmt.Errorf("%w: SPREAD_OBJECT target not an object", engine.ErrTypeError))
 				}
-				for _, k := range keys {
-					pv, err := p.proxyGet(k)
+				// Proxy interception: use ownKeys + get traps.
+				if p, ok := src.(*ProxyValue); ok {
+					keys, err := p.proxyOwnKeys()
 					if err != nil {
 						return v.handleThrow(err)
 					}
-					_ = dstObj.Set(k, pv)
-				}
-				break
-			}
-			if srcObj, ok := src.AsObject(); ok {
-				for _, k := range srcObj.Keys() {
-					// 用 getProperty 读取：getter 访问器会被调用（spread 语义
-					// 复制 getter 的结果值，而非 AccessorValue 本身）。
-					if pv, err := v.getProperty(src, k); err == nil {
+					for _, k := range keys {
+						pv, err := p.proxyGet(k)
+						if err != nil {
+							return v.handleThrow(err)
+						}
 						_ = dstObj.Set(k, pv)
 					}
+					break
 				}
-			}
+				if srcObj, ok := src.AsObject(); ok {
+					for _, k := range srcObj.Keys() {
+						// 用 getProperty 读取：getter 访问器会被调用（spread 语义
+						// 复制 getter 的结果值，而非 AccessorValue 本身）。
+						if pv, err := v.getProperty(src, k); err == nil {
+							_ = dstObj.Set(k, pv)
+						}
+					}
+				}
 			case bytecode.OpCallArgs:
 				// Stack: ... callee argsArray
 				argsArr := v.pop()
@@ -981,13 +981,13 @@ func (v *VM) run() (engine.Value, error) {
 				}
 				v.push(result)
 			case bytecode.OpGetProto:
-			obj := v.pop()
-			proto := v.getProto(obj)
-			if proto != nil {
-				v.push(proto)
-			} else {
-				v.push(engine.Null())
-			}
+				obj := v.pop()
+				proto := v.getProto(obj)
+				if proto != nil {
+					v.push(proto)
+				} else {
+					v.push(engine.Null())
+				}
 			case bytecode.OpCallThis:
 				numArgs := int(operand)
 				result, err := v.doCallThis(numArgs, false)
@@ -1015,33 +1015,33 @@ func (v *VM) run() (engine.Value, error) {
 				}
 				v.push(result)
 
-		// --- Iterator protocol (ES2015) ---
-		case bytecode.OpGetIterator:
-			iterable := v.pop()
-			iter, err := v.getIterator(iterable)
-			if err != nil {
-				return v.handleThrow(err)
-			}
-			v.push(iter)
-		case bytecode.OpGetAsyncIterator:
-			// ES2018 异步迭代协议：优先 [Symbol.asyncIterator]()，
-			// 回退到 [Symbol.iterator]()（其 next 结果由后续 OpAwait 解包）。
-			iterable := v.pop()
-			iter, err := v.getAsyncIterator(iterable)
-			if err != nil {
-				return v.handleThrow(err)
-			}
-			v.push(iter)
-		case bytecode.OpYield:
-			// Generator yield: pop yielded value, suspend frame, return to caller.
-			yieldVal := v.pop()
-			return v.doYield(yieldVal)
-		case bytecode.OpAwait:
-			// Async await: pop awaited value, suspend frame. The asyncRunner
-			// catches the awaitSignal and schedules resumption when the
-			// value's Promise settles.
-			awaitedVal := v.pop()
-			return v.doAwait(awaitedVal)
+			// --- Iterator protocol (ES2015) ---
+			case bytecode.OpGetIterator:
+				iterable := v.pop()
+				iter, err := v.getIterator(iterable)
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(iter)
+			case bytecode.OpGetAsyncIterator:
+				// ES2018 异步迭代协议：优先 [Symbol.asyncIterator]()，
+				// 回退到 [Symbol.iterator]()（其 next 结果由后续 OpAwait 解包）。
+				iterable := v.pop()
+				iter, err := v.getAsyncIterator(iterable)
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(iter)
+			case bytecode.OpYield:
+				// Generator yield: pop yielded value, suspend frame, return to caller.
+				yieldVal := v.pop()
+				return v.doYield(yieldVal)
+			case bytecode.OpAwait:
+				// Async await: pop awaited value, suspend frame. The asyncRunner
+				// catches the awaitSignal and schedules resumption when the
+				// value's Promise settles.
+				awaitedVal := v.pop()
+				return v.doAwait(awaitedVal)
 
 			default:
 				return engine.Undefined(), fmt.Errorf("aluka: unknown opcode %s (%d)", op, op)
@@ -1500,6 +1500,17 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 		restArr := engine.NewArray(restElems)
 		engine.SetProto(restArr, v.interp.arrayProto)
 		v.stack[restSlot] = restArr
+	}
+
+	// Populate the `arguments` object for non-arrow functions (slot from
+	// ArgumentsSlot). The arguments object is array-like: it has numeric
+	// indices and a `length`. We bind it as a local so `arguments.length` /
+	// `arguments[i]` work（get-intrinsic 等 npm 包依赖它）。
+	if tmpl.ArgumentsSlot >= 0 {
+		argsObj := engine.NewArray(append([]engine.Value{}, args...))
+		engine.SetProto(argsObj, v.interp.arrayProto)
+		_ = argsObj.Set("callee", cl.obj)
+		v.stack[frame.base+tmpl.ArgumentsSlot] = argsObj
 	}
 
 	v.frames = append(v.frames, frame)
@@ -2109,4 +2120,11 @@ func (v *VM) DrainMicrotasks() {
 	if len(v.frames) == 0 {
 		v.interp.drainMicrotasks()
 	}
+}
+
+// FlushMicrotasks 无条件排空微任务队列（implements engine.Context）。
+// 与 DrainMicrotasks 不同，不计较是否有活跃 JS 帧：HTTP handler 等在
+// 同步返回后仍需驱动 Promise/async 续期，直到响应完成。
+func (v *VM) FlushMicrotasks() bool {
+	return v.interp.drainMicrotasksReport()
 }

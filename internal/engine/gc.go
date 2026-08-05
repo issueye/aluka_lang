@@ -23,18 +23,36 @@ import (
 type jsHeap struct {
 	mu      sync.Mutex
 	objects map[weak.Pointer[objectValue]]struct{}
-	alloc   int64 // 累计分配数（原子）
+	alloc   int64 // 累计分配数（锁内访问）
 }
+
+// gcSweepEvery 控制注册表自动清扫频率：每分配这么多对象就清扫一次，
+// 移除已被 Go GC 回收（weak.Value()==nil）的弱引用条目，防止注册表无限增长。
+const gcSweepEvery = 4096
 
 // jsHeapGlobal 是全局对象堆。
 var jsHeapGlobal = &jsHeap{objects: make(map[weak.Pointer[objectValue]]struct{})}
 
 // register 在 JS 对象创建时注册到堆（由 NewObject/NewArray/NewFunction 等调用）。
+// 按阈值周期清扫注册表，避免长跑/高分配程序下 `objects` 随分配无限膨胀。
 func register(obj *objectValue) {
 	jsHeapGlobal.mu.Lock()
 	jsHeapGlobal.objects[weak.Make(obj)] = struct{}{}
 	jsHeapGlobal.alloc++
+	if jsHeapGlobal.alloc%gcSweepEvery == 0 {
+		jsHeapGlobal.sweepLocked()
+	}
 	jsHeapGlobal.mu.Unlock()
+}
+
+// sweepLocked 移除已由 Go GC 回收（weak.Value()==nil）的弱引用条目。
+// 调用方须持有 mu。
+func (h *jsHeap) sweepLocked() {
+	for w := range h.objects {
+		if w.Value() == nil {
+			delete(h.objects, w)
+		}
+	}
 }
 
 // HeapStats 是 GC 统计结果。

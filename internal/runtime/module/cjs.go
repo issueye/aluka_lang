@@ -13,7 +13,9 @@ import (
 // loadCJS loads and executes a CommonJS module.
 //
 // 实现（P0-1）：将模块源码包装为带模块作用域参数的函数
-//   (function(require, module, exports, __filename, __dirname, __import) { SRC })
+//
+//	(function(require, module, exports, __filename, __dirname, __import) { SRC })
+//
 // 并以此为词法参数调用。这样 require/module 等是包装函数的局部参数，
 // 模块内的普通函数/箭头函数/async 函数闭包经 upvalue 链捕获它们，
 // 异步恢复后依然可用（修复原"全局属性 + save/restore"方案在 await 后
@@ -31,9 +33,13 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 	if err != nil {
 		return engine.Undefined(), fmt.Errorf("module: cannot read %q: %w", absPath, err)
 	}
+	// 剥离 UTF-8 BOM。文件开头若有 BOM（常见于 Windows 编辑器），若保留并
+	// 被 wrapCJSSource 嵌入到包装函数体中间，lexer 会因 BOM 字符无法前进而
+	// 死循环（CPU/内存暴涨）。Node 同样会在编译前剥离 BOM。
+	src = stripBOM(src)
 
 	// Create module and exports objects
-	exports := engine.NewObject()
+	exports := l.newExports()
 	moduleObj := engine.NewObject()
 	_ = moduleObj.Set("exports", exports)
 	_ = moduleObj.Set("id", engine.Str(absPath))
@@ -165,12 +171,12 @@ func (l *Loader) loadCJSFile(absPath string) error {
 
 // savedGlobals holds the previous values of module-scoped globals.
 type savedGlobals struct {
-	require   engine.Value
-	module    engine.Value
-	exports   engine.Value
-	filename  engine.Value
-	dirname   engine.Value
-	importFn  engine.Value
+	require     engine.Value
+	module      engine.Value
+	exports     engine.Value
+	filename    engine.Value
+	dirname     engine.Value
+	importFn    engine.Value
 	hasRequire  bool
 	hasModule   bool
 	hasExports  bool

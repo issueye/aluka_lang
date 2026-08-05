@@ -928,7 +928,7 @@ func (interp *Interpreter) evalMember(e *ast.MemberExpr, scope *Scope) (engine.V
 		if err != nil {
 			return nil, err
 		}
-		key = kv.String()
+		key = propertyKeyOf(kv)
 	} else {
 		if id, ok := e.Property.(*ast.Identifier); ok {
 			key = id.Name

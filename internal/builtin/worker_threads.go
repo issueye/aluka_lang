@@ -24,11 +24,11 @@ import (
 
 // workerState 是 Worker 的内部状态（跨 VM 消息通道）。
 type workerState struct {
-	toWorker chan string // 主线程 → worker
-	toMain   chan string // worker → 主线程
-	closed   chan struct{}
-	mu           sync.Mutex
-	stopFn       func() // 终止 worker 的事件循环
+	toWorker      chan string // 主线程 → worker
+	toMain        chan string // worker → 主线程
+	closed        chan struct{}
+	mu            sync.Mutex
+	stopFn        func() // 终止 worker 的事件循环
 	releaseWorker func() // 释放 worker 端 parentPort 的活跃度
 }
 
@@ -108,7 +108,9 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 	if len(args) > 1 && args[1].IsObject() {
 		if o, ok := args[1].AsObject(); ok {
 			if v, err := o.Get("workerData"); err == nil && !v.IsUndefined() {
-				workerDataJSON, _ = json.Marshal(valueToJSON(v))
+				if dj, err := valueToJSON(v, make(map[engine.Object]bool)); err == nil {
+					workerDataJSON, _ = json.Marshal(dj)
+				}
 			}
 		}
 	}
@@ -130,7 +132,7 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 		if len(pa) > 0 {
 			msg = pa[0]
 		}
-		data, _ := json.Marshal(valueToJSON(msg))
+		data, _ := json.Marshal(mustValueToJSON(msg))
 		select {
 		case state.toWorker <- string(data):
 		case <-state.closed:
@@ -191,7 +193,7 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 			if len(pa) > 0 {
 				msg = pa[0]
 			}
-			data, _ := json.Marshal(valueToJSON(msg))
+			data, _ := json.Marshal(mustValueToJSON(msg))
 			select {
 			case state.toMain <- string(data):
 			case <-state.closed:

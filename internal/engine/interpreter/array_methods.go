@@ -358,6 +358,17 @@ func (interp *Interpreter) setupArrayProtoExt() {
 		return interp.arrayEntryIterator(arr), nil
 	}))
 
+	// [Symbol.iterator]() 数组默认迭代器（与 values() 一致）。缺失时
+	// `[][Symbol.iterator]()` 会报 "undefined is not a function"（get-intrinsic
+	// 等 npm 包依赖此协议）。
+	_ = p.Set(engine.SymbolIterator.SymbolKey(), interp.nativeMethod("[Symbol.iterator]", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		arr, ok := this.(*engine.ArrayValue)
+		if !ok {
+			return engine.Undefined(), nil
+		}
+		return interp.currentVM.newArrayIterator(arr), nil
+	}))
+
 	// --- ES2019 / ES2023 扩展 ------------------------------------------------
 
 	// flat(depth) 按深度展平嵌套数组。

@@ -130,19 +130,29 @@ func (s *timerState) schedule(args []engine.Value, interval bool, forcedDelay ..
 		// setInterval：重复调度。
 		var timer *time.Ticker
 		timer = time.NewTicker(time.Duration(delay) * time.Millisecond)
-		stopped := false
+		// stopped 通道在 clear 时关闭，通知投递 goroutine 退出，避免其
+		// 因 Ticker.Stop() 不关闭 C 而永久阻塞（goroutine 泄漏）。
+		stopped := make(chan struct{})
+		var stopOnce sync.Once
 		stopFn = func() {
-			if stopped {
-				return
-			}
-			stopped = true
-			timer.Stop()
-			releaseHandle() // 释放 interval 句柄
+			stopOnce.Do(func() {
+				timer.Stop()
+				close(stopped)
+				releaseHandle() // 释放 interval 句柄
+			})
 		}
 		// 在独立 goroutine 持续投递（进程存活由 handle 保证）。
 		go func() {
-			for range timer.C {
-				run()
+			for {
+				select {
+				case _, ok := <-timer.C:
+					if !ok {
+						return
+					}
+					run()
+				case <-stopped:
+					return
+				}
 			}
 		}()
 	} else {

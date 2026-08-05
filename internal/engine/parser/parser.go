@@ -26,6 +26,12 @@ type Parser struct {
 	// so `yield` should be parsed as a YieldExpr.
 	genStack []bool
 
+	// noIn is set while parsing a for-init expression. ECMAScript treats the
+	// for-init as Expression[+In=false], so the relational `in` operator must
+	// NOT be consumed there (otherwise `for (k in obj)` miscarries as a binary
+	// `k in obj` expression). Non-zero counter to allow nesting.
+	noIn int
+
 	// asyncStack tracks whether each enclosing function is async.
 	// asyncStack[len-1] == true means we're currently inside an async function
 	// body, so `await` should be parsed as an AwaitExpr.
@@ -625,8 +631,11 @@ func (p *Parser) parseFor() (ast.Statement, error) {
 			return nil, err
 		}
 	} else {
-		// 表达式 init 或 for-in/of 左值
+		// 表达式 init 或 for-in/of 左值。for-init 为 Expression[+In=false]，
+		// 需禁用 `in` 二元操作符，否则 `for (k in obj)` 会被误解析为 `k in obj`。
+		p.noIn++
 		expr, err := p.parseExpression()
+		p.noIn--
 		if err != nil {
 			return nil, err
 		}
@@ -1250,6 +1259,11 @@ func (p *Parser) parseBinary(minPrec int) (ast.Expression, error) {
 		if t.Type == lexer.TokenPunct {
 			op = t.Value
 		} else if t.Type == lexer.TokenKeyword && (t.Value == "in" || t.Value == "instanceof") {
+			// The relational `in` operator is disabled while parsing a for-init
+			// (noIn > 0), matching ECMAScript's Expression[+In=false].
+			if t.Value == "in" && p.noIn > 0 {
+				break
+			}
 			op = t.Value
 		} else {
 			break

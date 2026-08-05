@@ -232,6 +232,13 @@ func (c *Compiler) hoistTopLevel(stmts []ast.Statement) {
 				if st.Name != nil {
 					c.declareVar(st.Name.Name)
 				}
+			case *ast.ClassDecl:
+				// class 声明同样需预先占槽（与 compileClassDecl 的 declareVar
+				// 一致），否则被提升到顶部的函数声明闭包会把类名解析为全局
+				// （undefined），导致 `function f(){ return Foo; }` 取到 undefined。
+				if st.Name != nil {
+					c.declareVar(st.Name.Name)
+				}
 			case *ast.BlockStmt:
 				walk(st.Body)
 			case *ast.IfStmt:
@@ -2301,14 +2308,15 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 		numLocals++
 	}
 	tmpl := &bytecode.FuncTemplate{
-		Name:        name,
-		NumParams:   len(params),
-		NumLocals:   numLocals,
-		IsVarArgs:   rest != nil,
-		IsAsync:     isAsync,
-		IsGenerator: isGenerator,
-		IsArrow:     isArrow,
-		SourceFile:  c.cur().tmpl.SourceFile,
+		Name:          name,
+		NumParams:     len(params),
+		NumLocals:     numLocals,
+		IsVarArgs:     rest != nil,
+		IsAsync:       isAsync,
+		IsGenerator:   isGenerator,
+		IsArrow:       isArrow,
+		ArgumentsSlot: -1,
+		SourceFile:    c.cur().tmpl.SourceFile,
 	}
 	funcIdx := c.module.AddFunction(tmpl)
 
@@ -2323,8 +2331,16 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 	for i, p := range params {
 		fc.scopes[0].decls[p.Name] = i + 1
 	}
+	// 非箭头函数均绑定 `arguments` 对象（slot = numLocals，紧随 this/params/rest）。
+	// 箭头函数不绑定 own arguments（词法继承外层），与 JS 语义一致。
 	if rest != nil {
 		fc.scopes[0].decls[rest.Name] = 1 + len(params)
+	}
+	if !isArrow {
+		argsSlot := tmpl.NumLocals
+		tmpl.ArgumentsSlot = argsSlot
+		tmpl.NumLocals++
+		fc.scopes[0].decls["arguments"] = argsSlot
 	}
 	c.funcStack = append(c.funcStack, fc)
 
@@ -2395,6 +2411,13 @@ func (c *Compiler) hoistFunc(body *ast.BlockStmt) {
 					c.hoistVarDeclarators(st.Decls)
 				}
 			case *ast.FunctionDecl:
+				if st.Name != nil {
+					c.declareVar(st.Name.Name)
+				}
+			case *ast.ClassDecl:
+				// class 声明同样需预先占槽（与 compileClassDecl 的 declareVar
+				// 一致），否则被提升到顶部的函数声明闭包会把类名解析为全局
+				// （undefined），导致 `function f(){ return Foo; }` 取到 undefined。
 				if st.Name != nil {
 					c.declareVar(st.Name.Name)
 				}
@@ -2851,6 +2874,12 @@ func (c *Compiler) compileMethod(name string, fn *ast.FunctionExpr) (int, error)
 	if rest != nil {
 		fc.scopes[0].decls[rest.Name] = 1 + len(params)
 	}
+	// 方法同样绑定 own `arguments` 对象。必须显式分配槽并递增 NumLocals，
+	// 否则 ArgumentsSlot 默认 0 会覆盖 slot 0 的 `this`。
+	argsSlot := tmpl.NumLocals
+	tmpl.ArgumentsSlot = argsSlot
+	tmpl.NumLocals++
+	fc.scopes[0].decls["arguments"] = argsSlot
 	c.funcStack = append(c.funcStack, fc)
 
 	// Default-parameter initialization at function entry.
@@ -2887,6 +2916,8 @@ func (c *Compiler) compileDefaultBaseCtor() (int, error) {
 		NumParams:  0,
 		NumLocals:  1, // slot 0 = this
 		SourceFile: c.cur().tmpl.SourceFile,
+		// 合成空构造器不引用 `arguments`：显式置 -1，避免默认 0 覆盖 this。
+		ArgumentsSlot: -1,
 	}
 	funcIdx := c.module.AddFunction(tmpl)
 	fc := &funcCtx{
@@ -2910,6 +2941,8 @@ func (c *Compiler) compileDefaultDerivedCtor() (int, error) {
 		NumLocals:  2, // slot 0 = this, slot 1 = rest "args"
 		IsVarArgs:  true,
 		SourceFile: c.cur().tmpl.SourceFile,
+		// 合成派生构造器通过 rest 转发 super，不引用 `arguments`：置 -1。
+		ArgumentsSlot: -1,
 	}
 	funcIdx := c.module.AddFunction(tmpl)
 	fc := &funcCtx{

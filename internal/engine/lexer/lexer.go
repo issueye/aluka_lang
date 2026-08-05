@@ -542,12 +542,16 @@ func (l *Lexer) readIdent(startLine, startCol int) (Token, error) {
 	start := l.pos
 	// 第一个字符
 	if l.src[l.pos] >= 0x80 {
-		// Unicode 标识符
+		// Unicode 标识符首字符
 		r, size := utf8.DecodeRuneInString(l.src[l.pos:])
-		if unicode.IsLetter(r) {
-			l.pos += size
-			l.col++
+		if !unicode.IsLetter(r) {
+			// 非字母的高字节（如 UTF-8 BOM U+FEFF、孤立续字节）不能作为标识符
+			// 首字符。必须返回错误而非静默不前进，否则 Tokens() 会无限循环
+			//（CPU/内存暴涨，曾在加载带 BOM 的 CJS 文件时触发）。
+			return Token{}, fmt.Errorf("unexpected character %q at line %d:%d", r, startLine, startCol)
 		}
+		l.pos += size
+		l.col++
 	}
 	for l.pos < len(l.src) {
 		r, size := utf8.DecodeRuneInString(l.src[l.pos:])

@@ -336,11 +336,26 @@ func hasOwn(o engine.Object, key string) bool {
 }
 
 // makePropertyDescriptor 构造一个标准的属性描述符对象。
+//
+// 支持访问器属性：当 v 是 AccessorValue 时返回 { get, set, enumerable,
+// configurable }，否则返回 { value, writable, enumerable, configurable }。
+// get-intrinsic 等 npm 包依赖 gOPD 区分访问器与数据属性：若访问器被伪装成
+// 数据属性（只有 value），它们会直接读取 prototype 上的属性值，从而以错误
+// 的 this 调用 getter（如 Map.prototype.size 报 "called on non-Map"）。
 func (interp *Interpreter) makePropertyDescriptor(v engine.Value) engine.Value {
 	desc := engine.NewObject()
 	engine.SetProto(desc, interp.objectProto)
-	_ = desc.Set("value", v)
-	_ = desc.Set("writable", engine.Boolean(true))
+	if acc, ok := v.(*engine.AccessorValue); ok {
+		if acc.Getter != nil && !acc.Getter.IsUndefined() {
+			_ = desc.Set("get", acc.Getter)
+		}
+		if acc.Setter != nil && !acc.Setter.IsUndefined() {
+			_ = desc.Set("set", acc.Setter)
+		}
+	} else {
+		_ = desc.Set("value", v)
+		_ = desc.Set("writable", engine.Boolean(true))
+	}
 	_ = desc.Set("enumerable", engine.Boolean(true))
 	_ = desc.Set("configurable", engine.Boolean(true))
 	return desc

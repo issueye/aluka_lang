@@ -70,7 +70,9 @@ var keywords = map[string]bool{
 	"try": true, "typeof": true, "var": true, "void": true,
 	"while": true, "with": true,
 	// 字面量
-	"true": true, "false": true, "null": true, "undefined": true,
+	"true": true, "false": true, "null": true,
+	// 注意：undefined 不是保留字（ECMAScript 中它是可写的全局属性），必须
+	// 作为普通标识符词法化，才能支持 `var undefined;` 这类 npm 包写法。
 	// ES2015+（部分提前支持）
 	"let": true, "const": true, "class": true, "extends": true,
 	"super": true, "import": true, "export": true, "yield": true,

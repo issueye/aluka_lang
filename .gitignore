@@ -31,3 +31,4 @@ node_modules/
 
 # ZCode plan/agent workspace
 .zcode/
+demo/express-demo/probe.js

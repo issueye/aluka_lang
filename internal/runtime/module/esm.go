@@ -29,6 +29,8 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	if err != nil {
 		return engine.Undefined(), fmt.Errorf("module: cannot read %q: %w", absPath, err)
 	}
+	// 剥离 UTF-8 BOM（同 CJS，避免 BOM 字符导致 lexer 死循环）。
+	src = stripBOM(src)
 
 	prog, err := parser.Parse(string(src))
 	if err != nil {
@@ -50,7 +52,7 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	}
 
 	// Create module/exports objects
-	exports := engine.NewObject()
+	exports := l.newExports()
 	moduleObj := engine.NewObject()
 	_ = moduleObj.Set("exports", exports)
 
@@ -111,7 +113,8 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 }
 
 // wrapESMAST 将转换后的 ESM AST 包装为模块函数表达式：
-//   (function(require, module, exports, __filename, __dirname, __import) { <body> })
+//
+//	(function(require, module, exports, __filename, __dirname, __import) { <body> })
 func wrapESMAST(prog *ast.Program, filename string) *ast.Program {
 	params := []*ast.Identifier{
 		{Name: "require"},
@@ -315,9 +318,9 @@ func makeExportAssignment(exported, local string, loc ast.Pos, expr ...ast.Expre
 				Property: &ast.Identifier{Name: exported, Loc: loc},
 				Loc:      loc,
 			},
-			Op:   "=",
+			Op:    "=",
 			Right: rhs,
-			Loc:  loc,
+			Loc:   loc,
 		},
 		Loc: loc,
 	}

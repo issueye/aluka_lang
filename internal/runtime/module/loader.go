@@ -25,8 +25,13 @@ type Loader struct {
 
 	// builtins 注册 Node.js 内置模块（node:fs / node:path 等）。
 	// key 为去掉 node: 前缀的模块名（如 "path"、"fs/promises"）。
-	builtins     map[string]engine.Value // 已构造的导出对象缓存
-	builtinFns   map[string]func(engine.Context) (engine.Value, error) // 工厂函数
+	builtins   map[string]engine.Value                               // 已构造的导出对象缓存
+	builtinFns map[string]func(engine.Context) (engine.Value, error) // 工厂函数
+
+	// objectProto 缓存 Object.prototype，用于把模块导出对象的原型设为
+	// Object.prototype（engine.NewObject 产生的对象原型为 nil，缺少
+	// hasOwnProperty/toString 等常用方法，会破坏依赖它的 npm 包）。
+	objectProto engine.Object
 }
 
 // NewLoader creates a module loader bound to the given context.
@@ -43,6 +48,56 @@ func NewLoader(ctx engine.Context) *Loader {
 // SetNoCache 禁用字节码缓存（对应 --no-cache）。
 func (l *Loader) SetNoCache(disabled bool) {
 	l.bcCache.disabled = disabled
+}
+
+// stripBOM 剥离开头的 UTF-8 BOM（EF BB BF）。若文件内容以 BOM 开头则移除，
+// 防止 BOM 被嵌入 CJS 包装函数体后导致 lexer 死循环。
+func stripBOM(src []byte) []byte {
+	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
+		return src[3:]
+	}
+	return src
+}
+
+// objectProtoValue 返回全局 Object.prototype（带缓存）。
+func (l *Loader) objectProtoValue() (engine.Object, error) {
+	if l.objectProto != nil {
+		return l.objectProto, nil
+	}
+	ov, err := l.ctx.Global().Get("Object")
+	if err != nil || !ov.IsObject() {
+		return nil, fmt.Errorf("module: Object constructor unavailable: %v", err)
+	}
+	ovObj, _ := ov.AsObject()
+	pv, err := ovObj.Get("prototype")
+	if err != nil || !pv.IsObject() {
+		return nil, fmt.Errorf("module: Object.prototype unavailable: %v", err)
+	}
+	po, _ := pv.AsObject()
+	l.objectProto = po
+	return po, nil
+}
+
+// newExports 创建带 Object.prototype 原型的模块导出对象。
+func (l *Loader) newExports() engine.Object {
+	o := engine.NewObject()
+	if p, err := l.objectProtoValue(); err == nil {
+		engine.SetProto(o, p)
+	}
+	return o
+}
+
+// ensureExportsProto 若导出值是可赋值原型的对象，则把其原型设为 Object.prototype。
+// engine.NewObject 产生的对象原型为 nil，缺少 hasOwnProperty 等常用方法。
+func (l *Loader) ensureExportsProto(v engine.Value) {
+	if !v.IsObject() {
+		return
+	}
+	if setter, ok := v.(interface{ SetProto(engine.Object) }); ok {
+		if p, err := l.objectProtoValue(); err == nil {
+			setter.SetProto(p)
+		}
+	}
 }
 
 // RegisterBuiltin 注册一个 Node.js 内置模块工厂。
@@ -298,6 +353,8 @@ func (l *Loader) loadBuiltin(specifier string) (engine.Value, error) {
 	if err != nil {
 		return engine.Undefined(), fmt.Errorf("module: failed to load %s: %w", specifier, err)
 	}
+	// 规范化导出对象原型（engine.NewObject 产生的对象原型为 nil）。
+	l.ensureExportsProto(exports)
 
 	l.mu.Lock()
 	l.builtins[name] = exports

@@ -29,8 +29,8 @@ func TestTranslate(t *testing.T) {
 		{"negated empty class", "[^]", "", `[\s\S]`, false},
 		{"dot no-dotall", "a.b", "", `a[^\n\r\x{2028}\x{2029}]b`, false},
 		{"dot with s", "a.b", "s", `a[\s\S]b`, false},
-		{"s escape", `\s+`, "", "["+jsWhiteSpaceClass+"]+", false},
-		{"S escape", `\S+`, "", "[^"+jsWhiteSpaceClass+"]+", false},
+		{"s escape", `\s+`, "", "[" + jsWhiteSpaceClass + "]+", false},
+		{"S escape", `\S+`, "", "[^" + jsWhiteSpaceClass + "]+", false},
 		{"named group", "(?<year>\\d{4})", "", `(?P<year>\d{4})`, false},
 		{"non-capturing", "(?:ab)+", "", "(?:ab)+", false},
 		{"unicode code point", `\u{1F600}`, "u", `\x{1F600}`, false},
@@ -160,6 +160,38 @@ func TestCompileErrors(t *testing.T) {
 		if _, err := Compile(b.pattern, b.flags); err == nil {
 			t.Errorf("Compile(%q, %q): want error", b.pattern, b.flags)
 		}
+	}
+}
+
+// TestBacktrackLookahead 验证回退引擎对前瞻/反向引用的支持。
+func TestBacktrackLookahead(t *testing.T) {
+	cases := []struct {
+		name    string
+		pattern string
+		flags   string
+		input   string
+		match   bool
+	}{
+		{"simple lookahead", "a(?=b)", "", "ab", true},
+		{"lookahead negative", "a(?!b)", "", "ac", true},
+		{"neg lookahead fail", "a(?!b)", "", "ab", false},
+		{"lookbehind", "(?<=a)b", "", "ab", true},
+		{"neg lookbehind fail", "(?<!a)b", "", "ab", false},
+		{"backref", "(a)\\1", "", "aa", true},
+		{"backref fail", "(a)\\1", "", "ab", false},
+		{"bytes thousands", "\\B(?=(\\d{3})+(?!\\d))", "g", "1,234,567", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			compiled, err := Compile(c.pattern, c.flags)
+			if err != nil {
+				t.Fatalf("Compile(%q, %q): %v", c.pattern, c.flags, err)
+			}
+			m := compiled.MatchIndex(c.input)
+			if c.match != (m != nil) {
+				t.Errorf("MatchIndex(%q) match=%v, want %v", c.input, m != nil, c.match)
+			}
+		})
 	}
 }
 

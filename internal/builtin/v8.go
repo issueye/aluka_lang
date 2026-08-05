@@ -21,7 +21,11 @@ func NewV8(ctx engine.Context) (engine.Value, error) {
 		if len(args) == 0 {
 			return globals.NewBufferInstance(nil), nil
 		}
-		data, err := json.Marshal(valueToJSON(args[0]))
+		dataVal, err := valueToJSON(args[0], make(map[engine.Object]bool))
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		data, err := json.Marshal(dataVal)
 		if err != nil {
 			return engine.Undefined(), err
 		}
@@ -63,38 +67,59 @@ func NewV8(ctx engine.Context) (engine.Value, error) {
 	return m, nil
 }
 
+// mustValueToJSON 忽略循环引用错误的便捷包装（worker 消息序列化用）。
+func mustValueToJSON(v engine.Value) interface{} {
+	data, _ := valueToJSON(v, make(map[engine.Object]bool))
+	return data
+}
+
 // valueToJSON 把 engine.Value 转成可 JSON 序列化的 Go 值。
-func valueToJSON(v engine.Value) interface{} {
+// seen 记录当前递归路径上的对象以检测循环引用（命中返回错误，避免无限递归）。
+func valueToJSON(v engine.Value, seen map[engine.Object]bool) (interface{}, error) {
 	switch {
 	case v.IsUndefined() || v.IsNull():
-		return nil
+		return nil, nil
 	case v.Type() == engine.TypeString:
-		return v.String()
+		return v.String(), nil
 	case v.Type() == engine.TypeBoolean:
 		b, _ := v.Bool()
-		return b
+		return b, nil
 	case v.Type() == engine.TypeNumber:
 		f, _ := v.Float()
-		return f
+		return f, nil
 	default:
 		if o, ok := v.AsObject(); ok {
+			if seen[o] {
+				return nil, fmt.Errorf("cannot serialize circular structure")
+			}
+			seen[o] = true
 			if a, ok := v.(*engine.ArrayValue); ok {
 				out := make([]interface{}, 0, len(a.Elems()))
 				for _, e := range a.Elems() {
-					out = append(out, valueToJSON(e))
+					r, err := valueToJSON(e, seen)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, r)
 				}
-				return out
+				delete(seen, o)
+				return out, nil
 			}
 			obj := make(map[string]interface{})
 			for _, k := range o.Keys() {
 				if val, err := o.Get(k); err == nil {
-					obj[k] = valueToJSON(val)
+					r, err := valueToJSON(val, seen)
+					if err != nil {
+						return nil, err
+					}
+					obj[k] = r
 				}
 			}
-			return obj
+			delete(seen, o)
+			return obj, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // jsonToEngine 把 JSON 解码值转回 engine.Value。
