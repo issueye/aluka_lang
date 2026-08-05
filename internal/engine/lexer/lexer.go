@@ -9,10 +9,10 @@ import (
 
 // Lexer 是 JS 词法分析器。
 type Lexer struct {
-	src    string
-	pos    int
-	line   int
-	col    int
+	src  string
+	pos  int
+	line int
+	col  int
 	// 上一个 token 是否允许 regex 字面量。
 	// JS 中 / 既是除法也是 regex 起始，需根据上下文区分。
 	// 简化规则：当上一个 token 是 ) ] } ident number keyword(非 typeof/void/in/instanceof) 时为除法。
@@ -390,22 +390,26 @@ func (l *Lexer) readEscape() (string, error) {
 }
 
 func (l *Lexer) readTemplate(startLine, startCol int) (Token, error) {
-	l.advance() // `
-	var b strings.Builder
+	l.advance()             // `
+	var b strings.Builder   // cooked 文本（转义已处理）
+	var raw strings.Builder // raw 文本（转义原文保留，供 tagged template 的 strings.raw 使用）
 	for l.pos < len(l.src) && l.src[l.pos] != '`' {
 		if l.src[l.pos] == '\\' && l.pos+1 < len(l.src) {
+			escStart := l.pos
 			l.advance()
 			esc, err := l.readEscape()
 			if err != nil {
 				return Token{}, err
 			}
 			b.WriteString(esc)
+			raw.WriteString(l.src[escStart:l.pos])
 			continue
 		}
 		// ${...} 表达式插值：Phase 1A 简化，不解析表达式，原样保留。
 		// 用 SkipTemplateExpr 正确配对大括号（跳过字符串/注释/嵌套模板）。
 		if l.src[l.pos] == '$' && l.peekAt(1) == '{' {
 			b.WriteString("${")
+			raw.WriteString("${")
 			l.advance()
 			l.advance()
 			end, ok := SkipTemplateExpr(l.src, l.pos-2)
@@ -413,21 +417,26 @@ func (l *Lexer) readTemplate(startLine, startCol int) (Token, error) {
 				return Token{}, fmt.Errorf("unterminated template literal at line %d", startLine)
 			}
 			// end 指向匹配 '}' 之后；表达式文本为 [l.pos, end-1)。
-			b.WriteString(l.src[l.pos : end-1])
+			seg := l.src[l.pos : end-1]
+			b.WriteString(seg)
+			raw.WriteString(seg)
 			b.WriteByte('}')
+			raw.WriteByte('}')
 			for l.pos < end {
 				l.advance()
 			}
 			continue
 		}
-		b.WriteByte(l.src[l.pos])
+		ch := l.src[l.pos]
+		b.WriteByte(ch)
+		raw.WriteByte(ch)
 		l.advance()
 	}
 	if l.pos >= len(l.src) {
 		return Token{}, fmt.Errorf("unterminated template at line %d", startLine)
 	}
 	l.advance() // 结尾 `
-	return Token{Type: TokenTemplate, Value: b.String(), Line: startLine, Col: startCol}, nil
+	return Token{Type: TokenTemplate, Value: b.String(), Raw: raw.String(), Line: startLine, Col: startCol}, nil
 }
 
 // SkipTemplateExpr 从 raw[i]=='$' 且 raw[i+1]=='{' 处扫描模板插值表达式，
@@ -601,10 +610,12 @@ func (l *Lexer) readRegex(startLine, startCol int) (Token, error) {
 
 // === 字符分类辅助 ========================================================
 
-func isDigit(ch byte) bool      { return ch >= '0' && ch <= '9' }
-func isHexDigit(ch byte) bool   { return isDigit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F') }
-func isOctDigit(ch byte) bool   { return ch >= '0' && ch <= '7' }
-func isBinDigit(ch byte) bool   { return ch == '0' || ch == '1' }
+func isDigit(ch byte) bool { return ch >= '0' && ch <= '9' }
+func isHexDigit(ch byte) bool {
+	return isDigit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+}
+func isOctDigit(ch byte) bool { return ch >= '0' && ch <= '7' }
+func isBinDigit(ch byte) bool { return ch == '0' || ch == '1' }
 
 func isIdentStart(ch byte) bool {
 	return ch == '_' || ch == '$' ||

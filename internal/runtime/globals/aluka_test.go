@@ -266,26 +266,32 @@ globalThis.__code = r.exitCode;
 	}
 }
 
-// TestAlukaExternalStub 验证 SQL/Redis/S3 stub 的 API 骨架（P2 占位）。
-func TestAlukaExternalStub(t *testing.T) {
+// TestAlukaExternalAPI 验证 SQL/Redis/S3 的对象骨架与配置校验。
+func TestAlukaExternalAPI(t *testing.T) {
 	ctx := newAlukaTestEnv(t)
 	code := `
 var q = Aluka.SQL("SELECT 1");
-globalThis.__q = typeof q === "object" && typeof q.all === "function";
-q.all().then(function(){ globalThis.__sqlResolved = true; }).catch(function(e){ globalThis.__sqlRejected = true; });
+globalThis.__q = typeof q === "object" && typeof q.all === "function" && typeof q.get === "function" && typeof q.run === "function" && typeof q.values === "function";
+var qq = Aluka.SQL` + "`SELECT 1`" + `;
+globalThis.__qt = typeof qq === "object" && typeof qq.all === "function";
 var r = Aluka.Redis();
-globalThis.__r = typeof r === "object" && typeof r.get === "function";
-r.get("k").catch(function(){ globalThis.__redisRejected = true; });
+globalThis.__r = typeof r === "object" && typeof r.get === "function" && typeof r.set === "function" && typeof r.connect === "function";
+var r2 = Aluka.Redis({ hostname: "example.com", port: 7000, password: "x" });
+globalThis.__r2 = typeof r2 === "object";
 var s = Aluka.S3();
-globalThis.__s = typeof s === "object" && typeof s.put === "function";
+globalThis.__s = typeof s === "object" && typeof s.put === "function" && typeof s.get === "function";
+s.exists("k").catch(function(e) { globalThis.__sErr = typeof e === "string" && e.indexOf("configured") >= 0; });
 `
 	if err := fetchRun(t, ctx, code); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	for _, k := range []string{"__q", "__sqlRejected", "__r", "__redisRejected", "__s"} {
+	for _, k := range []string{"__q", "__qt", "__r", "__r2", "__s"} {
 		if got := webGlobalGet(ctx, k); got != "true" {
 			t.Errorf("%s = %q, want true", k, got)
 		}
+	}
+	if got := webGlobalGet(ctx, "__sErr"); got != "true" {
+		t.Errorf("__sErr = %q, want true (missing credentials should reject)", got)
 	}
 }
 

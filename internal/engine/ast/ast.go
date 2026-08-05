@@ -308,9 +308,12 @@ func (r *RegexLit) exprNode() {}
 func (r *RegexLit) node()     {}
 
 type TemplateLit struct {
-	// Quasis are the literal string segments between interpolations.
+	// Quasis are the cooked literal string segments between interpolations.
 	// len(Quasis) == len(Expressions) + 1.
 	Quasis []string
+	// RawQuasis are the raw (unescaped) literal string segments, used by
+	// tagged templates to build the strings.raw array. Aligned 1:1 with Quasis.
+	RawQuasis []string
 	// Expressions are the interpolated ${...} expressions.
 	Expressions []Expression
 	Loc         Pos
@@ -319,6 +322,18 @@ type TemplateLit struct {
 func (t *TemplateLit) Pos() Pos  { return t.Loc }
 func (t *TemplateLit) exprNode() {}
 func (t *TemplateLit) node()     {}
+
+// TaggedTemplateExpr 是标记模板字面量 `tag`a${x}b“。
+// tag 可以是任意表达式（标识符/成员访问/调用结果等）。
+type TaggedTemplateExpr struct {
+	Tag      Expression
+	Template *TemplateLit
+	Loc      Pos
+}
+
+func (t *TaggedTemplateExpr) Pos() Pos  { return t.Loc }
+func (t *TaggedTemplateExpr) exprNode() {}
+func (t *TaggedTemplateExpr) node()     {}
 
 type ArrayLit struct {
 	Elements []Expression
@@ -519,9 +534,10 @@ func (n *NewTargetExpr) exprNode() {}
 func (n *NewTargetExpr) node()     {}
 
 // YieldExpr is a `yield` expression (only valid inside generator functions).
-//   yield            -> Argument == nil
-//   yield expr       -> Argument = expr
-//   yield* expr      -> Delegate = true, Argument = expr
+//
+//	yield            -> Argument == nil
+//	yield expr       -> Argument = expr
+//	yield* expr      -> Delegate = true, Argument = expr
 type YieldExpr struct {
 	Argument Expression
 	Delegate bool // `yield*`
@@ -577,10 +593,10 @@ type ClassBody struct {
 
 // ClassDecl is a class declaration: `class Name [extends Super] { body }`.
 type ClassDecl struct {
-	Name      *Identifier
+	Name       *Identifier
 	SuperClass Expression // nil if no extends
-	Body      *ClassBody
-	Loc       Pos
+	Body       *ClassBody
+	Loc        Pos
 }
 
 func (c *ClassDecl) Pos() Pos  { return c.Loc }
@@ -589,10 +605,10 @@ func (c *ClassDecl) node()     {}
 
 // ClassExpr is a class expression: `class [Name] [extends Super] { body }`.
 type ClassExpr struct {
-	Name      *Identifier
+	Name       *Identifier
 	SuperClass Expression
-	Body      *ClassBody
-	Loc       Pos
+	Body       *ClassBody
+	Loc        Pos
 }
 
 func (c *ClassExpr) Pos() Pos  { return c.Loc }
@@ -621,7 +637,7 @@ type ArrayPattern struct {
 	Loc      Pos
 }
 
-func (a *ArrayPattern) Pos() Pos    { return a.Loc }
+func (a *ArrayPattern) Pos() Pos     { return a.Loc }
 func (a *ArrayPattern) patternNode() {}
 func (a *ArrayPattern) node()        {}
 
@@ -640,7 +656,7 @@ type ObjectPattern struct {
 	Loc        Pos
 }
 
-func (o *ObjectPattern) Pos() Pos    { return o.Loc }
+func (o *ObjectPattern) Pos() Pos     { return o.Loc }
 func (o *ObjectPattern) patternNode() {}
 func (o *ObjectPattern) node()        {}
 
@@ -665,8 +681,8 @@ type ImportSpecifier struct {
 //	import {a, b as c} from 'mod'
 //	import x, {a, b} from 'mod'
 type ImportDecl struct {
-	Source     string             // module specifier (string literal)
-	Specifiers []ImportSpecifier  // empty for side-effect-only import
+	Source     string            // module specifier (string literal)
+	Specifiers []ImportSpecifier // empty for side-effect-only import
 	Loc        Pos
 }
 
@@ -689,10 +705,10 @@ type ExportSpecifier struct {
 //	export function f() {}
 //	export class C {}
 type ExportDecl struct {
-	Declaration Statement        // non-nil for `export <decl>` (VarDecl/FunctionDecl/ClassDecl)
+	Declaration Statement         // non-nil for `export <decl>` (VarDecl/FunctionDecl/ClassDecl)
 	Specifiers  []ExportSpecifier // non-empty for `export {a, b}`
-	Source      string           // non-empty for re-export `export {a} from 'mod'`
-	IsStar      bool             // `export * from 'mod'`
+	Source      string            // non-empty for re-export `export {a} from 'mod'`
+	IsStar      bool              // `export * from 'mod'`
 	Loc         Pos
 }
 
@@ -709,4 +725,3 @@ type ExportDefaultDecl struct {
 func (d *ExportDefaultDecl) Pos() Pos  { return d.Loc }
 func (d *ExportDefaultDecl) stmtNode() {}
 func (d *ExportDefaultDecl) node()     {}
-

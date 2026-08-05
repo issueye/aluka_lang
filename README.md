@@ -13,35 +13,50 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 - 直接运行 JS/TS 文件
 - 兼容 Node.js 内置模块（fs / path / http / crypto / stream ...）
 - 兼容 Web API（fetch / WebSocket / Streams ...）
-- 兼容 Bun 特有 API（Bun.serve / Bun.file / Bun.$ ...）
+- 兼容 Bun 特有 API（Aluka.serve / Aluka.file / Aluka.$ ...）
 - 单二进制分发，零运行时依赖
 
 ## 项目状态
 
-🚧 **Phase 0 — 工程基座（已完成）**
+> 评估日期：2026-08-05 ｜ 测试总数：604 个 Go 测试函数（全部通过）
 
-- ✅ CLI 框架（`-e` / `run` / `--version` / `--help`）
-- ✅ JS 引擎抽象层接口（`Engine` / `Context` / `Value`）
-- ✅ 桩引擎（最小表达式求值器，验证端到端架构）
-- ✅ `console` 全局对象（log / info / warn / error / assert / time / timeEnd）
-- ✅ `process` 全局对象（argv / env / platform / cwd / hrtime ...）
-- ✅ 单元测试（覆盖率 > 50%）
-- ✅ GitHub Actions CI（lint + test + 跨平台 build）
+| Phase | 名称 | 状态 | 完成度 |
+|-------|------|------|--------|
+| 0 | 工程基座 | ✅ 完成 | 100% |
+| 1A | AST-walking 解释器 | ✅ 完成 | ~90% |
+| 1B | 字节码 VM | ✅ 完成（含隐藏类/IC、自研 GC） | ~95% |
+| 1C | ES2015 + 模块系统 | ✅ 完成 | ~95% |
+| 1D | TS 转译 + ES2017-2023 | ✅ 完成 | ~95% |
+| 2 | Node.js 核心内置模块 | ✅ 完成 | ~95% |
+| 3 | Web API + P1 Node 模块 | ✅ 完成 | ~95% |
+| 4 | Aluka 特有 API（兼容 Bun） | ✅ P0+P1+P2 完成 | ~100% |
+| 5 | 包管理器 | ✅ P0 完成（含 workspace、.npmrc） | ~90% |
+| 6-8 | 测试器 / 打包器 / 优化 | ❌ 未开始 | 0% |
+
+### 核心能力一览
+
+- **JS 引擎（自研）**：AST 解释器 + 字节码 VM 双引擎、隐藏类 + 内联缓存、自研标记-清除 GC、磁盘字节码缓存
+- **ES 特性**：ES5 全部核心、ES2015（let/const/class/箭头函数/解构/Promise/Symbol/Map/Set/Proxy/Reflect/生成器/模块/**tagged template**）、ES2017-2023（async/await、for await...of、可选链 `?.`、BigInt、动态 `import()`、数字分隔符、逻辑赋值 `||=`/`&&=`/`??=`、Error cause 等）
+- **TypeScript 转译**：类型注解剥离、`interface`/`type` 擦除、`enum`/`namespace` 降级、装饰器跳过、泛型参数删除、`as`/`satisfies` 断言剥离、`import type` 擦除、路径别名（`paths`/`baseUrl`）
+- **模块系统**：ESM（import/export 全语法）+ CJS（require/module.exports）+ Node.js 解析算法 + 循环依赖 + 字节码缓存
+- **Node.js 内置模块（20+）**：fs、path、os、url、querystring、events、util、assert、stream、buffer、crypto、string_decoder、http、https、net、tls、dns、zlib、child_process、worker_threads、perf_hooks、timers/promises、readline、repl、module、v8、tty 等
+- **Web API**：fetch/Request/Response/Headers/FormData、WebSocket、ReadableStream/WritableStream/TransformStream、Blob/File、crypto.subtle、URL/URLPattern、MessageChannel、AbortController、Event/EventTarget
+- **Aluka API（兼容 Bun）**：`Aluka.serve`、`Aluka.file`/`write`、`Aluka.$`、`Aluka.env`、`Aluka.sleep`、`Aluka.hash`/`password`、`Aluka.deflate`/`inflate`、`Aluka.spawn`、`Bun.peek`/`deepEquals` 等（`Bun` 为兼容别名）
+- **外部服务驱动（P2）**：`Aluka.SQL`（SQLite 零配置 + Postgres 经 `DATABASE_URL`，支持 tagged template 参数绑定）、`Aluka.Redis`（get/set/hget/hset...）、`Aluka.S3`（自研 AWS SigV4，get/put/delete/list/exists）
+- **包管理器**：`aluka install/add/remove/update`、npm registry 客户端、自研 semver 解析、依赖树解析 + hoisting、并发下载解压、`aluka.lock` lockfile、**workspace 支持**（monorepo 本地包链接）、**.npmrc**（registry + 鉴权 token）
+- **RegExp**：基于 Go regexp 翻译层的完整正则引擎（g/y lastIndex 状态机、命名捕获组、`$` 替换串、Symbol.match/replace/split）
+
+### 已知限制
+
+- RegExp 反向引用 / 前瞻 / 后行断言不支持
+- `Array.prototype.find/map` 等的 `thisArg` 第二参数对非箭头函数未生效
+- CJS/ESM interop：`module.exports = func` 整体赋值时动态 import 不包装 `.default`
+- 表达式语句开头的 `/` 可能被误判为正则字面量起始
+- Redis / Postgres 命令级测试需活服务（`TEST_REDIS_URL` / `TEST_DATABASE_URL` 门控）；S3 无 presign / 分片上传
+- Phase 5：生命周期脚本（preinstall/postinstall）、`aluka link`/`pm` 未实现；部分真实 npm 包（如 express）仍无法完整运行
+- Phase 6 测试器 / Phase 7 打包器 / Phase 8 优化 尚未开始
 
 详见 [开发计划文档](./docs/development-plan.md)。
-
-后续阶段：
-
-| Phase | 名称 | 状态 |
-|-------|------|------|
-| 0 | 工程基座 | ✅ |
-| 1 | JS 引擎 + 模块 + TS 转译 | ⏳ |
-| 2 | Node.js 核心模块 | ⏳ |
-| 3 | Web API + P1 Node 模块 | ⏳ |
-| 4 | Bun 特有 API | ⏳ |
-| 5 | 包管理器 | ⏳ |
-| 6 | 测试器 | ⏳ |
-| 7 | 打包器 | ⏳ |
 
 ## 约束
 
@@ -71,13 +86,17 @@ CGO_ENABLED=0 go build -o bin/aluka ./cmd/aluka
 aluka -e "console.log(1+1)"
 # => 2
 
-# 执行文件
+# 执行文件（JS 或 TS）
 aluka run hello.js
-aluka hello.js    # 简写
+aluka hello.ts    # 简写
 
-# 查看版本与帮助
-aluka --version
-aluka --help
+# 交互式 REPL
+aluka repl
+
+# 包管理
+aluka install          # 安装 package.json 依赖
+aluka add is-number    # 添加依赖
+aluka remove is-number # 移除依赖
 ```
 
 ### 示例
@@ -89,35 +108,65 @@ win32 x64
 $ aluka -e "console.log('Hello, ' + 'Aluka!')"
 Hello, Aluka!
 
-$ aluka -e "console.log([1, 2, 3])"
-[ 1, 2, 3 ]
+$ aluka -e "console.log([1, 2, 3].map(x => x * 2))"
+[ 2, 4, 6 ]
 
 $ aluka -e "console.log({ a: 1, b: 'hi' })"
 { a: 1, b: hi }
+
+$ aluka -e "class A { hello() { return 'world'; } } console.log(new A().hello())"
+world
+
+$ aluka -e "var q = Aluka.SQL\`CREATE TABLE t (x INTEGER)\`.run().then(function(){ return Aluka.SQL\`INSERT INTO t VALUES (42)\`.run(); }).then(function(){ return Aluka.SQL\`SELECT * FROM t\`.all(); }).then(function(r){ console.log(r[0].x); });"
+42
 ```
+
+> 上面 SQL 示例使用零配置的 `:memory:` SQLite；设 `DATABASE_URL`（postgres:// 前缀）可切换 Postgres 后端。
+
+## CLI 命令
+
+| 命令 | 说明 |
+|------|------|
+| `aluka run <file>` / `aluka <file>` | 执行 JS/TS 文件 |
+| `aluka -e <code>` | 执行内联代码 |
+| `aluka repl` | 交互式 REPL（状态保持、多行输入、`.help`/`.exit`） |
+| `aluka install [pkg]` | 安装依赖（Phase 5） |
+| `aluka add <pkg>` / `remove <pkg>` / `update` | 包管理 |
+| `aluka --vm` / `--ast` | 选择字节码 VM（默认）或 AST 解释器 |
+| `aluka --no-cache` | 禁用字节码磁盘缓存 |
 
 ## 项目结构
 
 ```
 aluka_lang/
 ├── cmd/
-│   └── aluka/                 # CLI 入口
+│   └── aluka/                 # CLI 入口（run/repl/install + 包管理子命令）
 ├── internal/
-│   ├── engine/                 # JS 引擎（Phase 0 桩实现）
-│   │   ├── engine.go           # Engine/Context/Value 接口
-│   │   ├── value.go            # 值类型实现
-│   │   └── stub.go             # 桩引擎（Phase 1 替换为自研 VM）
-│   └── runtime/
-│       └── globals/            # 全局对象
-│           ├── console.go     # console 实现
-│           └── process.go      # process 实现
-├── docs/                       # 文档
-│   ├── requirements-analysis.md
-│   └── development-plan.md
-├── .github/workflows/ci.yml    # CI 配置
-├── Makefile
-├── go.mod
-└── go.sum
+│   ├── engine/                # JS 引擎（自研）
+│   │   ├── lexer/             # 词法分析器
+│   │   ├── parser/            # 递归下降 + Pratt 解析器
+│   │   ├── ast/               # AST 节点定义
+│   │   ├── compiler/          # AST → 字节码
+│   │   ├── bytecode/          # 指令集 / 序列化
+│   │   ├── interpreter/       # AST 解释器 + 字节码 VM
+│   │   ├── regex/             # 正则翻译层（JS → Go RE2）
+│   │   ├── engine.go          # Engine/Context/Value 接口
+│   │   ├── shape.go           # 隐藏类 + 内联缓存
+│   │   └── gc.go              # 标记-清除 GC
+	│   ├── runtime/
+	│   │   ├── globals/           # 全局对象（console/process/Buffer/URL/fetch/...）
+	│   │   │   └── aluka*.go      # Aluka 特有 API（含 aluka_sql/redis/s3 外部服务驱动）
+	│   │   └── module/            # ESM/CJS 模块系统 + 字节码缓存
+	│   ├── builtin/               # Node.js 内置模块（fs/http/net/crypto/...）
+	│   └── pkgmanager/            # npm 兼容包管理器（semver/registry/resolver/...）
+	│       ├── config/            # .npmrc 解析（registry + 鉴权）
+	│       └── workspace/         # workspace 发现（glob 展开 + 本地包链接）
+	├── tests/conformance/         # 一致性测试（node / test262 / npm / install）
+	├── bench/                     # 性能基准
+	├── docs/                      # 需求分析与开发计划文档
+	├── .github/workflows/ci.yml   # CI（三端 lint + test + build）
+	├── Makefile
+	└── go.mod
 ```
 
 ## 开发
@@ -134,6 +183,25 @@ make lint
 
 # 跨平台构建
 make release
+
+# 安装到 GOBIN
+make install
+```
+
+### 一致性测试
+
+```bash
+# Node.js 官方测试子集（11/11 通过）
+bash tests/conformance/node/run.sh
+
+# test262 子集（8/8 通过）
+cd tests/conformance/test262 && ALUKA=../../../aluka go run .
+
+# 真实 npm 包加载测试（semver/ms/debug/is-odd/chalk@4，5/5 通过）
+ALUKA=./aluka bash tests/conformance/npm/run.sh
+
+# 包管理器 conformance（离线 monorepo workspace install，全通过）
+ALUKA=./aluka bash tests/conformance/install/run.sh
 ```
 
 ## 设计原则

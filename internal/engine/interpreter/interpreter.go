@@ -746,6 +746,37 @@ func (interp *Interpreter) evalExpr(expr ast.Expression, scope *Scope) (engine.V
 			b.WriteString(e.Quasis[i+1])
 		}
 		return engine.Str(b.String()), nil
+	case *ast.TaggedTemplateExpr:
+		// tag`a${x}b`：构造 TemplateStringsArray（含 .raw），以 undefined 为 this 调用 tag。
+		tag, err := interp.evalExpr(e.Tag, scope)
+		if err != nil {
+			return nil, err
+		}
+		quasis := make([]engine.Value, 0, len(e.Template.Quasis))
+		for _, q := range e.Template.Quasis {
+			quasis = append(quasis, engine.Str(q))
+		}
+		strs := engine.NewArray(quasis)
+		rawQuasis := make([]engine.Value, 0, len(e.Template.RawQuasis))
+		for _, rq := range e.Template.RawQuasis {
+			rawQuasis = append(rawQuasis, engine.Str(rq))
+		}
+		if err := strs.Set("raw", engine.NewArray(rawQuasis)); err != nil {
+			return nil, err
+		}
+		args := []engine.Value{strs}
+		for _, ex := range e.Template.Expressions {
+			v, err := interp.evalExpr(ex, scope)
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, v)
+		}
+		callable, err := asCallable(tag)
+		if err != nil {
+			return nil, err
+		}
+		return callable.callWith(engine.Undefined(), args)
 	case *ast.RegexLit:
 		// 正则字面量：构造真实 RegExp 实例（Go regexp 翻译层内核）。
 		return interp.makeRegexp(e.Pattern, e.Flags)

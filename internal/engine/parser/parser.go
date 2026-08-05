@@ -942,9 +942,10 @@ func (p *Parser) parseAssignment() (ast.Expression, error) {
 
 // parseYield parses a `yield` expression. Must only be called when inside a
 // generator function. Forms:
-//   yield            -> bare yield (argument is undefined)
-//   yield expr       -> yield the value of expr
-//   yield* expr      -> delegate: iterate expr's iterator and yield each value
+//
+//	yield            -> bare yield (argument is undefined)
+//	yield expr       -> yield the value of expr
+//	yield* expr      -> delegate: iterate expr's iterator and yield each value
 func (p *Parser) parseYield() (ast.Expression, error) {
 	t := p.next() // consume `yield`
 	y := &ast.YieldExpr{Loc: posOf(t)}
@@ -1424,6 +1425,16 @@ func (p *Parser) parseCallMember() (ast.Expression, error) {
 			}
 			continue
 		}
+		// Tagged template: tag`a${x}b`（tag 可为标识符/成员访问等任意表达式）。
+		if t.Type == lexer.TokenTemplate {
+			p.next()
+			tmpl, err := p.parseTemplateLit(t.Value, t.Raw, posOf(t))
+			if err != nil {
+				return nil, err
+			}
+			expr = &ast.TaggedTemplateExpr{Tag: expr, Template: tmpl, Loc: posOf(t)}
+			continue
+		}
 		prev := expr
 		expr, err = p.parseMemberTail(expr)
 		if err != nil {
@@ -1467,20 +1478,27 @@ func (p *Parser) parseArgs() ([]ast.Expression, error) {
 	return args, nil
 }
 
-// parseTemplateLit splits the raw template string (produced by the lexer,
-// which preserves ${...} segments verbatim) into alternating string quasis
-// and interpolated expressions.
-func (p *Parser) parseTemplateLit(raw string, loc ast.Pos) (*ast.TemplateLit, error) {
-	var quasis []string
+// parseTemplateLit splits the raw/cooked template strings (produced by the
+// lexer, which preserves ${...} segments verbatim) into alternating string
+// quasis and interpolated expressions.
+//
+// 插值边界在 raw 文本上检测：cooked 文本中 `\${`、`\u0024{`、`\x24{` 等转义
+// 会伪产生 `${`（转义被处理成字面 `$`），若按 cooked 拆分会导致伪插值边界。
+// 因此对 raw 与 cooked 并行扫描：raw 定位 `${` 与转义边界，cooked 按对应
+// 长度推进取出已转义的 quasi。
+func (p *Parser) parseTemplateLit(cooked, raw string, loc ast.Pos) (*ast.TemplateLit, error) {
+	var quasis, rawQuasis []string
 	var exprs []ast.Expression
-	var quasi strings.Builder
+	var quasi, rawQuasi strings.Builder
 
-	i := 0
+	i, j := 0, 0 // i 在 raw，j 在 cooked
 	for i < len(raw) {
-		// Detect ${...} interpolation.
+		// Detect ${...} interpolation on the raw text.
 		if raw[i] == '$' && i+1 < len(raw) && raw[i+1] == '{' {
 			quasis = append(quasis, quasi.String())
+			rawQuasis = append(rawQuasis, rawQuasi.String())
 			quasi.Reset()
+			rawQuasi.Reset()
 			// 用 lexer.SkipTemplateExpr 正确配对大括号（跳过字符串/注释/嵌套模板）。
 			end, ok := lexer.SkipTemplateExpr(raw, i)
 			if !ok {
@@ -1497,14 +1515,69 @@ func (p *Parser) parseTemplateLit(raw string, loc ast.Pos) (*ast.TemplateLit, er
 				return nil, fmt.Errorf("template literal expression %q: %w", exprSrc, err)
 			}
 			exprs = append(exprs, expr)
+			// ${...} 段在 cooked 与 raw 中逐字相同。
+			segLen := end - i
+			if j+segLen > len(cooked) {
+				return nil, fmt.Errorf("template literal: internal alignment error at line %d", loc.Line)
+			}
 			i = end
+			j += segLen
 			continue
 		}
-		quasi.WriteByte(raw[i])
+		if raw[i] == '\\' {
+			n, cookEmpty := templateEscapeLen(raw, i)
+			rawQuasi.WriteString(raw[i : i+n])
+			if !cookEmpty {
+				if j >= len(cooked) {
+					return nil, fmt.Errorf("template literal: internal alignment error at line %d", loc.Line)
+				}
+				quasi.WriteByte(cooked[j])
+				j++
+			}
+			i += n
+			continue
+		}
+		if j >= len(cooked) {
+			return nil, fmt.Errorf("template literal: internal alignment error at line %d", loc.Line)
+		}
+		rawQuasi.WriteByte(raw[i])
+		quasi.WriteByte(cooked[j])
 		i++
+		j++
 	}
 	quasis = append(quasis, quasi.String())
-	return &ast.TemplateLit{Quasis: quasis, Expressions: exprs, Loc: loc}, nil
+	rawQuasis = append(rawQuasis, rawQuasi.String())
+	return &ast.TemplateLit{Quasis: quasis, RawQuasis: rawQuasis, Expressions: exprs, Loc: loc}, nil
+}
+
+// templateEscapeLen 返回 raw 文本 raw[i]=='\\' 处转义序列的长度（含 `\`），
+// 以及该转义在 cooked 文本中是否贡献 0 个字符（`\`+换行的行连接）。其余转义
+// 在 cooked 中贡献 1 个字符。与 lexer.readEscape 的处理保持一致。
+func templateEscapeLen(raw string, i int) (n int, cookEmpty bool) {
+	if i+1 >= len(raw) {
+		return 1, false
+	}
+	switch raw[i+1] {
+	case 'x':
+		return 4, false // \xNN
+	case 'u':
+		if i+2 < len(raw) && raw[i+2] == '{' {
+			j := i + 3
+			for j < len(raw) && raw[j] != '}' {
+				j++
+			}
+			if j < len(raw) {
+				j++
+			}
+			return j - i, false // \u{...}
+		}
+		return 6, false // \uNNNN
+	case '\n':
+		return 2, true // 行连接：cooked 贡献 0 字符
+	case '\r':
+		return 2, false // \r 为字面 CR（readEscape 返回 "\r"）
+	}
+	return 2, false // 单字符转义
 }
 
 func (p *Parser) parsePrimary() (ast.Expression, error) {
@@ -1524,7 +1597,7 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 		return &ast.StringLit{Value: t.Value, Loc: posOf(t)}, nil
 	case lexer.TokenTemplate:
 		p.next()
-		return p.parseTemplateLit(t.Value, posOf(t))
+		return p.parseTemplateLit(t.Value, t.Raw, posOf(t))
 	case lexer.TokenRegex:
 		p.next()
 		return &ast.RegexLit{Pattern: t.Value, Flags: t.RegexFlags, Loc: posOf(t)}, nil
@@ -2365,21 +2438,21 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 				v, _ := parseNumberLiteral(propTok.Value)
 				key = &ast.NumberLit{Value: v, Raw: propTok.Value, Loc: posOf(propTok)}
 			case lexer.TokenPunct:
-			if propTok.Value == "[" {
-				p.next()
-				ce, err := p.parseAssignment()
-				if err != nil {
-					return nil, err
+				if propTok.Value == "[" {
+					p.next()
+					ce, err := p.parseAssignment()
+					if err != nil {
+						return nil, err
+					}
+					if err := p.expectPunct("]"); err != nil {
+						return nil, err
+					}
+					key = ce
+					computedKey = true
+					_ = propTok
+				} else {
+					return nil, p.errorf(propTok, "invalid object key")
 				}
-				if err := p.expectPunct("]"); err != nil {
-					return nil, err
-				}
-				key = ce
-				computedKey = true
-				_ = propTok
-			} else {
-				return nil, p.errorf(propTok, "invalid object key")
-			}
 			default:
 				return nil, p.errorf(propTok, "invalid object key")
 			}
@@ -2423,11 +2496,11 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 						return nil, p.errorf(methodTok, "invalid accessor name")
 					}
 					params, defaults, rest, body, err := p.parseFuncParamsAndBody()
-				if err != nil {
-					return nil, err
-				}
-				fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(methodTok)}
-				if id.Name == "get" {
+					if err != nil {
+						return nil, err
+					}
+					fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(methodTok)}
+					if id.Name == "get" {
 						kind = ast.PropertyGet
 					} else {
 						kind = ast.PropertySet
@@ -2440,26 +2513,26 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 				}
 			}
 			// 普通 init 或 method shorthand
-		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
-			// method shorthand
-		params, defaults, rest, body, err := p.parseFuncParamsAndBody()
-		if err != nil {
-			return nil, err
-		}
-		fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(propTok)}
-			obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: fn, Kind: ast.PropertyMethod, Computed: computedKey, Loc: posOf(propTok)})
-		} else if p.matchPunct(":") {
-			val, err := p.parseAssignment()
-			if err != nil {
-				return nil, err
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+				// method shorthand
+				params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+				if err != nil {
+					return nil, err
+				}
+				fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(propTok)}
+				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: fn, Kind: ast.PropertyMethod, Computed: computedKey, Loc: posOf(propTok)})
+			} else if p.matchPunct(":") {
+				val, err := p.parseAssignment()
+				if err != nil {
+					return nil, err
+				}
+				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: val, Kind: ast.PropertyInit, Computed: computedKey, Loc: posOf(propTok)})
+			} else if id, ok := key.(*ast.Identifier); ok {
+				// shorthand: { x } → { x: x }
+				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: id, Kind: ast.PropertyInit, Computed: computedKey, Loc: posOf(propTok)})
+			} else {
+				return nil, p.errorf(p.peek(), "expected ':' after object key")
 			}
-			obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: val, Kind: ast.PropertyInit, Computed: computedKey, Loc: posOf(propTok)})
-		} else if id, ok := key.(*ast.Identifier); ok {
-			// shorthand: { x } → { x: x }
-			obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: id, Kind: ast.PropertyInit, Computed: computedKey, Loc: posOf(propTok)})
-		} else {
-			return nil, p.errorf(p.peek(), "expected ':' after object key")
-		}
 		}
 		if !p.matchPunct(",") {
 			break
@@ -2849,9 +2922,9 @@ func (p *Parser) parseEnumDecl() (ast.Statement, error) {
 				Computed: true,
 				Loc:      posOf(t),
 			},
-			Op:       "=",
-			Right:    valExpr,
-			Loc:      posOf(t),
+			Op:    "=",
+			Right: valExpr,
+			Loc:   posOf(t),
 		}
 		iifeBody.Body = append(iifeBody.Body, &ast.ExprStmt{Expr: forwardAssign, Loc: posOf(t)})
 
@@ -2866,7 +2939,7 @@ func (p *Parser) parseEnumDecl() (ast.Statement, error) {
 				},
 				Op:    "=",
 				Right: &ast.StringLit{Value: m.name, Loc: posOf(t)},
-				Loc:      posOf(t),
+				Loc:   posOf(t),
 			}
 			iifeBody.Body = append(iifeBody.Body, &ast.ExprStmt{Expr: reverseAssign, Loc: posOf(t)})
 			autoIdx++
@@ -2875,9 +2948,9 @@ func (p *Parser) parseEnumDecl() (ast.Statement, error) {
 
 	// Build: (function(Name) { body })(Name || (Name = {}))
 	fnExpr := &ast.FunctionExpr{
-		Params:  []*ast.Identifier{enumIdent},
-		Body:    iifeBody,
-		Loc:     posOf(t),
+		Params: []*ast.Identifier{enumIdent},
+		Body:   iifeBody,
+		Loc:    posOf(t),
 	}
 	// Name || (Name = {})
 	innerAssign := &ast.AssignExpr{
@@ -2991,9 +3064,9 @@ func (p *Parser) parseNamespaceDecl() (ast.Statement, error) {
 
 	// Build: (function(Name) { body })(Name || (Name = {}))
 	fnExpr := &ast.FunctionExpr{
-		Params:  []*ast.Identifier{nsIdent},
-		Body:    iifeBody,
-		Loc:     posOf(t),
+		Params: []*ast.Identifier{nsIdent},
+		Body:   iifeBody,
+		Loc:    posOf(t),
 	}
 	innerAssign := &ast.AssignExpr{
 		Left:  nsIdent,
@@ -3046,8 +3119,8 @@ func (p *Parser) transformExportedDecl(stmt ast.Statement, nsIdent *ast.Identifi
 					Loc:      d.Name.Loc,
 				},
 				Op:    "=",
-			Right: d.Init,
-			Loc:   d.Name.Loc,
+				Right: d.Init,
+				Loc:   d.Name.Loc,
 			}
 			result = append(result, &ast.ExprStmt{Expr: assign, Loc: d.Name.Loc})
 		}
@@ -3057,14 +3130,14 @@ func (p *Parser) transformExportedDecl(stmt ast.Statement, nsIdent *ast.Identifi
 			return nil
 		}
 		fnExpr := &ast.FunctionExpr{
-			Name:       n.Name,
-			Params:     n.Params,
-			Defaults:   n.Defaults,
-			RestParam:  n.RestParam,
-			Body:       n.Body,
-			IsAsync:    n.IsAsync,
+			Name:        n.Name,
+			Params:      n.Params,
+			Defaults:    n.Defaults,
+			RestParam:   n.RestParam,
+			Body:        n.Body,
+			IsAsync:     n.IsAsync,
 			IsGenerator: n.IsGenerator,
-			Loc:        n.Loc,
+			Loc:         n.Loc,
 		}
 		assign := &ast.AssignExpr{
 			Left: &ast.MemberExpr{
@@ -3082,10 +3155,10 @@ func (p *Parser) transformExportedDecl(stmt ast.Statement, nsIdent *ast.Identifi
 			return nil
 		}
 		classExpr := &ast.ClassExpr{
-			Name:      n.Name,
+			Name:       n.Name,
 			SuperClass: n.SuperClass,
-			Body:      n.Body,
-			Loc:       n.Loc,
+			Body:       n.Body,
+			Loc:        n.Loc,
 		}
 		assign := &ast.AssignExpr{
 			Left: &ast.MemberExpr{

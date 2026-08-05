@@ -90,6 +90,38 @@ func TestVMTemplateLiteral(t *testing.T) {
 	}
 }
 
+func TestVMTaggedTemplate(t *testing.T) {
+	// 基本：tag 接收 TemplateStringsArray + 插值。
+	got := vmEvalStr(t, "function tag(s, v) { return s[0] + \"|\" + v + \"|\" + s[1]; } tag`a${1+1}b`")
+	if got != "a|2|b" {
+		t.Errorf("tagged template = %q, want a|2|b", got)
+	}
+	// cooked vs raw：cooked 处理转义，raw 保留原文。
+	got = vmEvalStr(t, "function c(s){ return s[0]; } c`\\n`")
+	if got != "\n" {
+		t.Errorf("cooked quasi = %q, want newline", got)
+	}
+	got = vmEvalStr(t, "function r(s){ return s.raw[0]; } r`\\n`")
+	if got != `\n` {
+		t.Errorf("raw quasi = %q, want literal backslash-n", got)
+	}
+	// 转义 ${ 不产生伪插值（拆分边界以 raw 文本为准）。
+	got = vmEvalStr(t, "function r(s){ return s.raw[0] + \"|\" + s[0]; } r`\\${foo}`")
+	if got != `\${foo}|${foo}` {
+		t.Errorf("escaped ${ quasi = %q, want \\${foo}|${foo}", got)
+	}
+	// 成员访问 tag：this 为接收者。
+	got = vmEvalStr(t, "var o = { n: 7, tag: function(s) { return this.n + s[0]; } }; o.tag`hi`")
+	if got != "7hi" {
+		t.Errorf("member tagged template = %q, want 7hi", got)
+	}
+	// 多插值顺序。
+	got = vmEvalStr(t, "function j(s, a, b, c) { return s[0]+a+s[1]+b+s[2]+c+s[3]; } j`${1},${2},${3}`")
+	if got != "1,2,3" {
+		t.Errorf("multi-interp tagged = %q, want 1,2,3", got)
+	}
+}
+
 // === Variables and scope ==================================================
 
 func TestVMVariables(t *testing.T) {
@@ -2431,4 +2463,3 @@ obj?.a?.b?.c()`)
 		t.Errorf("chain with call = %q, want 1", got)
 	}
 }
-

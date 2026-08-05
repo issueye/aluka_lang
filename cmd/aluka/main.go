@@ -1,11 +1,12 @@
 // Package main 是 aluka 命令行入口。
 //
 // Phase 0 支持的子命令：
-//   aluka --version | -v
-//   aluka --help    | -h
-//   aluka -e "<code>" | --eval "<code>"
-//   aluka run <file>
-//   aluka <file>              # run 的简写
+//
+//	aluka --version | -v
+//	aluka --help    | -h
+//	aluka -e "<code>" | --eval "<code>"
+//	aluka run <file>
+//	aluka <file>              # run 的简写
 //
 // Phase 1B: 默认使用字节码 VM（--ast 回退到 AST 解释器）。
 //
@@ -232,6 +233,11 @@ func execute(code string, filename string, vm bool) error {
 	_ = ctx.Global().Set("globalThis", ctx.Global())
 	_ = ctx.Global().Set("global", ctx.Global())
 
+	// 注册定时器（事件循环基础设施，-e 模式同样需要）。
+	if err := globals.NewTimers(ctx, globals.TimerConfig{}); err != nil {
+		return fmt.Errorf("register timers: %w", err)
+	}
+
 	// 注册 Buffer 全局 + 文本编码 API（-e 模式同样需要）。
 	if err := globals.NewBuffer(ctx, globals.BufferConfig{}); err != nil {
 		return fmt.Errorf("register Buffer: %w", err)
@@ -286,6 +292,12 @@ func execute(code string, filename string, vm bool) error {
 	result, err := ctx.Eval(code, filename)
 	if err != nil {
 		return err
+	}
+
+	// 进入事件循环：驱动异步 I/O（SQL/Redis/S3/fetch/timers 等），
+	// 直到无 pending 任务（与 node/bun 的 -e 行为一致）。
+	if vmCtx, ok := ctx.(interface{ RunLoop() }); ok {
+		vmCtx.RunLoop()
 	}
 
 	// 打印非 undefined 的求值结果（-e 模式）

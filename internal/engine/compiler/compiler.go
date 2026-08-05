@@ -1461,12 +1461,85 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 		return nil
 	case *ast.TemplateLit:
 		return c.compileTemplateLit(n)
+	case *ast.TaggedTemplateExpr:
+		return c.compileTaggedTemplate(n)
 	case *ast.YieldExpr:
 		return c.compileYield(n)
 	case *ast.AwaitExpr:
 		return c.compileAwait(n)
 	}
 	return fmt.Errorf("unsupported expression %T", e)
+}
+
+// compileTaggedTemplate compiles a tagged template `tag`a${x}b“.
+// 栈布局（复用现有指令，无需新 opcode）：
+//
+//	非成员 tag：compile tag → [tag]
+//	成员 tag obj.tag：compile obj → [obj]（OpCallMethod 内部取方法并绑定 this=obj）
+//	计算成员 tag obj[k]：OpDup/GetElem/Swap → [method, obj]
+//	再压 cooked quasis + OpNewArray → [..., stringsArr]
+//	压 raw quasis + OpNewArray + OpSetPropObj("raw") → [..., stringsArr]
+//	编译插值表达式 → [..., stringsArr, e1..eM]
+//	OpCall/OpCallMethod/OpCallWithThis（参数数 = 1+插值数）
+func (c *Compiler) compileTaggedTemplate(n *ast.TaggedTemplateExpr) error {
+	tmpl := n.Template
+	switch m := n.Tag.(type) {
+	case *ast.MemberExpr:
+		if m.Computed {
+			// [obj] → OpDup → [obj, obj] → compile key → [obj, obj, key]
+			// → OpGetElem → [obj, method] → OpSwap → [method, obj(this)]
+			if err := c.compileExpr(m.Object); err != nil {
+				return err
+			}
+			c.emit(bytecode.OpDup, 0)
+			if err := c.compileExpr(m.Property); err != nil {
+				return err
+			}
+			c.emit(bytecode.OpGetElem, 0)
+			c.emit(bytecode.OpSwap, 0)
+		} else {
+			if err := c.compileExpr(m.Object); err != nil {
+				return err
+			}
+		}
+	default:
+		if err := c.compileExpr(n.Tag); err != nil {
+			return err
+		}
+	}
+	// TemplateStringsArray：cooked quasis。
+	for _, q := range tmpl.Quasis {
+		idx := c.cur().tmpl.AddStringConst(q)
+		c.emit(bytecode.OpPushConst, uint32(idx))
+	}
+	c.emit(bytecode.OpNewArray, uint32(len(tmpl.Quasis)))
+	// strings.raw 数组：raw quasis。
+	for _, rq := range tmpl.RawQuasis {
+		idx := c.cur().tmpl.AddStringConst(rq)
+		c.emit(bytecode.OpPushConst, uint32(idx))
+	}
+	c.emit(bytecode.OpNewArray, uint32(len(tmpl.RawQuasis)))
+	rawIdx := c.cur().tmpl.AddStringConst("raw")
+	c.emit(bytecode.OpSetPropObj, uint32(rawIdx))
+	// 插值表达式。
+	for _, e := range tmpl.Expressions {
+		if err := c.compileExpr(e); err != nil {
+			return err
+		}
+	}
+	numArgs := uint32(1 + len(tmpl.Expressions))
+	switch m := n.Tag.(type) {
+	case *ast.MemberExpr:
+		if m.Computed {
+			c.emit(bytecode.OpCallWithThis, numArgs)
+		} else {
+			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
+			c.emit(bytecode.OpCallMethod, numArgs<<16|uint32(nameIdx&0xFFFF))
+		}
+	default:
+		c.emit(bytecode.OpCall, numArgs)
+	}
+	return nil
 }
 
 // compileTemplateLit compiles a template literal by concatenating string
@@ -1492,10 +1565,10 @@ func (c *Compiler) compileTemplateLit(n *ast.TemplateLit) error {
 
 // compileYield compiles a `yield` / `yield*` expression.
 //
-//   yield        -> push undefined; OpYield
-//   yield expr   -> compile expr; OpYield
-//   yield* expr  -> compile expr; OpGetIterator; loop { next(); if done push
-//                  value & break; else OpYield (discard sent value) }
+//	yield        -> push undefined; OpYield
+//	yield expr   -> compile expr; OpYield
+//	yield* expr  -> compile expr; OpGetIterator; loop { next(); if done push
+//	               value & break; else OpYield (discard sent value) }
 //
 // OpYield pops the yielded value and suspends; on resume it pushes the value
 // passed to .next(v), which becomes the result of the yield expression.
@@ -1822,12 +1895,13 @@ func (c *Compiler) compileAssign(n *ast.AssignExpr) error {
 //
 // 这些 Keep 跳转指令的语义：满足条件时跳过并保留栈顶值；不满足时 pop 栈顶值。
 // 字节码序列：
-//   compileExpr(left)          // push 当前左值
-//   OpJmpTrueKeep end          // 满足短路条件 → 保留 left 跳到 end；否则 pop left
-//   compileExpr(right)         // push 右值（left 已被跳转指令 pop）
-//   OpDup                      // 复制（一份赋值，一份作为结果保留）
-//   assignTo(left)             // 赋值给左值
-//   end:                       // 栈顶为结果值（left 或 right）
+//
+//	compileExpr(left)          // push 当前左值
+//	OpJmpTrueKeep end          // 满足短路条件 → 保留 left 跳到 end；否则 pop left
+//	compileExpr(right)         // push 右值（left 已被跳转指令 pop）
+//	OpDup                      // 复制（一份赋值，一份作为结果保留）
+//	assignTo(left)             // 赋值给左值
+//	end:                       // 栈顶为结果值（left 或 right）
 func (c *Compiler) compileLogicalAssign(left ast.Expression, right ast.Expression, jmpOp bytecode.Opcode) error {
 	if err := c.compileExpr(left); err != nil {
 		return err
@@ -2259,7 +2333,7 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 		c.patchJumpToHere(jSkip)
 	}
 
-		bodyErr := func() error {
+	bodyErr := func() error {
 		switch b := body.(type) {
 		case *ast.BlockStmt:
 			c.hoistFunc(b)

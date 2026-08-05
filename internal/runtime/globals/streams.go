@@ -275,10 +275,10 @@ func (s *rsState) readSync() rsChunk {
 
 // wsState 是 WritableStream 的内部状态。
 type wsState struct {
-	writeFn  engine.Value
-	closeFn  engine.Value
-	abortFn  engine.Value
-	closed   bool
+	writeFn engine.Value
+	closeFn engine.Value
+	abortFn engine.Value
+	closed  bool
 }
 
 // newWritableStream 构造 WritableStream。
@@ -457,5 +457,12 @@ func doneResult() engine.Value {
 func callResolve(resolve engine.Value, v engine.Value) {
 	if f, ok := resolve.AsFunction(); ok {
 		_, _ = f.Call([]engine.Value{v})
+	}
+}
+
+// callReject 调用 Promise reject 函数。
+func callReject(reject engine.Value, msg string) {
+	if f, ok := reject.AsFunction(); ok {
+		_, _ = f.Call([]engine.Value{engine.Str(msg)})
 	}
 }

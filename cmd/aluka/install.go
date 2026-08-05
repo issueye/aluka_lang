@@ -1,11 +1,12 @@
 // Package main — aluka install / add / remove（Phase 5 WBS 5.8/5.9）。
 //
-//   aluka install [pkg]    解析 package.json 安装全部依赖；给定 pkg 时先 add 再装
-//   aluka add <pkg>        解析最新版本写入 package.json 并安装
-//   aluka remove <pkg>     从 package.json 移除并重新安装
-//   aluka update           同 install（重新解析）
+//	aluka install [pkg]    解析 package.json 安装全部依赖；给定 pkg 时先 add 再装
+//	aluka add <pkg>        解析最新版本写入 package.json 并安装
+//	aluka remove <pkg>     从 package.json 移除并重新安装
+//	aluka update           同 install（重新解析）
 //
-// registry 地址经环境变量 ALUKA_REGISTRY 覆盖（默认 https://registry.npmjs.org）。
+// registry 与鉴权配置优先级：环境变量 ALUKA_REGISTRY > 项目 .npmrc >
+// 用户 ~/.npmrc > 默认 https://registry.npmjs.org。
 package main
 
 import (
@@ -15,10 +16,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/aluka-lang/aluka/internal/pkgmanager/config"
 	"github.com/aluka-lang/aluka/internal/pkgmanager/installer"
 	"github.com/aluka-lang/aluka/internal/pkgmanager/lockfile"
 	"github.com/aluka-lang/aluka/internal/pkgmanager/registry"
 	"github.com/aluka-lang/aluka/internal/pkgmanager/resolver"
+	"github.com/aluka-lang/aluka/internal/pkgmanager/workspace"
 )
 
 // cmdPkg 分发 install/add/remove/update。
@@ -57,7 +60,7 @@ func cmdPkg(first string, args []string) {
 	}
 }
 
-// runInstall 解析并安装 package.json 的依赖。
+// runInstall 解析并安装 package.json 的依赖（含 workspace 支持）。
 func runInstall(dir, pkgPath string) error {
 	pj, err := readPkgJSON(pkgPath)
 	if err != nil {
@@ -70,28 +73,112 @@ func runInstall(dir, pkgPath string) error {
 	for n, r := range depsMap(pj, "devDependencies") {
 		deps = append(deps, resolver.Dep{Name: n, Range: r})
 	}
-	if len(deps) == 0 {
-		fmt.Println("No dependencies found in package.json")
-		return nil
-	}
-	client := registry.New(registryFromEnv())
-	res := resolver.New(client)
-	resolution, err := res.Resolve(deps)
+
+	// --- workspace 支持：聚合各包依赖，本地包名不解析 registry ---
+	local := map[string]string{} // 本地包名 → 目录
+	wpkgs, err := workspace.Discover(dir)
 	if err != nil {
 		return err
 	}
-	inst := installer.New(dir, client)
-	inst.OnInstall = func(name, version string) {
-		fmt.Printf("installed %s@%s\n", name, version)
+	if len(wpkgs) > 0 {
+		fmt.Printf("found %d workspace packages\n", len(wpkgs))
+		for _, wp := range wpkgs {
+			local[wp.Name] = wp.Dir
+		}
+		for _, wp := range wpkgs {
+			for _, d := range wp.Dependencies {
+				if _, isLocal := local[d.Name]; !isLocal {
+					deps = append(deps, d)
+				}
+			}
+		}
 	}
-	if err := inst.Install(resolution); err != nil {
+	if len(wpkgs) > 0 {
+		filtered := deps[:0]
+		for _, d := range deps {
+			if _, isLocal := local[d.Name]; !isLocal {
+				filtered = append(filtered, d)
+			}
+		}
+		deps = filtered
+	}
+
+	if len(deps) > 0 {
+		client := newRegistryClient(dir)
+		res := resolver.New(client)
+		resolution, err := res.Resolve(deps)
+		if err != nil {
+			return err
+		}
+		inst := installer.New(dir, client)
+		inst.OnInstall = func(name, version string) {
+			fmt.Printf("installed %s@%s\n", name, version)
+		}
+		if err := inst.Install(resolution); err != nil {
+			return err
+		}
+		if err := lockfile.Write(filepath.Join(dir, "aluka.lock"), resolution); err != nil {
+			return err
+		}
+		fmt.Printf("installed %d packages\n", len(resolution.Pkgs))
+	} else if len(wpkgs) == 0 {
+		fmt.Println("No dependencies found in package.json")
+		return nil
+	} else if err := lockfile.Write(filepath.Join(dir, "aluka.lock"), &resolver.Resolution{}); err != nil {
+		// workspace-only 场景：无外部依赖，仍生成 lockfile 占位。
 		return err
 	}
-	if err := lockfile.Write(filepath.Join(dir, "aluka.lock"), resolution); err != nil {
-		return err
+
+	// 链接本地 workspace 包到根 node_modules。
+	for name, wpDir := range local {
+		if err := linkLocalPackage(dir, name, wpDir); err != nil {
+			return err
+		}
 	}
-	fmt.Printf("installed %d packages\n", len(resolution.Pkgs))
 	return nil
+}
+
+// linkLocalPackage 将 workspace 包链接进 node_modules（symlink，失败回退拷贝）。
+func linkLocalPackage(rootDir, name, wpDir string) error {
+	target := filepath.Join(rootDir, "node_modules", filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(target); err != nil {
+		return err
+	}
+	if err := os.Symlink(wpDir, target); err == nil {
+		return nil
+	}
+	return copyDir(wpDir, target)
+}
+
+// copyDir 递归拷贝目录（跳过符号链接）。
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(src, path)
+		if rerr != nil {
+			return rerr
+		}
+		out := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(out, 0o755)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(out, data, info.Mode())
+	})
 }
 
 // addPackage 解析 pkg 最新版本写入 package.json 并安装。
@@ -106,7 +193,7 @@ func addPackage(dir, pkgPath, spec string) error {
 	}
 	deps := depsMap(pj, "dependencies")
 	if rng == "" {
-		client := registry.New(registryFromEnv())
+		client := newRegistryClient(dir)
 		md, err := client.GetMetadata(name)
 		if err != nil {
 			return fmt.Errorf("resolve %s: %w", name, err)
@@ -160,9 +247,20 @@ func splitSpec(spec string) (name, rng string) {
 	return spec, ""
 }
 
-// registryFromEnv 读取 ALUKA_REGISTRY（可为空，用默认）。
-func registryFromEnv() string {
-	return os.Getenv("ALUKA_REGISTRY")
+// newRegistryClient 构造 registry 客户端：ALUKA_REGISTRY env > .npmrc registry
+// > 默认；鉴权 token 从 .npmrc 按 registry 主机匹配。
+func newRegistryClient(dir string) *registry.Client {
+	reg := os.Getenv("ALUKA_REGISTRY")
+	token := ""
+	if cfg, err := config.Load(dir); err == nil {
+		if reg == "" {
+			reg = cfg.Registry
+		}
+		token = cfg.TokenFor(reg)
+	}
+	c := registry.New(reg)
+	c.Token = token
+	return c
 }
 
 // readPkgJSON 读取 package.json（不存在返回空 map）。
