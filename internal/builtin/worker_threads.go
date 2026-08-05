@@ -13,6 +13,7 @@ package builtin
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -126,13 +127,17 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 	// worker 计入事件循环活跃度（运行期间保持主进程存活）。
 	release := mainCtx.AddRef()
 
-	// worker.postMessage(data) → worker 端 parentPort 'message'。
+	// worker.postMessage(data[, transferList]) → worker 端 parentPort 'message'。
+	// transferList 中的 ArrayBuffer/Buffer 转移（detach 源，Node 语义）。
 	_ = worker.Set("postMessage", engine.NewFunction("postMessage", func(pa []engine.Value) (engine.Value, error) {
 		var msg engine.Value
 		if len(pa) > 0 {
 			msg = pa[0]
 		}
 		data, _ := json.Marshal(mustValueToJSON(msg))
+		if len(pa) > 1 {
+			detachTransferList(pa[1])
+		}
 		select {
 		case state.toWorker <- string(data):
 		case <-state.closed:
@@ -193,6 +198,9 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 			if len(pa) > 0 {
 				msg = pa[0]
 			}
+			if len(pa) > 1 {
+				detachTransferList(pa[1])
+			}
 			data, _ := json.Marshal(mustValueToJSON(msg))
 			select {
 			case state.toMain <- string(data):
@@ -236,7 +244,25 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 		// 加载并运行 worker 模块。
 		loader := modmodule.NewLoader(wctx)
 		RegisterAll(loader)
-		runErr := loader.Run(filename)
+		// eval: true —— 首个参数为源码而非文件路径。
+		evalMode := false
+		if len(args) > 1 {
+			if o, ok := args[1].AsObject(); ok {
+				if v, err := o.Get("eval"); err == nil && !v.IsUndefined() {
+					if b, ok := v.Bool(); ok {
+						evalMode = b
+					}
+				}
+			}
+		}
+		var runErr error
+		if evalMode {
+			// eval 模式：注入 require（worker_threads 等内置模块可加载）。
+			_ = wctx.Global().Set("require", loader.MakeRequireFunc("[worker eval]"))
+			_, runErr = wctx.Eval(filename, "[worker eval]")
+		} else {
+			runErr = loader.Run(filename)
+		}
 		if runErr != nil {
 			mainCtx.PostTask(func() {
 				emitEvent(worker, "error", engine.Str(fmt.Sprintf("worker: %v", runErr)))
@@ -271,4 +297,25 @@ func jsonDecode(s string) interface{} {
 		return nil
 	}
 	return v
+}
+
+// detachTransferList 处理 postMessage 的 transferList：ArrayBuffer/Buffer
+// 所有权转移——源内容置零（Node detach 语义近似：转移后源不可用）。
+func detachTransferList(tl engine.Value) {
+	if o, ok := tl.AsObject(); ok {
+		lv, err := o.Get("length")
+		if err != nil || lv.IsUndefined() {
+			return
+		}
+		n, _ := lv.Int()
+		for i := 0; i < n; i++ {
+			bv, err := o.Get(strconv.Itoa(i))
+			if err != nil {
+				continue
+			}
+			if b, ok := engine.AsBuffer(bv); ok {
+				clear(b) // 转移后源 Buffer 内容清零（长度保留，近似 detach）
+			}
+		}
+	}
 }

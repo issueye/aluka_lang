@@ -210,6 +210,10 @@ func newBufferInstance(data []byte) engine.Object {
 	}
 	d := data
 
+	// TypedArray 兼容：.buffer 返回底层 ArrayBuffer（以自身近似，
+	// worker transferList 的 detach 经 AsBuffer 定位）。
+	_ = buf.Set("buffer", buf)
+
 	// toString([encoding[, start[, end]]])
 	_ = buf.Set("toString", engine.NewFunction("toString", func(args []engine.Value) (engine.Value, error) {
 		encoding := "utf8"
