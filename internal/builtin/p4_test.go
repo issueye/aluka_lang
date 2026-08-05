@@ -75,3 +75,19 @@ w.postMessage('ping');
 		t.Errorf("worker message = %q, want ping:42", got)
 	}
 }
+
+func TestWorkerThreadsCloneMarkers(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var wt = require('node:worker_threads');
+var value = {};
+globalThis.__r = typeof wt.markAsUncloneable + ':' +
+  typeof wt.markAsUntransferable + ':' + (wt.markAsUncloneable(value) === undefined);
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "function:function:true" {
+		t.Errorf("worker clone markers = %q", got)
+	}
+}

@@ -55,6 +55,7 @@ type Interpreter struct {
 	stringProto   engine.Object
 	numberProto   engine.Object
 	booleanProto  engine.Object
+	bigintProto   engine.Object
 	errorProto    engine.Object
 	promiseProto  engine.Object
 	mapProto      engine.Object
@@ -969,6 +970,10 @@ func (interp *Interpreter) getProperty(obj engine.Value, key string) (engine.Val
 	case engine.TypeBoolean:
 		if interp.booleanProto != nil {
 			return interp.booleanProto.Get(key)
+		}
+	case engine.TypeBigInt:
+		if interp.bigintProto != nil {
+			return interp.bigintProto.Get(key)
 		}
 	}
 	return engine.Undefined(), nil

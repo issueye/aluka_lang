@@ -61,7 +61,7 @@ func (e *testEnv) globalGet(key string) string {
 
 func TestCJSBasicRequire(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
-		"main.cjs": `var utils = require('./utils.cjs'); globalThis.__result = utils.add(2, 3);`,
+		"main.cjs":  `var utils = require('./utils.cjs'); globalThis.__result = utils.add(2, 3);`,
 		"utils.cjs": `module.exports.add = function(a, b) { return a + b; };`,
 	})
 	env.run(t, "main.cjs")
@@ -92,7 +92,7 @@ func TestCJSRequiredModuleClosureSurvivesStackGrowth(t *testing.T) {
 func TestCJSModuleExportsObject(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
 		"main.cjs": `var m = require('./mod.cjs'); globalThis.__result = m.x + ':' + m.y;`,
-		"mod.cjs": `module.exports = { x: 10, y: 20 };`,
+		"mod.cjs":  `module.exports = { x: 10, y: 20 };`,
 	})
 	env.run(t, "main.cjs")
 	if got := env.globalGet("__result"); got != "10:20" {
@@ -103,7 +103,7 @@ func TestCJSModuleExportsObject(t *testing.T) {
 func TestCJSExportsAlias(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
 		"main.cjs": `var m = require('./mod.cjs'); globalThis.__result = m.val;`,
-		"mod.cjs": `exports.val = 42;`,
+		"mod.cjs":  `exports.val = 42;`,
 	})
 	env.run(t, "main.cjs")
 	if got := env.globalGet("__result"); got != "42" {
@@ -113,8 +113,8 @@ func TestCJSExportsAlias(t *testing.T) {
 
 func TestCJSCircularDependency(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
-		"a.cjs": `var b = require('./b.cjs'); exports.bVal = b.val; exports.val = 1;`,
-		"b.cjs": `var a = require('./a.cjs'); exports.val = 2; exports.aVal = a.bVal;`,
+		"a.cjs":    `var b = require('./b.cjs'); exports.bVal = b.val; exports.val = 1;`,
+		"b.cjs":    `var a = require('./a.cjs'); exports.val = 2; exports.aVal = a.bVal;`,
 		"main.cjs": `var a = require('./a.cjs'); var b = require('./b.cjs'); globalThis.__result = a.val + ':' + b.val + ':' + a.bVal + ':' + b.aVal;`,
 	})
 	env.run(t, "main.cjs")
@@ -127,8 +127,8 @@ func TestCJSCircularDependency(t *testing.T) {
 
 func TestCJSRequireJSON(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
-		"main.cjs":    `var data = require('./data.json'); globalThis.__result = data.name + ':' + data.age;`,
-		"data.json":   `{"name": "alice", "age": 30}`,
+		"main.cjs":  `var data = require('./data.json'); globalThis.__result = data.name + ':' + data.age;`,
+		"data.json": `{"name": "alice", "age": 30}`,
 	})
 	env.run(t, "main.cjs")
 	if got := env.globalGet("__result"); got != "alice:30" {
@@ -151,9 +151,9 @@ func TestCJSFilenameDirname(t *testing.T) {
 
 func TestCJSNestedRequire(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
-		"main.cjs":    `var a = require('./a.cjs'); globalThis.__result = a.compute();`,
-		"a.cjs":       `var b = require('./b.cjs'); exports.compute = function() { return b.mul(3, 4); };`,
-		"b.cjs":       `exports.mul = function(a, b) { return a * b; };`,
+		"main.cjs": `var a = require('./a.cjs'); globalThis.__result = a.compute();`,
+		"a.cjs":    `var b = require('./b.cjs'); exports.compute = function() { return b.mul(3, 4); };`,
+		"b.cjs":    `exports.mul = function(a, b) { return a * b; };`,
 	})
 	env.run(t, "main.cjs")
 	if got := env.globalGet("__result"); got != "12" {
@@ -394,6 +394,44 @@ func TestResolverNodeModulesSubpath(t *testing.T) {
 	}
 }
 
+func TestResolverPackageExports(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "node_modules", "typebox")
+	os.MkdirAll(filepath.Join(pkgDir, "build", "compile"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "exports": {"./compile": {"import": "./build/compile/index.mjs", "default": "./fallback.js"}}
+}`), 0644)
+	want := filepath.Join(pkgDir, "build", "compile", "index.mjs")
+	os.WriteFile(want, []byte(""), 0644)
+
+	resolved, err := NewResolver().Resolve("typebox/compile", filepath.Join(dir, "src", "main.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != want {
+		t.Errorf("package exports: got %q, want %q", resolved, want)
+	}
+}
+
+func TestResolverScopedPackageWildcardExport(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "node_modules", "@scope", "pkg")
+	os.MkdirAll(filepath.Join(pkgDir, "dist", "features"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "exports": {"./features/*": "./dist/features/*.js"}
+}`), 0644)
+	want := filepath.Join(pkgDir, "dist", "features", "tool.js")
+	os.WriteFile(want, []byte(""), 0644)
+
+	resolved, err := NewResolver().Resolve("@scope/pkg/features/tool", filepath.Join(dir, "src", "main.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != want {
+		t.Errorf("scoped wildcard export: got %q, want %q", resolved, want)
+	}
+}
+
 func TestResolverNotFound(t *testing.T) {
 	dir := t.TempDir()
 	r := NewResolver()
@@ -472,7 +510,3 @@ module.exports = F;
 		t.Errorf("const closure in module = %q, want 42", got)
 	}
 }
-
-
-
-

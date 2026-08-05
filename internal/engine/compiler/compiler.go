@@ -83,6 +83,27 @@ type scope struct {
 	isFunc bool           // function scope (vars hoist here)
 }
 
+// isolateControlFlow gives each function its own loop and pending-jump state.
+// Function declarations are compiled during hoisting while the enclosing
+// function may itself be inside a loop; sharing these slices lets a child
+// function's continue/break jumps target bytecode in the parent function.
+func (c *Compiler) isolateControlFlow() func() {
+	savedLoops := c.loopStack
+	savedBreaks := c.pendingBreaks
+	savedContinues := c.pendingContinues
+	savedLabel := c.curLabel
+	c.loopStack = nil
+	c.pendingBreaks = nil
+	c.pendingContinues = nil
+	c.curLabel = ""
+	return func() {
+		c.loopStack = savedLoops
+		c.pendingBreaks = savedBreaks
+		c.pendingContinues = savedContinues
+		c.curLabel = savedLabel
+	}
+}
+
 // New creates a Compiler.
 func New() *Compiler { return &Compiler{module: bytecode.NewModule(), curClassID: -1} }
 
@@ -621,20 +642,26 @@ func (c *Compiler) compileBindPattern(p ast.Pattern, srcSlot int, kind string) e
 		}
 
 	case *ast.ObjectPattern:
-		for _, prop := range pat.Properties {
+		for propIndex, prop := range pat.Properties {
 			tmpSlot := c.newSlot()
 			if prop.IsRest {
 				// Object rest: create { ...src } then delete already-bound keys.
-				boundKeys := objectPatternBoundKeys(pat)
 				c.emit(bytecode.OpNewObject, 0)
 				c.emit(bytecode.OpLoadLocal, uint32(srcSlot))
 				c.emit(bytecode.OpSpreadObject, 0)
 				// Delete each already-bound key from the rest object.
-				for _, k := range boundKeys {
-					nameIdx := c.cur().tmpl.AddStringConst(k)
-					c.emit(bytecode.OpDup, 0)                   // dup rest obj
-					c.emit(bytecode.OpDelProp, uint32(nameIdx)) // pop obj, push bool
-					c.emit(bytecode.OpPop, 0)                   // discard bool
+				for _, bound := range pat.Properties[:propIndex] {
+					c.emit(bytecode.OpDup, 0) // dup rest obj
+					if bound.Computed {
+						if err := c.compileExpr(bound.Key); err != nil {
+							return err
+						}
+						c.emit(bytecode.OpDelElem, 0)
+					} else {
+						nameIdx := c.cur().tmpl.AddStringConst(propKey(bound.Key))
+						c.emit(bytecode.OpDelProp, uint32(nameIdx))
+					}
+					c.emit(bytecode.OpPop, 0) // discard bool
 				}
 				c.emit(bytecode.OpStoreLocal, uint32(tmpSlot))
 				c.compileBindPattern(prop.Value, tmpSlot, kind)
@@ -642,9 +669,16 @@ func (c *Compiler) compileBindPattern(p ast.Pattern, srcSlot int, kind string) e
 			}
 			// result = src[key]
 			c.emit(bytecode.OpLoadLocal, uint32(srcSlot))
-			key := propKey(prop.Key)
-			nameIdx := c.cur().tmpl.AddStringConst(key)
-			c.emit(bytecode.OpGetProp, uint32(nameIdx))
+			if prop.Computed {
+				if err := c.compileExpr(prop.Key); err != nil {
+					return err
+				}
+				c.emit(bytecode.OpGetElem, 0)
+			} else {
+				key := propKey(prop.Key)
+				nameIdx := c.cur().tmpl.AddStringConst(key)
+				c.emit(bytecode.OpGetProp, uint32(nameIdx))
+			}
 			c.emit(bytecode.OpStoreLocal, uint32(tmpSlot))
 			// Apply default if value is undefined.
 			if prop.Default != nil {
@@ -664,19 +698,6 @@ func (c *Compiler) compileBindPattern(p ast.Pattern, srcSlot int, kind string) e
 		}
 	}
 	return nil
-}
-
-// objectPatternBoundKeys returns the property keys already bound by earlier
-// (non-rest) properties in the object pattern. Used for object-rest exclusion.
-func objectPatternBoundKeys(pat *ast.ObjectPattern) []string {
-	var keys []string
-	for _, prop := range pat.Properties {
-		if prop.IsRest {
-			break
-		}
-		keys = append(keys, propKey(prop.Key))
-	}
-	return keys
 }
 
 func (c *Compiler) compileFunctionDecl(d *ast.FunctionDecl) error {
@@ -2301,6 +2322,9 @@ func (c *Compiler) compileConditional(n *ast.ConditionalExpr) error {
 // `isArrow` 为 true 时编译箭头函数：不声明本函数级 `this` 槽位，
 // `this` 经 upvalue 链解析为外层函数的 `this`（P0-2）。
 func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patterns []ast.Pattern, defaults []ast.Expression, rest *ast.Identifier, body ast.Node, isAsync, isGenerator, isArrow bool) error {
+	restoreControlFlow := c.isolateControlFlow()
+	defer restoreControlFlow()
+
 	// 普通函数：`this` slot = 0；params = slots 1..N；rest 参数 = slot N+1。
 	// 箭头函数：无 own `this`（slot 0 仍保留以兼容 frame 布局，但不会被引用）。
 	numLocals := 1 + len(params)
@@ -2660,7 +2684,34 @@ func (c *Compiler) compileClassExpr(e *ast.ClassExpr) error {
 	if e.Name != nil {
 		name = e.Name.Name
 	}
-	return c.compileClass(name, e.SuperClass, e.Body)
+	if name == "" {
+		return c.compileClass(name, e.SuperClass, e.Body)
+	}
+
+	// A named class expression has a private lexical self-binding visible to
+	// its constructor, methods, and field initializers, but not to the outer
+	// scope. Capture a hidden local and temporarily expose it under the class
+	// name while method templates are compiled.
+	hiddenName := fmt.Sprintf("__class_expr_self_%d__", c.classCounter)
+	selfSlot := c.declareLocal(hiddenName)
+	scope := c.cur().scopes[len(c.cur().scopes)-1]
+	previousSlot, hadPrevious := scope.decls[name]
+	scope.decls[name] = selfSlot
+	defer func() {
+		if hadPrevious {
+			scope.decls[name] = previousSlot
+		} else {
+			delete(scope.decls, name)
+		}
+	}()
+
+	if err := c.compileClass(name, e.SuperClass, e.Body); err != nil {
+		return err
+	}
+	// Preserve the expression result while initializing the captured binding.
+	c.emit(bytecode.OpDup, 0)
+	c.emit(bytecode.OpStoreLocal, uint32(selfSlot))
+	return nil
 }
 
 // compileClass is the core class compilation routine. It compiles all methods
@@ -2706,12 +2757,9 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 	// (e.g. `x: number;`) have no runtime effect and are skipped.
 	var instanceFieldInits []ast.Statement
 	var staticFields []*ast.MethodDefinition
-	for _, m := range body.Methods {
+	for fieldIndex, m := range body.Methods {
 		if m.Kind != ast.MethodField {
 			continue
-		}
-		if m.Computed {
-			return fmt.Errorf("computed class field names not supported")
 		}
 		if m.Static {
 			staticFields = append(staticFields, &m)
@@ -2720,13 +2768,26 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 		if m.Init == nil {
 			continue
 		}
-		fieldName := propKey(m.Key)
+		fieldKey := m.Key
+		if m.Computed {
+			// Computed field names are evaluated once when the class is defined,
+			// not once per instance. Store the key in the surrounding scope; the
+			// generated constructor captures that slot as an upvalue.
+			keyName := fmt.Sprintf("__class_field_key_%d_%d__", classID, fieldIndex)
+			keySlot := c.declareLocal(keyName)
+			if err := c.compileExpr(m.Key); err != nil {
+				return err
+			}
+			c.emit(bytecode.OpStoreLocal, uint32(keySlot))
+			fieldKey = &ast.Identifier{Name: keyName, Loc: m.Loc}
+		}
 		instanceFieldInits = append(instanceFieldInits, &ast.ExprStmt{
 			Expr: &ast.AssignExpr{
 				Op: "=",
 				Left: &ast.MemberExpr{
 					Object:   &ast.ThisExpr{Loc: m.Loc},
-					Property: &ast.Identifier{Name: fieldName, Loc: m.Loc},
+					Property: fieldKey,
+					Computed: m.Computed,
 					Loc:      m.Loc,
 				},
 				Right: m.Init,
@@ -2809,7 +2870,7 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 	// Compile non-constructor, non-field methods.
 	// 计算键方法（[expr]() {}）：键表达式按方法顺序求值压栈，供
 	// OpMakeClass 弹出使用；记录其在 Methods 中的索引。
-	for i, m := range body.Methods {
+	for _, m := range body.Methods {
 		if m.Kind == ast.MethodConstructor || m.Kind == ast.MethodField {
 			continue
 		}
@@ -2817,7 +2878,7 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 			if err := c.compileExpr(m.Key); err != nil {
 				return err
 			}
-			classTpl.ComputedIdx = append(classTpl.ComputedIdx, i)
+			classTpl.ComputedIdx = append(classTpl.ComputedIdx, len(classTpl.Methods))
 		}
 		methodName := propKey(m.Key)
 		if m.Computed {
@@ -2853,9 +2914,19 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 		if f.Init == nil {
 			continue
 		}
+		c.emit(bytecode.OpDup, 0)
+		if f.Computed {
+			if err := c.compileExpr(f.Key); err != nil {
+				return err
+			}
+			if err := c.compileExpr(f.Init); err != nil {
+				return err
+			}
+			c.emit(bytecode.OpSetPropComputedObj, 0)
+			continue
+		}
 		fieldName := propKey(f.Key)
 		nameIdx := c.cur().tmpl.AddStringConst(fieldName)
-		c.emit(bytecode.OpDup, 0)
 		if err := c.compileExpr(f.Init); err != nil {
 			return err
 		}
@@ -2868,6 +2939,9 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 // its index. Unlike compileFunction, it does NOT emit OpMakeClosure — the
 // class assembler (OpMakeClass) creates the closure at runtime.
 func (c *Compiler) compileMethod(name string, fn *ast.FunctionExpr) (int, error) {
+	restoreControlFlow := c.isolateControlFlow()
+	defer restoreControlFlow()
+
 	params := fn.Params
 	defaults := fn.Defaults
 	rest := fn.RestParam
@@ -2924,6 +2998,19 @@ func (c *Compiler) compileMethod(name string, fn *ast.FunctionExpr) (int, error)
 		}
 		c.emit(bytecode.OpStoreLocal, uint32(slot))
 		c.patchJumpToHere(jSkip)
+	}
+
+	// Class methods and constructors use the same destructuring parameter
+	// semantics as ordinary functions. Bind patterns only after whole-parameter
+	// defaults have been applied (for example constructor({x = fallback} = {})).
+	for i, pat := range fn.ParamPatterns {
+		if pat == nil {
+			continue
+		}
+		if err := c.compileBindPattern(pat, i+1, "let"); err != nil {
+			c.funcStack = c.funcStack[:len(c.funcStack)-1]
+			return 0, err
+		}
 	}
 
 	c.hoistFunc(fn.Body)

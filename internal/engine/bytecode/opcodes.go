@@ -88,25 +88,26 @@ const (
 	OpOptionalJump   // optional chain short-circuit: if top is nullish, pop+push undefined+jump; else keep and fall through
 
 	// --- Functions ---
-	OpCall         // A: numArgs
-	OpCallMethod   // A: numArgs (callee.method(...args), `this` = receiver)
-	OpCallWithThis    // A: numArgs; stack: callee this arg0...argN-1; calls callee with this
+	OpCall             // A: numArgs
+	OpCallMethod       // A: numArgs (callee.method(...args), `this` = receiver)
+	OpCallWithThis     // A: numArgs; stack: callee this arg0...argN-1; calls callee with this
 	OpCallWithThisArgs // stack: callee this argsArray; calls callee with this (spread args)
-	OpNew             // A: numArgs
-	OpReturn      // return top of stack
-	OpReturnUndef // return undefined
+	OpNew              // A: numArgs
+	OpReturn           // return top of stack
+	OpReturnUndef      // return undefined
 
 	// --- Objects & arrays ---
 	OpNewObject
-	OpNewArray   // A: element count (elements on stack)
-	OpGetProp    // A: name-const index; obj on stack → value
-	OpSetProp    // A: name-const index; pops value then obj (assignment context)
-	OpSetPropObj // A: name-const index; for { key: val } literals: pops value then obj, pushes obj back
-	OpSetPropTop // A: name-const index; for obj.prop = expr: pops value then obj (no push)
-	OpGetElem    // obj, key on stack → value
-	OpSetElem    // obj, key, value on stack (assignment context)
-	OpSetElemTop // pops value, key, obj (no push)
-	OpDelProp           // A: name-const index; pops obj, deletes own prop, pushes bool
+	OpNewArray           // A: element count (elements on stack)
+	OpGetProp            // A: name-const index; obj on stack → value
+	OpSetProp            // A: name-const index; pops value then obj (assignment context)
+	OpSetPropObj         // A: name-const index; for { key: val } literals: pops value then obj, pushes obj back
+	OpSetPropTop         // A: name-const index; for obj.prop = expr: pops value then obj (no push)
+	OpGetElem            // obj, key on stack → value
+	OpSetElem            // obj, key, value on stack (assignment context)
+	OpSetElemTop         // pops value, key, obj (no push)
+	OpDelProp            // A: name-const index; pops obj, deletes own prop, pushes bool
+	OpDelElem            // pops key then obj, deletes own computed property, pushes bool
 	OpSetPropComputedObj // for { [expr]: val }: pops value then key then obj (peek), pushes obj back
 
 	// --- Spread (ES2015) ---
@@ -136,11 +137,11 @@ const (
 	OpForInNext // A: jump offset to exit when exhausted
 
 	// --- Class (ES2015) ---
-	OpMakeClass        // A: class-template index; pops optional superclass, pushes ctor
-	OpGetProto         // pop obj, push its [[Prototype]] (or null)
-	OpCallThis         // A: numArgs; pop fn+args, call with this = current frame's slot 0
-	OpConstructThis    // A: numArgs; pop ctor+args, call as constructor with this = slot 0
-	OpCallThisArgs     // pop argsArray + fn, call with this = slot 0 (spread args)
+	OpMakeClass         // A: class-template index; pops optional superclass, pushes ctor
+	OpGetProto          // pop obj, push its [[Prototype]] (or null)
+	OpCallThis          // A: numArgs; pop fn+args, call with this = current frame's slot 0
+	OpConstructThis     // A: numArgs; pop ctor+args, call as constructor with this = slot 0
+	OpCallThisArgs      // pop argsArray + fn, call with this = slot 0 (spread args)
 	OpConstructThisArgs // pop argsArray + ctor, call as constructor with this = slot 0 (spread)
 
 	// --- Iterator protocol (ES2015) ---
@@ -223,24 +224,25 @@ var opNames = [...]string{
 	OpJmpNullishKeep: "JMP_NULLISH_KEEP",
 	OpOptionalJump:   "OPTIONAL_JUMP",
 
-	OpCall:            "CALL",
-	OpCallMethod:      "CALL_METHOD",
-	OpCallWithThis:    "CALL_WITH_THIS",
+	OpCall:             "CALL",
+	OpCallMethod:       "CALL_METHOD",
+	OpCallWithThis:     "CALL_WITH_THIS",
 	OpCallWithThisArgs: "CALL_WITH_THIS_ARGS",
-	OpNew:             "NEW",
-	OpReturn:      "RETURN",
-	OpReturnUndef: "RETURN_UNDEF",
+	OpNew:              "NEW",
+	OpReturn:           "RETURN",
+	OpReturnUndef:      "RETURN_UNDEF",
 
-	OpNewObject:  "NEW_OBJECT",
-	OpNewArray:   "NEW_ARRAY",
-	OpGetProp:    "GET_PROP",
-	OpSetProp:    "SET_PROP",
-	OpSetPropObj: "SET_PROP_OBJ",
-	OpSetPropTop: "SET_PROP_TOP",
-	OpGetElem:    "GET_ELEM",
-	OpSetElem:    "SET_ELEM",
-	OpSetElemTop: "SET_ELEM_TOP",
-	OpDelProp:           "DEL_PROP",
+	OpNewObject:          "NEW_OBJECT",
+	OpNewArray:           "NEW_ARRAY",
+	OpGetProp:            "GET_PROP",
+	OpSetProp:            "SET_PROP",
+	OpSetPropObj:         "SET_PROP_OBJ",
+	OpSetPropTop:         "SET_PROP_TOP",
+	OpGetElem:            "GET_ELEM",
+	OpSetElem:            "SET_ELEM",
+	OpSetElemTop:         "SET_ELEM_TOP",
+	OpDelProp:            "DEL_PROP",
+	OpDelElem:            "DEL_ELEM",
 	OpSetPropComputedObj: "SET_PROP_COMPUTED_OBJ",
 
 	OpBuildArray:     "BUILD_ARRAY",
@@ -271,10 +273,10 @@ var opNames = [...]string{
 	OpCallThisArgs:      "CALL_THIS_ARGS",
 	OpConstructThisArgs: "CONSTRUCT_THIS_ARGS",
 
-	OpGetIterator: "GET_ITERATOR",
-	OpYield:       "YIELD",
+	OpGetIterator:      "GET_ITERATOR",
+	OpYield:            "YIELD",
 	OpGetAsyncIterator: "GET_ASYNC_ITERATOR",
-	OpAwait:       "AWAIT",
+	OpAwait:            "AWAIT",
 
 	// 正则字面量：弹 flags + pattern，压入 RegExp 实例。
 	OpMakeRegexp: "MAKE_REGEXP",
@@ -311,7 +313,7 @@ func (op Opcode) HasOperand() bool {
 		return true
 	case OpSetGetterObj, OpSetSetterObj:
 		return true
-	case OpGetElem, OpSetElem, OpSetElemTop, OpDelProp, OpSetPropComputedObj:
+	case OpGetElem, OpSetElem, OpSetElemTop, OpDelProp, OpDelElem, OpSetPropComputedObj:
 		return true
 	case OpCallMethodArgs:
 		return true

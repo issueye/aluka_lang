@@ -52,6 +52,186 @@ func getProp(t *testing.T, obj engine.Value, key string) engine.Value {
 	return v
 }
 
+func TestDiagnosticsChannelPublishAndUnsubscribe(t *testing.T) {
+	ctx := newCtx(t)
+	mod, err := NewDiagnosticsChannel(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := callMethod(t, mod, "channel", engine.Str("aluka:test"))
+	second := callMethod(t, mod, "channel", engine.Str("aluka:test"))
+	if first != second {
+		t.Fatal("channel(name) should return the cached channel object")
+	}
+
+	var message, channelName string
+	subscriber := engine.NewFunction("subscriber", func(args []engine.Value) (engine.Value, error) {
+		message = args[0].String()
+		channelName = args[1].String()
+		return engine.Undefined(), nil
+	})
+	callMethod(t, first, "subscribe", subscriber)
+	if got := getProp(t, first, "hasSubscribers").String(); got != "true" {
+		t.Fatalf("hasSubscribers after subscribe = %s, want true", got)
+	}
+	callMethod(t, first, "publish", engine.Str("payload"))
+	if message != "payload" || channelName != "aluka:test" {
+		t.Fatalf("subscriber got message=%q name=%q", message, channelName)
+	}
+	if got := callMethod(t, mod, "unsubscribe", engine.Str("aluka:test"), subscriber).String(); got != "true" {
+		t.Fatalf("unsubscribe = %s, want true", got)
+	}
+	if got := getProp(t, first, "hasSubscribers").String(); got != "false" {
+		t.Fatalf("hasSubscribers after unsubscribe = %s, want false", got)
+	}
+}
+
+func TestVMModuleSurface(t *testing.T) {
+	mod, err := NewVMModule(newCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"runInThisContext", "runInNewContext", "compileFunction", "Script"} {
+		if got := getProp(t, mod, name); !got.IsFunction() {
+			t.Fatalf("%s type = %s, want function", name, got.Type())
+		}
+	}
+	fn, _ := getProp(t, mod, "runInThisContext").AsFunction()
+	if _, err := fn.Call([]engine.Value{engine.Str("1 + 1")}); err == nil {
+		t.Fatal("runInThisContext should report unavailable dynamic evaluation")
+	}
+}
+
+func TestDiagnosticsTracingChannel(t *testing.T) {
+	ctx := newCtx(t)
+	mod, err := NewDiagnosticsChannel(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tracing := callMethod(t, mod, "tracingChannel", engine.Str("aluka:test"))
+	if got := getProp(t, tracing, "hasSubscribers").String(); got != "false" {
+		t.Fatalf("initial tracing hasSubscribers = %s", got)
+	}
+	start := getProp(t, tracing, "start")
+	callMethod(t, start, "subscribe", engine.NewFunction("subscriber", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+	if got := getProp(t, tracing, "hasSubscribers").String(); got != "true" {
+		t.Fatalf("subscribed tracing hasSubscribers = %s", got)
+	}
+	result := callMethod(t, tracing, "tracePromise", engine.NewFunction("work", func(args []engine.Value) (engine.Value, error) {
+		return engine.Str("done"), nil
+	}), engine.NewObject())
+	if result.String() != "done" {
+		t.Fatalf("tracePromise result = %q", result.String())
+	}
+}
+
+func TestConstantsBuiltinAliases(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var legacy = require('constants');
+var modern = require('node:constants');
+globalThis.__r = (legacy === modern) + ':' + legacy.F_OK + ':' + (typeof legacy.O_RDONLY);
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "true:0:number" {
+		t.Errorf("constants aliases = %q", got)
+	}
+}
+
+func TestUtilDebuglogEnabled(t *testing.T) {
+	t.Setenv("NODE_DEBUG", "http,undici*")
+	ctx := newCtx(t)
+	mod, err := NewUtil(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	undici := callMethod(t, mod, "debuglog", engine.Str("undici"))
+	if !undici.IsFunction() || getProp(t, undici, "enabled").String() != "true" {
+		t.Fatal("debuglog(undici) should return an enabled function")
+	}
+	other := callMethod(t, mod, "debuglog", engine.Str("other"))
+	if getProp(t, other, "enabled").String() != "false" {
+		t.Fatal("debuglog(other) should be disabled")
+	}
+}
+
+func TestUtilTypesArrayBufferPredicates(t *testing.T) {
+	ctx := newCtx(t)
+	types, err := NewUtilTypes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffer := engine.NewArrayBuffer([]byte{1, 2})
+	uint8 := engine.NewTypedArrayValue(engine.KindUint8, []byte{1, 2})
+	int16 := engine.NewTypedArrayValue(engine.KindInt16, make([]byte, 2))
+
+	if got := callMethod(t, types, "isArrayBuffer", buffer).String(); got != "true" {
+		t.Fatalf("isArrayBuffer(ArrayBuffer) = %s, want true", got)
+	}
+	if got := callMethod(t, types, "isUint8Array", uint8).String(); got != "true" {
+		t.Fatalf("isUint8Array(Uint8Array) = %s, want true", got)
+	}
+	if got := callMethod(t, types, "isUint8Array", int16).String(); got != "false" {
+		t.Fatalf("isUint8Array(Int16Array) = %s, want false", got)
+	}
+	if got := callMethod(t, types, "isArrayBufferView", int16).String(); got != "true" {
+		t.Fatalf("isArrayBufferView(Int16Array) = %s, want true", got)
+	}
+}
+
+func TestEventsExportsEventEmitterConstructor(t *testing.T) {
+	ctx := newCtx(t)
+	mod, err := NewEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mod.IsFunction() {
+		t.Fatal("node:events default export should be the EventEmitter constructor")
+	}
+	if got := getProp(t, mod, "EventEmitter"); got != mod {
+		t.Fatal("node:events.EventEmitter should equal the default export")
+	}
+	if !getProp(t, mod, "once").IsFunction() || !getProp(t, mod, "on").IsFunction() {
+		t.Fatal("EventEmitter static methods should be exposed on the default export")
+	}
+}
+
+func TestStreamWebExportsGlobalConstructors(t *testing.T) {
+	ctx := newCtx(t)
+	if err := ctx.Global().Set("ReadableStream", engine.NewFunction("ReadableStream", func(args []engine.Value) (engine.Value, error) {
+		return engine.NewObject(), nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Global().Set("WritableStream", engine.NewFunction("WritableStream", func(args []engine.Value) (engine.Value, error) {
+		return engine.NewObject(), nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Global().Set("TransformStream", engine.NewFunction("TransformStream", func(args []engine.Value) (engine.Value, error) {
+		return engine.NewObject(), nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	mod, err := NewStreamWeb(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if getProp(t, mod, "ReadableStream") != getProp(t, ctx.Global(), "ReadableStream") {
+		t.Fatal("stream/web should reuse global ReadableStream constructor")
+	}
+	if !getProp(t, mod, "ReadableStreamTee").IsFunction() {
+		t.Fatal("stream/web.ReadableStreamTee should be callable")
+	}
+}
+
 // === node:path ==========================================================
 
 func TestPathJoin(t *testing.T) {

@@ -70,6 +70,15 @@ var workerThreadCounter int64
 // parentPort/workerData/isMainThread 从全局读取（worker 内注入对应值）。
 func NewWorkerThreads(ctx engine.Context) (engine.Value, error) {
 	m := engine.NewObject()
+	// Node uses these markers to reject selected objects during structured
+	// cloning/transfer. Aluka's worker transport already only serializes the
+	// supported JSON-compatible subset, so marking is currently a no-op.
+	_ = m.Set("markAsUncloneable", engine.NewFunction("markAsUncloneable", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+	_ = m.Set("markAsUntransferable", engine.NewFunction("markAsUntransferable", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
 	_ = m.Set("Worker", engine.NewFunction("Worker", func(args []engine.Value) (engine.Value, error) {
 		return newWorkerInstance(ctx, args), nil
 	}))

@@ -2,6 +2,11 @@ package module
 
 import "testing"
 
+import (
+	"path/filepath"
+	"strings"
+)
+
 // 本文件覆盖 ES2020 动态 import()（1D.13）。
 // 风格对齐 module_test.go：newTestEnv 写临时文件 → loader.Run → globalGet 验证。
 //
@@ -15,7 +20,7 @@ import "testing"
 // TestDynamicImportCJS: 动态加载 CJS 模块，访问其命名导出。
 func TestDynamicImportCJS(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
-		"main.cjs": `import('./utils.cjs').then(function(m) { globalThis.__r = m.add(2, 3); });`,
+		"main.cjs":  `import('./utils.cjs').then(function(m) { globalThis.__r = m.add(2, 3); });`,
 		"utils.cjs": `module.exports.add = function(a, b) { return a + b; };`,
 	})
 	env.run(t, "main.cjs")
@@ -69,7 +74,7 @@ export default "hello";
 // TestDynamicImportJSON: 动态加载 JSON 模块。
 func TestDynamicImportJSON(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
-		"main.cjs": `import('./data.json').then(function(m) { globalThis.__r = m.name + ':' + m.age; });`,
+		"main.cjs":  `import('./data.json').then(function(m) { globalThis.__r = m.name + ':' + m.age; });`,
 		"data.json": `{"name":"alice","age":30}`,
 	})
 	env.run(t, "main.cjs")
@@ -137,9 +142,9 @@ import('./nonexistent.cjs').then(function() {
 // 基于发起模块自身路径解析。
 func TestDynamicImportRelativePath(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
-		"main.cjs":     `require('./sub/inner.cjs');`,
+		"main.cjs":      `require('./sub/inner.cjs');`,
 		"sub/inner.cjs": `import('../helper.cjs').then(function(m) { globalThis.__r = m.val; });`,
-		"helper.cjs":   `module.exports.val = 99;`,
+		"helper.cjs":    `module.exports.val = 99;`,
 	})
 	env.run(t, "main.cjs")
 	if got := env.globalGet("__r"); got != "99" {
@@ -216,8 +221,8 @@ globalThis.__r = d;
 // TestTypeScriptRelativeImport: .ts 扩展名相对导入。
 func TestTypeScriptRelativeImport(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
-		"main.ts":  `import { b } from './dep.ts'; globalThis.__r = b;`,
-		"dep.ts":   `export const b: number = 42;`,
+		"main.ts": `import { b } from './dep.ts'; globalThis.__r = b;`,
+		"dep.ts":  `export const b: number = 42;`,
 	})
 	env.run(t, "main.ts")
 	if got := env.globalGet("__r"); got != "42" {
@@ -237,6 +242,27 @@ globalThis.__r = a + b;
 	env.run(t, "main.mjs")
 	if got := env.globalGet("__r"); got != "30" {
 		t.Errorf("TLA: got %q, want 30", got)
+	}
+}
+
+func TestImportMetaUsesCurrentModule(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.mjs": `
+import { childURL } from './child.mjs';
+globalThis.__mainURL = import.meta.url;
+globalThis.__childURL = childURL;
+`,
+		"child.mjs": `export const childURL = import.meta.url;`,
+	})
+	env.run(t, "main.mjs")
+
+	mainURL := filepath.ToSlash(filepath.Join(env.dir, "main.mjs"))
+	childURL := filepath.ToSlash(filepath.Join(env.dir, "child.mjs"))
+	if got := filepath.ToSlash(env.globalGet("__mainURL")); !strings.HasSuffix(got, mainURL) {
+		t.Errorf("main import.meta.url = %q, want suffix %q", got, mainURL)
+	}
+	if got := filepath.ToSlash(env.globalGet("__childURL")); !strings.HasSuffix(got, childURL) {
+		t.Errorf("child import.meta.url = %q, want suffix %q", got, childURL)
 	}
 }
 

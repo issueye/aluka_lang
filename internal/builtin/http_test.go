@@ -43,6 +43,9 @@ func newHTTPEnv(t *testing.T) *httpTestEnv {
 	if err := globals.NewWebCrypto(ctx, globals.WebCryptoConfig{}); err != nil {
 		t.Fatal(err)
 	}
+	if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
+		t.Fatal(err)
+	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())
 
 	loader := modmodule.NewLoader(ctx)

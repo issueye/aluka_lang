@@ -15,13 +15,14 @@ var { performance } = require('node:perf_hooks');
 var a = performance.now();
 setTimeout(function(){}, 5);
 var b = performance.now();
-globalThis.__r = (b >= a) + ':' + (typeof performance.timeOrigin);
+globalThis.__r = (b >= a) + ':' + (typeof performance.timeOrigin) + ':' +
+  (globalThis.performance === performance) + ':' + (typeof performance.markResourceTiming);
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if got := env.globalGet("__r"); got != "true:number" {
-		t.Errorf("perf_hooks = %q, want true:number", got)
+	if got := env.globalGet("__r"); got != "true:number:true:function" {
+		t.Errorf("perf_hooks = %q, want true:number:true:function", got)
 	}
 }
 
@@ -73,6 +74,55 @@ globalThis.__r = typeof r2;
 	}
 	if got := env.globalGet("__r"); got != "function" {
 		t.Errorf("createRequire = %q, want function", got)
+	}
+}
+
+func TestAsyncResourceSubclassRunInAsyncScope(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var { AsyncResource } = require('node:async_hooks');
+class Resource extends AsyncResource {
+  constructor() { super('ALUKA_TEST'); }
+  run(callback) { return this.runInAsyncScope(callback, { value: 40 }, 2); }
+}
+var resource = new Resource();
+globalThis.__r = resource.run(function(n) { return this.value + n; });
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "42" {
+		t.Errorf("AsyncResource.runInAsyncScope = %q, want 42", got)
+	}
+}
+
+func TestConsoleBuiltinUsesGlobalConsole(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `globalThis.__r = require('node:console') === console;`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "true" {
+		t.Errorf("node:console identity = %q, want true", got)
+	}
+}
+
+func TestTimersBuiltinSharesGlobalTimers(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var timers = require('node:timers');
+var id = timers.setTimeout(function() { globalThis.__fired = true; }, 1);
+clearTimeout(id);
+globalThis.__r = timers.setTimeout === setTimeout && timers.clearTimeout === clearTimeout;
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "true" {
+		t.Errorf("node:timers identity = %q, want true", got)
+	}
+	if got := env.globalGet("__fired"); got != "undefined" {
+		t.Errorf("cleared module timer fired: %q", got)
 	}
 }
 

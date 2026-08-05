@@ -5,6 +5,8 @@ package builtin
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -37,6 +39,21 @@ func NewUtil(ctx engine.Context) (engine.Value, error) {
 			rest = rest[1:]
 		}
 		return engine.Str(utilFormat(rest)), nil
+	}))
+
+	_ = m.Set("debuglog", engine.NewFunction("debuglog", func(args []engine.Value) (engine.Value, error) {
+		section := strings.ToLower(strArg(args, 0))
+		enabled := debugSectionEnabled(section, os.Getenv("NODE_DEBUG"))
+		debugFn := engine.NewFunction(section, func(callArgs []engine.Value) (engine.Value, error) {
+			if enabled {
+				fmt.Fprintf(os.Stderr, "%s %d: %s\n", strings.ToUpper(section), os.Getpid(), utilFormat(callArgs))
+			}
+			return engine.Undefined(), nil
+		})
+		if obj, ok := debugFn.AsObject(); ok {
+			_ = obj.Set("enabled", engine.Boolean(enabled))
+		}
+		return debugFn, nil
 	}))
 
 	// util.inherits(ctor, superCtor)：令 ctor.prototype 的原型为
@@ -133,6 +150,26 @@ func NewUtil(ctx engine.Context) (engine.Value, error) {
 	_ = m.Set("defaultOptions", inspectOpts)
 
 	return m, nil
+}
+
+// NewUtilTypes constructs the standalone node:util/types module. Node exposes
+// the same predicates both here and as util.types.
+func NewUtilTypes(ctx engine.Context) (engine.Value, error) {
+	types := engine.NewObject()
+	registerUtilTypes(types)
+	return types, nil
+}
+
+func debugSectionEnabled(section, setting string) bool {
+	for _, pattern := range strings.FieldsFunc(setting, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	}) {
+		matched, err := filepath.Match(strings.ToLower(pattern), section)
+		if err == nil && matched {
+			return true
+		}
+	}
+	return false
 }
 
 // utilFormat 实现 Node.js util.format 的占位符替换。
@@ -284,5 +321,42 @@ func registerUtilTypes(types engine.Object) {
 	typeCheck("isPrimitive", func(v engine.Value) bool {
 		t := v.Type()
 		return t != engine.TypeObject && t != engine.TypeFunction
+	})
+	typeCheck("isArrayBuffer", func(v engine.Value) bool {
+		_, ok := engine.AsArrayBufferValue(v)
+		return ok
+	})
+	typeCheck("isSharedArrayBuffer", func(v engine.Value) bool { return false })
+	typeCheck("isAnyArrayBuffer", func(v engine.Value) bool {
+		_, ok := engine.AsArrayBufferValue(v)
+		return ok
+	})
+	typeCheck("isTypedArray", func(v engine.Value) bool {
+		if _, ok := engine.AsBuffer(v); ok {
+			return true
+		}
+		_, ok := engine.AsTypedArray(v)
+		return ok
+	})
+	typeCheck("isUint8Array", func(v engine.Value) bool {
+		if _, ok := engine.AsBuffer(v); ok {
+			return true
+		}
+		typed, ok := engine.AsTypedArray(v)
+		return ok && typed.Kind() == engine.KindUint8
+	})
+	typeCheck("isArrayBufferView", func(v engine.Value) bool {
+		if _, ok := engine.AsBuffer(v); ok {
+			return true
+		}
+		if _, ok := engine.AsTypedArray(v); ok {
+			return true
+		}
+		_, ok := engine.AsDataView(v)
+		return ok
+	})
+	typeCheck("isDataView", func(v engine.Value) bool {
+		_, ok := engine.AsDataView(v)
+		return ok
 	})
 }

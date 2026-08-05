@@ -24,6 +24,22 @@ globalThis.__r = h + ':' + m;
 	}
 }
 
+func TestCryptoOneShotHashAndGetHashes(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var crypto = require('node:crypto');
+var hashes = crypto.getHashes();
+var sum = crypto.hash('sha256', new Uint8Array([97, 98, 99]), 'base64');
+globalThis.__r = hashes.indexOf('sha384') >= 0 && sum;
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=" {
+		t.Errorf("one-shot hash = %q", got)
+	}
+}
+
 // TestCryptoHmac 验证 HMAC-SHA256（RFC 向量）。
 func TestCryptoHmac(t *testing.T) {
 	env := newHTTPEnv(t)

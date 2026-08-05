@@ -21,10 +21,9 @@ const defaultMaxListeners = 10
 // （JS 对象组织结构，天然参与引擎 GC，不会泄漏）。
 const emitterStateKey = "\x00<aluka>emitterState"
 
-// NewEvents 构造 node:events 模块的导出对象。
+// NewEvents 构造 node:events 模块导出。Node.js 的 events 模块本身就是
+// EventEmitter 构造器，同时也通过 .EventEmitter 暴露同一个构造器。
 func NewEvents(ctx engine.Context) (engine.Value, error) {
-	m := engine.NewObject()
-
 	// EventEmitter 构造器：new EventEmitter() 返回一个 emitter 实例对象。
 	ctor := engine.NewFunction("EventEmitter", func(args []engine.Value) (engine.Value, error) {
 		return newEmitterInstance(), nil
@@ -47,8 +46,8 @@ func NewEvents(ctx engine.Context) (engine.Value, error) {
 	_ = ctorObj.Set("off", engine.NewFunction("off", makeStaticEmitterMethod("off")))
 	_ = ctorObj.Set("listenerCount", engine.NewFunction("listenerCount", makeStaticEmitterMethod("listenerCount")))
 
-	_ = m.Set("EventEmitter", ctor)
-	return m, nil
+	_ = ctorObj.Set("EventEmitter", ctor)
+	return ctor, nil
 }
 
 // makeStaticEmitterMethod 构造模块级静态方法的 engine.Func

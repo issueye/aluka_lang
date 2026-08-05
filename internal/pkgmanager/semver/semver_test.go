@@ -135,6 +135,14 @@ func TestRangeTest(t *testing.T) {
 		{"^ 1.2.3", "1.9.0", true},
 		{">= 2.1.2 < 3.0.0 || >= 4.0.0", "4.5.0", true},
 		{">= 2.1.2 < 3.0.0 || >= 4.0.0", "3.5.0", false},
+		// prerelease 范围（gensync 场景）：^1.0.0-beta.2 须包含 1.0.0-beta.2 本身。
+		{"^1.0.0-beta.2", "1.0.0-beta.2", true},
+		{"^1.0.0-beta.2", "1.0.0-beta.1", false},
+		{"^1.0.0-beta.2", "1.0.0", true},
+		{"^1.0.0-beta.2", "2.0.0", false},
+		{"^1.0.0", "2.0.0-rc.1", false}, // npm：^1.0.0 不匹配 2.0.0-0 及以上
+		{"~1.2.3-beta.2", "1.2.3-beta.2", true},
+		{"~1.2.3-beta.2", "1.2.5", true},
 	}
 	for _, c := range cases {
 		r := mustRange(t, c.rangeStr)

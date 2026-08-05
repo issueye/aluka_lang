@@ -16,7 +16,9 @@ type Lexer struct {
 	// 上一个 token 是否允许 regex 字面量。
 	// JS 中 / 既是除法也是 regex 起始，需根据上下文区分。
 	// 简化规则：当上一个 token 是 ) ] } ident number keyword(非 typeof/void/in/instanceof) 时为除法。
-	allowRegex bool
+	allowRegex   bool
+	lastToken    Token
+	parenControl []bool
 }
 
 // New 创建词法分析器。
@@ -95,10 +97,33 @@ func (l *Lexer) Tokens() ([]Token, error) {
 		if t.Type == TokenEOF {
 			break
 		}
-		// 更新 allowRegex 状态
-		l.allowRegex = regexAllowedAfter(t)
+		// 更新 allowRegex 状态。控制语句的右括号结束后进入语句位置，
+		// 因此允许正则；普通调用表达式右括号后仍按除法处理。
+		allow := regexAllowedAfter(t)
+		if t.Type == TokenPunct && t.Value == "(" {
+			control := l.lastToken.Type == TokenKeyword && isControlParenKeyword(l.lastToken.Value)
+			l.parenControl = append(l.parenControl, control)
+		} else if t.Type == TokenPunct && t.Value == ")" && len(l.parenControl) > 0 {
+			last := len(l.parenControl) - 1
+			control := l.parenControl[last]
+			l.parenControl = l.parenControl[:last]
+			if control {
+				allow = true
+			}
+		}
+		l.lastToken = t
+		l.allowRegex = allow
 	}
 	return tokens, nil
+}
+
+func isControlParenKeyword(keyword string) bool {
+	switch keyword {
+	case "if", "for", "while", "with", "switch", "catch":
+		return true
+	default:
+		return false
+	}
 }
 
 // regexAllowedAfter 判断某 token 之后是否允许 regex 字面量。
@@ -569,8 +594,6 @@ func (l *Lexer) readIdent(startLine, startCol int) (Token, error) {
 		}
 	}
 	word := l.src[start:l.pos]
-	// 修正 col（advance 没被调用，需重新计算）
-	l.col += len(word)
 	if IsKeyword(word) {
 		return Token{Type: TokenKeyword, Value: word, Line: startLine, Col: startCol}, nil
 	}

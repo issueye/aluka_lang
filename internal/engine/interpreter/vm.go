@@ -362,15 +362,19 @@ func (v *VM) run() (engine.Value, error) {
 				v.push(closure)
 
 			// --- Binary arithmetic & bitwise ---
-			case bytecode.OpAdd:
+		case bytecode.OpAdd:
 				r := v.pop()
 				l := v.pop()
+				// BigInt 与非 BigInt 的加法必须显式转换；保持运行时
+				// 对混合 String/BigInt 的 TypeError 约定，避免静默拼接。
 				if isBigInt(l) || isBigInt(r) {
 					result, err := bigintArith2(l, r, '+')
 					if err != nil {
 						return v.handleThrow(err)
 					}
 					v.push(result)
+				} else if l.Type() == engine.TypeString || r.Type() == engine.TypeString {
+					v.push(v.binAdd(l, r))
 				} else {
 					v.push(v.binAdd(l, r))
 				}
@@ -811,6 +815,14 @@ func (v *VM) run() (engine.Value, error) {
 					result = o.Delete(name)
 				}
 				v.push(engine.Boolean(result))
+			case bytecode.OpDelElem:
+				key := propertyKeyOf(v.pop())
+				obj := v.pop()
+				result := true
+				if o, ok := obj.AsObject(); ok {
+					result = o.Delete(key)
+				}
+				v.push(engine.Boolean(result))
 			case bytecode.OpSetPropComputedObj:
 				// Stack: [..., obj, key, value] → set obj[key] = value, obj stays.
 				val := v.pop()
@@ -1123,15 +1135,16 @@ func (v *VM) doNew(numArgs int) (engine.Value, error) {
 func (v *VM) doMakeClass(classIdx int) (engine.Value, error) {
 	classTpl := v.module.Classes[classIdx]
 
-	var superCtor engine.Value
-	if classTpl.HasSuper {
-		superCtor = v.pop()
-	}
-
-	// 计算键方法：弹出编译时压栈的键值（方法顺序与 ComputedIdx 一致）。
+	// 编译器先压入父类，再按声明顺序压入计算键，因此必须先逆序弹出
+	// 计算键，最后才能取得父类构造器。
 	computedKeys := make([]string, len(classTpl.ComputedIdx))
 	for i := len(classTpl.ComputedIdx) - 1; i >= 0; i-- {
 		computedKeys[i] = propertyKeyOf(v.pop())
+	}
+
+	var superCtor engine.Value
+	if classTpl.HasSuper {
+		superCtor = v.pop()
 	}
 
 	// Create the constructor closure.
@@ -1717,6 +1730,10 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 	case engine.TypeBoolean:
 		if v.interp.booleanProto != nil {
 			return v.interp.booleanProto.Get(key)
+		}
+	case engine.TypeBigInt:
+		if v.interp.bigintProto != nil {
+			return v.interp.bigintProto.Get(key)
 		}
 	case engine.TypeFunction:
 		// 函数对象：先查 own（name/length 等），miss 后回退 Function.prototype

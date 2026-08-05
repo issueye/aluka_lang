@@ -55,7 +55,7 @@ func (d *VarDecl) node()     {}
 type FunctionDecl struct {
 	Name          *Identifier
 	Params        []*Identifier
-	ParamPatterns []Pattern // 解构参数；nil 条目 = 普通参数。len 与 Params 一致
+	ParamPatterns []Pattern    // 解构参数；nil 条目 = 普通参数。len 与 Params 一致
 	Defaults      []Expression // ES2015 default values; nil entry = no default. len == len(Params)
 	RestParam     *Identifier  // ES2015 rest param (`...rest`); nil if none
 	Body          *BlockStmt
@@ -503,7 +503,7 @@ func (s *SpreadElement) node()     {}
 type FunctionExpr struct {
 	Name          *Identifier
 	Params        []*Identifier
-	ParamPatterns []Pattern // 解构参数；nil 条目 = 普通参数。len 与 Params 一致
+	ParamPatterns []Pattern    // 解构参数；nil 条目 = 普通参数。len 与 Params 一致
 	Defaults      []Expression // ES2015 default values; nil entry = no default. len == len(Params)
 	RestParam     *Identifier  // ES2015 rest param (`...rest`); nil if none
 	Body          *BlockStmt
@@ -518,7 +518,7 @@ func (f *FunctionExpr) node()     {}
 
 type ArrowFunc struct {
 	Params        []*Identifier
-	ParamPatterns []Pattern // 解构参数；nil 条目 = 普通参数。len 与 Params 一致
+	ParamPatterns []Pattern    // 解构参数；nil 条目 = 普通参数。len 与 Params 一致
 	Defaults      []Expression // ES2015 default values; nil entry = no default. len == len(Params)
 	RestParam     *Identifier  // ES2015 rest param (`...rest`); nil if none
 	Body          Node
@@ -647,10 +647,11 @@ func (a *ArrayPattern) node()        {}
 // ObjectPatternProperty represents one binding in an object destructuring
 // pattern.
 type ObjectPatternProperty struct {
-	Key     Expression // Identifier/StringLit/NumberLit (property name)
-	Value   Pattern    // binding target
-	Default Expression // nil = no default
-	IsRest  bool       // ...rest (must be last)
+	Key      Expression // property name or computed key expression
+	Value    Pattern    // binding target
+	Default  Expression // nil = no default
+	IsRest   bool       // ...rest (must be last)
+	Computed bool       // {[expr]: target}
 }
 
 // ObjectPattern: {a, b: c, ...rest}
@@ -714,6 +715,7 @@ type ExportDecl struct {
 	Specifiers  []ExportSpecifier // non-empty for `export {a, b}`
 	Source      string            // non-empty for re-export `export {a} from 'mod'`
 	IsStar      bool              // `export * from 'mod'`
+	StarName    string            // `export * as ns from 'mod'` 的命名空间名（非空时生效）
 	Loc         Pos
 }
 

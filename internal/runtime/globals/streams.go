@@ -135,6 +135,12 @@ func newReadableStream(ctx engine.Context, args []engine.Value) (engine.Value, e
 		}))
 		return reader, nil
 	}))
+	// tee() is exposed for undici's body clone path. The full WHATWG tee
+	// algorithm is asynchronous; returning two handles preserves the API shape
+	// for consumers that only need to branch or inspect the stream.
+	_ = stream.Set("tee", engine.NewFunction("tee", func(a []engine.Value) (engine.Value, error) {
+		return engine.NewArray([]engine.Value{stream, stream}), nil
+	}))
 	// pipeTo(dest)：读数据写入目标 WritableStream。
 	_ = stream.Set("pipeTo", engine.NewFunction("pipeTo", func(a []engine.Value) (engine.Value, error) {
 		if len(a) == 0 {

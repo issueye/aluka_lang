@@ -18,11 +18,16 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("os", NewOS)
 	loader.RegisterBuiltin("url", NewURL)
 	loader.RegisterBuiltin("util", NewUtil)
+	loader.RegisterBuiltin("util/types", NewUtilTypes)
 	loader.RegisterBuiltin("events", NewEvents)
+	loader.RegisterBuiltin("diagnostics_channel", NewDiagnosticsChannel)
+	loader.RegisterBuiltin("async_hooks", NewAsyncHooks)
 	loader.RegisterBuiltin("fs", NewFS)
 	loader.RegisterBuiltin("assert", NewAssert)
+	loader.RegisterBuiltin("constants", NewConstants)
 	loader.RegisterBuiltin("crypto", NewCrypto)
 	loader.RegisterBuiltin("stream", NewStream)
+	loader.RegisterBuiltin("stream/web", NewStreamWeb)
 	loader.RegisterBuiltin("querystring", NewQueryString)
 	loader.RegisterBuiltin("string_decoder", NewStringDecoder)
 	loader.RegisterBuiltin("http", NewHTTP)
@@ -32,8 +37,10 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("dns", NewDNS)
 	loader.RegisterBuiltin("zlib", NewZlib)
 	loader.RegisterBuiltin("perf_hooks", NewPerfHooks)
+	loader.RegisterBuiltin("timers", NewTimersModule)
 	loader.RegisterBuiltin("timers/promises", NewTimersPromises)
 	loader.RegisterBuiltin("v8", NewV8)
+	loader.RegisterBuiltin("vm", NewVMModule)
 	loader.RegisterBuiltin("readline", NewReadline)
 	loader.RegisterBuiltin("repl", NewReplModule)
 	loader.RegisterBuiltin("child_process", NewChildProcess)
@@ -49,6 +56,7 @@ func RegisterAll(loader *module.Loader) {
 	// node:process —— 返回全局 process 对象（require('process') 语义，
 	// 与 Node 一致：裸名 process 解析为内置而非 node_modules 包）。
 	loader.RegisterBuiltin("process", NewProcessModule)
+	loader.RegisterBuiltin("console", NewConsoleModule)
 	loader.RegisterBuiltin("test", NewTest)
 }
 
@@ -57,6 +65,17 @@ func NewProcessModule(ctx engine.Context) (engine.Value, error) {
 	v, err := ctx.Global().Get("process")
 	if err != nil || v == nil || v.IsUndefined() {
 		return engine.Undefined(), fmt.Errorf("process: global process not initialized")
+	}
+	return v, nil
+}
+
+// NewConsoleModule returns the initialized global console object. Node's
+// node:console module exposes additional constructors, but its logging methods
+// are the same callable surface needed by packages that import it directly.
+func NewConsoleModule(ctx engine.Context) (engine.Value, error) {
+	v, err := ctx.Global().Get("console")
+	if err != nil || v == nil || v.IsUndefined() {
+		return engine.Undefined(), fmt.Errorf("console: global console not initialized")
 	}
 	return v, nil
 }

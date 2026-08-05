@@ -25,13 +25,15 @@ var ErrNotFound = errors.New("registry: not found")
 
 // VersionInfo 是单个版本的元数据。
 type VersionInfo struct {
-	Version            string            `json:"version"`
-	Dependencies       map[string]string `json:"dependencies"`
-	DevDependencies    map[string]string `json:"devDependencies"`
-	PeerDependencies   map[string]string `json:"peerDependencies"`
+	Version              string            `json:"version"`
+	Dependencies         map[string]string `json:"dependencies"`
+	DevDependencies      map[string]string `json:"devDependencies"`
+	PeerDependencies     map[string]string `json:"peerDependencies"`
 	OptionalDependencies map[string]string `json:"optionalDependencies"`
-	Bin                map[string]string `json:"bin"`
-	Dist               DistInfo          `json:"dist"`
+	// Bin 可为字符串（单入口，如 "./bin/x.js"）或 map（名称 → 路径）。
+	// 用 RawMessage 兼容两种形态；当前安装流程不使用该字段。
+	Bin  json.RawMessage `json:"bin"`
+	Dist DistInfo        `json:"dist"`
 }
 
 // DistInfo 描述发布产物（tarball）。
@@ -41,9 +43,9 @@ type DistInfo struct {
 
 // Metadata 是包元数据（registry 的 package document）。
 type Metadata struct {
-	Name     string                  `json:"name"`
-	DistTags map[string]string       `json:"dist-tags"`
-	Versions map[string]VersionInfo  `json:"versions"`
+	Name     string                 `json:"name"`
+	DistTags map[string]string      `json:"dist-tags"`
+	Versions map[string]VersionInfo `json:"versions"`
 }
 
 // Client 是 npm registry 客户端。

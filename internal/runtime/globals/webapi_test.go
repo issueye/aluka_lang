@@ -52,6 +52,25 @@ globalThis.__r = u.protocol + '|' + u.hostname + '|' + u.port + '|' + u.host + '
 	}
 }
 
+func TestDOMExceptionAndSubclass(t *testing.T) {
+	ctx := newWebAPITestContext(t)
+	if err := NewDOMException(ctx, DOMExceptionConfig{}); err != nil {
+		t.Fatalf("NewDOMException: %v", err)
+	}
+	got := webGet(t, ctx, `
+class CustomDOMException extends DOMException {
+  get reason() { return 'custom'; }
+}
+var direct = new DOMException('stopped', 'AbortError');
+var custom = new CustomDOMException('bad', 'NetworkError');
+globalThis.__r = direct.name + '|' + direct.message + '|' + direct.code + '|' +
+  (direct instanceof Error) + '|' + custom.reason + '|' + (custom instanceof DOMException);
+`, "__r")
+	if got != "AbortError|stopped|20|true|custom|true" {
+		t.Errorf("DOMException = %q", got)
+	}
+}
+
 // TestURLRelativeBase 验证相对解析。
 func TestURLRelativeBase(t *testing.T) {
 	ctx := newWebAPITestContext(t)

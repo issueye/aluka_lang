@@ -267,6 +267,9 @@ func registerRuntimeGlobals(ctx engine.Context) error {
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())
 	_ = ctx.Global().Set("global", ctx.Global())
+	if err := globals.NewPerformance(ctx, globals.PerformanceConfig{}); err != nil {
+		return fmt.Errorf("register performance: %w", err)
+	}
 	if err := globals.NewTimers(ctx, globals.TimerConfig{}); err != nil {
 		return fmt.Errorf("register timers: %w", err)
 	}
@@ -287,6 +290,9 @@ func registerRuntimeGlobals(ctx engine.Context) error {
 	}
 	if err := globals.NewEvent(ctx, globals.EventConfig{}); err != nil {
 		return fmt.Errorf("register Event: %w", err)
+	}
+	if err := globals.NewDOMException(ctx, globals.DOMExceptionConfig{}); err != nil {
+		return fmt.Errorf("register DOMException: %w", err)
 	}
 	if err := globals.NewFetch(ctx, globals.FetchConfig{}); err != nil {
 		return fmt.Errorf("register fetch: %w", err)
@@ -345,6 +351,9 @@ func execute(code string, filename string, vm bool) error {
 	// 注册 globalThis 引用
 	_ = ctx.Global().Set("globalThis", ctx.Global())
 	_ = ctx.Global().Set("global", ctx.Global())
+	if err := globals.NewPerformance(ctx, globals.PerformanceConfig{}); err != nil {
+		return fmt.Errorf("register performance: %w", err)
+	}
 
 	// 注册定时器（事件循环基础设施，-e 模式同样需要）。
 	if err := globals.NewTimers(ctx, globals.TimerConfig{}); err != nil {
@@ -371,6 +380,9 @@ func execute(code string, filename string, vm bool) error {
 	}
 	if err := globals.NewEvent(ctx, globals.EventConfig{}); err != nil {
 		return fmt.Errorf("register Event: %w", err)
+	}
+	if err := globals.NewDOMException(ctx, globals.DOMExceptionConfig{}); err != nil {
+		return fmt.Errorf("register DOMException: %w", err)
 	}
 
 	// 注册 Web API 全局（-e 模式同样需要）。

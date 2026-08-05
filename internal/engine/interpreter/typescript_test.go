@@ -40,6 +40,13 @@ func TestTSTypeAnnotationFuncParams(t *testing.T) {
 	}
 }
 
+func TestTSCatchBindingTypeAnnotation(t *testing.T) {
+	got := vmEvalStr(t, `try { throw new Error("boom") } catch (err: unknown) { err.message }`)
+	if got != "boom" {
+		t.Errorf("typed catch binding = %q, want boom", got)
+	}
+}
+
 func TestTSTypeAnnotationClassFields(t *testing.T) {
 	code := `
 class Point {
@@ -54,6 +61,45 @@ p.sum();
 	got := vmEvalStr(t, code)
 	if got != "15" {
 		t.Errorf("Point.sum = %q, want 15", got)
+	}
+}
+
+func TestComputedClassFields(t *testing.T) {
+	code := `
+let calls = 0;
+const instanceKey = Symbol("instance");
+const staticKey = "static";
+function key() { calls++; return instanceKey; }
+class Box {
+  [key()] = 41;
+  static [staticKey] = 1;
+}
+const a = new Box();
+const b = new Box();
+a[instanceKey] + b[instanceKey] + Box[staticKey] + ":" + calls;
+`
+	if got := vmEvalStr(t, code); got != "83:1" {
+		t.Errorf("computed class fields = %q, want 83:1", got)
+	}
+}
+
+func TestPrivateClassFieldsWithoutSemicolons(t *testing.T) {
+	code := `
+class Probe {
+  #maxSize = 1024 * 1024
+  #size = 0
+  #controller = null
+
+  update(err, chunk) {
+    err = this.#controller?.reason ?? err
+    this.#size = this.#size + chunk.length
+    return err + ":" + (this.#size < this.#maxSize)
+  }
+}
+new Probe().update("fallback", { length: 1 })
+`
+	if got := vmEvalStr(t, code); got != "fallback:true" {
+		t.Errorf("private fields without semicolons = %q, want fallback:true", got)
 	}
 }
 

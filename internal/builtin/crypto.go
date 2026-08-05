@@ -35,6 +35,45 @@ import (
 func NewCrypto(ctx engine.Context) (engine.Value, error) {
 	m := engine.NewObject()
 
+	// --- getHashes / hash ---
+	// undici and other Node packages use these convenience APIs for one-shot
+	// integrity checks. Keep the list deterministic and limited to algorithms
+	// implemented by this runtime.
+	_ = m.Set("getHashes", engine.NewFunction("getHashes", func(args []engine.Value) (engine.Value, error) {
+		return engine.NewArray([]engine.Value{
+			engine.Str("md5"), engine.Str("sha1"), engine.Str("sha256"),
+			engine.Str("sha384"), engine.Str("sha512"),
+		}), nil
+	}))
+	_ = m.Set("hash", engine.NewFunction("hash", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("hash: algorithm and data required")
+		}
+		h, err := newDigest(args[0].String())
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		data, err := cryptoBytes(args[1])
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		_, _ = h.Write(data)
+		sum := h.Sum(nil)
+		if len(args) > 2 && !args[2].IsUndefined() && !args[2].IsNull() {
+			switch encoding := args[2].String(); encoding {
+			case "buffer":
+				return globals.NewBufferInstance(sum), nil
+			case "hex":
+				return engine.Str(hex.EncodeToString(sum)), nil
+			case "base64":
+				return engine.Str(base64Encode(sum)), nil
+			default:
+				return engine.Undefined(), fmt.Errorf("hash: unsupported output encoding %q", encoding)
+			}
+		}
+		return globals.NewBufferInstance(sum), nil
+	}))
+
 	// --- createHash ---
 	_ = m.Set("createHash", engine.NewFunction("createHash", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
@@ -204,6 +243,8 @@ func newDigest(algorithm string) (hash.Hash, error) {
 		return sha1.New(), nil
 	case "sha256":
 		return sha256.New(), nil
+	case "sha384":
+		return sha512.New384(), nil
 	case "sha512":
 		return sha512.New(), nil
 	default:
@@ -445,7 +486,7 @@ func parseScryptArgs(args []engine.Value) (password, salt []byte, keylen, N, r, 
 
 // cryptoBytes 把参数转为字节（Buffer 或字符串）。
 func cryptoBytes(v engine.Value) ([]byte, error) {
-	if b, ok := engine.AsBuffer(v); ok {
+	if b, ok := engine.AsBytes(v); ok {
 		return b, nil
 	}
 	return []byte(v.String()), nil

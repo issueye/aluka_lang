@@ -232,12 +232,9 @@ func (r *Resolver) readPackageType(dir string) string {
 // resolveBare resolves a bare specifier (e.g. "lodash") by walking up
 // the directory tree looking for node_modules/<specifier>.
 func (r *Resolver) resolveBare(specifier, parentPath string) (string, error) {
-	// Split package name and subpath (e.g. "lodash/fp" → "lodash", "fp")
-	parts := strings.SplitN(specifier, "/", 2)
-	pkgName := parts[0]
-	subPath := ""
-	if len(parts) > 1 {
-		subPath = parts[1]
+	pkgName, subPath := splitPackageSpecifier(specifier)
+	if pkgName == "" {
+		return "", fmt.Errorf("module: invalid package specifier %q", specifier)
 	}
 
 	// Walk up from parentPath's directory looking for node_modules
@@ -250,6 +247,12 @@ func (r *Resolver) resolveBare(specifier, parentPath string) (string, error) {
 		candidate := filepath.Join(searchDir, "node_modules", filepath.FromSlash(pkgName))
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			// Found the package
+			if resolved, hasExports, err := r.resolvePackageExports(candidate, subPath); hasExports {
+				if err != nil {
+					return "", fmt.Errorf("module: package %q: %w", pkgName, err)
+				}
+				return resolved, nil
+			}
 			if subPath != "" {
 				target := filepath.Join(candidate, filepath.FromSlash(subPath))
 				return r.resolveFileOrDir(target)
@@ -266,6 +269,148 @@ func (r *Resolver) resolveBare(specifier, parentPath string) (string, error) {
 	}
 
 	return "", fmt.Errorf("module: cannot find package %q in node_modules", specifier)
+}
+
+// splitPackageSpecifier separates a bare package name from its subpath,
+// including scoped names such as @scope/pkg/feature.
+func splitPackageSpecifier(specifier string) (pkgName, subPath string) {
+	parts := strings.Split(specifier, "/")
+	if strings.HasPrefix(specifier, "@") {
+		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+			return "", ""
+		}
+		pkgName = parts[0] + "/" + parts[1]
+		if len(parts) > 2 {
+			subPath = strings.Join(parts[2:], "/")
+		}
+		return pkgName, subPath
+	}
+	if len(parts) == 0 || parts[0] == "" {
+		return "", ""
+	}
+	pkgName = parts[0]
+	if len(parts) > 1 {
+		subPath = strings.Join(parts[1:], "/")
+	}
+	return pkgName, subPath
+}
+
+// resolvePackageExports resolves package.json exports for the requested
+// package subpath. hasExports distinguishes an absent exports field (where
+// legacy main/index fallback applies) from an unexported subpath.
+func (r *Resolver) resolvePackageExports(pkgDir, subPath string) (resolved string, hasExports bool, err error) {
+	data, readErr := os.ReadFile(filepath.Join(pkgDir, "package.json"))
+	if readErr != nil {
+		return "", false, nil
+	}
+	var pkg struct {
+		Exports json.RawMessage `json:"exports"`
+	}
+	if json.Unmarshal(data, &pkg) != nil || len(pkg.Exports) == 0 || string(pkg.Exports) == "null" {
+		return "", false, nil
+	}
+
+	requestKey := "."
+	if subPath != "" {
+		requestKey = "./" + filepath.ToSlash(subPath)
+	}
+	rawTarget, ok := matchPackageExport(pkg.Exports, requestKey)
+	if !ok {
+		return "", true, fmt.Errorf("subpath %q is not exported", requestKey)
+	}
+	target := conditionalExportTarget(rawTarget)
+	if target == "" || !strings.HasPrefix(target, "./") {
+		return "", true, fmt.Errorf("subpath %q has no supported target", requestKey)
+	}
+	full := filepath.Join(pkgDir, filepath.FromSlash(strings.TrimPrefix(target, "./")))
+	resolved, resolveErr := r.resolveFileOrDir(full)
+	if resolveErr != nil {
+		return "", true, resolveErr
+	}
+	return resolved, true, nil
+}
+
+func matchPackageExport(exports json.RawMessage, requestKey string) (json.RawMessage, bool) {
+	var direct string
+	if json.Unmarshal(exports, &direct) == nil {
+		if requestKey == "." {
+			return exports, true
+		}
+		return nil, false
+	}
+
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(exports, &obj) != nil {
+		return nil, false
+	}
+	// An object without subpath keys is the conditional target for root.
+	hasSubpathKeys := false
+	for key := range obj {
+		if strings.HasPrefix(key, ".") {
+			hasSubpathKeys = true
+			break
+		}
+	}
+	if !hasSubpathKeys {
+		if requestKey == "." {
+			return exports, true
+		}
+		return nil, false
+	}
+	if raw, ok := obj[requestKey]; ok {
+		return raw, true
+	}
+
+	bestKey := ""
+	bestMatch := ""
+	for key := range obj {
+		star := strings.IndexByte(key, '*')
+		if star < 0 {
+			continue
+		}
+		prefix, suffix := key[:star], key[star+1:]
+		if strings.HasPrefix(requestKey, prefix) && strings.HasSuffix(requestKey, suffix) && len(key) > len(bestKey) {
+			bestKey = key
+			bestMatch = requestKey[len(prefix) : len(requestKey)-len(suffix)]
+		}
+	}
+	if bestKey == "" {
+		return nil, false
+	}
+	raw := obj[bestKey]
+	target := conditionalExportTarget(raw)
+	if target == "" {
+		return nil, false
+	}
+	replaced, _ := json.Marshal(strings.ReplaceAll(target, "*", bestMatch))
+	return replaced, true
+}
+
+func conditionalExportTarget(raw json.RawMessage) string {
+	var target string
+	if json.Unmarshal(raw, &target) == nil {
+		return target
+	}
+	var alternatives []json.RawMessage
+	if json.Unmarshal(raw, &alternatives) == nil {
+		for _, alternative := range alternatives {
+			if target := conditionalExportTarget(alternative); target != "" {
+				return target
+			}
+		}
+		return ""
+	}
+	var conditions map[string]json.RawMessage
+	if json.Unmarshal(raw, &conditions) == nil {
+		for _, condition := range []string{"node", "import", "require", "default"} {
+			if value, ok := conditions[condition]; ok {
+				if target := conditionalExportTarget(value); target != "" {
+					return target
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // ModuleType determines the module type for a file path.

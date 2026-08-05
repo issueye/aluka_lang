@@ -285,6 +285,43 @@ func (l *Loader) makeImportFunc(modulePath string) engine.Function {
 	})
 }
 
+// makeImportMetaFunc 构造 import.meta 元数据访问函数（__importMeta()）。
+// 返回当前模块的元数据对象：{ url, dirname, filename, resolve }。
+// parser 把 import.meta lower 为对全局 __importMeta() 的调用。
+func (l *Loader) makeImportMetaFunc(modulePath string) engine.Value {
+	meta := engine.NewObject()
+	fileURL := pathToFileURLString(modulePath)
+	_ = meta.Set("url", engine.Str(fileURL))
+	_ = meta.Set("dirname", engine.Str(filepath.Dir(modulePath)))
+	_ = meta.Set("filename", engine.Str(modulePath))
+	_ = meta.Set("resolve", engine.NewFunction("resolve", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("import.meta.resolve: missing specifier")
+		}
+		resolved, err := l.resolver.Resolve(args[0].String(), modulePath)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		absPath, err := filepath.Abs(resolved)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.Str(pathToFileURLString(absPath)), nil
+	}))
+	return engine.NewFunction("__importMeta", func(args []engine.Value) (engine.Value, error) {
+		return meta, nil
+	})
+}
+
+// pathToFileURLString 将绝对路径转为 file:// URL（Windows 驱动器盘符带斜杠）。
+func pathToFileURLString(abs string) string {
+	slash := filepath.ToSlash(abs)
+	if len(slash) >= 2 && slash[1] == ':' {
+		slash = "/" + slash
+	}
+	return "file://" + slash
+}
+
 // requireWithAttributes 按 import attributes 加载模块：
 // type 为 "json" 时强制走 JSON 模块加载；"module" 或不指定走常规加载；
 // 其他 type 报错。

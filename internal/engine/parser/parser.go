@@ -191,6 +191,18 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 		}
 	}
 	t := p.peek()
+	// TypeScript ambient 声明：`declare function f(): T;` / `declare const x: T;`
+	// / `declare class C {}` / `declare namespace X {}`——无运行时语义，整体擦除。
+	if t.Type == lexer.TokenIdent && t.Value == "declare" {
+		nx := p.peekAt(1)
+		if nx.Type == lexer.TokenKeyword &&
+			(nx.Value == "function" || nx.Value == "const" || nx.Value == "let" ||
+				nx.Value == "var" || nx.Value == "class" || nx.Value == "enum" ||
+				nx.Value == "namespace" || nx.Value == "module" || nx.Value == "abstract") {
+			p.next() // 消费 'declare'
+			return p.skipAmbientDecl()
+		}
+	}
 	switch t.Type {
 	case lexer.TokenPunct:
 		switch t.Value {
@@ -217,10 +229,11 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 		case "class":
 			return p.parseClassDecl()
 		case "import":
-			// 动态 import(...) 作为表达式语句：import 后紧跟 "(" 时不是声明。
-			// 落到 parseExprStmt → parsePrimary 的 import 分支处理。
+			// 动态 import(...) / import.meta 作为表达式语句：
+			// import 后紧跟 "(" 或 "." 时不是声明，落到
+			// parseExprStmt → parsePrimary 的 import 分支处理。
 			next := p.peekAt(1)
-			if next.Type == lexer.TokenPunct && next.Value == "(" {
+			if next.Type == lexer.TokenPunct && (next.Value == "(" || next.Value == ".") {
 				break
 			}
 			return p.parseImportDecl()
@@ -282,6 +295,111 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 	}
 	// 表达式语句
 	return p.parseExprStmt()
+}
+
+// skipAmbientDecl 擦除 TypeScript `declare ...` 环境声明（无运行时语义）。
+// 已消费 `declare` 关键字；按声明种类跳过到语句/块结束。
+func (p *Parser) skipAmbientDecl() (ast.Statement, error) {
+	kw := p.next() // function/const/let/var/class/enum/namespace/module/abstract
+	switch kw.Value {
+	case "function":
+		// 函数名（可选）。
+		if p.peek().Type == lexer.TokenIdent || p.peek().Type == lexer.TokenKeyword {
+			p.next()
+		}
+		if err := p.skipTypeParameters(); err != nil {
+			return nil, err
+		}
+		if err := p.skipBalanced("(", ")"); err != nil {
+			return nil, err
+		}
+		if err := p.parseTypeAnnotation(); err != nil {
+			return nil, err
+		}
+		if err := p.consumeSemicolon(); err != nil {
+			return nil, err
+		}
+	case "class":
+		// 类名 + 泛型 + 可选 extends + implements + 类体。
+		if p.peek().Type == lexer.TokenIdent || p.peek().Type == lexer.TokenKeyword {
+			p.next()
+		}
+		if err := p.skipTypeParameters(); err != nil {
+			return nil, err
+		}
+		if p.matchKeyword("extends") {
+			if _, err := p.parseCallMember(); err != nil {
+				return nil, err
+			}
+			if err := p.skipTypeParameters(); err != nil {
+				return nil, err
+			}
+		}
+		if err := p.skipImplementsClause(); err != nil {
+			return nil, err
+		}
+		if _, err := p.parseClassBody(); err != nil {
+			return nil, err
+		}
+	case "namespace", "module":
+		// namespace/module 名（标识符或字符串）+ 可选块体。
+		if p.peek().Type == lexer.TokenIdent || p.peek().Type == lexer.TokenString {
+			p.next()
+		}
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
+			if _, err := p.parseBlock(); err != nil {
+				return nil, err
+			}
+		} else if err := p.consumeSemicolon(); err != nil {
+			return nil, err
+		}
+	default:
+		// const/let/var/enum/abstract：跳过绑定列表到分号。类型注解经
+		// parseTypeAnnotation 正确处理（对象/数组类型中的 `{`/`[` 是类型
+		// 而非代码块）。enum 声明体为 `{...}` 枚举成员，单独跳过。
+		if err := p.skipTypeParameters(); err != nil {
+			return nil, err
+		}
+		if kw.Value == "enum" {
+			if p.peek().Type == lexer.TokenIdent || p.peek().Type == lexer.TokenKeyword {
+				p.next() // 枚举名
+			}
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
+				if err := p.skipBalanced("{", "}"); err != nil {
+					return nil, err
+				}
+			} else if err := p.consumeSemicolon(); err != nil {
+				return nil, err
+			}
+			return &ast.EmptyStmt{Loc: posOf(p.peek())}, nil
+		}
+		for {
+			// 绑定名（标识符）或解构模式。
+			if p.peek().Type == lexer.TokenIdent || p.peek().Type == lexer.TokenKeyword {
+				p.next()
+			} else if p.peek().Type == lexer.TokenPunct && (p.peek().Value == "{" || p.peek().Value == "[") {
+				open := p.peek().Value
+				close := "]"
+				if open == "{" {
+					close = "}"
+				}
+				if err := p.skipBalanced(open, close); err != nil {
+					return nil, err
+				}
+			}
+			// 可选类型注解（declare 无初始化器）。
+			if err := p.parseTypeAnnotation(); err != nil {
+				return nil, err
+			}
+			if !p.matchPunct(",") {
+				break
+			}
+		}
+		if err := p.consumeSemicolon(); err != nil {
+			return nil, err
+		}
+	}
+	return &ast.EmptyStmt{Loc: posOf(p.peek())}, nil
 }
 
 // parseLabeled 解析标签语句 `name: statement`（如 OUTER: for (...) {...}）。
@@ -402,6 +520,20 @@ func (p *Parser) parseFunctionDecl(isExpr bool) (*ast.FunctionDecl, error) {
 	if err := p.skipTypeParameters(); err != nil {
 		return nil, err
 	}
+	// TypeScript 函数重载签名：function f(params): RetType;——无函数体，
+	// 返回空声明（编译期擦除）。lookahead 探测并回溯。
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+		savedPos := p.pos
+		if p.isOverloadSignature() {
+			return &ast.FunctionDecl{
+				Name:   name,
+				Params: nil,
+				Body:   &ast.BlockStmt{},
+				Loc:    posOf(t),
+			}, nil
+		}
+		p.pos = savedPos
+	}
 	p.genStack = append(p.genStack, isGenerator)
 	p.asyncStack = append(p.asyncStack, isAsync)
 	params, patterns, defaults, rest, body, err := p.parseFuncParamsAndBody()
@@ -414,12 +546,12 @@ func (p *Parser) parseFunctionDecl(isExpr bool) (*ast.FunctionDecl, error) {
 		Name:          name,
 		Params:        params,
 		ParamPatterns: patterns,
-		Defaults:    defaults,
-		RestParam:   rest,
-		Body:        body,
-		IsAsync:     isAsync,
-		IsGenerator: isGenerator,
-		Loc:         posOf(t),
+		Defaults:      defaults,
+		RestParam:     rest,
+		Body:          body,
+		IsAsync:       isAsync,
+		IsGenerator:   isGenerator,
+		Loc:           posOf(t),
 	}, nil
 }
 
@@ -504,17 +636,17 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Pattern, []a
 			} else {
 				defaults = append(defaults, nil)
 			}
-				if !p.matchPunct(",") {
-					break
-				}
-				// 尾部逗号：(a, b,) 合法（ES2017 trailing comma）。
-				if p.peek().Type == lexer.TokenPunct && p.peek().Value == ")" {
-					break
-				}
+			if !p.matchPunct(",") {
+				break
+			}
+			// 尾部逗号：(a, b,) 合法（ES2017 trailing comma）。
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == ")" {
+				break
 			}
 		}
-		if err := p.expectPunct(")"); err != nil {
-			return nil, nil, nil, nil, nil, err
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, nil, nil, nil, nil, err
 	}
 	// TypeScript: optional return type annotation `: T` before the body.
 	if err := p.parseTypeAnnotation(); err != nil {
@@ -840,6 +972,11 @@ func (p *Parser) parseTry() (*ast.TryStmt, error) {
 				return nil, err
 			}
 			handler.Param = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+			// TypeScript permits a type annotation on catch bindings. It has no
+			// runtime meaning and is erased before parsing the catch body.
+			if err := p.parseTypeAnnotation(); err != nil {
+				return nil, err
+			}
 			if err := p.expectPunct(")"); err != nil {
 				return nil, err
 			}
@@ -1097,11 +1234,10 @@ func (p *Parser) tryParseAsyncArrow() (ast.Expression, bool, error) {
 		}
 	}
 
-	// `async (...) => ...`
+	// `async (...) => ...`（允许返回类型注解 `: T`）。
 	if t.Type == lexer.TokenPunct && t.Value == "(" {
 		if endIdx, ok := p.findMatchingParen(p.pos); ok {
-			afterParen := p.peekAt(endIdx - p.pos + 1)
-			if afterParen.Type == lexer.TokenPunct && afterParen.Value == "=>" {
+			if p.arrowAfterParen(endIdx) {
 				// It's an async arrow with parens. Reuse parseArrowWithParens
 				// but we've already consumed `async`; that's fine because
 				// parseArrowWithParens starts at `(`.
@@ -1195,7 +1331,33 @@ func (p *Parser) arrowAfterParen(endIdx int) bool {
 		switch tk.Value {
 		case "{", "(", "[", "<":
 			depth++
-		case "}", ")", "]", ">":
+		case "}":
+			if depth > 0 {
+				depth--
+			}
+		case ")", "]":
+			if depth > 0 {
+				depth--
+			}
+		case ">":
+			if depth > 0 {
+				depth--
+			}
+		case ">>", ">=":
+			// 嵌套泛型闭合产生 `>>`（如 Pick<T, K>）——按两个 `>` 减深度。
+			if depth > 0 {
+				depth--
+			}
+			if depth > 0 {
+				depth--
+			}
+		case ">>>":
+			if depth > 0 {
+				depth--
+			}
+			if depth > 0 {
+				depth--
+			}
 			if depth > 0 {
 				depth--
 			}
@@ -1502,17 +1664,6 @@ func (p *Parser) parseMemberTail(expr ast.Expression) (ast.Expression, error) {
 			p.next()
 			continue
 		}
-		// 私有名称成员访问：this.#field（'#' 前缀的 TokenIdent，不带点）。
-		if t.Type == lexer.TokenIdent && len(t.Value) > 0 && t.Value[0] == '#' {
-			p.next()
-			expr = &ast.MemberExpr{
-				Object:   expr,
-				Property: &ast.Identifier{Name: t.Value, Loc: posOf(t)},
-				Computed: false,
-				Loc:      posOf(t),
-			}
-			continue
-		}
 		if t.Type != lexer.TokenPunct {
 			return expr, nil
 		}
@@ -1693,6 +1844,12 @@ func (p *Parser) parseTemplateLit(cooked, raw string, loc ast.Pos) (*ast.Templat
 			if err != nil {
 				return nil, err
 			}
+			// Template interpolation is part of the surrounding grammar context.
+			// Preserve async/generator and module state so await/yield are parsed
+			// exactly as they would be outside the template literal.
+			sub.asyncStack = append([]bool(nil), p.asyncStack...)
+			sub.genStack = append([]bool(nil), p.genStack...)
+			sub.allowTopLevelAwait = p.allowTopLevelAwait
 			expr, err := sub.parseExpression()
 			if err != nil {
 				return nil, fmt.Errorf("template literal expression %q: %w", exprSrc, err)
@@ -1829,6 +1986,24 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 		case "new":
 			return p.parseNew()
 		case "import":
+			// import.meta —— 模块元数据。lower 为对内置全局 __importMeta() 的
+			// 调用；后续 .url / .dirname / .resolve 由 parseCallMember 的
+			// parseMemberTail 接续解析。__importMeta 由模块加载器在 setGlobals
+			// 时注入（返回当前模块的元数据对象）。
+			nx := p.peekAt(1)
+			if nx.Type == lexer.TokenPunct && nx.Value == "." {
+				p.next() // import
+				p.next() // .
+				prop := p.next()
+				if prop.Type != lexer.TokenIdent || prop.Value != "meta" {
+					return nil, p.errorf(prop, "expected 'meta' after 'import.'")
+				}
+				return &ast.CallExpr{
+					Callee:    &ast.Identifier{Name: "__importMeta", Loc: posOf(prop)},
+					Arguments: nil,
+					Loc:       posOf(prop),
+				}, nil
+			}
 			// 动态 import(specifier)：在 parser 层直接 lower 为对内置全局
 			// __import 的调用，复用现有 CallExpr 编译链路。__import 由模块
 			// 加载器在 setGlobals 时注入，返回 Promise<module exports>。
@@ -2176,9 +2351,18 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 		return &ast.ExportDefaultDecl{Expression: expr, Loc: posOf(t)}, nil
 	}
 
-	// export * from 'mod'
+	// export * from 'mod' / export * as ns from 'mod'
 	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "*" {
 		p.next() // consume '*'
+		starName := ""
+		if p.matchIdent("as") {
+			// export * as ns from 'mod' —— 命名空间重导出。
+			nameTok, err := p.expect(lexer.TokenIdent, "")
+			if err != nil {
+				return nil, err
+			}
+			starName = nameTok.Value
+		}
 		if !p.matchIdent("from") {
 			return nil, p.errorf(p.peek(), "expected 'from' after '*' in export")
 		}
@@ -2189,13 +2373,21 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 		if err := p.consumeSemicolon(); err != nil {
 			return nil, err
 		}
-		return &ast.ExportDecl{IsStar: true, Source: src, Loc: posOf(t)}, nil
+		return &ast.ExportDecl{IsStar: true, StarName: starName, Source: src, Loc: posOf(t)}, nil
 	}
 
 	// export {a, b as c} [from 'mod']
 	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
 		p.next() // consume '{'
 		decl := &ast.ExportDecl{Loc: posOf(t)}
+		// 空导出：export {}（仅类型标记，无运行时导出）。
+		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "}" {
+			p.next() // consume '}'
+			if err := p.consumeSemicolon(); err != nil {
+				return nil, err
+			}
+			return decl, nil
+		}
 		for {
 			// TypeScript: `type` prefix on individual specifiers — erase them.
 			isTypeSpec := false
@@ -2360,6 +2552,10 @@ func (p *Parser) parseClassTail() (ast.Expression, *ast.ClassBody, error) {
 			return nil, nil, err
 		}
 		super = s
+		// TypeScript: extends Super<T, U> —— 跳过泛型实参。
+		if err := p.skipTypeParameters(); err != nil {
+			return nil, nil, err
+		}
 		// TypeScript: skip `implements I1, I2, ...` clauses.
 		if err := p.skipImplementsClause(); err != nil {
 			return nil, nil, err
@@ -2571,6 +2767,12 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 		p.next() // consume ? or !
 	}
 
+	// TypeScript: 泛型方法 method<T extends X>(...)——跳过类型参数
+	//（非 `<` 时安全返回，不影响普通方法/字段）。
+	if err := p.skipTypeParameters(); err != nil {
+		return def, err
+	}
+
 	// 抽象方法：abstract doRender(): void;——无函数体，跳过 (params) +
 	// 返回类型注解 + 分号。以 MethodField（无 init）返回，编译器全部跳过。
 	if isAbstract && p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
@@ -2614,6 +2816,19 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 		return def, nil
 	}
 
+	// TypeScript 方法重载签名：method<T>(params): RetType;——无函数体，
+	// 编译期擦除为 MethodField（不构造方法）。lookahead 探测并回溯。
+	{
+		savedPos := p.pos
+		if p.isOverloadSignature() {
+			def.Key = key
+			def.Kind = ast.MethodField
+			def.Computed = computed
+			return def, nil
+		}
+		p.pos = savedPos
+	}
+
 	// Parse the method body using the standard function-params-and-body rule.
 	p.genStack = append(p.genStack, isGenerator)
 	p.asyncStack = append(p.asyncStack, isAsync)
@@ -2627,17 +2842,37 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 		Params:        params,
 		ParamPatterns: patterns,
 		Defaults:      defaults,
-		RestParam: rest,
-		Body:      body,
-		IsAsync:   isAsync,
-		IsGenerator: isGenerator,
-		Loc:       posOf(t),
+		RestParam:     rest,
+		Body:          body,
+		IsAsync:       isAsync,
+		IsGenerator:   isGenerator,
+		Loc:           posOf(t),
 	}
 	def.Key = key
 	def.Value = fn
 	def.Kind = kind
 	def.Computed = computed
 	return def, nil
+}
+
+// isOverloadSignature 判断当前是否为方法重载签名（无函数体，以 ';' 结尾）：
+//
+//	method<T>(params): RetType;
+//
+// 从当前位置消费 (params) 与可选返回类型注解后，若下一 token 为 ';' 则返回 true
+// 且位置停在 ';' 之后；否则返回 false（位置由调用方回溯）。
+func (p *Parser) isOverloadSignature() bool {
+	if err := p.skipBalanced("(", ")"); err != nil {
+		return false
+	}
+	if err := p.parseTypeAnnotation(); err != nil {
+		return false
+	}
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == ";" {
+		p.next() // consume ;
+		return true
+	}
+	return false
 }
 
 func (p *Parser) parseNew() (ast.Expression, error) {
@@ -2760,6 +2995,7 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 			}
 			obj.Properties = append(obj.Properties, ast.Property{Value: expr, Kind: ast.PropertySpread, Loc: posOf(t)})
 		} else {
+			generatorMethod := p.matchPunct("*")
 			propTok := p.peek()
 			var key ast.Expression
 			computedKey := false
@@ -2797,7 +3033,12 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 			kind := ast.PropertyInit
 			if id, ok := key.(*ast.Identifier); ok {
 				// async method shorthand: `async foo() {}`
-				if id.Name == "async" && p.peek().Type != lexer.TokenPunct {
+				asyncGenerator := false
+				if id.Name == "async" && p.peek().Type == lexer.TokenPunct && p.peek().Value == "*" {
+					p.next()
+					asyncGenerator = true
+				}
+				if id.Name == "async" && (asyncGenerator || p.peek().Type != lexer.TokenPunct) {
 					methodTok := p.next()
 					var methodKey ast.Expression
 					if methodTok.Type == lexer.TokenIdent || methodTok.Type == lexer.TokenKeyword {
@@ -2807,13 +3048,18 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 					} else {
 						return nil, p.errorf(methodTok, "invalid async method name")
 					}
+					if err := p.skipTypeParameters(); err != nil {
+						return nil, err
+					}
 					p.asyncStack = append(p.asyncStack, true)
+					p.genStack = append(p.genStack, asyncGenerator)
 					params, patterns, defaults, rest, body, err := p.parseFuncParamsAndBody()
+					p.genStack = p.genStack[:len(p.genStack)-1]
 					p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
 					if err != nil {
 						return nil, err
 					}
-					fn := &ast.FunctionExpr{Params: params, ParamPatterns: patterns, Defaults: defaults, RestParam: rest, Body: body, IsAsync: true, Loc: posOf(methodTok)}
+					fn := &ast.FunctionExpr{Params: params, ParamPatterns: patterns, Defaults: defaults, RestParam: rest, Body: body, IsAsync: true, IsGenerator: asyncGenerator, Loc: posOf(methodTok)}
 					obj.Properties = append(obj.Properties, ast.Property{Key: methodKey, Value: fn, Kind: ast.PropertyMethod, Loc: posOf(propTok)})
 					if !p.matchPunct(",") {
 						break
@@ -2849,14 +3095,21 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 					continue
 				}
 			}
+			// TypeScript generic object methods: `{ method<T>(value: T) {} }`.
+			// Type parameters are erased before parsing the runtime signature.
+			if err := p.skipTypeParameters(); err != nil {
+				return nil, err
+			}
 			// 普通 init 或 method shorthand
-			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+			if generatorMethod || (p.peek().Type == lexer.TokenPunct && p.peek().Value == "(") {
 				// method shorthand
+				p.genStack = append(p.genStack, generatorMethod)
 				params, patterns, defaults, rest, body, err := p.parseFuncParamsAndBody()
+				p.genStack = p.genStack[:len(p.genStack)-1]
 				if err != nil {
 					return nil, err
 				}
-				fn := &ast.FunctionExpr{Params: params, ParamPatterns: patterns, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(propTok)}
+				fn := &ast.FunctionExpr{Params: params, ParamPatterns: patterns, Defaults: defaults, RestParam: rest, Body: body, IsGenerator: generatorMethod, Loc: posOf(propTok)}
 				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: fn, Kind: ast.PropertyMethod, Computed: computedKey, Loc: posOf(propTok)})
 			} else if p.matchPunct(":") {
 				val, err := p.parseAssignment()
@@ -2957,19 +3210,31 @@ func (p *Parser) parseObjectPattern() (*ast.ObjectPattern, error) {
 		// key
 		keyTok := p.peek()
 		var key ast.Expression
-		switch keyTok.Type {
-		case lexer.TokenIdent, lexer.TokenKeyword:
-			p.next()
-			key = &ast.Identifier{Name: keyTok.Value, Loc: posOf(keyTok)}
-		case lexer.TokenString:
-			p.next()
-			key = &ast.StringLit{Value: keyTok.Value, Loc: posOf(keyTok)}
-		case lexer.TokenNumber:
-			p.next()
-			v, _ := parseNumberLiteral(keyTok.Value)
-			key = &ast.NumberLit{Value: v, Raw: keyTok.Value, Loc: posOf(keyTok)}
-		default:
-			return nil, p.errorf(keyTok, "invalid property name in object pattern")
+		if p.matchPunct("[") {
+			computedKey, err := p.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectPunct("]"); err != nil {
+				return nil, err
+			}
+			key = computedKey
+			prop.Computed = true
+		} else {
+			switch keyTok.Type {
+			case lexer.TokenIdent, lexer.TokenKeyword:
+				p.next()
+				key = &ast.Identifier{Name: keyTok.Value, Loc: posOf(keyTok)}
+			case lexer.TokenString:
+				p.next()
+				key = &ast.StringLit{Value: keyTok.Value, Loc: posOf(keyTok)}
+			case lexer.TokenNumber:
+				p.next()
+				v, _ := parseNumberLiteral(keyTok.Value)
+				key = &ast.NumberLit{Value: v, Raw: keyTok.Value, Loc: posOf(keyTok)}
+			default:
+				return nil, p.errorf(keyTok, "invalid property name in object pattern")
+			}
 		}
 		prop.Key = key
 		if p.matchPunct(":") {
@@ -2986,6 +3251,8 @@ func (p *Parser) parseObjectPattern() (*ast.ObjectPattern, error) {
 				}
 				prop.Default = def
 			}
+		} else if prop.Computed {
+			return nil, p.errorf(p.peek(), "computed property in object pattern requires a target")
 		} else if p.matchPunct("=") {
 			// shorthand with default: name = default
 			prop.Value = &ast.Identifier{Name: keyTok.Value, Loc: posOf(keyTok)}
@@ -3538,6 +3805,16 @@ func (p *Parser) parseTypeAnnotation() error {
 	if !p.matchPunct(":") {
 		return nil
 	}
+	// TypeScript 类型谓词返回注解：(provider): provider is X => ...——
+	// 跳过 `paramName is TypeExpr` 谓词部分。
+	if p.peek().Type == lexer.TokenIdent {
+		nx := p.peekAt(1)
+		if nx.Type == lexer.TokenIdent && nx.Value == "is" {
+			p.next() // 谓词参数名
+			p.next() // is
+			return p.skipType()
+		}
+	}
 	return p.skipType()
 }
 
@@ -3660,6 +3937,28 @@ func (p *Parser) skipTypeAtom() (bool, error) {
 	case lexer.TokenString, lexer.TokenNumber:
 		p.next()
 	case lexer.TokenKeyword:
+		if t.Value == "import" && p.peekAt(1).Type == lexer.TokenPunct && p.peekAt(1).Value == "(" {
+			p.next() // import
+			p.next() // (
+			if _, err := p.expect(lexer.TokenString, ""); err != nil {
+				return false, err
+			}
+			if err := p.expectPunct(")"); err != nil {
+				return false, err
+			}
+			for p.peek().Type == lexer.TokenPunct && p.peek().Value == "." {
+				p.next()
+				if _, err := p.expect(lexer.TokenIdent, ""); err != nil {
+					return false, err
+				}
+			}
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "<" {
+				if err := p.skipAngleBraces(); err != nil {
+					return false, err
+				}
+			}
+			break
+		}
 		// true/false/null/undefined are value literals; other keywords
 		// (number/string/boolean/any/unknown/void/never/object/symbol/bigint/
 		// in/out/const/abstract) are type primitives.
@@ -3778,32 +4077,28 @@ func (p *Parser) skipAngleBraces() error {
 				depth--
 				p.next()
 			case ">>":
-				// Two closing angles: consume one, rewrite remaining as '>'.
-				depth--
-				if depth >= 1 {
-					depth--
-				}
-				if depth > 0 {
+				// Consume at most two generic closers. If the current generic
+				// only needs one, preserve the second '>' for the outer JS
+				// expression instead of inventing an extra closer.
+				if depth >= 2 {
+					depth -= 2
+					p.next()
+				} else {
+					depth = 0
 					p.tokens[p.pos] = lexer.Token{
 						Type: lexer.TokenPunct, Value: ">", Line: t.Line, Col: t.Col,
 					}
-				} else {
-					p.next()
 				}
 			case ">>>":
-				depth--
-				if depth >= 1 {
-					depth--
-				}
-				if depth >= 1 {
-					depth--
-				}
-				if depth > 0 {
-					p.tokens[p.pos] = lexer.Token{
-						Type: lexer.TokenPunct, Value: ">>", Line: t.Line, Col: t.Col,
-					}
-				} else {
+				if depth >= 3 {
+					depth -= 3
 					p.next()
+				} else {
+					remaining := 3 - depth
+					depth = 0
+					p.tokens[p.pos] = lexer.Token{
+						Type: lexer.TokenPunct, Value: strings.Repeat(">", remaining), Line: t.Line, Col: t.Col,
+					}
 				}
 			case ">=":
 				// T >= U shouldn't appear in type position; treat as `>` then `=`.
@@ -3812,12 +4107,16 @@ func (p *Parser) skipAngleBraces() error {
 					Type: lexer.TokenPunct, Value: "=", Line: t.Line, Col: t.Col,
 				}
 			case ">>=":
-				depth--
-				if depth >= 1 {
-					depth--
-				}
-				p.tokens[p.pos] = lexer.Token{
-					Type: lexer.TokenPunct, Value: "=", Line: t.Line, Col: t.Col,
+				if depth >= 2 {
+					depth -= 2
+					p.tokens[p.pos] = lexer.Token{
+						Type: lexer.TokenPunct, Value: "=", Line: t.Line, Col: t.Col,
+					}
+				} else {
+					depth = 0
+					p.tokens[p.pos] = lexer.Token{
+						Type: lexer.TokenPunct, Value: ">=", Line: t.Line, Col: t.Col,
+					}
 				}
 			default:
 				p.next()

@@ -226,6 +226,27 @@ func TestVMBreakContinue(t *testing.T) {
 	}
 }
 
+func TestVMFunctionLoopControlFlowIsIsolated(t *testing.T) {
+	got := vmEvalStr(t, `
+var total = 0;
+for (var outer = 0; outer < 1; outer++) {
+  function nested() {
+    for (var i = 0; i < 2; i++) {
+      for (var j = 0; j < 2; j++) {
+        if (j === 0) continue;
+        total++;
+      }
+    }
+  }
+  nested();
+}
+total
+`)
+	if got != "2" {
+		t.Errorf("nested function loop control flow = %q, want 2", got)
+	}
+}
+
 // === Functions and closures ===============================================
 
 func TestVMFunction(t *testing.T) {
@@ -769,6 +790,33 @@ func TestVMObjectDestructuringRest(t *testing.T) {
 	}
 }
 
+func TestVMObjectDestructuringComputedProperties(t *testing.T) {
+	got := vmEvalStr(t, `
+const first = Symbol("first");
+const second = "second";
+const source = { [first]: 20, second: 22, keep: 1 };
+const { [first]: a, [second]: b, ...rest } = source;
+a + b + ":" + rest.keep + ":" + Object.keys(rest).length;
+`)
+	if got != "42:1:1" {
+		t.Errorf("computed object destructuring = %q, want 42:1:1", got)
+	}
+}
+
+func TestVMClassMethodDestructuringParameters(t *testing.T) {
+	got := vmEvalStr(t, `
+function fallback() { return 40; }
+class Example {
+  constructor({ factory = fallback } = {}) { this.factory = factory; }
+  add({ value }, [extra]) { return this.factory() + value + extra; }
+}
+new Example().add({ value: 1 }, [1]);
+`)
+	if got != "42" {
+		t.Errorf("class method destructuring parameters = %q, want 42", got)
+	}
+}
+
 // === Class syntax (ES2015) ===============================================
 
 func TestVMClassBasic(t *testing.T) {
@@ -966,6 +1014,42 @@ func TestVMClassExpression(t *testing.T) {
 	}
 }
 
+func TestVMNamedClassExpressionSelfReference(t *testing.T) {
+	got := vmEvalStr(t, `
+		var Inner = "outer";
+		var Factory = class Inner {
+			static create() { return new Inner(); }
+			constructor() { this.ctor = Inner; }
+		};
+		var value = Factory.create();
+		(value instanceof Factory) + ":" + (value.ctor === Factory) + ":" + Inner
+	`)
+	if got != "true:true:outer" {
+		t.Errorf("named class expression self reference = %q, want true:true:outer", got)
+	}
+}
+
+func TestVMArrayBufferIsView(t *testing.T) {
+	got := vmEvalStr(t, `
+		ArrayBuffer.isView(new Uint8Array(2)) + ":" +
+		ArrayBuffer.isView(new DataView(new ArrayBuffer(2))) + ":" +
+		ArrayBuffer.isView(new ArrayBuffer(2))
+	`)
+	if got != "true:true:false" {
+		t.Errorf("ArrayBuffer.isView = %q, want true:true:false", got)
+	}
+}
+
+func TestVMTypedArrayIterator(t *testing.T) {
+	got := vmEvalStr(t, `
+		var bytes = new Uint8Array([1, 2, 3]);
+		[...bytes].join(",")
+	`)
+	if got != "1,2,3" {
+		t.Errorf("typed array iterator = %q, want 1,2,3", got)
+	}
+}
+
 func TestVMClassStaticInheritance(t *testing.T) {
 	got := vmEvalStr(t, `
 		class Base {
@@ -976,6 +1060,26 @@ func TestVMClassStaticInheritance(t *testing.T) {
 	`)
 	if got != "base" {
 		t.Errorf("static inheritance = %q, want base", got)
+	}
+}
+
+func TestVMClassComputedMethodsPreserveInheritance(t *testing.T) {
+	got := vmEvalStr(t, `
+		const method = "computed";
+		const symbolMethod = Symbol("symbolMethod");
+		class Base {
+			base() { return "base"; }
+		}
+		class Sub extends Base {
+			constructor() { super(); }
+			[method]() { return this.base(); }
+			[symbolMethod]() { return "symbol"; }
+		}
+		const value = new Sub();
+		typeof value.base + ":" + value.computed() + ":" + value[symbolMethod]() + ":" + (value instanceof Sub)
+	`)
+	if got != "function:base:symbol:true" {
+		t.Errorf("computed methods with inheritance = %q, want function:base:symbol:true", got)
 	}
 }
 

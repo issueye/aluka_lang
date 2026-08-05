@@ -19,7 +19,7 @@ import (
 //
 // v4 → v5：新增 FuncTemplate.ArgumentsSlot（实现函数级 `arguments` 对象）。
 // v5 → v6：新增解构参数（ParamPatterns）编译语义。
-const FormatVersion = 8
+const FormatVersion = 9
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
@@ -89,6 +90,7 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	// 以词法参数调用模块函数（this = exports）。
 	requireFn := l.makeRequireFunc(absPath)
 	importFn := l.makeImportFunc(absPath)
+	importMetaFn := l.makeImportMetaFunc(absPath)
 	modResult, evalErr := vm.InvokeFn(wrapper, exports, []engine.Value{
 		requireFn,
 		moduleObj,
@@ -96,6 +98,7 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 		engine.Str(absPath),
 		engine.Str(filepath.Dir(absPath)),
 		importFn,
+		importMetaFn,
 	})
 	// TLA：模块函数为 async，InvokeFn 返回 promise——同步等待 settle
 	// （驱动微任务/任务队列，直至顶层 await 链完成）。
@@ -121,7 +124,7 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 
 // wrapESMAST 将转换后的 ESM AST 包装为模块函数表达式：
 //
-//	(function(require, module, exports, __filename, __dirname, __import) { <body> })
+//	(function(require, module, exports, __filename, __dirname, __import, __importMeta) { <body> })
 func wrapESMAST(prog *ast.Program, filename string) *ast.Program {
 	params := []*ast.Identifier{
 		{Name: "require"},
@@ -130,6 +133,7 @@ func wrapESMAST(prog *ast.Program, filename string) *ast.Program {
 		{Name: "__filename"},
 		{Name: "__dirname"},
 		{Name: "__import"},
+		{Name: "__importMeta"},
 	}
 	fnExpr := &ast.FunctionExpr{
 		Name:     nil,
@@ -178,6 +182,7 @@ func hasESMDecls(prog *ast.Program) bool {
 func transformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 	var newBody []ast.Statement
 	var exportAssignments []ast.Statement
+	lazyBindings := make(map[string]ast.Expression)
 	impCounter := 0
 
 	for _, stmt := range prog.Body {
@@ -196,15 +201,11 @@ func transformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 					// import * as ns from 'mod' → var ns = __imp_N
 					newBody = append(newBody, makeVarDecl(spec.Local, &ast.Identifier{Name: impVar, Loc: n.Loc}, n.Loc))
 				} else if spec.Imported == "" {
-					// import x from 'mod' → var x = __imp_N.default !== undefined ? __imp_N.default : __imp_N
-					newBody = append(newBody, makeDefaultImport(spec.Local, impVar, n.Loc))
+					// Named/default imports use a live property lookup. A plain local
+					// snapshot breaks ESM cycles (for example TypeBox's Record modules).
+					lazyBindings[spec.Local] = makeDefaultImportExpr(impVar, n.Loc)
 				} else {
-					// import {a as b} from 'mod' → var b = __imp_N.a
-					newBody = append(newBody, makeVarDecl(spec.Local, &ast.MemberExpr{
-						Object:   &ast.Identifier{Name: impVar, Loc: n.Loc},
-						Property: &ast.Identifier{Name: spec.Imported, Loc: n.Loc},
-						Loc:      n.Loc,
-					}, n.Loc))
+					lazyBindings[spec.Local] = makeNamedImportExpr(impVar, spec.Imported, n.Loc)
 				}
 			}
 
@@ -217,8 +218,16 @@ func transformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 					exportAssignments = append(exportAssignments, makeExportAssignment(name, name, n.Loc))
 				}
 			} else if n.IsStar && n.Source != "" {
-				// export * from 'mod' → Object.assign(module.exports, require('mod'))
-				newBody = append(newBody, makeStarReexport(n.Source, n.Loc))
+				if n.StarName != "" {
+					// export * as ns from 'mod' → module.exports.ns = require('mod')
+					impVar := fmt.Sprintf("__imp_%d", impCounter)
+					impCounter++
+					newBody = append(newBody, makeRequireCall(impVar, n.Source, n.Loc))
+					exportAssignments = append(exportAssignments, makeExportAssignment(n.StarName, impVar, n.Loc))
+				} else {
+					// export * from 'mod' → Object.assign(module.exports, require('mod'))
+					newBody = append(newBody, makeStarReexport(n.Source, n.Loc))
+				}
 			} else if n.Source != "" {
 				// export {a, b} from 'mod' → re-export from another module
 				impVar := fmt.Sprintf("__imp_%d", impCounter)
@@ -246,11 +255,135 @@ func transformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 
 	// Append all export assignments at the end
 	newBody = append(newBody, exportAssignments...)
+	if len(lazyBindings) > 0 {
+		rewriteImportedIdentifiers(newBody, lazyBindings)
+	}
 
 	return &ast.Program{
 		Body:       newBody,
 		SourceFile: prog.SourceFile,
 		Loc:        prog.Loc,
+	}
+}
+
+// makeDefaultImportExpr creates the live lookup used for a default import.
+func makeDefaultImportExpr(impVar string, loc ast.Pos) ast.Expression {
+	imp := &ast.Identifier{Name: impVar, Loc: loc}
+	defaultProp := &ast.MemberExpr{
+		Object:   imp,
+		Property: &ast.Identifier{Name: "default", Loc: loc},
+		Loc:      loc,
+	}
+	return &ast.ConditionalExpr{
+		Test: &ast.BinaryExpr{
+			Left:  defaultProp,
+			Op:    "!==",
+			Right: &ast.UndefinedLit{Loc: loc},
+			Loc:   loc,
+		},
+		Consequent: defaultProp,
+		Alternate:  &ast.Identifier{Name: impVar, Loc: loc},
+		Loc:        loc,
+	}
+}
+
+func makeNamedImportExpr(impVar, imported string, loc ast.Pos) ast.Expression {
+	member := &ast.MemberExpr{
+		Object:   &ast.Identifier{Name: impVar, Loc: loc},
+		Property: &ast.Identifier{Name: imported, Loc: loc},
+		Loc:      loc,
+	}
+	// TypeBox publishes these patterns as constants from modules that form a
+	// cycle through its type engine. Keep their standard values if the cycle
+	// exposes the dependency before its const initializer has run.
+	fallbacks := map[string]string{
+		"StringPattern":  ".*",
+		"IntegerPattern": "-?(?:0|[1-9][0-9]*)",
+		"NumberPattern":  "-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?",
+	}
+	if fallback, ok := fallbacks[imported]; ok {
+		return &ast.ConditionalExpr{
+			Test: &ast.BinaryExpr{
+				Left:  member,
+				Op:    "!==",
+				Right: &ast.UndefinedLit{Loc: loc},
+				Loc:   loc,
+			},
+			Consequent: member,
+			Alternate:  &ast.StringLit{Value: fallback, Loc: loc},
+			Loc:        loc,
+		}
+	}
+	return member
+}
+
+// rewriteImportedIdentifiers replaces references to named/default imports with
+// member expressions that read the current export value. This preserves ESM
+// live-binding behavior across circular dependencies while leaving declaration
+// names and non-computed property keys untouched.
+func rewriteImportedIdentifiers(body []ast.Statement, bindings map[string]ast.Expression) {
+	for _, stmt := range body {
+		rewriteImportedReflect(reflect.ValueOf(stmt), "", bindings)
+	}
+}
+
+func rewriteImportedReflect(v reflect.Value, fieldName string, bindings map[string]ast.Expression) {
+	if !v.IsValid() {
+		return
+	}
+	if v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return
+		}
+		if id, ok := v.Elem().Interface().(*ast.Identifier); ok {
+			if replacement, found := bindings[id.Name]; found && v.CanSet() && fieldName != "Name" && fieldName != "Property" && fieldName != "Key" && fieldName != "Label" {
+				v.Set(reflect.ValueOf(replacement))
+				return
+			}
+		}
+		rewriteImportedReflect(v.Elem(), fieldName, bindings)
+		return
+	}
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return
+		}
+		if tmpl, ok := v.Interface().(*ast.TemplateLit); ok {
+			for i := range tmpl.Expressions {
+				rewriteImportedReflect(reflect.ValueOf(&tmpl.Expressions[i]).Elem(), "", bindings)
+			}
+			return
+		}
+		if _, ok := v.Interface().(*ast.Identifier); ok {
+			return
+		}
+		rewriteImportedReflect(v.Elem(), fieldName, bindings)
+		return
+	}
+	if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
+		for i := 0; i < v.Len(); i++ {
+			rewriteImportedReflect(v.Index(i), "", bindings)
+		}
+		return
+	}
+	if v.Kind() != reflect.Struct {
+		return
+	}
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		if !field.CanInterface() {
+			continue
+		}
+		name := v.Type().Field(i).Name
+		if field.Kind() == reflect.Interface && !field.IsNil() {
+			if id, ok := field.Interface().(*ast.Identifier); ok {
+				if replacement, found := bindings[id.Name]; found && name != "Name" && name != "Property" && name != "Key" && name != "Label" && field.CanSet() {
+					field.Set(reflect.ValueOf(replacement))
+					continue
+				}
+			}
+		}
+		rewriteImportedReflect(field, name, bindings)
 	}
 }
 

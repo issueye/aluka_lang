@@ -349,11 +349,14 @@ func wildBounds(c Comparator) (Version, Version) {
 	default: // 1.2.3.x 等
 		hi.Patch = lo.Patch + 1
 	}
-	lo.Pre, hi.Pre = nil, nil
+	lo.Pre, hi.Pre = nil, []string{"0"}
 	return lo, hi
 }
 
 // caretBounds 计算 ^ 范围 [lo, hi)。
+// 下界保留 prerelease（^1.0.0-beta.2 应包含 1.0.0-beta.2 本身）；
+// 上界取下一大版本的 -0（最低预发布），排除 2.0.0-rc.1 等（npm 语义：
+// ^1.0.0 不匹配 2.0.0-0 及以上的任何版本）。
 func caretBounds(v Version) (Version, Version) {
 	lo, hi := v, v
 	switch {
@@ -364,11 +367,11 @@ func caretBounds(v Version) (Version, Version) {
 	default:
 		hi.Patch = v.Patch + 1
 	}
-	lo.Pre, hi.Pre = nil, nil
+	hi.Pre = []string{"0"}
 	return lo, hi
 }
 
-// tildeBounds 计算 ~ 范围 [lo, hi)。
+// tildeBounds 计算 ~ 范围 [lo, hi)。语义同 caretBounds（保留下界 prerelease）。
 func tildeBounds(v Version) (Version, Version) {
 	lo, hi := v, v
 	if v.Minor > 0 || v.Patch > 0 {
@@ -376,7 +379,7 @@ func tildeBounds(v Version) (Version, Version) {
 	} else {
 		hi.Major, hi.Minor, hi.Patch = v.Major+1, 0, 0
 	}
-	lo.Pre, hi.Pre = nil, nil
+	hi.Pre = []string{"0"}
 	return lo, hi
 }
 

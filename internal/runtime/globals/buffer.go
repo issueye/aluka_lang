@@ -33,13 +33,42 @@ type BufferConfig struct{}
 // 使 buf instanceof Buffer / Uint8Array 成立。
 var bufferProto engine.Object
 
-// NewBuffer 注册全局 Buffer 构造器（并注册 Uint8Array 兼容别名）。
+// bufferU8Ctor 是引擎 TypedArray 的 Uint8Array 构造器（存在时非 nil）。
+// Buffer 构造器对 ArrayBuffer/TypedArray 入参委托给它的视图语义。
+var bufferU8Ctor engine.Value
+
+// NewBuffer 注册全局 Buffer 构造器。若引擎已注册 TypedArray 的 Uint8Array
+//（interpreter setupTypedArrays），则保留它并把 Buffer 作为其子类
+//（Buffer.prototype → Uint8Array.prototype，buf instanceof Uint8Array 成立）；
+// 否则回退旧行为：Uint8Array 作为 Buffer 的别名。
 func NewBuffer(ctx engine.Context, cfg BufferConfig) error {
+	// 检测已注册的 TypedArray Uint8Array 构造器（有 BYTES_PER_ELEMENT 静态属性）。
+	taU8 := engine.Undefined()
+	if v, err := ctx.Global().Get("Uint8Array"); err == nil && v.IsFunction() {
+		if o, ok := v.AsObject(); ok {
+			if bpe, err := o.Get("BYTES_PER_ELEMENT"); err == nil && !bpe.IsUndefined() {
+				taU8 = v
+			}
+		}
+	}
+	bufferU8Ctor = taU8
+
 	ctor := newBufferExports()
 	if err := ctx.Global().Set("Buffer", ctor); err != nil {
 		return err
 	}
-	// Bun/Web API 中 Buffer 是 Uint8Array 子类：复用同一构造器。
+	if !taU8.IsUndefined() {
+		// TypedArray Uint8Array 保留为全局；Buffer.prototype 链接到其 prototype。
+		if o, ok := taU8.AsObject(); ok {
+			if up, err := o.Get("prototype"); err == nil && !up.IsUndefined() {
+				if upObj, ok := up.AsObject(); ok {
+					engine.SetProto(bufferProto, upObj)
+				}
+			}
+		}
+		return nil
+	}
+	// 旧路径：Buffer 与 Uint8Array 为同一构造器（Bun/Web API 语义）。
 	return ctx.Global().Set("Uint8Array", ctor)
 }
 
@@ -69,6 +98,15 @@ func newBufferExports() engine.Value {
 			return newBufferInstance(nil), nil
 		}
 		arg := args[0]
+		// Buffer(arrayBuffer | typedArray) → 委托 TypedArray Uint8Array 视图。
+		if f, ok := bufferU8Ctor.AsFunction(); ok {
+			if _, ok := engine.AsArrayBuffer(arg); ok {
+				return f.Call(args)
+			}
+			if _, ok := engine.AsTypedArray(arg); ok {
+				return f.Call(args)
+			}
+		}
 		if arg.Type() != engine.TypeBoolean && !arg.IsObject() && !arg.IsFunction() {
 			if n, ok := arg.Int(); ok {
 				if n < 0 {

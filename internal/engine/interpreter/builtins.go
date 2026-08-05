@@ -20,6 +20,7 @@ func (interp *Interpreter) setupBuiltins() {
 	interp.stringProto = engine.NewObject()
 	interp.numberProto = engine.NewObject()
 	interp.booleanProto = engine.NewObject()
+	interp.bigintProto = engine.NewObject()
 	interp.errorProto = engine.NewObject()
 
 	// Object.prototype methods
@@ -30,6 +31,7 @@ func (interp *Interpreter) setupBuiltins() {
 	interp.setupStringProto()
 	// Number.prototype methods
 	interp.setupNumberProto()
+	interp.setupBigIntProto()
 	// Function.prototype methods
 	interp.setupFunctionProto()
 	// Error.prototype methods
@@ -69,9 +71,61 @@ func (interp *Interpreter) setupBuiltins() {
 	// Proxy / Reflect
 	interp.setupProxy()
 	interp.setupReflect()
+	// TypedArray / ArrayBuffer / DataView（Pi 兼容：typebox 等依赖）
+	interp.setupTypedArrays()
+	// BigInt 全局构造器（BigInt(x) 转换；字面量 123n 已在 lexer/compiler 支持）
+	interp.setupBigIntGlobal()
 
 	// Global functions
 	interp.setupGlobalFuncs()
+	interp.setupFinalizationRegistry()
+}
+
+// --- BigInt.prototype ---
+
+func (interp *Interpreter) setupBigIntProto() {
+	p := interp.bigintProto
+	_ = p.Set("toString", interp.nativeMethod("toString", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		bi, ok := engine.BigIntValue(this)
+		if !ok {
+			return engine.Str("0"), nil
+		}
+		radix := 10
+		if len(args) > 0 {
+			if n, ok := args[0].Int(); ok && n >= 2 && n <= 36 {
+				radix = n
+			}
+		}
+		return engine.Str(bi.Text(radix)), nil
+	}))
+	_ = p.Set("valueOf", interp.nativeMethod("valueOf", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		return this, nil
+	}))
+}
+
+// setupFinalizationRegistry installs the API shape used by undici. The VM's
+// object GC does not expose weak reachability callbacks, so registrations are
+// retained as inert records and are never invoked spuriously.
+func (interp *Interpreter) setupFinalizationRegistry() {
+	ctor := interp.makeFunc("FinalizationRegistry", func(args []engine.Value) (engine.Value, error) {
+		registry := engine.NewObject()
+		var callback engine.Value
+		if len(args) > 0 && args[0].IsFunction() {
+			callback = args[0]
+		}
+		_ = callback
+		_ = registry.Set("register", interp.makeFunc("register", func(_ []engine.Value) (engine.Value, error) {
+			return engine.Undefined(), nil
+		}))
+		_ = registry.Set("unregister", interp.makeFunc("unregister", func(_ []engine.Value) (engine.Value, error) {
+			return engine.Boolean(false), nil
+		}))
+		_ = registry.Set("cleanupSome", interp.makeFunc("cleanupSome", func(_ []engine.Value) (engine.Value, error) {
+			return engine.Undefined(), nil
+		}))
+		return registry, nil
+	})
+	_ = interp.globalObj.Set("FinalizationRegistry", ctor)
 }
 
 // makeFunc creates a Go-backed function and sets its prototype to Function.prototype.
@@ -1295,9 +1349,11 @@ func (interp *Interpreter) setupFunctionProto() {
 	// 注册全局 Function 构造器。npm 包常访问 Function.prototype.toString /
 	// bind 等（如 object-inspect 的 `Function.prototype.toString`）。
 	ctor := interp.makeFunc("Function", func(args []engine.Value) (engine.Value, error) {
-		// 简化实现：返回一个可调用占位函数（动态代码构造暂不支持）。
+		// Dynamic code generation is intentionally unavailable. Returning a
+		// callable that reports this explicitly lets libraries such as TypeBox
+		// detect the limitation and choose their interpreter-safe path.
 		return interp.makeFunc("anonymous", func(_ []engine.Value) (engine.Value, error) {
-			return engine.Undefined(), nil
+			return engine.Undefined(), fmt.Errorf("%w: dynamic Function construction is unavailable", engine.ErrTypeError)
 		}), nil
 	})
 	_ = ctor.Set("prototype", p)
