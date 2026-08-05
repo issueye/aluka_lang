@@ -150,7 +150,7 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		return engine.Undefined(), nil
 	}))
 
-	// kill(pid[, signal])：发信号（跨平台简化：终止进程）。
+	// kill(pid[, signal])：发信号（默认 SIGTERM；Windows 仅支持终止）。
 	_ = proc.Set("kill", engine.NewFunction("kill", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Undefined(), nil
@@ -159,9 +159,18 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		if pid <= 0 {
 			return engine.Undefined(), fmt.Errorf("%w: invalid pid %d", engine.ErrRangeError, pid)
 		}
+		sigName := "SIGTERM"
+		if len(args) > 1 && !args[1].IsUndefined() {
+			sigName = args[1].String()
+		}
 		p, err := os.FindProcess(pid)
 		if err != nil {
 			return engine.Undefined(), err
+		}
+		// 跨平台简化：Windows 仅支持 Kill（SIGTERM/SIGKILL 等价）；其他
+		// 平台按信号名发送（SIGTERM/SIGKILL/SIGINT 等）。
+		if sig, ok := goSignalByName(sigName); ok && runtime.GOOS != "windows" {
+			return engine.Undefined(), p.Signal(sig)
 		}
 		return engine.Undefined(), p.Kill()
 	}))
@@ -233,8 +242,21 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		return mu, nil
 	}))
 
-	// on / emit（暂为空 stub，不实际触发）
+	// on / emit：SIGINT/SIGTERM/SIGHUP/SIGBREAK 等信号事件实际触发
+	// （os/signal → PostTask → JS 监听器）；其余事件为普通注册。
 	listeners := make(map[string][]engine.Func)
+	sigCh := make(chan os.Signal, 8)
+	go func() {
+		for sig := range sigCh {
+			name := sigName(sig)
+			ctx.PostTask(func() {
+				fns := listeners[name]
+				for _, fn := range fns {
+					_, _ = fn(nil)
+				}
+			})
+		}
+	}()
 	_ = proc.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Undefined(), nil
@@ -245,6 +267,11 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 			return engine.Undefined(), nil
 		}
 		listeners[event] = append(listeners[event], fn.Call)
+		// 注册可监听信号：启动 os/signal 通知（SIGTSTP/SIGCONT 等
+		// Windows 不支持，注册不生效——与 Node 行为一致）。
+		if sig, ok := goSignalByName(event); ok {
+			osSignalNotify(sigCh, sig)
+		}
 		return engine.Undefined(), nil
 	}))
 	_ = proc.Set("emit", engine.NewFunction("emit", func(args []engine.Value) (engine.Value, error) {
@@ -291,3 +318,4 @@ func archName() string {
 		return runtime.GOARCH
 	}
 }
+
