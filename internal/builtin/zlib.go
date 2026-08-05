@@ -15,10 +15,12 @@ import (
 	gzlib "compress/zlib"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/andybalholm/brotli"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/klauspost/compress/zstd"
 )
 
 // NewZlib 构造 node:zlib 模块的导出对象。
@@ -32,16 +34,24 @@ func NewZlib(ctx engine.Context) (engine.Value, error) {
 	_ = m.Set("inflateSync", engine.NewFunction("inflateSync", makeZlibSync(inflateBytes)))
 	_ = m.Set("brotliCompressSync", engine.NewFunction("brotliCompressSync", makeZlibSync(brotliCompressBytes)))
 	_ = m.Set("brotliDecompressSync", engine.NewFunction("brotliDecompressSync", makeZlibSync(brotliDecompressBytes)))
+	_ = m.Set("zstdCompressSync", engine.NewFunction("zstdCompressSync", makeZlibSync(zstdCompressBytes)))
+	_ = m.Set("zstdDecompressSync", engine.NewFunction("zstdDecompressSync", makeZlibSync(zstdDecompressBytes)))
 
-	// 异步回调版：gzip(buf, cb) / gunzip / deflate / inflate / brotli*。
+	// 异步回调版：gzip(buf, cb) / gunzip / deflate / inflate / brotli* / zstd*。
 	_ = m.Set("gzip", engine.NewFunction("gzip", makeZlibAsync(ctx, gzipBytes)))
 	_ = m.Set("gunzip", engine.NewFunction("gunzip", makeZlibAsync(ctx, gunzipBytes)))
 	_ = m.Set("deflate", engine.NewFunction("deflate", makeZlibAsync(ctx, deflateBytes)))
 	_ = m.Set("inflate", engine.NewFunction("inflate", makeZlibAsync(ctx, inflateBytes)))
 	_ = m.Set("brotliCompress", engine.NewFunction("brotliCompress", makeZlibAsync(ctx, brotliCompressBytes)))
 	_ = m.Set("brotliDecompress", engine.NewFunction("brotliDecompress", makeZlibAsync(ctx, brotliDecompressBytes)))
+	_ = m.Set("zstdCompress", engine.NewFunction("zstdCompress", makeZlibAsync(ctx, zstdCompressBytes)))
+	_ = m.Set("zstdDecompress", engine.NewFunction("zstdDecompress", makeZlibAsync(ctx, zstdDecompressBytes)))
 
-	_ = m.Set("constants", engine.NewObject())
+	// constants：zstd 参数枚举（libzstd ZSTD_cParameter 值，与 Node 一致）。
+	c := engine.NewObject()
+	_ = c.Set("ZSTD_c_compressionLevel", engine.Number(100))
+	_ = c.Set("ZSTD_c_strategy", engine.Number(107))
+	_ = m.Set("constants", c)
 	return m, nil
 }
 
@@ -169,4 +179,37 @@ func brotliCompressBytes(data []byte) ([]byte, error) {
 
 func brotliDecompressBytes(data []byte) ([]byte, error) {
 	return io.ReadAll(brotli.NewReader(bytes.NewReader(data)))
+}
+
+// zstdEncoder/zstdDecoder 惰性初始化（复用实例，zstd 允许并发用同一
+// Encoder/Decoder，但 EncodeAll 需持有锁）。
+var (
+	zstdOnce      sync.Once
+	zstdEnc       *zstd.Encoder
+	zstdDec       *zstd.Decoder
+	zstdEncMu     sync.Mutex
+)
+
+func zstdCompressBytes(data []byte) ([]byte, error) {
+	zstdOnce.Do(func() {
+		zstdEnc, _ = zstd.NewWriter(nil)
+		zstdDec, _ = zstd.NewReader(nil)
+	})
+	if zstdEnc == nil {
+		return nil, fmt.Errorf("zstd: encoder init failed")
+	}
+	zstdEncMu.Lock()
+	defer zstdEncMu.Unlock()
+	return zstdEnc.EncodeAll(data, nil), nil
+}
+
+func zstdDecompressBytes(data []byte) ([]byte, error) {
+	zstdOnce.Do(func() {
+		zstdEnc, _ = zstd.NewWriter(nil)
+		zstdDec, _ = zstd.NewReader(nil)
+	})
+	if zstdDec == nil {
+		return nil, fmt.Errorf("zstd: decoder init failed")
+	}
+	return zstdDec.DecodeAll(data, nil)
 }
