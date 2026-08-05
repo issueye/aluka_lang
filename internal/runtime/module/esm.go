@@ -32,13 +32,15 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	// 剥离 UTF-8 BOM（同 CJS，避免 BOM 字符导致 lexer 死循环）。
 	src = stripBOM(src)
 
-	prog, err := parser.Parse(string(src))
+	prog, err := parser.ParseModule(string(src))
 	if err != nil {
 		return engine.Undefined(), fmt.Errorf("module: parse error in %q: %w", absPath, err)
 	}
 
 	// Check if the source actually has import/export; if not, treat as CJS.
-	if !hasESMDecls(prog) {
+	// 例外：.mjs 强制 ESM（Node 语义）；含顶层 await（TLA）也按 ESM
+	// （无 import/export 的纯 TLA 模块，如 scripts/*.mjs）。
+	if !hasESMDecls(prog) && !ast.HasTopLevelAwait(prog) && filepath.Ext(absPath) != ".mjs" {
 		return l.loadCJS(absPath)
 	}
 
@@ -87,7 +89,7 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	// 以词法参数调用模块函数（this = exports）。
 	requireFn := l.makeRequireFunc(absPath)
 	importFn := l.makeImportFunc(absPath)
-	_, evalErr = vm.InvokeFn(wrapper, exports, []engine.Value{
+	modResult, evalErr := vm.InvokeFn(wrapper, exports, []engine.Value{
 		requireFn,
 		moduleObj,
 		exports,
@@ -95,6 +97,11 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 		engine.Str(filepath.Dir(absPath)),
 		importFn,
 	})
+	// TLA：模块函数为 async，InvokeFn 返回 promise——同步等待 settle
+	// （驱动微任务/任务队列，直至顶层 await 链完成）。
+	if pv, ok := modResult.(*interpreter.PromiseValue); ok {
+		_, evalErr = vm.AwaitPromise(pv)
+	}
 	vm.DrainMicrotasks()
 	if evalErr != nil {
 		l.mu.Lock()
@@ -129,7 +136,10 @@ func wrapESMAST(prog *ast.Program, filename string) *ast.Program {
 		Params:   params,
 		Defaults: make([]ast.Expression, len(params)),
 		Body:     &ast.BlockStmt{Body: prog.Body, Loc: prog.Loc},
-		Loc:      prog.Loc,
+		// 模块含顶层 await（TLA）时模块函数为 async：顶层 await 经
+		// asyncRunner 挂起/恢复，loadESM 等待返回的 promise settle。
+		IsAsync: ast.HasTopLevelAwait(prog),
+		Loc:     prog.Loc,
 	}
 	// 顶层：返回模块函数（表达式），供 RunModule 求值为闭包。
 	return &ast.Program{

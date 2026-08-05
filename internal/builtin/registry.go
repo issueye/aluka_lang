@@ -43,6 +43,7 @@ func RegisterAll(loader *module.Loader) {
 	})
 	loader.RegisterBuiltin("buffer", globals.NewBufferModule)
 	loader.RegisterBuiltin("tty", NewTTY)
+	loader.RegisterBuiltin("sqlite", NewSQLite)
 }
 
 // --- 公共辅助函数 -------------------------------------------------------

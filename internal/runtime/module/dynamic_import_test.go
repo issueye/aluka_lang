@@ -224,3 +224,98 @@ func TestTypeScriptRelativeImport(t *testing.T) {
 		t.Errorf("ts relative import: got %q, want 42", got)
 	}
 }
+
+// TestTopLevelAwait: ESM 模块顶层 await（TLA）按顺序执行。
+func TestTopLevelAwait(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.mjs": `
+const a = await Promise.resolve(10);
+const b = await Promise.resolve(20);
+globalThis.__r = a + b;
+`,
+	})
+	env.run(t, "main.mjs")
+	if got := env.globalGet("__r"); got != "30" {
+		t.Errorf("TLA: got %q, want 30", got)
+	}
+}
+
+// TestTopLevelAwaitError: TLA 中未捕获拒绝 → 模块加载失败。
+func TestTopLevelAwaitReject(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.mjs": `await Promise.reject(new Error("tla-boom"));`,
+	})
+	if err := env.loader.Run(env.dir + "/main.mjs"); err == nil {
+		t.Error("TLA rejection should fail module load")
+	}
+}
+
+// TestDestructuringParams: 箭头/函数解构参数（({a}) => / ([x]) => / (a, {b}) =>）。
+func TestDestructuringParams(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.js": `
+const f = ({ x }) => x;
+const g = ([a, b]) => a + b;
+const h = (first, { second }) => first + second;
+const k = ({ a, b } = { a: 1, b: 2 }) => a * 10 + b;
+globalThis.__r = f({ x: 5 }) + ":" + g([1, 2]) + ":" + h("A", { second: "B" }) + ":" + k();
+`,
+	})
+	env.run(t, "main.js")
+	if got := env.globalGet("__r"); got != "5:3:AB:12" {
+		t.Errorf("destructuring params: got %q, want 5:3:AB:12", got)
+	}
+}
+
+// TestArrowReturnTypeAnnotation: 箭头函数返回类型注解 (: T =>)。
+func TestArrowReturnTypeAnnotation(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.ts": `
+const f = (x: number): string => String(x * 2);
+globalThis.__r = f(21);
+`,
+	})
+	env.run(t, "main.ts")
+	if got := env.globalGet("__r"); got != "42" {
+		t.Errorf("arrow return type: got %q, want 42", got)
+	}
+}
+
+// TestExportTypeErase: export type X = ... / export interface 擦除。
+func TestExportTypeErase(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.ts": `
+export type Alias = { a: number };
+export interface Detail { b: string }
+export const value: number = 7;
+globalThis.__r = value;
+`,
+	})
+	env.run(t, "main.ts")
+	if got := env.globalGet("__r"); got != "7" {
+		t.Errorf("export type erase: got %q, want 7", got)
+	}
+}
+
+// TestTrailingCommaParams: 多行参数尾部逗号（函数/箭头/import/export 列表）。
+func TestTrailingCommaParams(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.js": `
+function f(
+  a,
+  b,
+) {
+  return a + b;
+}
+const g = (
+  x,
+  y,
+) => x * y;
+globalThis.__r = f(1, 2) + ":" + g(3, 4);
+`,
+	})
+	env.run(t, "main.js")
+	if got := env.globalGet("__r"); got != "3:12" {
+		t.Errorf("trailing comma params: got %q, want 3:12", got)
+	}
+}

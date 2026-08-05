@@ -53,14 +53,15 @@ func (d *VarDecl) stmtNode() {}
 func (d *VarDecl) node()     {}
 
 type FunctionDecl struct {
-	Name        *Identifier
-	Params      []*Identifier
-	Defaults    []Expression // ES2015 default values; nil entry = no default. len == len(Params)
-	RestParam   *Identifier  // ES2015 rest param (`...rest`); nil if none
-	Body        *BlockStmt
-	IsAsync     bool
-	IsGenerator bool
-	Loc         Pos
+	Name          *Identifier
+	Params        []*Identifier
+	ParamPatterns []Pattern // 解构参数；nil 条目 = 普通参数。len 与 Params 一致
+	Defaults      []Expression // ES2015 default values; nil entry = no default. len == len(Params)
+	RestParam     *Identifier  // ES2015 rest param (`...rest`); nil if none
+	Body          *BlockStmt
+	IsAsync       bool
+	IsGenerator   bool
+	Loc           Pos
 }
 
 func (f *FunctionDecl) Pos() Pos  { return f.Loc }
@@ -500,14 +501,15 @@ func (s *SpreadElement) exprNode() {}
 func (s *SpreadElement) node()     {}
 
 type FunctionExpr struct {
-	Name        *Identifier
-	Params      []*Identifier
-	Defaults    []Expression // ES2015 default values; nil entry = no default. len == len(Params)
-	RestParam   *Identifier  // ES2015 rest param (`...rest`); nil if none
-	Body        *BlockStmt
-	IsAsync     bool
-	IsGenerator bool
-	Loc         Pos
+	Name          *Identifier
+	Params        []*Identifier
+	ParamPatterns []Pattern // 解构参数；nil 条目 = 普通参数。len 与 Params 一致
+	Defaults      []Expression // ES2015 default values; nil entry = no default. len == len(Params)
+	RestParam     *Identifier  // ES2015 rest param (`...rest`); nil if none
+	Body          *BlockStmt
+	IsAsync       bool
+	IsGenerator   bool
+	Loc           Pos
 }
 
 func (f *FunctionExpr) Pos() Pos  { return f.Loc }
@@ -515,12 +517,13 @@ func (f *FunctionExpr) exprNode() {}
 func (f *FunctionExpr) node()     {}
 
 type ArrowFunc struct {
-	Params    []*Identifier
-	Defaults  []Expression // ES2015 default values; nil entry = no default. len == len(Params)
-	RestParam *Identifier  // ES2015 rest param (`...rest`); nil if none
-	Body      Node
-	IsAsync   bool
-	Loc       Pos
+	Params        []*Identifier
+	ParamPatterns []Pattern // 解构参数；nil 条目 = 普通参数。len 与 Params 一致
+	Defaults      []Expression // ES2015 default values; nil entry = no default. len == len(Params)
+	RestParam     *Identifier  // ES2015 rest param (`...rest`); nil if none
+	Body          Node
+	IsAsync       bool
+	Loc           Pos
 }
 
 func (a *ArrowFunc) Pos() Pos  { return a.Loc }
@@ -727,3 +730,187 @@ type ExportDefaultDecl struct {
 func (d *ExportDefaultDecl) Pos() Pos  { return d.Loc }
 func (d *ExportDefaultDecl) stmtNode() {}
 func (d *ExportDefaultDecl) node()     {}
+
+// HasTopLevelAwait 报告程序顶层（模块级）是否含 await 表达式。
+// 不深入嵌套函数体（函数内的 await 不是 TLA），但深入语句内的表达式
+// （表达式语句、声明初始化、if/for/return 等分支）。
+func HasTopLevelAwait(prog *Program) bool {
+	for _, stmt := range prog.Body {
+		if stmtHasAwait(stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+// stmtHasAwait 判断语句中（非嵌套函数内）是否出现 await。
+func stmtHasAwait(s Statement) bool {
+	switch n := s.(type) {
+	case *ExprStmt:
+		return exprHasAwait(n.Expr)
+	case *VarDecl:
+		for _, d := range n.Decls {
+			if d.Init != nil && exprHasAwait(d.Init) {
+				return true
+			}
+		}
+		return false
+	case *ReturnStmt:
+		return n.Arg != nil && exprHasAwait(n.Arg)
+	case *IfStmt:
+		if exprHasAwait(n.Test) || stmtHasAwait(n.Consequent) {
+			return true
+		}
+		return n.Alternate != nil && stmtHasAwait(n.Alternate)
+	case *WhileStmt:
+		return exprHasAwait(n.Test) || stmtHasAwait(n.Body)
+	case *DoWhileStmt:
+		return exprHasAwait(n.Test) || stmtHasAwait(n.Body)
+	case *ForStmt:
+		if n.Test != nil && exprHasAwait(n.Test) {
+			return true
+		}
+		if n.Update != nil && exprHasAwait(n.Update) {
+			return true
+		}
+		return stmtHasAwait(n.Body)
+	case *ForInStmt:
+		if exprHasAwait(n.Right) {
+			return true
+		}
+		return stmtHasAwait(n.Body)
+	case *ForOfStmt:
+		if n.IsAwait || exprHasAwait(n.Right) {
+			return true
+		}
+		return stmtHasAwait(n.Body)
+	case *BlockStmt:
+		for _, b := range n.Body {
+			if stmtHasAwait(b) {
+				return true
+			}
+		}
+		return false
+	case *SwitchStmt:
+		if exprHasAwait(n.Disc) {
+			return true
+		}
+		for _, c := range n.Cases {
+			if c.Test != nil && exprHasAwait(c.Test) {
+				return true
+			}
+			for _, b := range c.Consequent {
+				if stmtHasAwait(b) {
+					return true
+				}
+			}
+		}
+		return false
+	case *TryStmt:
+		if stmtHasAwait(n.Block) {
+			return true
+		}
+		if n.Handler != nil && stmtHasAwait(n.Handler.Body) {
+			return true
+		}
+		return n.Finally != nil && stmtHasAwait(n.Finally)
+	case *LabeledStmt:
+		return stmtHasAwait(n.Body)
+	case *ThrowStmt:
+		return n.Arg != nil && exprHasAwait(n.Arg)
+	case *FunctionDecl:
+		return false // 嵌套函数体不算 TLA
+	default:
+		return false
+	}
+}
+
+// exprHasAwait 判断表达式（不深入函数表达式体）中是否出现 await。
+func exprHasAwait(e Expression) bool {
+	switch n := e.(type) {
+	case *AwaitExpr:
+		return true
+	case *UnaryExpr:
+		return exprHasAwait(n.Arg)
+	case *BinaryExpr:
+		return exprHasAwait(n.Left) || exprHasAwait(n.Right)
+	case *LogicalExpr:
+		return exprHasAwait(n.Left) || exprHasAwait(n.Right)
+	case *AssignExpr:
+		if exprHasAwait(n.Left) {
+			return true
+		}
+		return n.Right != nil && exprHasAwait(n.Right)
+	case *UpdateExpr:
+		return exprHasAwait(n.Arg)
+	case *ConditionalExpr:
+		return exprHasAwait(n.Test) || exprHasAwait(n.Consequent) || exprHasAwait(n.Alternate)
+	case *CallExpr:
+		if exprHasAwait(n.Callee) {
+			return true
+		}
+		for _, a := range n.Arguments {
+			if exprHasAwait(a) {
+				return true
+			}
+		}
+		return false
+	case *MemberExpr:
+		if exprHasAwait(n.Object) {
+			return true
+		}
+		return n.Property != nil && exprHasAwait(n.Property)
+	case *NewExpr:
+		if exprHasAwait(n.Callee) {
+			return true
+		}
+		for _, a := range n.Arguments {
+			if exprHasAwait(a) {
+				return true
+			}
+		}
+		return false
+	case *SequenceExpr:
+		for _, e := range n.Expressions {
+			if exprHasAwait(e) {
+				return true
+			}
+		}
+		return false
+	case *ArrayLit:
+		for _, e := range n.Elements {
+			if e != nil && exprHasAwait(e) {
+				return true
+			}
+		}
+		return false
+	case *ObjectLit:
+		for _, p := range n.Properties {
+			if p.Value != nil && exprHasAwait(p.Value) {
+				return true
+			}
+		}
+		return false
+	case *TemplateLit:
+		for _, e := range n.Expressions {
+			if exprHasAwait(e) {
+				return true
+			}
+		}
+		return false
+	case *TaggedTemplateExpr:
+		if exprHasAwait(n.Tag) {
+			return true
+		}
+		for _, e := range n.Template.Expressions {
+			if exprHasAwait(e) {
+				return true
+			}
+		}
+		return false
+	case *FunctionExpr, *ArrowFunc:
+		return false // 函数表达式体内不算 TLA
+	default:
+		return false
+	}
+}

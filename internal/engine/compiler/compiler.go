@@ -1451,9 +1451,9 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 	case *ast.MemberExpr:
 		return c.compileMember(n)
 	case *ast.FunctionExpr:
-		return c.compileFunction(funcNameFromExpr(n), n.Params, n.Defaults, n.RestParam, n.Body, n.IsAsync, n.IsGenerator, false)
+		return c.compileFunction(funcNameFromExpr(n), n.Params, n.ParamPatterns, n.Defaults, n.RestParam, n.Body, n.IsAsync, n.IsGenerator, false)
 	case *ast.ArrowFunc:
-		return c.compileFunction("", n.Params, n.Defaults, n.RestParam, n.Body, n.IsAsync, false, true)
+		return c.compileFunction("", n.Params, n.ParamPatterns, n.Defaults, n.RestParam, n.Body, n.IsAsync, false, true)
 	case *ast.ClassExpr:
 		return c.compileClassExpr(n)
 	case *ast.ConditionalExpr:
@@ -2300,7 +2300,7 @@ func (c *Compiler) compileConditional(n *ast.ConditionalExpr) error {
 // `rest` is the ES2015 rest parameter name (or "" if none).
 // `isArrow` 为 true 时编译箭头函数：不声明本函数级 `this` 槽位，
 // `this` 经 upvalue 链解析为外层函数的 `this`（P0-2）。
-func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaults []ast.Expression, rest *ast.Identifier, body ast.Node, isAsync, isGenerator, isArrow bool) error {
+func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patterns []ast.Pattern, defaults []ast.Expression, rest *ast.Identifier, body ast.Node, isAsync, isGenerator, isArrow bool) error {
 	// 普通函数：`this` slot = 0；params = slots 1..N；rest 参数 = slot N+1。
 	// 箭头函数：无 own `this`（slot 0 仍保留以兼容 frame 布局，但不会被引用）。
 	numLocals := 1 + len(params)
@@ -2329,7 +2329,9 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 		fc.scopes[0].decls["__this__"] = 0
 	}
 	for i, p := range params {
-		fc.scopes[0].decls[p.Name] = i + 1
+		if p != nil {
+			fc.scopes[0].decls[p.Name] = i + 1
+		}
 	}
 	// 非箭头函数均绑定 `arguments` 对象（slot = numLocals，紧随 this/params/rest）。
 	// 箭头函数不绑定 own arguments（词法继承外层），与 JS 语义一致。
@@ -2362,6 +2364,18 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, defaul
 		}
 		c.emit(bytecode.OpStoreLocal, uint32(slot))
 		c.patchJumpToHere(jSkip)
+	}
+
+	// 解构参数（({a, b}, [x]) => ...）：参数 slot 已填充，生成绑定指令。
+	// 模式绑定名经 compileBindPattern 的 declareLocal 声明为局部变量。
+	for i, pat := range patterns {
+		if pat == nil {
+			continue
+		}
+		if err := c.compileBindPattern(pat, i+1, "let"); err != nil {
+			c.funcStack = c.funcStack[:len(c.funcStack)-1]
+			return err
+		}
 	}
 
 	bodyErr := func() error {
@@ -2476,7 +2490,7 @@ func (c *Compiler) hoistFunctionDecls(stmts []ast.Statement) {
 	for _, s := range stmts {
 		if fd, ok := s.(*ast.FunctionDecl); ok && fd.Name != nil {
 			slot := c.declareVar(fd.Name.Name)
-			if err := c.compileFunction(fd.Name.Name, fd.Params, fd.Defaults, fd.RestParam, fd.Body, fd.IsAsync, fd.IsGenerator, false); err != nil {
+			if err := c.compileFunction(fd.Name.Name, fd.Params, fd.ParamPatterns, fd.Defaults, fd.RestParam, fd.Body, fd.IsAsync, fd.IsGenerator, false); err != nil {
 				// 提升编译出错：推迟到正常编译路径报错（这里不中断）。
 				_ = err
 				_ = slot
@@ -2869,7 +2883,9 @@ func (c *Compiler) compileMethod(name string, fn *ast.FunctionExpr) (int, error)
 	fc.scopes = []*scope{{decls: make(map[string]int), isFunc: true}}
 	fc.scopes[0].decls["__this__"] = 0
 	for i, p := range params {
-		fc.scopes[0].decls[p.Name] = i + 1
+		if p != nil {
+			fc.scopes[0].decls[p.Name] = i + 1
+		}
 	}
 	if rest != nil {
 		fc.scopes[0].decls[rest.Name] = 1 + len(params)

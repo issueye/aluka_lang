@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
@@ -2119,6 +2120,30 @@ func (v *VM) InvokeFn(fn, this engine.Value, args []engine.Value) (engine.Value,
 func (v *VM) DrainMicrotasks() {
 	if len(v.frames) == 0 {
 		v.interp.drainMicrotasks()
+	}
+}
+
+// AwaitPromise 同步等待 promise settle（顶层 await / TLA 的模块加载语义）。
+// 循环驱动微任务队列与投递的任务（IO 回调等），直至 promise 完成。
+// 供 Loader 在 async 模块函数（含 TLA）执行后调用。
+func (v *VM) AwaitPromise(p *PromiseValue) (engine.Value, error) {
+	for {
+		switch p.state {
+		case promiseFulfilled:
+			return p.result, nil
+		case promiseRejected:
+			return engine.Undefined(), &jsThrow{val: p.result}
+		}
+		v.interp.drainMicrotasks()
+		select {
+		case fn := <-v.interp.taskCh:
+			fn()
+		case <-v.interp.idleCh:
+			// 空闲信号：无任务在途，继续微任务驱动（TLA 依赖同步 promise）。
+		default:
+			// 微任务已排空且无投递任务：IO 在途（await fetch 等），短暂让出。
+			time.Sleep(time.Millisecond)
+		}
 	}
 }
 

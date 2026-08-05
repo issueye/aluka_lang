@@ -36,11 +36,27 @@ type Parser struct {
 	// asyncStack[len-1] == true means we're currently inside an async function
 	// body, so `await` should be parsed as an AwaitExpr.
 	asyncStack []bool
+
+	// allowTopLevelAwait 标记模块上下文（ESM）：顶层允许 await（TLA）。
+	// 由 ParseModule 设置；脚本（Eval/REPL）保持 false。
+	allowTopLevelAwait bool
 }
 
 // New 创建解析器。
 func New(tokens []lexer.Token, src string) *Parser {
 	return &Parser{tokens: tokens, src: src}
+}
+
+// ParseModule 以模块上下文解析源码（允许顶层 await）。
+func ParseModule(src string) (*ast.Program, error) {
+	l := lexer.New(src)
+	tokens, err := l.Tokens()
+	if err != nil {
+		return nil, err
+	}
+	p := New(tokens, src)
+	p.allowTopLevelAwait = true
+	return p.parseProgram()
 }
 
 // NewFromString lexes and creates a parser from a source string. Used for
@@ -388,15 +404,16 @@ func (p *Parser) parseFunctionDecl(isExpr bool) (*ast.FunctionDecl, error) {
 	}
 	p.genStack = append(p.genStack, isGenerator)
 	p.asyncStack = append(p.asyncStack, isAsync)
-	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+	params, patterns, defaults, rest, body, err := p.parseFuncParamsAndBody()
 	p.genStack = p.genStack[:len(p.genStack)-1]
 	p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
 	if err != nil {
 		return nil, err
 	}
 	return &ast.FunctionDecl{
-		Name:        name,
-		Params:      params,
+		Name:          name,
+		Params:        params,
+		ParamPatterns: patterns,
 		Defaults:    defaults,
 		RestParam:   rest,
 		Body:        body,
@@ -409,11 +426,12 @@ func (p *Parser) parseFunctionDecl(isExpr bool) (*ast.FunctionDecl, error) {
 // parseFuncParamsAndBody parses `(params) { body }` and returns the regular
 // params, their default expressions (nil entries = no default), the optional
 // rest param (`...rest`), and the body block.
-func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Expression, *ast.Identifier, *ast.BlockStmt, error) {
+func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Pattern, []ast.Expression, *ast.Identifier, *ast.BlockStmt, error) {
 	if err := p.expectPunct("("); err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	var params []*ast.Identifier
+	var patterns []ast.Pattern
 	var defaults []ast.Expression
 	var rest *ast.Identifier
 	if !(p.peek().Type == lexer.TokenPunct && p.peek().Value == ")") {
@@ -423,54 +441,90 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Expression, 
 				p.next()
 				nameTok, err := p.expect(lexer.TokenIdent, "")
 				if err != nil {
-					return nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, err
 				}
 				rest = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
 				// TypeScript: rest param type annotation `: T[]`
 				if err := p.parseTypeAnnotation(); err != nil {
-					return nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, err
 				}
 				break // rest must be the last parameter
 			}
+			// 解构参数：({a, b}, [x, y]) => ...（模式绑定名在编译期解构）。
+			if p.peek().Type == lexer.TokenPunct && (p.peek().Value == "{" || p.peek().Value == "[") {
+				pat, err := p.parsePatternTarget()
+				if err != nil {
+					return nil, nil, nil, nil, nil, err
+				}
+				params = append(params, nil) // 占位：由 ParamPatterns 提供绑定
+				patterns = append(patterns, pat)
+				// TypeScript: 模式参数后的类型注解 `: T`。
+				if err := p.parseTypeAnnotation(); err != nil {
+					return nil, nil, nil, nil, nil, err
+				}
+				// 默认值：{a} = {} => ...
+				if p.matchPunct("=") {
+					def, err := p.parseAssignment()
+					if err != nil {
+						return nil, nil, nil, nil, nil, err
+					}
+					defaults = append(defaults, def)
+				} else {
+					defaults = append(defaults, nil)
+				}
+				if !p.matchPunct(",") {
+					break
+				}
+				// 尾部逗号：(a, b,) 合法（ES2017 trailing comma）。
+				if p.peek().Type == lexer.TokenPunct && p.peek().Value == ")" {
+					break
+				}
+				continue
+			}
 			nameTok, err := p.expect(lexer.TokenIdent, "")
 			if err != nil {
-				return nil, nil, nil, nil, err
+				return nil, nil, nil, nil, nil, err
 			}
 			params = append(params, &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)})
+			patterns = append(patterns, nil)
 			// TypeScript: optional `?` marker (param?: T) and type annotation.
 			if p.matchPunct("?") {
 				// optional parameter marker — just consume
 			}
 			if err := p.parseTypeAnnotation(); err != nil {
-				return nil, nil, nil, nil, err
+				return nil, nil, nil, nil, nil, err
 			}
 			// ES2015 default value: `name = expr`
 			if p.matchPunct("=") {
 				def, err := p.parseAssignment()
 				if err != nil {
-					return nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, err
 				}
 				defaults = append(defaults, def)
 			} else {
 				defaults = append(defaults, nil)
 			}
-			if !p.matchPunct(",") {
-				break
+				if !p.matchPunct(",") {
+					break
+				}
+				// 尾部逗号：(a, b,) 合法（ES2017 trailing comma）。
+				if p.peek().Type == lexer.TokenPunct && p.peek().Value == ")" {
+					break
+				}
 			}
 		}
-	}
-	if err := p.expectPunct(")"); err != nil {
-		return nil, nil, nil, nil, err
+		if err := p.expectPunct(")"); err != nil {
+			return nil, nil, nil, nil, nil, err
 	}
 	// TypeScript: optional return type annotation `: T` before the body.
 	if err := p.parseTypeAnnotation(); err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	body, err := p.parseBlock()
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
-	return params, defaults, rest, body, nil
+	return params, patterns, defaults, rest, body, nil
 }
 
 func (p *Parser) parseIf() (*ast.IfStmt, error) {
@@ -544,11 +598,14 @@ func (p *Parser) parseDoWhile() (*ast.DoWhileStmt, error) {
 func (p *Parser) parseFor() (ast.Statement, error) {
 	t := p.next()
 
-	// for await...of：仅在 async 函数体内合法（ES2018）。
+	// for await...of：仅在 async 函数体内合法（ES2018）；模块顶层（TLA
+	// 上下文）同样允许（Node 允许顶层 for await...of）。
 	// token 序列为 `for` `await` `(`，因此 await 必须在期望 "(" 之前消费。
 	isForAwait := false
 	if p.peek().Type == lexer.TokenKeyword && p.peek().Value == "await" {
-		if len(p.asyncStack) == 0 || !p.asyncStack[len(p.asyncStack)-1] {
+		inAsync := len(p.asyncStack) > 0 && p.asyncStack[len(p.asyncStack)-1]
+		topLevelModule := p.allowTopLevelAwait && len(p.asyncStack) == 0
+		if !inAsync && !topLevelModule {
 			return nil, fmt.Errorf("aluka: syntax error: for await...of is only valid in async functions")
 		}
 		p.next() // 消费 await
@@ -1028,7 +1085,7 @@ func (p *Parser) tryParseAsyncArrow() (ast.Expression, bool, error) {
 			p.next() // ident
 			p.next() // =>
 			expr, ok, err := p.parseArrowBody(
-				[]*ast.Identifier{{Name: t.Value, Loc: posOf(t)}}, nil, nil)
+				[]*ast.Identifier{{Name: t.Value, Loc: posOf(t)}}, nil, nil, nil)
 			if err != nil || !ok {
 				return nil, false, err
 			}
@@ -1085,22 +1142,58 @@ func (p *Parser) tryParseArrow() (ast.Expression, bool, error) {
 		if next.Type == lexer.TokenPunct && next.Value == "=>" {
 			p.next() // ident
 			p.next() // =>
-			return p.parseArrowBody([]*ast.Identifier{{Name: t.Value, Loc: posOf(t)}}, nil, nil)
+			return p.parseArrowBody([]*ast.Identifier{{Name: t.Value, Loc: posOf(t)}}, nil, nil, nil)
 		}
 	}
 
 	// 多参数或空参数：(x, y) => ... 或 () => ...
 	if t.Type == lexer.TokenPunct && t.Value == "(" {
-		// 探测是否有匹配的 ) 后跟 =>
+		// 探测是否有匹配的 ) 后跟 =>（允许中间有返回类型注解 `: T`）。
 		if endIdx, ok := p.findMatchingParen(p.pos); ok {
-			afterParen := p.peekAt(endIdx - p.pos + 1)
-			if afterParen.Type == lexer.TokenPunct && afterParen.Value == "=>" {
+			if p.arrowAfterParen(endIdx) {
 				return p.parseArrowWithParens()
 			}
 		}
 	}
 	_ = start
 	return nil, false, nil
+}
+
+// arrowAfterParen 判断匹配的右括号 endIdx 之后是否为箭头函数：
+// `=>` 直接跟随，或 `: T =>`（返回类型注解，TS）。扫描类型注解时
+// 遇到语句边界（; , = { 等）提前判定非箭头。
+func (p *Parser) arrowAfterParen(endIdx int) bool {
+	idx := endIdx + 1
+	if idx < len(p.tokens) && p.tokens[idx].Type == lexer.TokenPunct && p.tokens[idx].Value == "=>" {
+		return true
+	}
+	if idx >= len(p.tokens) || p.tokens[idx].Type != lexer.TokenPunct || p.tokens[idx].Value != ":" {
+		return false
+	}
+	depth := 0
+	for j := idx + 1; j < len(p.tokens); j++ {
+		tk := p.tokens[j]
+		if tk.Type != lexer.TokenPunct {
+			continue
+		}
+		switch tk.Value {
+		case "{", "(", "[", "<":
+			depth++
+		case "}", ")", "]", ">":
+			if depth > 0 {
+				depth--
+			}
+		case "=>":
+			if depth == 0 {
+				return true
+			}
+		case ";", ",", "=":
+			if depth == 0 {
+				return false
+			}
+		}
+	}
+	return false
 }
 
 // findMatchingParen 找到匹配的右括号位置。
@@ -1131,6 +1224,7 @@ func (p *Parser) parseArrowWithParens() (ast.Expression, bool, error) {
 	startTok := p.peek()
 	p.next() // (
 	var params []*ast.Identifier
+	var patterns []ast.Pattern
 	var defaults []ast.Expression
 	var rest *ast.Identifier
 	if !(p.peek().Type == lexer.TokenPunct && p.peek().Value == ")") {
@@ -1148,11 +1242,42 @@ func (p *Parser) parseArrowWithParens() (ast.Expression, bool, error) {
 				}
 				break // rest must be last
 			}
+			// 解构参数：({a, b}, [x]) => ...
+			if p.peek().Type == lexer.TokenPunct && (p.peek().Value == "{" || p.peek().Value == "[") {
+				pat, err := p.parsePatternTarget()
+				if err != nil {
+					return nil, true, err
+				}
+				params = append(params, nil)
+				patterns = append(patterns, pat)
+				// 模式参数类型注解 `: T`。
+				if err := p.parseTypeAnnotation(); err != nil {
+					return nil, true, err
+				}
+				if p.matchPunct("=") {
+					def, err := p.parseAssignment()
+					if err != nil {
+						return nil, true, err
+					}
+					defaults = append(defaults, def)
+				} else {
+					defaults = append(defaults, nil)
+				}
+				if !p.matchPunct(",") {
+					break
+				}
+				// 尾部逗号：(a, b,) 合法（ES2017 trailing comma）。
+				if p.peek().Type == lexer.TokenPunct && p.peek().Value == ")" {
+					break
+				}
+				continue
+			}
 			nameTok, err := p.expect(lexer.TokenIdent, "")
 			if err != nil {
 				return nil, true, err
 			}
 			params = append(params, &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)})
+			patterns = append(patterns, nil)
 			// TypeScript: optional `?` marker and type annotation.
 			if p.matchPunct("?") {
 				// optional parameter marker
@@ -1173,6 +1298,10 @@ func (p *Parser) parseArrowWithParens() (ast.Expression, bool, error) {
 			if !p.matchPunct(",") {
 				break
 			}
+			// 尾部逗号：(a, b,) 合法（ES2017 trailing comma）。
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == ")" {
+				break
+			}
 		}
 	}
 	if err := p.expectPunct(")"); err != nil {
@@ -1185,7 +1314,7 @@ func (p *Parser) parseArrowWithParens() (ast.Expression, bool, error) {
 	if err := p.expectPunct("=>"); err != nil {
 		return nil, true, err
 	}
-	expr, ok, err := p.parseArrowBody(params, defaults, rest)
+	expr, ok, err := p.parseArrowBody(params, patterns, defaults, rest)
 	if err != nil {
 		return nil, true, err
 	}
@@ -1194,7 +1323,7 @@ func (p *Parser) parseArrowWithParens() (ast.Expression, bool, error) {
 	return expr, true, nil
 }
 
-func (p *Parser) parseArrowBody(params []*ast.Identifier, defaults []ast.Expression, rest *ast.Identifier) (ast.Expression, bool, error) {
+func (p *Parser) parseArrowBody(params []*ast.Identifier, patterns []ast.Pattern, defaults []ast.Expression, rest *ast.Identifier) (ast.Expression, bool, error) {
 	t := p.peek()
 	// 简洁体：单个表达式
 	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "{" {
@@ -1203,13 +1332,13 @@ func (p *Parser) parseArrowBody(params []*ast.Identifier, defaults []ast.Express
 		if err != nil {
 			return nil, true, err
 		}
-		return &ast.ArrowFunc{Params: params, Defaults: defaults, RestParam: rest, Body: block, Loc: posOf(t)}, true, nil
+		return &ast.ArrowFunc{Params: params, ParamPatterns: patterns, Defaults: defaults, RestParam: rest, Body: block, Loc: posOf(t)}, true, nil
 	}
 	expr, err := p.parseAssignment()
 	if err != nil {
 		return nil, true, err
 	}
-	return &ast.ArrowFunc{Params: params, Defaults: defaults, RestParam: rest, Body: expr, Loc: posOf(t)}, true, nil
+	return &ast.ArrowFunc{Params: params, ParamPatterns: patterns, Defaults: defaults, RestParam: rest, Body: expr, Loc: posOf(t)}, true, nil
 }
 
 func (p *Parser) parseConditional() (ast.Expression, error) {
@@ -1318,8 +1447,11 @@ func (p *Parser) parseUnary() (ast.Expression, error) {
 			}
 			return &ast.UnaryExpr{Op: t.Value, Arg: arg, Loc: posOf(t)}, nil
 		case "await":
-			// `await` is a unary operator only valid inside async functions.
-			if len(p.asyncStack) > 0 && p.asyncStack[len(p.asyncStack)-1] {
+			// `await` is a unary operator only valid inside async functions;
+			// 模块顶层（TLA）同样允许（ParseModule 设置 allowTopLevelAwait）。
+			inAsync := len(p.asyncStack) > 0 && p.asyncStack[len(p.asyncStack)-1]
+			topLevelModule := p.allowTopLevelAwait && len(p.asyncStack) == 0
+			if inAsync || topLevelModule {
 				return p.parseAwait()
 			}
 		}
@@ -1482,6 +1614,10 @@ func (p *Parser) parseArgs() ([]ast.Expression, error) {
 				args = append(args, expr)
 			}
 			if !p.matchPunct(",") {
+				break
+			}
+			// 尾部逗号：f(a,) / f(a,\n) 合法（ES2017 trailing comma）。
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == ")" {
 				break
 			}
 		}
@@ -1719,13 +1855,13 @@ func (p *Parser) parseFunctionExpr() (ast.Expression, error) {
 	}
 	p.genStack = append(p.genStack, isGenerator)
 	p.asyncStack = append(p.asyncStack, isAsync)
-	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+	params, patterns, defaults, rest, body, err := p.parseFuncParamsAndBody()
 	p.genStack = p.genStack[:len(p.genStack)-1]
 	p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
 	if err != nil {
 		return nil, err
 	}
-	return &ast.FunctionExpr{Name: name, Params: params, Defaults: defaults, RestParam: rest, Body: body, IsAsync: isAsync, IsGenerator: isGenerator, Loc: posOf(t)}, nil
+	return &ast.FunctionExpr{Name: name, Params: params, ParamPatterns: patterns, Defaults: defaults, RestParam: rest, Body: body, IsAsync: isAsync, IsGenerator: isGenerator, Loc: posOf(t)}, nil
 }
 
 // === ESM import/export parsing ===========================================
@@ -1841,6 +1977,10 @@ func (p *Parser) parseImportDeclRest(t lexer.Token) (*ast.ImportDecl, error) {
 					decl.Specifiers = append(decl.Specifiers, spec)
 				}
 				if !p.matchPunct(",") {
+					break
+				}
+				// 尾部逗号：import { a, b, } 合法（ES2017 trailing comma）。
+				if p.peek().Type == lexer.TokenPunct && p.peek().Value == "}" {
 					break
 				}
 			}
@@ -1978,6 +2118,13 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 			}
 			return &ast.EmptyStmt{Loc: posOf(t)}, nil
 		}
+		// `export type X = ...` — 类型别名声明（含泛型/联合类型等），擦除。
+		if p.peek().Type == lexer.TokenIdent {
+			if err := p.skipToSemicolon(); err != nil {
+				return nil, err
+			}
+			return &ast.EmptyStmt{Loc: posOf(t)}, nil
+		}
 		// Anything else after `export type` is invalid; fall through to error.
 		return nil, p.errorf(p.peek(), "unexpected token %q after 'export type'", p.peek().Value)
 	}
@@ -2045,6 +2192,10 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 			if !p.matchPunct(",") {
 				break
 			}
+			// 尾部逗号：export { a, b, } 合法（ES2017 trailing comma）。
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "}" {
+				break
+			}
 		}
 		if err := p.expectPunct("}"); err != nil {
 			return nil, err
@@ -2061,6 +2212,19 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 			return nil, err
 		}
 		return decl, nil
+	}
+
+	// TypeScript 类型声明擦除：export interface / export enum /
+	// export namespace / export declare（仅类型层，无运行时产物）。
+	if p.peek().Type == lexer.TokenIdent {
+		switch p.peek().Value {
+		case "interface", "enum", "namespace", "declare":
+			p.next()
+			if err := p.skipTypeDeclBody(); err != nil {
+				return nil, err
+			}
+			return &ast.EmptyStmt{Loc: posOf(t)}, nil
+		}
 	}
 
 	// export <declaration>: var/let/const, function, async function, class
@@ -2352,14 +2516,15 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 
 	// Parse the method body using the standard function-params-and-body rule.
 	p.asyncStack = append(p.asyncStack, isAsync)
-	params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+	params, patterns, defaults, rest, body, err := p.parseFuncParamsAndBody()
 	p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
 	if err != nil {
 		return def, err
 	}
 	fn := &ast.FunctionExpr{
-		Params:    params,
-		Defaults:  defaults,
+		Params:        params,
+		ParamPatterns: patterns,
+		Defaults:      defaults,
 		RestParam: rest,
 		Body:      body,
 		IsAsync:   isAsync,
@@ -2540,12 +2705,12 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 						return nil, p.errorf(methodTok, "invalid async method name")
 					}
 					p.asyncStack = append(p.asyncStack, true)
-					params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+					params, patterns, defaults, rest, body, err := p.parseFuncParamsAndBody()
 					p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
 					if err != nil {
 						return nil, err
 					}
-					fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, IsAsync: true, Loc: posOf(methodTok)}
+					fn := &ast.FunctionExpr{Params: params, ParamPatterns: patterns, Defaults: defaults, RestParam: rest, Body: body, IsAsync: true, Loc: posOf(methodTok)}
 					obj.Properties = append(obj.Properties, ast.Property{Key: methodKey, Value: fn, Kind: ast.PropertyMethod, Loc: posOf(propTok)})
 					if !p.matchPunct(",") {
 						break
@@ -2564,11 +2729,11 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 					} else {
 						return nil, p.errorf(methodTok, "invalid accessor name")
 					}
-					params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+					params, patterns, defaults, rest, body, err := p.parseFuncParamsAndBody()
 					if err != nil {
 						return nil, err
 					}
-					fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(methodTok)}
+					fn := &ast.FunctionExpr{Params: params, ParamPatterns: patterns, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(methodTok)}
 					if id.Name == "get" {
 						kind = ast.PropertyGet
 					} else {
@@ -2584,11 +2749,11 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 			// 普通 init 或 method shorthand
 			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
 				// method shorthand
-				params, defaults, rest, body, err := p.parseFuncParamsAndBody()
+				params, patterns, defaults, rest, body, err := p.parseFuncParamsAndBody()
 				if err != nil {
 					return nil, err
 				}
-				fn := &ast.FunctionExpr{Params: params, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(propTok)}
+				fn := &ast.FunctionExpr{Params: params, ParamPatterns: patterns, Defaults: defaults, RestParam: rest, Body: body, Loc: posOf(propTok)}
 				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: fn, Kind: ast.PropertyMethod, Computed: computedKey, Loc: posOf(propTok)})
 			} else if p.matchPunct(":") {
 				val, err := p.parseAssignment()
@@ -3616,6 +3781,72 @@ func (p *Parser) skipDecorators() error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// skipToSemicolon 跳过 token 直到语句结束（顶层 ';' 或 EOF）。
+// 用于擦除 TS 类型声明（export type X = ... 等），跳过时保持嵌套深度
+// （{} () [] 内的 ';' 不终止）。
+func (p *Parser) skipToSemicolon() error {
+	depth := 0
+	for p.pos < len(p.tokens) {
+		tok := p.tokens[p.pos]
+		switch tok.Type {
+		case lexer.TokenEOF:
+			return nil
+		case lexer.TokenString, lexer.TokenTemplate, lexer.TokenRegex:
+			p.pos++
+			continue
+		case lexer.TokenPunct:
+			switch tok.Value {
+			case "{", "(", "[":
+				depth++
+			case "}", ")", "]":
+				if depth > 0 {
+					depth--
+				}
+			case ";":
+				if depth == 0 {
+					p.pos++
+					return nil
+				}
+			}
+		}
+		p.pos++
+	}
+	return nil
+}
+
+// skipTypeDeclBody 跳过 TS 类型声明体（interface/enum/namespace）：
+// 名称 + 泛型/extends/implements 子句（至顶层 '{'），再平衡跳过块体。
+func (p *Parser) skipTypeDeclBody() error {
+	depth := 0
+	for p.pos < len(p.tokens) {
+		tok := p.tokens[p.pos]
+		if tok.Type == lexer.TokenEOF {
+			return nil
+		}
+		if tok.Type == lexer.TokenPunct {
+			switch tok.Value {
+			case "{":
+				if depth == 0 {
+					return p.skipBalanced("{", "}")
+				}
+			case "(", "[":
+				depth++
+			case ")", "]":
+				if depth > 0 {
+					depth--
+				}
+			case ";":
+				if depth == 0 {
+					p.pos++
+					return nil // 无块体声明（如 declare 语句）
+				}
+			}
+		}
+		p.pos++
 	}
 	return nil
 }
