@@ -179,7 +179,15 @@ func TestBacktrackLookahead(t *testing.T) {
 		{"neg lookbehind fail", "(?<!a)b", "", "ab", false},
 		{"backref", "(a)\\1", "", "aa", true},
 		{"backref fail", "(a)\\1", "", "ab", false},
-		{"bytes thousands", "\\B(?=(\\d{3})+(?!\\d))", "g", "1,234,567", true},
+		// V8 实测（node 22）"1,234,567".search(/\B(?=(\d{3})+(?!\d))/) = -1：
+		// (\d{3}) 跨不过逗号，千分位模式只匹配纯数字串（如 "1234567"）。
+		{"bytes thousands comma", "\\B(?=(\\d{3})+(?!\\d))", "g", "1,234,567", false},
+		{"bytes thousands digits", "\\B(?=(\\d{3})+(?!\\d))", "g", "1234567", true},
+		{"named backref", "(?<x>ab)\\k<x>", "", "abab", true},
+		{"named backref fail", "(?<x>ab)\\k<x>", "", "abac", false},
+		// V8 实测：a(?=(b))c 在 "abc" 上不匹配（前瞻零宽，c 需在 a 之后紧邻）。
+		{"lookahead capture", "a(?=(b))b", "", "abb", true},
+		{"lookbehind capture", "(?<=(a))b", "", "ab", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -192,6 +200,40 @@ func TestBacktrackLookahead(t *testing.T) {
 				t.Errorf("MatchIndex(%q) match=%v, want %v", c.input, m != nil, c.match)
 			}
 		})
+	}
+}
+
+// TestBtCaptures 验证前瞻/后行断言内的捕获组写入整体结果、命名反向引用取值。
+func TestBtCaptures(t *testing.T) {
+	cases := []struct {
+		pattern, input string
+		want           []int
+	}{
+		// "1234567" 千分位：匹配于索引 1，组1 为最后一次迭代 "567"（V8 实测 ["","567"]）。
+		{`\B(?=(\d{3})+(?!\d))`, "1234567", []int{1, 1, 4, 7}},
+		// /a(?=(b))/ 组1 = "b"（V8 实测 ["a","b"]）。
+		{`a(?=(b))`, "ab", []int{0, 1, 1, 2}},
+		// /(?<=(a))b/ 整体 "b"（索引 1）、组1 = "a"（V8 实测 ["b","a"]）。
+		{`(?<=(a))b`, "ab", []int{1, 2, 0, 1}},
+		// 命名反向引用 (?<x>ab)\k<x> 整体 "abab"、组x = "ab"。
+		{`(?<x>ab)\k<x>`, "abab", []int{0, 4, 0, 2}},
+	}
+	for _, c := range cases {
+		compiled, err := Compile(c.pattern, "g")
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", c.pattern, err)
+		}
+		m := compiled.MatchIndex(c.input)
+		if m == nil {
+			t.Errorf("MatchIndex(%q) = nil, want %v", c.input, c.want)
+			continue
+		}
+		for i, w := range c.want {
+			if i >= len(m) || m[i] != w {
+				t.Errorf("MatchIndex(%q) = %v, want %v (idx %d)", c.input, m, c.want, i)
+				break
+			}
+		}
 	}
 }
 

@@ -18,7 +18,7 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 
 ## 项目状态
 
-> 评估日期：2026-08-05 ｜ 测试总数：604 个 Go 测试函数（全部通过）
+> 评估日期：2026-08-05 ｜ 测试总数：591 个 Go 测试函数（全部通过）
 
 | Phase | 名称 | 状态 | 完成度 |
 |-------|------|------|--------|
@@ -44,16 +44,15 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 - **Aluka API（兼容 Bun）**：`Aluka.serve`、`Aluka.file`/`write`、`Aluka.$`、`Aluka.env`、`Aluka.sleep`、`Aluka.hash`/`password`、`Aluka.deflate`/`inflate`、`Aluka.spawn`、`Bun.peek`/`deepEquals` 等（`Bun` 为兼容别名）
 - **外部服务驱动（P2）**：`Aluka.SQL`（SQLite 零配置 + Postgres 经 `DATABASE_URL`，支持 tagged template 参数绑定）、`Aluka.Redis`（get/set/hget/hset...）、`Aluka.S3`（自研 AWS SigV4，get/put/delete/list/exists）
 - **包管理器**：`aluka install/add/remove/update`、npm registry 客户端、自研 semver 解析、依赖树解析 + hoisting、并发下载解压、`aluka.lock` lockfile、**workspace 支持**（monorepo 本地包链接）、**.npmrc**（registry + 鉴权 token）
-- **RegExp**：基于 Go regexp 翻译层的完整正则引擎（g/y lastIndex 状态机、命名捕获组、`$` 替换串、Symbol.match/replace/split）
+- **RegExp**：基于 Go regexp 翻译层的完整正则引擎（g/y lastIndex 状态机、命名捕获组、`$` 替换串、Symbol.match/replace/split）；反向引用、前瞻/后行断言经自研回溯引擎回退支持（如 bytes 包的 `/\B(?=(\d{3})+(?!\d))/`）
 
 ### 已知限制
 
-- RegExp 反向引用 / 前瞻 / 后行断言不支持
 - `Array.prototype.find/map` 等的 `thisArg` 第二参数对非箭头函数未生效
 - CJS/ESM interop：`module.exports = func` 整体赋值时动态 import 不包装 `.default`
 - 表达式语句开头的 `/` 可能被误判为正则字面量起始
 - Redis / Postgres 命令级测试需活服务（`TEST_REDIS_URL` / `TEST_DATABASE_URL` 门控）；S3 无 presign / 分片上传
-- Phase 5：生命周期脚本（preinstall/postinstall）、`aluka link`/`pm` 未实现；部分真实 npm 包（如 express）仍无法完整运行
+- Phase 5：生命周期脚本（preinstall/postinstall）、`aluka link`/`pm` 未实现；express 基础链路已通过真实 demo 验证（含 500 并发 Promise），但更复杂 npm 包仍可能受限
 - Phase 6 测试器 / Phase 7 打包器 / Phase 8 优化 尚未开始
 
 详见 [开发计划文档](./docs/development-plan.md)。

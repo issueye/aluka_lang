@@ -139,20 +139,37 @@ func NewAluka(ctx engine.Context, cfg AlukaConfig) error {
 	return ctx.Global().Set("Bun", aluka)
 }
 
-// newAlukaFile 构造 BunFile 对象（读取文件内容）。
+// newAlukaFile 构造 BunFile 对象。
+// Bun 语义：text/json/arrayBuffer 每次调用实时读盘（write 后可读到新内容），
+// size 惰性 stat（访问时取文件当前大小）。
 func newAlukaFile(ctx engine.Context, path string) engine.Value {
 	file := engine.NewObject()
-	data, err := os.ReadFile(path)
-	if err != nil && path != "" {
-		data = nil
+	// readAll 惰性读取文件内容；空 path（如 stdout）视为无数据。
+	readAll := func() []byte {
+		if path == "" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		return data
 	}
-	_ = file.Set("size", engine.IntValue(len(data)))
+	engine.SetAccessor(file, "size", engine.NewFunction("size", func(args []engine.Value) (engine.Value, error) {
+		if path == "" {
+			return engine.IntValue(0), nil
+		}
+		if st, err := os.Stat(path); err == nil {
+			return engine.IntValue(int(st.Size())), nil
+		}
+		return engine.IntValue(0), nil
+	}), nil)
 	_ = file.Set("type", engine.Str(""))
 	_ = file.Set("text", engine.NewFunction("text", func(args []engine.Value) (engine.Value, error) {
-		return promiseResolveValue(ctx, engine.Str(string(data)))
+		return promiseResolveValue(ctx, engine.Str(string(readAll())))
 	}))
 	_ = file.Set("arrayBuffer", engine.NewFunction("arrayBuffer", func(args []engine.Value) (engine.Value, error) {
-		return promiseResolveValue(ctx, NewBufferInstance(data))
+		return promiseResolveValue(ctx, NewBufferInstance(readAll()))
 	}))
 	_ = file.Set("json", engine.NewFunction("json", func(args []engine.Value) (engine.Value, error) {
 		jsonGlobal, err := ctx.Global().Get("JSON")
@@ -162,7 +179,7 @@ func newAlukaFile(ctx engine.Context, path string) engine.Value {
 		jo, _ := jsonGlobal.AsObject()
 		if parseFn, err := jo.Get("parse"); err == nil && parseFn.IsFunction() {
 			if f, ok := parseFn.AsFunction(); ok {
-				parsed, perr := f.Call([]engine.Value{engine.Str(string(data))})
+				parsed, perr := f.Call([]engine.Value{engine.Str(string(readAll()))})
 				if perr != nil {
 					return promiseRejectValue(ctx, perr.Error())
 				}

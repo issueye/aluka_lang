@@ -792,6 +792,11 @@ func (interp *Interpreter) evalExpr(expr ast.Expression, scope *Scope) (engine.V
 		if v, err := interp.globalObj.Get(e.Name); err == nil && !v.IsUndefined() {
 			return v, nil
 		}
+		// Get 对缺失属性也返回 Undefined：globalObj 上显式存在但值为
+		// undefined 的属性（如全局 undefined 本身）需与"缺失"区分。
+		if interp.globalHas(e.Name) {
+			return engine.Undefined(), nil
+		}
 		return nil, fmt.Errorf("%w: %s is not defined", engine.ErrReferenceError, e.Name)
 	case *ast.ThisExpr:
 		if v, ok := scope.Get("__this__"); ok {
@@ -967,6 +972,17 @@ func (interp *Interpreter) getProperty(obj engine.Value, key string) (engine.Val
 		}
 	}
 	return engine.Undefined(), nil
+}
+
+// globalHas 判断 name 是否为 globalObj 的自有属性。
+// 用于区分"属性缺失"与"属性存在但值为 undefined"（Get 对两者都返回 Undefined）。
+func (interp *Interpreter) globalHas(name string) bool {
+	for _, k := range interp.globalObj.Keys() {
+		if k == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (interp *Interpreter) evalCall(e *ast.CallExpr, scope *Scope) (engine.Value, error) {

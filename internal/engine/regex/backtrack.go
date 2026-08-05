@@ -165,8 +165,13 @@ func (r *btRegexp) matchNode(s string, st *btState, n *btNode) bool {
 			}
 			return true
 		case grpLookahead:
+			// V8 语义：前瞻内的捕获组会写入整体匹配结果（如 /(?=(a))b/ 组1 = "a"）。
 			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos}
-			return r.matchSeq(s, sub, n.sub)
+			if r.matchSeq(s, sub, n.sub) {
+				copy(st.captures, sub.captures)
+				return true
+			}
+			return false
 		case grpNegLookahead:
 			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos}
 			return !r.matchSeq(s, sub, n.sub)
@@ -384,6 +389,8 @@ func (r *btRegexp) matchLookbehind(s string, st *btState, n *btNode) bool {
 		sub := &btState{captures: cloneCaps(st.captures), pos: p}
 		if r.matchSeq(s, sub, n.sub) && sub.pos == start {
 			ok = true
+			// 与前瞻一致：后行断言内的捕获组写入整体结果。
+			copy(st.captures, sub.captures)
 			break
 		}
 	}
@@ -820,7 +827,8 @@ func (p *btParser) parseEscape() (btNode, error) {
 			}
 			name := p.src[p.i+2 : j]
 			p.i = j + 1
-			return btNode{kind: btBackref, refName: name}, nil
+			// refIdx 置 -1，使 matchBackref 走命名组分支（默认 0 会被当成组 0 整体匹配）。
+			return btNode{kind: btBackref, refIdx: -1, refName: name}, nil
 		}
 		p.i++
 		return btNode{kind: btLit, lit: 'k'}, nil

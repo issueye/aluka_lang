@@ -120,6 +120,20 @@ func TestVMTaggedTemplate(t *testing.T) {
 	if got != "1,2,3" {
 		t.Errorf("multi-interp tagged = %q, want 1,2,3", got)
 	}
+	// String.raw：按 .raw 数组拼接，保留转义原文。
+	got = vmEvalStr(t, `String.raw`+"`"+`a\nb`+"`")
+	if got != `a\nb` {
+		t.Errorf("String.raw = %q, want a\\nb", got)
+	}
+	got = vmEvalStr(t, `String.raw`+"`"+`x${1+2}y`+"`")
+	if got != "x3y" {
+		t.Errorf("String.raw interp = %q, want x3y", got)
+	}
+	// String.raw 普通调用：首参为含 .raw 的对象。
+	got = vmEvalStr(t, `String.raw({raw: ["a", "b"]}, "X")`)
+	if got != "aXb" {
+		t.Errorf("String.raw plain call = %q, want aXb", got)
+	}
 }
 
 // === Variables and scope ==================================================

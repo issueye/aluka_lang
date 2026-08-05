@@ -1008,6 +1008,48 @@ func (interp *Interpreter) setupStringCtor() {
 		}
 		return engine.Str(b.String()), nil
 	}))
+	// String.raw`...`：按模板对象 .raw 数组拼接（raw 保留转义原文）。
+	_ = ctor.Set("raw", interp.makeFunc("raw", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Str(""), nil
+		}
+		tpl, ok := args[0].AsObject()
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("%w: String.raw: template is not an object", engine.ErrTypeError)
+		}
+		rawVal, err := tpl.Get("raw")
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		rawObj, ok := rawVal.AsObject()
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("%w: String.raw: template.raw is not an object", engine.ErrTypeError)
+		}
+		lv, err := rawObj.Get("length")
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		n, ok := lv.Int()
+		if !ok || n < 0 {
+			return engine.Undefined(), fmt.Errorf("%w: String.raw: invalid raw length", engine.ErrTypeError)
+		}
+		var b strings.Builder
+		for i := 0; i < n; i++ {
+			qv, err := rawObj.Get(strconv.Itoa(i))
+			if err != nil {
+				return engine.Undefined(), err
+			}
+			b.WriteString(qv.String())
+			if i+1 < n {
+				sub := engine.Str("")
+				if i < len(args)-1 {
+					sub = args[i+1]
+				}
+				b.WriteString(sub.String())
+			}
+		}
+		return engine.Str(b.String()), nil
+	}))
 	_ = ctor.Set("prototype", interp.stringProto)
 	_ = interp.stringProto.Set("constructor", ctor)
 	_ = interp.globalObj.Set("String", ctor)

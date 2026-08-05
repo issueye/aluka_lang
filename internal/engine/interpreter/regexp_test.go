@@ -146,12 +146,9 @@ func TestRegexpConstructor(t *testing.T) {
 func TestRegexpErrors(t *testing.T) {
 	bad := []string{
 		`new RegExp("(", "")`,
-		`/a/gg`,                        // 重复 flags
-		`new RegExp("a", "x")`,         // 非法 flags
-		`new RegExp("(a)\\1")`,         // 反向引用
-		`new RegExp("a(?=b)")`,         // 前瞻
-		`new RegExp("(?<=a)b")`,        // 后行断言
-		`new RegExp("[a-z")`,           // 未闭合字符类
+		`/a/gg`,                 // 重复 flags
+		`new RegExp("a", "x")`,  // 非法 flags
+		`new RegExp("[a-z")`,    // 未闭合字符类
 	}
 	for _, code := range bad {
 		_, err := vmEvalStrErr(t, code)
@@ -161,6 +158,20 @@ func TestRegexpErrors(t *testing.T) {
 		}
 		if !strings.Contains(strings.ToLower(err.Error()), "syntaxerror") {
 			t.Errorf("%s: error should be SyntaxError, got: %v", code, err)
+		}
+	}
+
+	// 反向引用/前瞻/后行断言已由回溯引擎支持（此前为编译期报错），验证行为正确。
+	good := []struct{ code, want string }{
+		{`"aa".match(/(a)\1/)[0]`, "aa"},
+		{`"ab".match(/a(?=b)/)[0]`, "a"},
+		{`"ab".match(/(?<=a)b/)[0]`, "b"},
+		{`"abab".match(/(?<x>ab)\k<x>/)[0]`, "abab"},
+		{`"12345".match(/\B(?=(\d{3})+(?!\d))/)[1]`, "345"},
+	}
+	for _, c := range good {
+		if got := vmEvalStr(t, c.code); got != c.want {
+			t.Errorf("%s = %q, want %q", c.code, got, c.want)
 		}
 	}
 }
