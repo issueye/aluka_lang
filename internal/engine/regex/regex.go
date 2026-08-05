@@ -54,7 +54,8 @@ func ParseFlags(s string) (Flags, error) {
 		case 'u':
 			f.Unicode = true
 		case 'v':
-			f.Unicode = true
+			// v（unicodeSets）本身即 Unicode 模式，但独立标志，避免与 u 冲突
+			// （此前置 Unicode=true 后与自身重复检查冲突，导致 /v 一律报错）。
 			f.UnicodeSets = true
 		case 'y':
 			f.Sticky = true

@@ -680,9 +680,11 @@ type ImportSpecifier struct {
 //	import * as ns from 'mod'
 //	import {a, b as c} from 'mod'
 //	import x, {a, b} from 'mod'
+//	import data from './d.json' with { type: 'json' }
 type ImportDecl struct {
 	Source     string            // module specifier (string literal)
 	Specifiers []ImportSpecifier // empty for side-effect-only import
+	Attributes map[string]string // import attributes（with { type: 'json' }）
 	Loc        Pos
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
@@ -72,6 +73,14 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 	}
 
 	if evalErr != nil {
+		// Node 22 的 module-syntax detection：typeless .js 文件解析为 CJS
+		// 失败但含顶层 import/export 语法时，重新按 ESM 加载（Node 22.7+）。
+		if hasESMSyntax(string(src)) {
+			l.mu.Lock()
+			delete(l.cache, absPath)
+			l.mu.Unlock()
+			return l.loadESM(absPath)
+		}
 		l.mu.Lock()
 		delete(l.cache, absPath)
 		l.mu.Unlock()
@@ -138,6 +147,101 @@ func wrapCJSSource(src string) string {
 	const prefix = "(function(require, module, exports, __filename, __dirname, __import) {\n"
 	const suffix = "\n});\n"
 	return prefix + src + suffix
+}
+
+// hasESMSyntax 粗略检测源码是否含顶层 import/export 语法（Node 22 的
+// module-syntax detection 语义：typeless .js 若含 ESM 语法则按 ESM 加载）。
+// 排除动态 import(...)、import.meta、字符串/注释内容及 import/export 前缀标识符
+// （如 exported/imported）。
+func hasESMSyntax(src string) bool {
+	cleaned := stripCommentsAndStrings(src)
+	for _, line := range strings.Split(cleaned, "\n") {
+		t := strings.TrimSpace(line)
+		if hasKeywordPrefix(t, "import") {
+			rest := t[len("import"):]
+			// import( 动态导入、import.meta 非静态导入。
+			if strings.HasPrefix(rest, "(") || strings.HasPrefix(rest, ".") {
+				continue
+			}
+			return true
+		}
+		if hasKeywordPrefix(t, "export") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasKeywordPrefix 判断 t 是否以关键字 kw 开头且后随非标识符字符
+// （空白、{、*、= 等），避免 exported/imported 误判。
+func hasKeywordPrefix(t, kw string) bool {
+	if !strings.HasPrefix(t, kw) {
+		return false
+	}
+	if len(t) == len(kw) {
+		return true
+	}
+	c := t[len(kw)]
+	if c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+		return false
+	}
+	return true
+}
+
+// stripCommentsAndStrings 移除行注释、块注释与字符串字面量，返回可用于
+// 语法检测的文本（按行保持结构）。
+func stripCommentsAndStrings(src string) string {
+	var b strings.Builder
+	inStr := byte(0) // 0 = 不在字符串中；' / "
+	inBlock := false
+	i := 0
+	for i < len(src) {
+		c := src[i]
+		if inStr != 0 {
+			b.WriteByte(c)
+			if c == '\\' && i+1 < len(src) {
+				b.WriteByte(src[i+1])
+				i += 2
+				continue
+			}
+			if c == inStr {
+				inStr = 0
+			}
+			i++
+			continue
+		}
+		if inBlock {
+			if c == '*' && i+1 < len(src) && src[i+1] == '/' {
+				inBlock = false
+				i += 2
+				continue
+			}
+			if c == '\n' {
+				b.WriteByte('\n')
+			}
+			i++
+			continue
+		}
+		if c == '/' && i+1 < len(src) {
+			if src[i+1] == '/' {
+				for i < len(src) && src[i] != '\n' {
+					i++
+				}
+				continue
+			}
+			if src[i+1] == '*' {
+				inBlock = true
+				i += 2
+				continue
+			}
+		}
+		if c == '\'' || c == '"' || c == '`' {
+			inStr = c
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
 }
 
 // loadCJSViaGlobals 非 VM 引擎（AST 解释器）的 CJS 加载：沿用旧的

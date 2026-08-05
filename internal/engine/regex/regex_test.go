@@ -33,8 +33,10 @@ func TestTranslate(t *testing.T) {
 		{"S escape", `\S+`, "", "[^" + jsWhiteSpaceClass + "]+", false},
 		{"named group", "(?<year>\\d{4})", "", `(?P<year>\d{4})`, false},
 		{"non-capturing", "(?:ab)+", "", "(?:ab)+", false},
-		{"unicode code point", `\u{1F600}`, "u", `\x{1F600}`, false},
-		{"unicode escape", `\u0041`, "", `\x{0041}`, false},
+		// >0xFFFF 的码点嵌入 UTF-8 字面量（Go 的 \x{...} 仅支持 4 位十六进制，
+		// \x{1F600} 会被 RE2 截断解析）。
+		{"unicode code point", `\u{1F600}`, "u", `😀`, false},
+		{"unicode escape", `\u0041`, "", `\x{41}`, false},
 		{"property escape u", `\p{L}+`, "u", `\p{L}+`, false},
 		{"property escape non-u is literal", `\p{L}`, "", "p{L}", false},
 		{"nul", `\0`, "", `\x00`, false},
@@ -254,5 +256,37 @@ func TestGroupNames(t *testing.T) {
 	}
 	if got := compiled.GroupName(3); got != "" {
 		t.Errorf("GroupName(3) = %q, want empty", got)
+	}
+}
+
+// TestUnicodeSetsV 验证 v 模式（unicodeSets）支持：属性类、衍生属性展开、
+// 集合差集（对齐 Node 22 / V8 实测）。
+func TestUnicodeSetsV(t *testing.T) {
+	cases := []struct {
+		name, pattern, input string
+		want                 bool
+	}{
+		{"zeroWidth zwsp", `^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Mark}|\p{Surrogate})+$`, "\u200b", true},
+		{"zeroWidth normal", `^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Mark}|\p{Surrogate})+$`, "abc", false},
+		{"zeroWidth combining", `^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Mark}|\p{Surrogate})+$`, "\u0301", true},
+		{"markChar", `^\p{Mark}$`, "\u0301", true},
+		{"setdiff Mc", `^[\p{Spacing_Mark}--[\u1734\u302E\u302F]]$`, "\u0903", true},
+		{"setdiff excluded", `^[\p{Spacing_Mark}--[\u1734\u302E\u302F]]$`, "\u1734", false},
+		{"setdiff other", `^[\p{Spacing_Mark}--[\u1734\u302E\u302F]]$`, "\u1AFF", false},
+		// Go UTF-8 模型无法表示孤立代理项（Node 为 true，文档标注差异）。
+		{"surrogate alias", `^\p{Surrogate}$`, string([]byte{0xED, 0xA0, 0x80}), false},
+		{"RGI emoji approx", `^\p{RGI_Emoji}$`, "\u2764", true}, // 近似 \p{So}（Node 裸 ❤ 为 false，需 VS16）
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			compiled, err := Compile(c.pattern, "v")
+			if err != nil {
+				t.Fatalf("Compile(%q, v): %v", c.pattern, err)
+			}
+			m := compiled.MatchIndex(c.input)
+			if (m != nil) != c.want {
+				t.Errorf("MatchIndex(%q) match=%v, want %v", c.input, m != nil, c.want)
+			}
+		})
 	}
 }

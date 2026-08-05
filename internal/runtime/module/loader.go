@@ -248,6 +248,8 @@ func (l *Loader) MakeRequireFunc(modulePath string) engine.Function {
 // path. It implements ES2020 dynamic import(): always returns a Promise that
 // resolves to the module's namespace (exports) or rejects on load failure.
 //
+// 支持第二参数 import attributes：import(x, { with: { type: 'json' } })。
+//
 // 实现说明：动态 import 复用 require() 的同步加载链路，再用全局 Promise
 // 把结果包装成已 settled 的 Promise。通过 engine.Function.Call 调用
 // Promise.resolve / Promise.reject 静态方法，避免依赖 interpreter 包。
@@ -257,12 +259,76 @@ func (l *Loader) makeImportFunc(modulePath string) engine.Function {
 			return l.rejectImport(fmt.Errorf("import: missing module specifier"))
 		}
 		spec := args[0].String()
-		exports, err := l.require(spec, modulePath)
+		attrType := ""
+		if len(args) > 1 {
+			t, err := importAttributeType(args[1])
+			if err != nil {
+				return l.rejectImport(err)
+			}
+			attrType = t
+		}
+		exports, err := l.requireWithAttributes(spec, modulePath, attrType)
 		if err != nil {
 			return l.rejectImport(err)
 		}
+		// 动态 import 解析为模块命名空间：JSON（type: json）与其他
+		// 非命名空间导出包装为 { default: <value> }（Node 语义）。
+		if attrType == "json" {
+			ns := engine.NewObject()
+			if p, err := l.objectProtoValue(); err == nil {
+				engine.SetProto(ns, p)
+			}
+			_ = ns.Set("default", exports)
+			return l.resolveImport(ns)
+		}
 		return l.resolveImport(exports)
 	})
+}
+
+// requireWithAttributes 按 import attributes 加载模块：
+// type 为 "json" 时强制走 JSON 模块加载；"module" 或不指定走常规加载；
+// 其他 type 报错。
+func (l *Loader) requireWithAttributes(specifier, parentPath, attrType string) (engine.Value, error) {
+	if attrType == "json" {
+		resolved, err := l.resolver.Resolve(specifier, parentPath)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		absPath, err := filepath.Abs(resolved)
+		if err != nil {
+			return engine.Undefined(), fmt.Errorf("module: cannot resolve path: %w", err)
+		}
+		return l.loadJSON(absPath)
+	}
+	if attrType != "" && attrType != "module" {
+		return engine.Undefined(), fmt.Errorf("import: unsupported import attribute type %q", attrType)
+	}
+	return l.require(specifier, parentPath)
+}
+
+// importAttributeType 从 import 第二参数提取 attributes：
+// { with: { type: 'json' } } → "json"。无 attributes 返回空串。
+func importAttributeType(opts engine.Value) (string, error) {
+	if opts.IsUndefined() || opts.IsNull() {
+		return "", nil
+	}
+	obj, ok := opts.AsObject()
+	if !ok {
+		return "", fmt.Errorf("import: options must be an object")
+	}
+	withVal, err := obj.Get("with")
+	if err != nil || withVal.IsUndefined() || withVal.IsNull() {
+		return "", nil
+	}
+	withObj, ok := withVal.AsObject()
+	if !ok {
+		return "", fmt.Errorf("import: options.with must be an object")
+	}
+	typeVal, err := withObj.Get("type")
+	if err != nil || typeVal.IsUndefined() {
+		return "", nil
+	}
+	return typeVal.String(), nil
 }
 
 // resolveImport wraps a value in a resolved Promise via the global Promise.resolve.

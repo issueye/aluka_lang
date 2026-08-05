@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // 不支持的正则特性对应的错误。
@@ -109,6 +110,11 @@ func translateEscape(pattern string, i int, f Flags) (string, int, error) {
 				if prop == "ID_Continue" {
 					return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
 				}
+				// Go RE2 不支持的属性（Default_Ignorable_Code_Point / RGI_Emoji）：
+				// 展开为码点类或近似类；类外需包裹 [] 表示单字符匹配。
+				if s, ok := unicodePropToGo(prop); ok {
+					return "[" + s + "]", end + 1, nil
+				}
 			}
 			return pattern[i : end+1], end + 1, nil
 		}
@@ -136,7 +142,8 @@ func translateEscape(pattern string, i int, f Flags) (string, int, error) {
 		return `\x00`, i + 2, nil
 	case esc == 'u':
 		// \uHHHH 或 \u{...}（u 模式码点）。Go regexp 不支持 \u 转义，
-		// 统一翻译为 \x{HHHH}（\x{...} 按码点匹配，语义与 u 模式一致）。
+		// 统一翻译为 \x{...}（≤0xFFFF）或 UTF-8 字面量（>0xFFFF，
+		// Go 的 \x{...} 仅支持 4 位十六进制）。
 		if i+2 < len(pattern) && pattern[i+2] == '{' {
 			end := i + 2
 			for end < len(pattern) && pattern[end] != '}' {
@@ -145,12 +152,12 @@ func translateEscape(pattern string, i int, f Flags) (string, int, error) {
 			if end >= len(pattern) {
 				return "", 0, errors.New("invalid regular expression: unterminated \\u escape")
 			}
-			return `\x` + pattern[i+2:end+1], end + 1, nil
+			return goCodePoint(hexVal(pattern[i+3 : end])), end + 1, nil
 		}
 		if i+6 > len(pattern) {
 			return "", 0, errors.New("invalid regular expression: incomplete \\u escape")
 		}
-		return `\x{` + pattern[i+2:i+6] + `}`, i + 6, nil
+		return goCodePoint(hexVal(pattern[i+2 : i+6])), i + 6, nil
 	case esc == 'x':
 		if i+4 > len(pattern) {
 			return "", 0, errors.New("invalid regular expression: incomplete \\x escape")
@@ -230,6 +237,27 @@ func translateClass(pattern string, i int, f Flags) (string, int, error) {
 			b.WriteByte(']')
 			return b.String(), i + 1, nil
 		}
+		if c == '-' && f.UnicodeSets && i+1 < len(pattern) && pattern[i+1] == '-' {
+			// v 模式集合差集：[\p{Prop}--[子集]]（如 tui 的
+			// [\p{Spacing_Mark}--[\u1734\u302E\u302F]]）。
+			// setDifferenceClass 返回裸范围（不含 [ ]），类闭合仍由
+			// 本函数外层 ']' 逻辑统一处理，避免双闭合。
+			negatedIn := strings.Contains(b.String(), "^")
+			out, ni, err := translateSetDifference(pattern, i, &b)
+			if err != nil {
+				return "", 0, err
+			}
+			b.Reset()
+			if negatedIn {
+				b.WriteString("[^")
+			} else {
+				b.WriteByte('[')
+			}
+			b.WriteString(out)
+			i = ni
+			hasAtom = true
+			continue
+		}
 		b.WriteByte(c)
 		hasAtom = true
 		firstContent = false
@@ -281,12 +309,12 @@ func translateClassEscape(pattern string, i int, f Flags) (string, int, error) {
 			if end >= len(pattern) {
 				return "", 0, errors.New("invalid regular expression: unterminated \\u escape")
 			}
-			return `\x` + pattern[i+2:end+1], end + 1, nil
+			return goCodePoint(hexVal(pattern[i+3 : end])), end + 1, nil
 		}
 		if i+6 > len(pattern) {
 			return "", 0, errors.New("invalid regular expression: incomplete \\u escape")
 		}
-		return `\x{` + pattern[i+2:i+6] + `}`, i + 6, nil
+		return goCodePoint(hexVal(pattern[i+2 : i+6])), i + 6, nil
 	case esc == 'x':
 		if i+4 > len(pattern) {
 			return "", 0, errors.New("invalid regular expression: incomplete \\x escape")
@@ -321,6 +349,10 @@ func translateClassEscape(pattern string, i int, f Flags) (string, int, error) {
 				}
 				if prop == "ID_Continue" {
 					return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
+				}
+				// 类内直接输出展开串（无需包裹 []）。
+				if s, ok := unicodePropToGo(prop); ok {
+					return s, end + 1, nil
 				}
 			}
 			return pattern[i : end+1], end + 1, nil
@@ -367,5 +399,219 @@ func translateGroup(pattern string, i int) (string, int, error) {
 		return "(?P", i + 3, nil
 	default:
 		return "", 0, errors.New("invalid regular expression: unsupported group")
+	}
+}
+
+// unicodePropToGo 处理 Go RE2 不支持的 JS Unicode 属性（PropList 衍生属性），
+// 返回可嵌入字符类的展开串。返回值用于类内（裸）或类外（调用方包裹 []）。
+func unicodePropToGo(prop string) (string, bool) {
+	switch prop {
+	case "Default_Ignorable_Code_Point":
+		// Unicode 15.1 PropList.txt：软连字符/零宽字符/变体选择符/标签字符等。
+		// Go regexp 无此属性表，展开为码点范围类。
+		return `\x{00AD}\x{034F}\x{061C}\x{115F}-\x{1160}\x{17B4}-\x{17B5}\x{180B}-\x{180E}\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{206F}\x{3164}\x{FE00}-\x{FE0F}\x{FEFF}\x{FFA0}\x{FFF0}-\x{FFF8}\x{1BCA0}-\x{1BCA3}\x{1D173}-\x{1D17A}\x{E0000}-\x{E0FFF}`, true
+	case "RGI_Emoji":
+		// Go RE2 无 emoji 序列集（含 ZWJ/肤色修饰组合）。近似为 \p{So}
+		// （绝大多数 emoji 属此类）；精度近似，文档标注。
+		return `\p{So}`, true
+	}
+	return "", false
+}
+
+// translateSetDifference 处理 v 模式字符类差集 [\p{Prop}--[子集]]。
+// i 指向 "--" 的起始 '-'；b 已包含类前缀（如 "[\p{Mc}"）。仅支持
+// "\p{Prop}--[字面量/\uHHHH/\x{...}/范围]" 形式（Pi 实际用法）。
+func translateSetDifference(pattern string, i int, b *strings.Builder) (string, int, error) {
+	cur := b.String()
+	// 提取前缀中的 \p{Prop}：形如 "[\p{X}" 或 "[^\p{X}"。
+	prop, ok := extractClassProp(cur)
+	if !ok {
+		return "", 0, errors.New("invalid regular expression: unsupported set difference (only \\p{Prop}--[subset] is supported)")
+	}
+	rt := rangeTableForProp(prop)
+	if rt == nil {
+		return "", 0, fmt.Errorf("invalid regular expression: unknown property %q in set difference", prop)
+	}
+	// 解析 "--" 后的子集 [ ... ]。
+	exclude, ni, err := parseSubsetCodePoints(pattern, i+2)
+	if err != nil {
+		return "", 0, err
+	}
+	return setDifferenceClass(rt, exclude), ni, nil
+}
+
+// extractClassProp 从字符类前缀（如 "[\p{Mc}"、"[\p{Spacing_Mark}"）提取属性名。
+func extractClassProp(prefix string) (string, bool) {
+	// 查找 "\p{"，其后到字符串结尾即属性名。
+	idx := strings.Index(prefix, `\p{`)
+	if idx < 0 {
+		return "", false
+	}
+	rest := prefix[idx+3:]
+	if rest == "" {
+		return "", false
+	}
+	for _, r := range rest {
+		if r == '}' {
+			rest = rest[:len(rest)-1]
+			break
+		}
+		if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			return "", false
+		}
+	}
+	return strings.TrimSuffix(rest, "}"), true
+}
+
+// rangeTableForProp 将 JS 属性名映射为 Go unicode 表。
+func rangeTableForProp(prop string) *unicode.RangeTable {
+	switch prop {
+	case "Mark", "M":
+		return unicode.M
+	case "Spacing_Mark", "Mc":
+		return unicode.Mc
+	case "Control", "Cc":
+		return unicode.Cc
+	case "Format", "Cf":
+		return unicode.Cf
+	case "Surrogate", "Cs":
+		return unicode.Cs
+	}
+	return unicode.Categories[prop]
+}
+
+// parseSubsetCodePoints 解析差集子类 [\u1734\u302E\u302F] 为码点集合。
+// 支持：字面量字符、\uHHHH、\x{HH..}、范围 a-b。返回 (集合, 结束位置)。
+func parseSubsetCodePoints(pattern string, start int) (map[rune]bool, int, error) {
+	if start >= len(pattern) || pattern[start] != '[' {
+		return nil, 0, errors.New("invalid regular expression: set difference requires [subset]")
+	}
+	set := make(map[rune]bool)
+	i := start + 1
+	for i < len(pattern) && pattern[i] != ']' {
+		c := pattern[i]
+		var lo rune
+		if c == '\\' {
+			if i+1 >= len(pattern) {
+				return nil, 0, errors.New("invalid regular expression: unterminated subset escape")
+			}
+			e := pattern[i+1]
+			switch {
+			case e == 'u' && i+5 < len(pattern) && pattern[i+2] == '{':
+				// \u{...}
+				j := i + 3
+				for j < len(pattern) && pattern[j] != '}' {
+					j++
+				}
+				if j >= len(pattern) {
+					return nil, 0, errors.New("invalid regular expression: unterminated \\u escape")
+				}
+				var v rune
+				for _, h := range pattern[i+3 : j] {
+					v = v*16 + rune(hexDigitValue(byte(h)))
+				}
+				lo = v
+				i = j + 1
+			case e == 'u' && i+6 <= len(pattern):
+				lo = rune(hex4(pattern[i+2 : i+6]))
+				i += 6
+			case e == 'x' && i+4 <= len(pattern):
+				lo = rune(hex4("00" + pattern[i+2:i+4]))
+				i += 4
+			default:
+				lo = rune(e)
+				i += 2
+			}
+		} else {
+			lo = rune(c)
+			i++
+		}
+		// 范围 a-b。
+		if i+1 < len(pattern) && pattern[i] == '-' && pattern[i+1] != ']' {
+			i++
+			var hi rune
+			if pattern[i] == '\\' && i+5 < len(pattern) && pattern[i+1] == 'u' {
+				hi = rune(hex4(pattern[i+2 : i+6]))
+				i += 6
+			} else {
+				hi = rune(pattern[i])
+				i++
+			}
+			for r := lo; r <= hi; r++ {
+				set[r] = true
+			}
+		} else {
+			set[lo] = true
+		}
+	}
+	if i >= len(pattern) {
+		return nil, 0, errors.New("invalid regular expression: unterminated subset class")
+	}
+	return set, i + 1, nil
+}
+
+// setDifferenceClass 计算 RangeTable 减去码点集合后的字符类（Go 语法）。
+// setDifferenceClass 计算 RangeTable 减去码点集合后的字符类内容
+// （裸范围序列，不含 [ ]，由调用方包裹）。
+func setDifferenceClass(rt *unicode.RangeTable, exclude map[rune]bool) string {
+	var b strings.Builder
+	emit := func(lo, hi rune) {
+		if lo == hi {
+			b.WriteString(goCodePoint(lo))
+		} else {
+			b.WriteString(goCodePoint(lo) + "-" + goCodePoint(hi))
+		}
+	}
+	emitRanges := func(lo, hi rune) {
+		for lo <= hi {
+			for lo <= hi && exclude[lo] {
+				lo++
+			}
+			if lo > hi {
+				break
+			}
+			start := lo
+			for lo <= hi && !exclude[lo] {
+				lo++
+			}
+			emit(start, lo-1)
+		}
+	}
+	for _, r := range rt.R16 {
+		emitRanges(rune(r.Lo), rune(r.Hi))
+	}
+	for _, r := range rt.R32 {
+		emitRanges(rune(r.Lo), rune(r.Hi))
+	}
+	return b.String()
+}
+
+// goCodePoint 将码点输出为 Go regexp 可识别的形式：
+// ≤0xFFFF 用 \x{HHHH}（Go 的 \x{...} 仅支持 1-4 位十六进制）；
+// >0xFFFF 嵌入 UTF-8 字面量（RE2 对超出 4 位的 \x{...} 会截断解析）。
+func goCodePoint(r rune) string {
+	if r <= 0xFFFF {
+		return fmt.Sprintf(`\x{%X}`, r)
+	}
+	return string(r)
+}
+
+// hex4 解析 4 位十六进制（供子集解析使用）。
+func hex4(s string) int {
+	v := 0
+	for _, c := range s {
+		v = v*16 + hexDigitValue(byte(c))
+	}
+	return v
+}
+
+func hexDigitValue(b byte) int {
+	switch {
+	case b >= '0' && b <= '9':
+		return int(b - '0')
+	case b >= 'a' && b <= 'f':
+		return int(b-'a') + 10
+	default:
+		return int(b-'A') + 10
 	}
 }

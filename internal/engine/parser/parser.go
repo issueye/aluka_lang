@@ -1664,6 +1664,7 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 			// __import 的调用，复用现有 CallExpr 编译链路。__import 由模块
 			// 加载器在 setGlobals 时注入，返回 Promise<module exports>。
 			// 这样无需新增 AST 节点/opcode/compiler 分支。
+			// 第二参数为 import attributes：import(x, { with: { type: 'json' } })。
 			p.next() // 消费 import 关键字
 			if err := p.expectPunct("("); err != nil {
 				return nil, err
@@ -1672,12 +1673,20 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 			if err != nil {
 				return nil, err
 			}
+			args := []ast.Expression{spec}
+			if p.matchPunct(",") {
+				opts, err := p.parseAssignment()
+				if err != nil {
+					return nil, err
+				}
+				args = append(args, opts)
+			}
 			if err := p.expectPunct(")"); err != nil {
 				return nil, err
 			}
 			return &ast.CallExpr{
 				Callee:    &ast.Identifier{Name: "__import", Loc: posOf(t)},
-				Arguments: []ast.Expression{spec},
+				Arguments: args,
 				Loc:       posOf(t),
 			}, nil
 		}
@@ -1763,6 +1772,13 @@ func (p *Parser) parseImportDeclRest(t lexer.Token) (*ast.ImportDecl, error) {
 			return nil, err
 		}
 		decl.Source = s
+		if p.matchKeyword("with") {
+			attrs, err := p.parseImportAttributes()
+			if err != nil {
+				return nil, err
+			}
+			decl.Attributes = attrs
+		}
 		if err := p.consumeSemicolon(); err != nil {
 			return nil, err
 		}
@@ -1853,10 +1869,49 @@ func (p *Parser) parseImportDeclRest(t lexer.Token) (*ast.ImportDecl, error) {
 		return nil, err
 	}
 	decl.Source = s
+	// Import attributes：import x from 'mod' with { type: 'json' }
+	if p.matchKeyword("with") {
+		attrs, err := p.parseImportAttributes()
+		if err != nil {
+			return nil, err
+		}
+		decl.Attributes = attrs
+	}
 	if err := p.consumeSemicolon(); err != nil {
 		return nil, err
 	}
 	return decl, nil
+}
+
+// parseImportAttributes 解析 import attributes 子句：
+// with { type: 'json', key: 'value' }（仅字符串值，键为标识符或字符串）。
+func (p *Parser) parseImportAttributes() (map[string]string, error) {
+	if err := p.expectPunct("{"); err != nil {
+		return nil, err
+	}
+	attrs := make(map[string]string)
+	for {
+		keyTok, err := p.expect(lexer.TokenIdent, "")
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expectPunct(":"); err != nil {
+			return nil, err
+		}
+		valTok := p.peek()
+		if valTok.Type != lexer.TokenString {
+			return nil, p.errorf(valTok, "expected string value in import attributes")
+		}
+		p.next()
+		attrs[keyTok.Value] = valTok.Value
+		if !p.matchPunct(",") {
+			break
+		}
+	}
+	if err := p.expectPunct("}"); err != nil {
+		return nil, err
+	}
+	return attrs, nil
 }
 
 // parseStringLiteral parses a string literal token and returns its value.
