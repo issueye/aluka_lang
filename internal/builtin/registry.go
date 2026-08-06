@@ -15,6 +15,8 @@ import (
 // 新增模块时在此添加一行 RegisterBuiltin 调用。
 func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("path", NewPath)
+	loader.RegisterBuiltin("path/posix", NewPathPosix)
+	loader.RegisterBuiltin("path/win32", NewPathWin32)
 	loader.RegisterBuiltin("os", NewOS)
 	loader.RegisterBuiltin("url", NewURL)
 	loader.RegisterBuiltin("util", NewUtil)
@@ -30,6 +32,7 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("stream", NewStream)
 	loader.RegisterBuiltin("stream/web", NewStreamWeb)
 	loader.RegisterBuiltin("stream/promises", NewStreamPromises)
+	loader.RegisterBuiltin("stream/consumers", NewStreamConsumers)
 	loader.RegisterBuiltin("querystring", NewQueryString)
 	loader.RegisterBuiltin("string_decoder", NewStringDecoder)
 	loader.RegisterBuiltin("http", NewHTTP)
@@ -37,6 +40,20 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("net", NewNet)
 	loader.RegisterBuiltin("tls", NewTLS)
 	loader.RegisterBuiltin("dns", NewDNS)
+	loader.RegisterBuiltin("dns/promises", func(ctx engine.Context) (engine.Value, error) {
+		// Node 语义：require('node:dns/promises') === require('node:dns').promises
+		// （同一对象身份）。
+		dnsV, err := loader.GetBuiltin("dns")
+		if err != nil || dnsV == nil || dnsV.IsUndefined() {
+			return engine.Undefined(), fmt.Errorf("dns/promises: dns not initialized")
+		}
+		if obj, ok := dnsV.AsObject(); ok {
+			if p, err := obj.Get("promises"); err == nil && !p.IsUndefined() {
+				return p, nil
+			}
+		}
+		return engine.Undefined(), fmt.Errorf("dns/promises: dns.promises not found")
+	})
 	loader.RegisterBuiltin("zlib", NewZlib)
 	loader.RegisterBuiltin("perf_hooks", NewPerfHooks)
 	loader.RegisterBuiltin("timers", NewTimersModule)
@@ -44,11 +61,13 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("v8", NewV8)
 	loader.RegisterBuiltin("vm", NewVMModule)
 	loader.RegisterBuiltin("inspector", NewInspector)
+	loader.RegisterBuiltin("inspector/promises", NewInspectorPromises)
 	loader.RegisterBuiltin("dgram", NewDgram)
 	loader.RegisterBuiltin("http2", NewHTTP2)
 	loader.RegisterBuiltin("cluster", NewCluster)
 	loader.RegisterBuiltin("trace_events", NewTraceEvents)
 	loader.RegisterBuiltin("readline", NewReadline)
+	loader.RegisterBuiltin("readline/promises", NewReadlinePromises)
 	loader.RegisterBuiltin("repl", NewReplModule)
 	loader.RegisterBuiltin("child_process", NewChildProcess)
 	loader.RegisterBuiltin("worker_threads", NewWorkerThreads)
@@ -65,6 +84,13 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("process", NewProcessModule)
 	loader.RegisterBuiltin("console", NewConsoleModule)
 	loader.RegisterBuiltin("test", NewTest)
+	loader.RegisterBuiltin("test/reporters", NewTestReporters)
+	// node:sys —— node:util 兼容别名（废弃，DEP0140）。与 util 同一对象身份。
+	loader.RegisterBuiltin("sys", func(ctx engine.Context) (engine.Value, error) {
+		// 仅首次加载打印一次废弃警告（Node 每次 require 发出，这里由缓存保证一次）。
+		emitDeprecation("sys", "The sys module is deprecated. Use util instead.")
+		return loader.GetBuiltin("util")
+	})
 }
 
 // NewProcessModule 返回全局 process 对象（require('process')）。

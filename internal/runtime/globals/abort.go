@@ -18,8 +18,19 @@ import (
 // AbortConfig 配置 Abort 全局（当前无可用选项）。
 type AbortConfig struct{}
 
+// abortSignalProto 是 AbortSignal 实例的原型（instanceof 支持）。
+var abortSignalProto engine.Object
+
 // NewAbort 注册全局 AbortController 构造器。
 func NewAbort(ctx engine.Context, cfg AbortConfig) error {
+	abortSignalCtor := engine.NewFunction("AbortSignal", func(args []engine.Value) (engine.Value, error) {
+		return newAbortSignalInstance(), nil
+	})
+	asObj, _ := abortSignalCtor.AsObject()
+	abortSignalProto = engine.NewObject()
+	_ = abortSignalProto.Set("constructor", abortSignalCtor)
+	_ = asObj.Set("prototype", abortSignalProto)
+
 	_ = ctx.Global().Set("AbortController", engine.NewFunction("AbortController", func(args []engine.Value) (engine.Value, error) {
 		ctrl := engine.NewObject()
 		signal := newAbortSignalInstance()
@@ -35,11 +46,6 @@ func NewAbort(ctx engine.Context, cfg AbortConfig) error {
 		}))
 		return ctrl, nil
 	}))
-
-	abortSignalCtor := engine.NewFunction("AbortSignal", func(args []engine.Value) (engine.Value, error) {
-		return newAbortSignalInstance(), nil
-	})
-	asObj, _ := abortSignalCtor.AsObject()
 
 	// AbortSignal.timeout(ms)：定时中断（reason 为 TimeoutError 语义）。
 	_ = asObj.Set("timeout", engine.NewFunction("timeout", func(args []engine.Value) (engine.Value, error) {
@@ -58,6 +64,17 @@ func NewAbort(ctx engine.Context, cfg AbortConfig) error {
 				abortSignal(signal, engine.Str("TimeoutError"))
 			})
 		})
+		return signal, nil
+	}))
+
+	// AbortSignal.abort([reason])：返回已中断的信号（Node ≥ 17.3）。
+	_ = asObj.Set("abort", engine.NewFunction("abort", func(args []engine.Value) (engine.Value, error) {
+		reason := engine.Undefined()
+		if len(args) > 0 {
+			reason = args[0]
+		}
+		signal := newAbortSignalInstance()
+		abortSignal(signal, reason)
 		return signal, nil
 	}))
 
@@ -110,6 +127,9 @@ func NewAbort(ctx engine.Context, cfg AbortConfig) error {
 // newAbortSignalInstance 构造 AbortSignal（基于 EventTarget）。
 func newAbortSignalInstance() engine.Value {
 	signal := newEventTargetInstance().(engine.Object)
+	if abortSignalProto != nil {
+		engine.SetProto(signal, abortSignalProto)
+	}
 	_ = signal.Set("aborted", engine.Boolean(false))
 	_ = signal.Set("reason", engine.Undefined())
 	_ = signal.Set("onabort", engine.Undefined())

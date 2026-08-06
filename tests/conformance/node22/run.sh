@@ -7,7 +7,7 @@
 #   ALUKA=<aluka 可执行路径> NODE=<node 可执行路径> bash run.sh [用例名]
 set -u
 
-ALUKA="${ALUKA:-go run ../../../cmd/aluka}"
+ALUKA="${ALUKA:-go run ../../../../cmd/aluka}"
 NODE="${NODE:-node}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -53,12 +53,12 @@ run_case() { # run_case <用例文件>
   # 用例内 require 相对模块：cd 到用例目录执行。
   if grep -q '^//@test' "$case_file"; then
     # 测试模式用例：node --test 与 aluka test（输出归一化后对比）。
-    a_out="$(cd "$dir" && "$ALUKA" test "$name" 2>&1)"
+    a_out="$(cd "$dir" && $ALUKA test "$name" 2>&1)"
     n_out="$(cd "$dir" && "$NODE" --test "$name" 2>&1)"
     a_out="$(norm_test_out "$a_out")"
     n_out="$(norm_test_out "$n_out")"
   else
-    a_out="$(cd "$dir" && "$ALUKA" "$name" 2>&1)"
+    a_out="$(cd "$dir" && $ALUKA "$name" 2>&1)"
     n_out="$(cd "$dir" && "$NODE" "$name" 2>&1)"
   fi
   if [ "$a_out" = "$n_out" ]; then

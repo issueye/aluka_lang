@@ -19,6 +19,8 @@ import (
 // NewDNS 构造 node:dns 模块的导出对象。
 func NewDNS(ctx engine.Context) (engine.Value, error) {
 	m := engine.NewObject()
+	// DNS 错误码常量（与 dns/promises 共享同一组值）。
+	registerDNSConstants(m)
 
 	// dns.lookup(hostname[, options], callback)
 	_ = m.Set("lookup", engine.NewFunction("lookup", func(args []engine.Value) (engine.Value, error) {
@@ -75,37 +77,9 @@ func NewDNS(ctx engine.Context) (engine.Value, error) {
 		return callResolveVariant(ctx, args, 6)
 	}))
 
-	// dns.promises：lookup / resolve 返回 Promise。
-	p := engine.NewObject()
-	_ = p.Set("lookup", engine.NewFunction("lookup", func(args []engine.Value) (engine.Value, error) {
-		if len(args) == 0 {
-			return engine.Undefined(), fmt.Errorf("dns.promises.lookup: requires hostname")
-		}
-		hostname := args[0].String()
-		return promiseLookup(ctx, hostname, func(addrs []string) (engine.Value, error) {
-			if len(addrs) == 0 {
-				return engine.Undefined(), fmt.Errorf("dns: ENOTFOUND %s", hostname)
-			}
-			return engine.Str(addrs[0]), nil
-		})
-	}))
-	_ = p.Set("resolve", engine.NewFunction("resolve", func(args []engine.Value) (engine.Value, error) {
-		if len(args) == 0 {
-			return engine.Undefined(), fmt.Errorf("dns.promises.resolve: requires hostname")
-		}
-		hostname := args[0].String()
-		return promiseLookup(ctx, hostname, func(addrs []string) (engine.Value, error) {
-			if len(addrs) == 0 {
-				return engine.Undefined(), fmt.Errorf("dns: ENOTFOUND %s", hostname)
-			}
-			vals := make([]engine.Value, len(addrs))
-			for i, a := range addrs {
-				vals[i] = engine.Str(a)
-			}
-			return engine.NewArray(vals), nil
-		})
-	}))
-	_ = m.Set("promises", p)
+	// dns.promises：Promise 版 API（完整实现见 dns_promises.go）。
+	// 与 node:dns/promises 共享同一对象（identity 一致）。
+	_ = m.Set("promises", newDNSPromises(ctx))
 
 	// setDefaultResultOrder：no-op（IPv4 优先固定）。
 	_ = m.Set("setDefaultResultOrder", engine.NewFunction("setDefaultResultOrder", func(args []engine.Value) (engine.Value, error) {

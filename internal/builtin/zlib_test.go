@@ -77,7 +77,8 @@ dns.lookup('localhost', function(err, address) {
   dns.resolve('localhost', function(err2, addrs) {
     globalThis.__resolve = (err2 === null) + ':' + (addrs.length > 0);
     dns.promises.lookup('localhost').then(function(a) {
-      globalThis.__promise = a.length > 0;
+      // Node 语义：lookup 返回 { address, family } 对象。
+      globalThis.__promise = (typeof a.address === 'string' && a.address.length > 0);
     });
   });
 });

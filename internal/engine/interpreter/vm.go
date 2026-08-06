@@ -2058,6 +2058,13 @@ type jsThrow struct {
 
 func (e *jsThrow) Error() string { return e.val.String() }
 
+// ThrowJSValue 构造一个携带 JS 值的抛出错误（供内置模块实现 Node 语义，
+// 如 EventEmitter 的 emit('error') 无监听器时抛出原始值）。经 VM 调用链
+// normalizeException 还原为 JS 值，可被 try/catch 捕获。
+func ThrowJSValue(val engine.Value) error {
+	return &jsThrow{val: val}
+}
+
 // handleThrow processes a thrown exception (value or Go error). It searches
 // ONLY the current frame's try-stack for a matching handler. If found, it
 // jumps to the catch/finally and resumes execution. If not, it returns a

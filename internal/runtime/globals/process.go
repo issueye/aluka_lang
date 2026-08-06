@@ -288,6 +288,44 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		return cu, nil
 	}))
 
+	// emitWarning(warning[, options] | warning[, type[, code]])：
+	// Node 语义的进程警告（默认输出 stderr，含 [code] 与 type）。M2 供
+	// EventEmitter 的 maxListeners 警告使用。
+	_ = proc.Set("emitWarning", engine.NewFunction("emitWarning", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), nil
+		}
+		msg := args[0].String()
+		code := ""
+		typ := "Warning"
+		parse := func(v engine.Value) {
+			if o, ok := v.AsObject(); ok {
+				if vv, err := o.Get("type"); err == nil {
+					typ = vv.String()
+				}
+				if vv, err := o.Get("code"); err == nil {
+					code = vv.String()
+				}
+			}
+		}
+		if len(args) > 1 {
+			if args[1].Type() == engine.TypeObject {
+				parse(args[1])
+			} else {
+				typ = args[1].String()
+			}
+		}
+		if len(args) > 2 {
+			code = args[2].String()
+		}
+		if code != "" {
+			fmt.Fprintf(os.Stderr, "(aluka:%d) [%s] %s: %s\n", os.Getpid(), code, typ, msg)
+		} else {
+			fmt.Fprintf(os.Stderr, "(aluka:%d) %s: %s\n", os.Getpid(), typ, msg)
+		}
+		return engine.Undefined(), nil
+	}))
+
 	// on / emit：SIGINT/SIGTERM/SIGHUP/SIGBREAK 等信号事件实际触发
 	// （os/signal → PostTask → JS 监听器）；其余事件为普通注册。
 	listeners := make(map[string][]engine.Func)

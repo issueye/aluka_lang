@@ -671,6 +671,23 @@ func (interp *Interpreter) goErrorToJSValue(err error) engine.Value {
 	if ce, ok := err.(interface{ Code() string }); ok {
 		_ = errObj.Set("code", engine.Str(ce.Code()))
 	}
+	// 系统错误（*os.PathError/*os.LinkError/*fs.PathError）：Node 风格
+	// code/errno/path 与 message（如 "ENOENT: no such file or directory, open 'x'"）。
+	if pe, ok := asPathError(err); ok {
+		code, desc, errnoNum := nodeErrnoInfo(pe.Err)
+		if code != "" {
+			_ = errObj.Set("code", engine.Str(code))
+			_ = errObj.Set("errno", engine.IntValue(errnoNum))
+			op := pe.Op
+			if op == "" {
+				op = "syscall"
+			}
+			msg = fmt.Sprintf("%s: %s, %s '%s'", code, desc, op, pe.Path)
+			_ = errObj.Set("message", engine.Str(msg))
+			_ = errObj.Set("path", engine.Str(pe.Path))
+			_ = errObj.Set("syscall", engine.Str(op))
+		}
+	}
 	// exec 类错误：status/killed（execFileSync/execSync 非零退出与超时）。
 	if se, ok := err.(interface{ Status() int }); ok {
 		_ = errObj.Set("status", engine.IntValue(se.Status()))

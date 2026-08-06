@@ -43,6 +43,21 @@ func currentPlatform() string {
 	return "posix"
 }
 
+// NewPathPosix 构造 node:path/posix 模块导出对象（固定 POSIX 语义，独立入口）。
+// 与 node:path.posix 子对象同一套实现，但作为独立模块导出。
+func NewPathPosix(ctx engine.Context) (engine.Value, error) {
+	m := engine.NewObject()
+	registerPathMethods(m, "posix")
+	return m, nil
+}
+
+// NewPathWin32 构造 node:path/win32 模块导出对象（固定 Win32 语义，独立入口）。
+func NewPathWin32(ctx engine.Context) (engine.Value, error) {
+	m := engine.NewObject()
+	registerPathMethods(m, "win32")
+	return m, nil
+}
+
 // pathImpl 封装特定平台的路径操作（避免直接在闭包里重复平台判断）。
 type pathImpl struct {
 	sep        string
@@ -140,7 +155,9 @@ func registerPathMethods(m engine.Object, platform string) {
 		if platform == "win32" {
 			p = strings.ReplaceAll(p, "\\", "/")
 		}
-		nocase := runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+		// Node 语义：path.win32.matchesGlob 大小写不敏感，path.posix 大小写敏感
+		// （与宿主平台无关）。
+		nocase := platform == "win32"
 		for _, cp := range globCompilePattern(pat, nocase) {
 			if globFullMatchExact(cp, p) {
 				return engine.Boolean(true), nil
