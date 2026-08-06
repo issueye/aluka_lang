@@ -1,0 +1,1 @@
+{"name":"pkgapp","type":"commonjs","imports":{"#alias":"./local/alias.js","#util/*":"./local/util/*.js"}}

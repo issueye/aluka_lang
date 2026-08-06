@@ -1,0 +1,239 @@
+package globals
+
+// Phase 3 Web API 测试：fetch/Response/Blob/ReadableStream。
+// 用 Go httptest 启动本地服务器，JS fetch 请求后经事件循环 resolve。
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+)
+
+// newFetchTestEnv 创建带 Web API 全局 + 事件循环的 VM 上下文。
+func newFetchTestEnv(t *testing.T) engine.Context {
+	t.Helper()
+	eng := interpreter.NewVMEngine()
+	ctx, err := eng.NewContext()
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	t.Cleanup(func() { ctx.Close() })
+	if err := NewFetch(ctx, FetchConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewBuffer(ctx, BufferConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewBlob(ctx, BlobConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewStream(ctx, StreamConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewWebCrypto(ctx, WebCryptoConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewURLPattern(ctx, URLPatternConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewMessageChannel(ctx, MessageConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewWebSocket(ctx, WebSocketConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewTimers(ctx, TimerConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	_ = ctx.Global().Set("globalThis", ctx.Global())
+	return ctx
+}
+
+// fetchRun 执行 JS 并在事件循环中驱动直到退出或超时。
+func fetchRun(t *testing.T, ctx engine.Context, code string) error {
+	t.Helper()
+	if _, err := ctx.Eval(code, "fetch_test.js"); err != nil {
+		return err
+	}
+	done := make(chan struct{})
+	go func() {
+		if vm, ok := ctx.(interface{ RunLoop() }); ok {
+			vm.RunLoop()
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("event loop timeout")
+	}
+}
+
+// webGlobalGet 读全局键。
+func webGlobalGet(ctx engine.Context, key string) string {
+	v, _ := ctx.Global().Get(key)
+	return v.String()
+}
+
+// TestFetchJSON 验证 fetch 请求本地服务器并解析 JSON。
+func TestFetchJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"hello":"world","n":42}`)
+	}))
+	defer srv.Close()
+
+	ctx := newFetchTestEnv(t)
+	code := fmt.Sprintf(`
+fetch('%s/json')
+  .then(function(res) { globalThis.__status = res.status; return res.json(); })
+  .then(function(data) { globalThis.__data = data.hello + ':' + data.n; });
+`, srv.URL)
+	if err := fetchRun(t, ctx, code); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := webGlobalGet(ctx, "__status"); got != "200" {
+		t.Errorf("status = %q, want 200", got)
+	}
+	if got := webGlobalGet(ctx, "__data"); got != "world:42" {
+		t.Errorf("data = %q, want world:42", got)
+	}
+}
+
+// TestFetchPost 验证 POST 方法 + 请求头。
+func TestFetchPost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := ""
+		if r.Body != nil {
+			buf := make([]byte, 1024)
+			n, _ := r.Body.Read(buf)
+			body = string(buf[:n])
+		}
+		_, _ = fmt.Fprintf(w, "%s:%s:%s", r.Method, r.Header.Get("X-Token"), body)
+	}))
+	defer srv.Close()
+
+	ctx := newFetchTestEnv(t)
+	code := fmt.Sprintf(`
+fetch('%s/api', { method: 'POST', headers: { 'X-Token': 'abc' }, body: 'payload' })
+  .then(function(res) { return res.text(); })
+  .then(function(t) { globalThis.__r = t; });
+`, srv.URL)
+	if err := fetchRun(t, ctx, code); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := webGlobalGet(ctx, "__r"); got != "POST:abc:payload" {
+		t.Errorf("post = %q, want POST:abc:payload", got)
+	}
+}
+
+// TestBlobBasics 验证 Blob/File。
+func TestBlobBasics(t *testing.T) {
+	ctx := newFetchTestEnv(t)
+	err := fetchRun(t, ctx, `
+var b = new Blob(['hello', ' ', 'world'], { type: 'text/plain' });
+globalThis.__size = b.size;
+globalThis.__type = b.type;
+b.text().then(function(t) { globalThis.__text = t; });
+var f = new File(['file-data'], 'a.txt');
+globalThis.__fname = f.name;
+globalThis.__fsize = f.size;
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := webGlobalGet(ctx, "__size"); got != "11" {
+		t.Errorf("size = %q, want 11", got)
+	}
+	if got := webGlobalGet(ctx, "__type"); got != "text/plain" {
+		t.Errorf("type = %q, want text/plain", got)
+	}
+	if got := webGlobalGet(ctx, "__text"); got != "hello world" {
+		t.Errorf("text = %q, want hello world", got)
+	}
+	if got := webGlobalGet(ctx, "__fname"); got != "a.txt" {
+		t.Errorf("fname = %q, want a.txt", got)
+	}
+	if got := webGlobalGet(ctx, "__fsize"); got != "9" {
+		t.Errorf("fsize = %q, want 9", got)
+	}
+}
+
+// TestReadableStream 验证 ReadableStream read 顺序。
+func TestReadableStream(t *testing.T) {
+	ctx := newFetchTestEnv(t)
+	err := fetchRun(t, ctx, `
+var rs = new ReadableStream({
+  start: function(c) { c.enqueue('a'); c.enqueue('b'); c.close(); }
+});
+var reader = rs.getReader();
+var out = [];
+reader.read().then(function(r1) {
+  out.push(r1.value);
+  return reader.read();
+}).then(function(r2) {
+  out.push(r2.value);
+  return reader.read();
+}).then(function(r3) {
+  out.push(String(r3.done));
+  globalThis.__stream = out.join(',');
+});
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := webGlobalGet(ctx, "__stream"); got != "a,b,true" {
+		t.Errorf("stream = %q, want a,b,true", got)
+	}
+}
+
+// TestResponseBasics 验证 Response 构造与属性。
+func TestResponseBasics(t *testing.T) {
+	ctx := newFetchTestEnv(t)
+	err := fetchRun(t, ctx, `
+var r = new Response('body-text', { status: 201, headers: { 'X-Test': '1' } });
+globalThis.__r = r.status + ':' + r.ok + ':' + r.statusText + ':' + r.headers.get('X-Test');
+r.text().then(function(t) { globalThis.__rt = t; });
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := webGlobalGet(ctx, "__r"); got != "201:true:Created:1" {
+		t.Errorf("response = %q, want 201:true:Created:1", got)
+	}
+	if got := webGlobalGet(ctx, "__rt"); got != "body-text" {
+		t.Errorf("text = %q, want body-text", got)
+	}
+}
+
+// TestHeadersFormData 验证 Headers 与 FormData。
+func TestHeadersFormData(t *testing.T) {
+	ctx := newFetchTestEnv(t)
+	err := fetchRun(t, ctx, `
+var h = new Headers();
+h.append('X-A', '1');
+h.append('X-A', '2');
+h.set('X-B', 'b');
+globalThis.__h = h.get('X-A') + ':' + h.has('X-B') + ':' + h.get('X-C');
+var fd = new FormData();
+fd.append('k1', 'v1');
+fd.append('k2', 'v2');
+fd.set('k1', 'v1b');
+globalThis.__fd = fd.get('k1') + ':' + fd.getAll('k2').length;
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := webGlobalGet(ctx, "__h"); got != "1:true:null" {
+		t.Errorf("headers = %q, want 1:true:null", got)
+	}
+	if got := webGlobalGet(ctx, "__fd"); got != "v1b:1" {
+		t.Errorf("formdata = %q, want v1b:1", got)
+	}
+}

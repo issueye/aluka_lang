@@ -1,9 +1,11 @@
 package globals
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -118,6 +120,57 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 	_ = release.Set("lts", engine.Null())
 	_ = proc.Set("release", release)
 	_ = proc.Set("config", engine.NewObject())
+
+	// M9-4：process.permission——Permission Model 的 has 方法面。
+	// aluka 不实现权限模型（ADR: docs/adr/permissions-report.md），has() 恒
+	// 返回 false（拒绝一切，等价于 Node --permission 且未授予任何 scope）。
+	// knownDifference：Node 默认（无 --permission）时 process.permission 为
+	// undefined，aluka 始终暴露该对象。
+	permObj := engine.NewObject()
+	_ = permObj.Set("has", engine.NewFunction("has", func(args []engine.Value) (engine.Value, error) {
+		return engine.Boolean(false), nil
+	}))
+	_ = proc.Set("permission", permObj)
+
+	// M9-4：process.report——writeReport/getReport 方法面 + 属性面。
+	// 默认值与 Node 一致；getReport 返回最小但形状一致的 report 对象，
+	// writeReport 将 JSON 落盘并打印 Node 相同的提示行（stderr）。
+	report := engine.NewObject()
+	_ = report.Set("compact", engine.Boolean(false))
+	_ = report.Set("directory", engine.Str(""))
+	_ = report.Set("excludeEnv", engine.Boolean(false))
+	_ = report.Set("excludeNetwork", engine.Boolean(false))
+	_ = report.Set("filename", engine.Str(""))
+	_ = report.Set("reportOnFatalError", engine.Boolean(false))
+	_ = report.Set("reportOnSignal", engine.Boolean(false))
+	_ = report.Set("reportOnUncaughtException", engine.Boolean(false))
+	_ = report.Set("signal", engine.Str("SIGUSR2"))
+	_ = report.Set("getReport", engine.NewFunction("getReport", func(a []engine.Value) (engine.Value, error) {
+		return reportToJS(buildReportMap(cfg.Argv)), nil
+	}))
+	_ = report.Set("writeReport", engine.NewFunction("writeReport", func(a []engine.Value) (engine.Value, error) {
+		// 文件名：默认生成 report.<ts>.<pid>.0.001.json（Node 格式），
+		// 或显式传入的路径。
+		path := ""
+		if len(a) > 0 && !a[0].IsUndefined() && a[0].String() != "" {
+			path = a[0].String()
+		} else {
+			dir := "."
+			path = filepath.Join(dir, fmt.Sprintf("report.%s.%d.0.001.json", time.Now().Format("20060102.150405"), os.Getpid()))
+		}
+		data, err := json.MarshalIndent(buildReportMap(cfg.Argv), "", "  ")
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		if werr := os.WriteFile(path, data, 0o644); werr != nil {
+			return engine.Undefined(), werr
+		}
+		// Node 的提示输出走 stderr（含前导空行）。
+		fmt.Fprintf(os.Stderr, "\nWriting Node.js report to file: %s\nNode.js report completed\n", path)
+		return engine.Str(path), nil
+	}))
+	_ = proc.Set("report", report)
+
 
 	// abort()：终止进程（Node 语义，SIGABRT）。
 	_ = proc.Set("abort", engine.NewFunction("abort", func(args []engine.Value) (engine.Value, error) {
@@ -555,6 +608,91 @@ func makeWarningObject(ctx engine.Context, msg, typ, code string) (engine.Value,
 		_ = obj.Set("stack", engine.Str(typ+": "+msg))
 	}
 	return obj, nil
+}
+
+// buildReportMap 构造 process.report.getReport() / writeReport() 使用的
+// report 数据（形状对齐 Node 22：header + 各 section 键）。动态值仅用于
+// 展示，不承诺与 Node 逐字段一致。
+func buildReportMap(argv []string) map[string]interface{} {
+	cwd, _ := os.Getwd()
+	cmdLine := make([]string, len(argv))
+	copy(cmdLine, argv)
+	host, _ := os.Hostname()
+	header := map[string]interface{}{
+		"reportVersion":   5,
+		"event":           "JavaScript API",
+		"trigger":         "getReport",
+		"filename":        "",
+		"dumpEventTime":   time.Now().Format(time.RFC3339),
+		"dumpEventTimeStamp": time.Now().UnixMilli(),
+		"processId":       os.Getpid(),
+		"threadId":        0,
+		"cwd":             cwd,
+		"commandLine":     cmdLine,
+		"nodejsVersion":   "v0.1.0-aluka",
+		"wordSize":        64,
+		"arch":            archName(),
+		"platform":        platformName(),
+		"componentVersions": map[string]interface{}{
+			"aluka": "0.1.0",
+			"go":    runtime.Version(),
+		},
+		"release": map[string]interface{}{
+			"name": "aluka",
+			"lts":  nil,
+		},
+		"osName":     runtime.GOOS,
+		"osRelease":  runtime.GOOS,
+		"osVersion":  runtime.GOOS,
+		"osMachine":  runtime.GOARCH,
+		"cpus":       []interface{}{},
+		"networkInterfaces": map[string]interface{}{},
+		"host":       host,
+	}
+	return map[string]interface{}{
+		"header":               header,
+		"javascriptStack":      map[string]interface{}{"message": "No stack trace was produced", "stack": []interface{}{}},
+		"javascriptHeap":       map[string]interface{}{},
+		"nativeStack":          []interface{}{},
+		"resourceUsage":        map[string]interface{}{},
+		"uvthreadResourceUsage": map[string]interface{}{},
+		"libuv":                []interface{}{},
+		"workers":              []interface{}{},
+		"environmentVariables": map[string]interface{}{},
+		"sharedObjects":        []interface{}{},
+	}
+}
+
+// reportToJS 将 report 数据（map/切片/标量）转换为 engine.Value。
+func reportToJS(v interface{}) engine.Value {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		obj := engine.NewObject()
+		for k, val := range t {
+			_ = obj.Set(k, reportToJS(val))
+		}
+		return obj
+	case []interface{}:
+		vals := make([]engine.Value, len(t))
+		for i, e := range t {
+			vals[i] = reportToJS(e)
+		}
+		return engine.NewArray(vals)
+	case string:
+		return engine.Str(t)
+	case bool:
+		return engine.Boolean(t)
+	case int:
+		return engine.IntValue(t)
+	case int64:
+		return engine.IntValue(int(t))
+	case float64:
+		return engine.Number(t)
+	case nil:
+		return engine.Null()
+	default:
+		return engine.Undefined()
+	}
 }
 
 // platformName 返回 Node.js 风格的平台名。

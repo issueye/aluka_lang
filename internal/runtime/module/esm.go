@@ -33,6 +33,12 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	// 剥离 UTF-8 BOM（同 CJS，避免 BOM 字符导致 lexer 死循环）。
 	src = stripBOM(src)
 
+	// TS strip-only 诊断：.ts/.mts 中非 declare 的 enum/namespace 报
+	// ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX（Node 22 语义）。
+	if err := checkUnsupportedTS(string(src), absPath); err != nil {
+		return engine.Undefined(), fmt.Errorf("module: %w", err)
+	}
+
 	prog, err := parser.ParseModule(string(src))
 	if err != nil {
 		return engine.Undefined(), fmt.Errorf("module: parse error in %q: %w", absPath, err)

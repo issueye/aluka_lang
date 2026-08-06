@@ -21,11 +21,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime/pprof"
+	"strconv"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/builtin"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/engine/parser"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
 	modmodule "github.com/aluka-lang/aluka/internal/runtime/module"
 )
@@ -61,6 +63,10 @@ func main() {
 	}
 
 	args := os.Args[1:]
+
+	// NODE_OPTIONS 解析（Node 22 语义）：环境变量中的白名单 flags。
+	// 测试运行器参数注入到 `aluka test` 子命令；其余子命令忽略。
+	nodeOpts := nodeOptionsFlags()
 
 	// O1-C1：--profile <path> 全局开关——CPU profile 写 <path>，
 	// 命令结束（或错误退出）时追加内存堆快照到 <path>.heap。
@@ -100,6 +106,11 @@ func main() {
 			fatalErr("aluka: missing code after " + first)
 		}
 		runCode(args[1], "[eval]", useVM(args[1:]))
+	case first == "--check" || first == "check":
+		if len(args) < 2 {
+			fatalErr("aluka: missing file after --check")
+		}
+		os.Exit(checkSyntax(args[1]))
 	case first == "run":
 		if len(args) < 2 {
 			fatalErr("aluka: missing file after 'run'")
@@ -110,7 +121,8 @@ func main() {
 	case first == "install" || first == "add" || first == "remove" || first == "update":
 		cmdPkg(first, args[1:])
 	case first == "test":
-		cmdTest(args[1:])
+		// NODE_OPTIONS 中的测试运行器 flags 合并进 test 子命令。
+		cmdTest(append(nodeOpts, args[1:]...))
 	case first == "build":
 		cmdBuild(args[1:])
 	case strings.HasPrefix(first, "-"):
@@ -154,6 +166,88 @@ func useVM(args []string) bool {
 		}
 	}
 	return true
+}
+
+// nodeOptionsFlags 解析 NODE_OPTIONS 环境变量，返回 aluka 支持的 flags 列表。
+// Node 22 语义：空格分隔的 token；含空格的 token 忽略；仅白名单 flags 生效
+// （测试运行器参数与 --no-warnings 等）。带值的 flag 支持 `--flag=value`
+// 与 `--flag value` 两种形态（Node 会把值 token 与 flag 配对）。
+func nodeOptionsFlags() []string {
+	raw, ok := os.LookupEnv("NODE_OPTIONS")
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	allowed := map[string]bool{
+		"--test-name-pattern":          true,
+		"--test-reporter":              true,
+		"--test-only":                  true,
+		"--test-skip-pattern":          true,
+		"--test-concurrency":           true,
+		"--test-update-snapshots":      true,
+		"--update-snapshots":           true,
+		"--experimental-test-coverage": true,
+		"--coverage":                   true,
+		"--no-warnings":                true,
+	}
+	takesValue := map[string]bool{
+		"--test-name-pattern": true,
+		"--test-reporter":     true,
+		"--test-skip-pattern": true,
+		"--test-concurrency":  true,
+	}
+	// 等号形式 base 判定（--flag=value）。
+	baseAllowed := func(tok string) bool {
+		eq := strings.IndexByte(tok, '=')
+		if eq < 0 {
+			return false
+		}
+		return allowed[tok[:eq]]
+	}
+	var out []string
+	fields := strings.Fields(raw)
+	for i := 0; i < len(fields); i++ {
+		tok := fields[i]
+		if strings.Contains(tok, " ") {
+			continue // 含空格 token 忽略（Node 语义）
+		}
+		if !strings.HasPrefix(tok, "-") {
+			continue
+		}
+		if baseAllowed(tok) {
+			out = append(out, tok)
+			continue
+		}
+		if !allowed[tok] {
+			continue
+		}
+		out = append(out, tok)
+		// 值 flag：若下一 token 非 flag，则一并纳入（--flag value 形态）。
+		if takesValue[tok] && i+1 < len(fields) && !strings.HasPrefix(fields[i+1], "-") {
+			out = append(out, fields[i+1])
+			i++
+		}
+	}
+	return out
+}
+
+// checkSyntax 实现 `aluka --check <file>`：只解析不执行（Node 语义）。
+// 语法正确返回 0；解析失败打印错误并返回 1。
+func checkSyntax(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	// 剥离 BOM（与模块加载一致）。
+	src := data
+	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
+		src = src[3:]
+	}
+	if _, err := parser.ParseModule(string(src)); err != nil {
+		fmt.Fprintln(os.Stderr, "aluka: syntax check failed:", err)
+		return 1
+	}
+	return 0
 }
 
 // runCode 执行一段 JS 代码字符串。
@@ -234,18 +328,21 @@ func printICStats(s engine.ICStats) {
 // cmdTest 实现 `aluka test` 子命令：发现并运行测试文件（node:test）。
 // 无参数时按 Node 约定发现测试：cwd 下递归匹配 *.test.{js,ts,mjs,cjs}。
 func cmdTest(args []string) {
-	// 标志解析：--coverage / --test-update-snapshots / --test-name-pattern /
-	// --test-only / --test-reporter（其余为测试文件/目录）。
+	// 标志解析：--coverage / --experimental-test-coverage /
+	// --test-update-snapshots / --test-name-pattern / --test-skip-pattern /
+	// --test-only / --test-reporter / --test-concurrency（其余为测试文件/目录）。
 	coverage := false
 	updateSnaps := false
 	only := false
-	reporter := "spec" // spec | tap
+	reporter := "spec" // spec | tap | dot | junit | lcov | <custom path>
+	concurrency := 1
 	var namePattern *regexp.Regexp
+	var skipPattern *regexp.Regexp
 	var paths []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
-		case a == "--coverage":
+		case a == "--coverage" || a == "--experimental-test-coverage":
 			coverage = true
 		case a == "--test-update-snapshots" || a == "--update-snapshots":
 			updateSnaps = true
@@ -258,6 +355,17 @@ func cmdTest(args []string) {
 			}
 		case strings.HasPrefix(a, "--test-reporter="):
 			reporter = strings.TrimPrefix(a, "--test-reporter=")
+		case a == "--test-concurrency":
+			if i+1 < len(args) {
+				i++
+				if n, err := strconv.Atoi(args[i]); err == nil && n > 0 {
+					concurrency = n
+				}
+			}
+		case strings.HasPrefix(a, "--test-concurrency="):
+			if n, err := strconv.Atoi(strings.TrimPrefix(a, "--test-concurrency=")); err == nil && n > 0 {
+				concurrency = n
+			}
 		case a == "--test-name-pattern":
 			if i+1 < len(args) {
 				i++
@@ -275,12 +383,31 @@ func cmdTest(args []string) {
 				osExit(1)
 			}
 			namePattern = re
+		case a == "--test-skip-pattern":
+			if i+1 < len(args) {
+				i++
+				re, err := regexp.Compile(args[i])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "aluka: invalid --test-skip-pattern %q: %v\n", args[i], err)
+					osExit(1)
+				}
+				skipPattern = re
+			}
+		case strings.HasPrefix(a, "--test-skip-pattern="):
+			re, err := regexp.Compile(strings.TrimPrefix(a, "--test-skip-pattern="))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "aluka: invalid --test-skip-pattern %q: %v\n", a, err)
+				osExit(1)
+			}
+			skipPattern = re
 		default:
 			paths = append(paths, a)
 		}
 	}
 	builtin.TestNamePattern = namePattern
+	builtin.TestSkipPattern = skipPattern
 	builtin.TestOnly = only
+	_ = concurrency // 接受 --test-concurrency（执行仍按注册顺序串行；见 knownDifference）
 	files := discoverTestFiles(paths)
 	if len(files) == 0 {
 		fmt.Fprintln(os.Stderr, "aluka: no test files found")
@@ -289,6 +416,20 @@ func cmdTest(args []string) {
 	passed, failed, skipped, todo, cancelled := 0, 0, 0, 0, 0
 	// 覆盖率统计（文件 → 已执行行集合）。
 	fileCoverage := map[string]map[int]bool{}
+	// dot 报告器：逐用例输出字符（. = pass, x = fail, , = skip, T = todo）。
+	// junit 报告器：收集 XML 用例节点。
+	var junitCases []junitCase
+	var dotFailed []string // dot 报告器的失败用例（Failed tests 节）。
+	// 自定义报告器（--test-reporter <path>）：模块导出 stream（write/end）。
+	var customReporter *customReporterHandle
+	if isCustomReporterPath(reporter) {
+		cr, err := loadCustomReporter(reporter)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "aluka: --test-reporter %s: %v\n", reporter, err)
+			osExit(1)
+		}
+		customReporter = cr
+	}
 	for _, f := range files {
 		builtin.SetSnapshotFile(f)
 		builtin.SetUpdateSnapshots(updateSnaps)
@@ -309,33 +450,94 @@ func cmdTest(args []string) {
 			}
 		}
 		for _, r := range results {
+			status := "ok"
+			note := ""
 			switch {
 			case r.Cancelled:
 				cancelled++
-				printTestLine(reporter, "ok", r.FullName, "# cancelled", "")
+				status, note = "ok", "# cancelled"
 			case r.Skipped:
 				skipped++
-				printTestLine(reporter, "ok", r.FullName, "# SKIP", "")
+				status, note = "ok", "# SKIP"
 			case r.Todo:
 				todo++
 				if r.Passed {
-					printTestLine(reporter, "ok", r.FullName, "# TODO", "")
+					status, note = "ok", "# TODO"
 				} else {
 					failed++
-					printTestLine(reporter, "not ok", r.FullName, "# TODO", r.Error)
+					status, note = "not ok", "# TODO"
 				}
 			case r.Passed:
 				passed++
-				printTestLine(reporter, "ok", r.FullName, "", "")
 			default:
 				failed++
-				printTestLine(reporter, "not ok", r.FullName, "", r.Error)
+				status = "not ok"
+			}
+			if customReporter != nil {
+				customReporter.Write(r, status)
+				continue
+			}
+			switch reporter {
+			case "dot":
+				printDotChar(r, status)
+				if status == "not ok" {
+					dotFailed = append(dotFailed, r.FullName)
+				}
+			case "junit":
+				junitCases = append(junitCases, junitCase{Name: r.FullName, Status: status, Err: r.Error, DurationMs: r.Duration.Milliseconds()})
+			default:
+				printTestLine(reporter, status, r.FullName, note, r.Error)
 			}
 		}
 	}
-	if reporter == "tap" {
+	switch {
+	case customReporter != nil:
+		customReporter.Finish(passed, failed, skipped, todo, cancelled)
+	case reporter == "dot":
+		if len(dotFailed) > 0 {
+			fmt.Printf("\nFailed tests:\n")
+			for _, n := range dotFailed {
+				fmt.Printf("✖ %s\n", n)
+			}
+		}
 		fmt.Printf("\n# tests %d\n# pass  %d\n# fail  %d\n# cancelled  %d\n# skipped  %d\n# todo  %d\n", passed+failed+skipped+todo+cancelled, passed, failed, cancelled, skipped, todo)
-	} else {
+	case reporter == "junit":
+		printJUnitReport(files, junitCases, passed, failed)
+	case reporter == "tap":
+		fmt.Printf("\n# tests %d\n# pass  %d\n# fail  %d\n# cancelled  %d\n# skipped  %d\n# todo  %d\n", passed+failed+skipped+todo+cancelled, passed, failed, cancelled, skipped, todo)
+	case reporter == "lcov":
+		fmt.Println("# start of coverage report")
+		fmt.Println("# ----------------------------------------------------------------")
+		fmt.Println("# file            | line % | branch % | funcs % | uncovered lines")
+		fmt.Println("# ----------------------------------------------------------------")
+		totalLines, coveredLines := 0, 0
+		for src, executed := range fileCoverage {
+			total := sourceLineCount(src)
+			covered := len(executed)
+			for ln := range executed {
+				if ln > total {
+					covered--
+				}
+			}
+			pct := 0.0
+			if total > 0 {
+				pct = float64(covered) / float64(total) * 100
+			}
+			uncovered := uncoveredLineList(executed, total)
+			name := filepath.Base(src)
+			fmt.Printf("# %-15s | %6.2f | %6.2f | %6.2f | %s\n", name, pct, pct, pct, uncovered)
+			totalLines += total
+			coveredLines += covered
+		}
+		allPct := 0.0
+		if totalLines > 0 {
+			allPct = float64(coveredLines) / float64(totalLines) * 100
+		}
+		fmt.Println("# ----------------------------------------------------------------")
+		fmt.Printf("# %-15s | %6.2f | %6.2f | %6.2f | \n", "all files", allPct, allPct, allPct)
+		fmt.Println("# ----------------------------------------------------------------")
+		fmt.Println("# end of coverage report")
+	default:
 		fmt.Printf("\nℹ tests %d\nℹ pass  %d\nℹ fail  %d\nℹ cancelled  %d\nℹ skipped  %d\nℹ todo  %d\n", passed+failed+skipped+todo+cancelled, passed, failed, cancelled, skipped, todo)
 	}
 	if coverage {
@@ -343,6 +545,173 @@ func cmdTest(args []string) {
 	}
 	if failed > 0 {
 		osExit(1)
+	}
+}
+
+// printDotChar 输出 dot 报告器单字符（Node dot 语义：pass/skip/todo → '.'，
+// fail → 'X'）。
+func printDotChar(r builtin.TestResult, status string) {
+	if status == "ok" {
+		fmt.Print(".")
+	} else {
+		fmt.Print("X")
+	}
+}
+
+// junitCase 是 junit 报告器的单个测试用例。
+type junitCase struct {
+	Name       string
+	Status     string
+	Err        string
+	DurationMs int64
+}
+
+// printJUnitReport 输出 Node 风格 junit XML（testsuite/failure）。
+func printJUnitReport(files []string, cases []junitCase, passed, failed int) {
+	fmt.Println(`<?xml version="1.0" encoding="UTF-8"?>`)
+	suites := 0
+	if len(files) > 0 {
+		suites = 1
+	}
+	fmt.Printf("<testsuites name=\"node test suites\" tests=\"%d\" failures=\"%d\" errors=\"0\" time=\"0\" timestamp=\"\">\n", len(cases), failed)
+	fmt.Printf("  <testsuite name=\"%s\" tests=\"%d\" failures=\"%d\" errors=\"0\" skipped=\"0\" time=\"0\">\n", xmlEscape(filepath.Base(files[0])), len(cases), failed)
+	for _, c := range cases {
+		fmt.Printf("    <testcase name=\"%s\" time=\"%d.%03d\">\n", xmlEscape(c.Name), c.DurationMs/1000, c.DurationMs%1000)
+		if c.Status != "ok" && c.Err != "" {
+			fmt.Printf("      <failure message=\"%s\"></failure>\n", xmlEscape(c.Err))
+		}
+		fmt.Println("    </testcase>")
+	}
+	fmt.Println("  </testsuite>")
+	fmt.Println("</testsuites>")
+	_ = suites
+}
+
+// xmlEscape 转义 XML 特殊字符。
+func xmlEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;", "'", "&apos;")
+	return r.Replace(s)
+}
+
+// customReporterHandle 包装自定义报告器（--test-reporter <path>）：
+// 模块导出带 write/end 的 stream 对象，按事件喂数据（Node 22 contract）。
+type customReporterHandle struct {
+	eng     engine.Engine
+	vm      *interpreter.VM
+	writeFn engine.Function
+	endFn   engine.Function
+}
+
+// isCustomReporterPath 判断 reporter 是否为内置名（非内置 → 自定义路径）。
+func isCustomReporterPath(reporter string) bool {
+	switch reporter {
+	case "spec", "tap", "dot", "junit", "lcov":
+		return false
+	}
+	return true
+}
+
+// loadCustomReporter 加载自定义报告器模块并构造 stream。
+// 支持导出：带 write/end 的 plain object，或返回该 object 的工厂函数。
+func loadCustomReporter(path string) (*customReporterHandle, error) {
+	var eng engine.Engine = interpreter.NewVMEngine()
+	ctx, err := eng.NewContext()
+	if err != nil {
+		return nil, err
+	}
+	if err := registerRuntimeGlobals(ctx); err != nil {
+		return nil, err
+	}
+	loader := modmodule.NewLoader(ctx)
+	builtin.RegisterAll(loader)
+	_ = builtin.InstallGetBuiltinModule(ctx, loader)
+	if err := loader.Run(path); err != nil {
+		return nil, err
+	}
+	vm, ok := ctx.(*interpreter.VM)
+	if !ok {
+		return nil, fmt.Errorf("custom reporter requires the VM engine")
+	}
+	// 通过 require 取模块导出（缓存命中，不会重复执行）。
+	req := loader.MakeRequireFunc(filepath.Dir(path))
+	exports, err := req.Call([]engine.Value{engine.Str(path)})
+	if err != nil {
+		return nil, err
+	}
+	var streamObj engine.Object
+	if fn, ok := exports.AsFunction(); ok {
+		// 工厂函数：调用得到 stream 对象。
+		v, cerr := vm.InvokeFn(fn, engine.Undefined(), nil)
+		if cerr != nil {
+			return nil, cerr
+		}
+		o, ok := v.AsObject()
+		if !ok {
+			return nil, fmt.Errorf("custom reporter factory did not return an object")
+		}
+		streamObj = o
+	} else if o, ok := exports.AsObject(); ok {
+		streamObj = o
+	} else {
+		return nil, fmt.Errorf("custom reporter export must be a function or an object")
+	}
+	writeV, err := streamObj.Get("write")
+	if err != nil || !writeV.IsFunction() {
+		return nil, fmt.Errorf("custom reporter stream lacks a write() method")
+	}
+	writeFn, _ := writeV.AsFunction()
+	var endFn engine.Function
+	if ev, err := streamObj.Get("end"); err == nil && ev.IsFunction() {
+		endFn, _ = ev.AsFunction()
+	}
+	return &customReporterHandle{eng: eng, vm: vm, writeFn: writeFn, endFn: endFn}, nil
+}
+
+// Write 向报告器发送一个测试事件对象（Node 事件面：type/data）。
+func (c *customReporterHandle) Write(r builtin.TestResult, status string) {
+	if c == nil || c.writeFn == nil {
+		return
+	}
+	// 事件对象：{ type: 'test:pass'|'test:fail'|..., data: { name, status, ... } }。
+	evType := "test:pass"
+	if status == "not ok" {
+		evType = "test:fail"
+	}
+	data := engine.NewObject()
+	_ = data.Set("name", engine.Str(r.FullName))
+	_ = data.Set("status", engine.Str(status))
+	if r.Skipped {
+		_ = data.Set("skipped", engine.Boolean(true))
+	}
+	if r.Todo {
+		_ = data.Set("todo", engine.Boolean(true))
+	}
+	if r.Error != "" {
+		errObj := engine.NewObject()
+		_ = errObj.Set("message", engine.Str(r.Error))
+		_ = data.Set("error", errObj)
+	}
+	ev := engine.NewObject()
+	_ = ev.Set("type", engine.Str(evType))
+	_ = ev.Set("data", data)
+	if f, ok := c.writeFn.AsFunction(); ok {
+		res, _ := f.Call([]engine.Value{ev})
+		if pv, ok := res.(*interpreter.PromiseValue); ok {
+			// 报告器 write 可返回 promise（Node 允许异步 reporter）。
+			if c.vm != nil {
+				_, _ = c.vm.AwaitPromise(pv)
+			}
+		}
+	}
+}
+
+// Finish 结束报告器流（调用 end()）。
+func (c *customReporterHandle) Finish(passed, failed, skipped, todo, cancelled int) {
+	if c == nil || c.endFn == nil {
+		return
+	}
+	if f, ok := c.endFn.AsFunction(); ok {
+		_, _ = f.Call(nil)
 	}
 }
 

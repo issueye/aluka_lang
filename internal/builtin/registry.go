@@ -79,6 +79,11 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("buffer", globals.NewBufferModule)
 	loader.RegisterBuiltin("tty", NewTTY)
 	loader.RegisterBuiltin("sqlite", NewSQLite)
+	// node:domain / node:punycode / node:wasi（M9：废弃/实验模块，含
+	// DEP0003 / DEP0040 废弃警告与 WASI 方法面）。
+	loader.RegisterBuiltin("domain", NewDomain)
+	loader.RegisterBuiltin("punycode", NewPunycode)
+	loader.RegisterBuiltin("wasi", NewWASI)
 	// node:process —— 返回全局 process 对象（require('process') 语义，
 	// 与 Node 一致：裸名 process 解析为内置而非 node_modules 包）。
 	loader.RegisterBuiltin("process", NewProcessModule)

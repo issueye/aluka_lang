@@ -39,6 +39,12 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 	// 死循环（CPU/内存暴涨）。Node 同样会在编译前剥离 BOM。
 	src = stripBOM(src)
 
+	// TS strip-only 诊断：.cts 中非 declare 的 enum/namespace 报
+	// ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX（Node 22 语义）。
+	if err := checkUnsupportedTS(string(src), absPath); err != nil {
+		return engine.Undefined(), fmt.Errorf("module: %w", err)
+	}
+
 	vm, ok := l.ctx.(*interpreter.VM)
 	if !ok {
 		// 非 VM 引擎（AST 解释器）：退化为旧的全局 save/restore 方案。

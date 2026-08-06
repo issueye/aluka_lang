@@ -78,9 +78,9 @@ func (r *Resolver) resolve(specifier, parentPath string, conditions []string) (s
 	}
 
 	// 包内 imports 映射（#subpath）：从父模块目录向上找最近的 package.json，
-	// 解析其 "imports" 字段（支持 node/default 条件与条件对象）。
+	// 解析其 "imports" 字段（支持 node/import/require/default 条件与通配）。
 	if strings.HasPrefix(specifier, "#") {
-		if resolved, ok := r.resolvePackageImports(specifier, parentPath); ok {
+		if resolved, ok := r.resolvePackageImports(specifier, parentPath, conditions); ok {
 			return resolved, nil
 		}
 	}
@@ -90,8 +90,9 @@ func (r *Resolver) resolve(specifier, parentPath string, conditions []string) (s
 }
 
 // resolvePackageImports 解析 package.json 的 "imports" 映射（如 chalk 的
-// "#ansi-styles"）。返回解析后的绝对路径。
-func (r *Resolver) resolvePackageImports(specifier, parentPath string) (string, bool) {
+// "#ansi-styles"）。支持条件对象（node/import/require/default）与通配
+// 子路径（"#util/*" → "./lib/*.js"，* 替换为匹配段——Node 语义）。
+func (r *Resolver) resolvePackageImports(specifier, parentPath string, conditions []string) (string, bool) {
 	dir := filepath.Dir(parentPath)
 	for {
 		pkgPath := filepath.Join(dir, "package.json")
@@ -101,12 +102,18 @@ func (r *Resolver) resolvePackageImports(specifier, parentPath string) (string, 
 				Imports map[string]json.RawMessage `json:"imports"`
 			}
 			if json.Unmarshal(data, &pkg) == nil {
-				if raw, ok := pkg.Imports[specifier]; ok {
-					if target := importsTarget(raw); target != "" {
-						full := filepath.Join(dir, filepath.FromSlash(target))
-						if resolved, err := r.resolveFileOrDir(full); err == nil {
-							return resolved, true
-						}
+				if raw, star, matched := matchPackageImport(pkg.Imports, specifier); matched {
+					target := conditionalExportTarget(raw, conditions)
+					if target == "" {
+						return "", false
+					}
+					// 通配替换：目标中的 * → 匹配段。
+					if star != "" && strings.Contains(target, "*") {
+						target = strings.ReplaceAll(target, "*", star)
+					}
+					full := filepath.Join(dir, filepath.FromSlash(target))
+					if resolved, err := r.resolveFileOrDir(full); err == nil {
+						return resolved, true
 					}
 				}
 			}
@@ -120,24 +127,31 @@ func (r *Resolver) resolvePackageImports(specifier, parentPath string) (string, 
 	}
 }
 
-// importsTarget 从 imports 条目中提取目标路径：字符串或条件对象
-// （node > default 优先级，与 Node 解析一致）。
-func importsTarget(raw json.RawMessage) string {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
+// matchPackageImport 从 imports 映射匹配 specifier：精确键优先，其次最长
+// 通配键。返回（目标 raw、通配匹配段、是否命中）。
+func matchPackageImport(imports map[string]json.RawMessage, specifier string) (json.RawMessage, string, bool) {
+	if raw, ok := imports[specifier]; ok {
+		return raw, "", true
 	}
-	var cond map[string]json.RawMessage
-	if json.Unmarshal(raw, &cond) == nil {
-		for _, key := range []string{"node", "default"} {
-			if v, ok := cond[key]; ok {
-				if json.Unmarshal(v, &s) == nil {
-					return s
-				}
-			}
+	bestKey := ""
+	var bestRaw json.RawMessage
+	bestStar := ""
+	for key, raw := range imports {
+		star := strings.IndexByte(key, '*')
+		if star < 0 {
+			continue
+		}
+		prefix, suffix := key[:star], key[star+1:]
+		if strings.HasPrefix(specifier, prefix) && strings.HasSuffix(specifier, suffix) && len(key) > len(bestKey) {
+			bestKey = key
+			bestRaw = raw
+			bestStar = specifier[len(prefix) : len(specifier)-len(suffix)]
 		}
 	}
-	return ""
+	if bestKey == "" {
+		return nil, "", false
+	}
+	return bestRaw, bestStar, true
 }
 
 // resolveFileOrDir tries the path as a file, then as a directory.

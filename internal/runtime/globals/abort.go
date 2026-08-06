@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // AbortConfig 配置 Abort 全局（当前无可用选项）。
@@ -20,6 +21,9 @@ type AbortConfig struct{}
 
 // abortSignalProto 是 AbortSignal 实例的原型（instanceof 支持）。
 var abortSignalProto engine.Object
+
+// abortControllerProto 是 AbortController 实例的原型（instanceof 支持）。
+var abortControllerProto engine.Object
 
 // NewAbort 注册全局 AbortController 构造器。
 func NewAbort(ctx engine.Context, cfg AbortConfig) error {
@@ -31,23 +35,31 @@ func NewAbort(ctx engine.Context, cfg AbortConfig) error {
 	_ = abortSignalProto.Set("constructor", abortSignalCtor)
 	_ = asObj.Set("prototype", abortSignalProto)
 
-	_ = ctx.Global().Set("AbortController", engine.NewFunction("AbortController", func(args []engine.Value) (engine.Value, error) {
+	acCtor := engine.NewFunction("AbortController", func(args []engine.Value) (engine.Value, error) {
 		ctrl := engine.NewObject()
+		if abortControllerProto != nil {
+			engine.SetProto(ctrl, abortControllerProto)
+		}
 		signal := newAbortSignalInstance()
 		_ = ctrl.Set("signal", signal)
 
 		_ = ctrl.Set("abort", engine.NewFunction("abort", func(a []engine.Value) (engine.Value, error) {
-			reason := engine.Undefined()
-			if len(a) > 0 {
+			reason := domExceptionInstance(ctx, "AbortError", "signal is aborted without reason")
+			if len(a) > 0 && !a[0].IsUndefined() {
 				reason = a[0]
 			}
 			abortSignal(signal, reason)
 			return engine.Undefined(), nil
 		}))
 		return ctrl, nil
-	}))
+	})
+	acObj, _ := acCtor.AsObject()
+	abortControllerProto = engine.NewObject()
+	_ = abortControllerProto.Set("constructor", acCtor)
+	_ = acObj.Set("prototype", abortControllerProto)
+	_ = ctx.Global().Set("AbortController", acCtor)
 
-	// AbortSignal.timeout(ms)：定时中断（reason 为 TimeoutError 语义）。
+	// AbortSignal.timeout(ms)：定时中断（reason 为 TimeoutError DOMException）。
 	_ = asObj.Set("timeout", engine.NewFunction("timeout", func(args []engine.Value) (engine.Value, error) {
 		ms := 0
 		if len(args) > 0 {
@@ -61,7 +73,7 @@ func NewAbort(ctx engine.Context, cfg AbortConfig) error {
 		signal := newAbortSignalInstance()
 		time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
 			ctx.PostTask(func() {
-				abortSignal(signal, engine.Str("TimeoutError"))
+				abortSignal(signal, domExceptionInstance(ctx, "TimeoutError", "signal timed out"))
 			})
 		})
 		return signal, nil
@@ -69,8 +81,8 @@ func NewAbort(ctx engine.Context, cfg AbortConfig) error {
 
 	// AbortSignal.abort([reason])：返回已中断的信号（Node ≥ 17.3）。
 	_ = asObj.Set("abort", engine.NewFunction("abort", func(args []engine.Value) (engine.Value, error) {
-		reason := engine.Undefined()
-		if len(args) > 0 {
+		reason := domExceptionInstance(ctx, "AbortError", "signal is aborted without reason")
+		if len(args) > 0 && !args[0].IsUndefined() {
 			reason = args[0]
 		}
 		signal := newAbortSignalInstance()
@@ -134,26 +146,32 @@ func newAbortSignalInstance() engine.Value {
 	_ = signal.Set("reason", engine.Undefined())
 	_ = signal.Set("onabort", engine.Undefined())
 
-	// throwIfAborted()：已中断则抛 reason。
+	// throwIfAborted()：已中断则抛 reason（Node 语义：直接抛 reason 值）。
 	_ = signal.Set("throwIfAborted", engine.NewFunction("throwIfAborted", func(args []engine.Value) (engine.Value, error) {
 		aborted, _ := signal.Get("aborted")
 		if b, ok := aborted.Bool(); ok && b {
 			reason, _ := signal.Get("reason")
-			return engine.Undefined(), &abortError{reason: reason}
+			return engine.Undefined(), interpreter.ThrowJSValue(reason)
 		}
 		return engine.Undefined(), nil
 	}))
 	return signal
 }
 
-// abortError 是 throwIfAborted 抛出的错误（包装 reason）。
-type abortError struct{ reason engine.Value }
-
-func (e *abortError) Error() string {
-	if e.reason == nil || e.reason.IsUndefined() {
-		return "This operation was aborted"
+// domExceptionInstance 构造全局 DOMException 实例。
+func domExceptionInstance(ctx engine.Context, name, message string) engine.Value {
+	if ctor, err := ctx.Global().Get("DOMException"); err == nil && ctor.IsFunction() {
+		if f, ok := ctor.AsFunction(); ok {
+			if inst, cerr := f.Call([]engine.Value{engine.Str(message), engine.Str(name)}); cerr == nil {
+				return inst
+			}
+		}
 	}
-	return e.reason.String()
+	// 兜底：普通对象。
+	o := engine.NewObject()
+	_ = o.Set("name", engine.Str(name))
+	_ = o.Set("message", engine.Str(message))
+	return o
 }
 
 // abortSignal 触发中断：设置 aborted/reason，调 onabort，派发 'abort' 事件。

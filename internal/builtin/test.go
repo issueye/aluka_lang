@@ -62,6 +62,7 @@ type registeredSuite struct {
 	tests       []*registeredTest
 	suites      []*registeredSuite
 	skip        bool
+	todo        bool
 	only        bool
 }
 
@@ -120,12 +121,13 @@ func NewTest(ctx engine.Context) (engine.Value, error) {
 	// describe(name, fn)：注册套件并同步执行函数体。
 	// Node 语义：describe.skip(name) 仍注册套件（子用例标记 skip），
 	// 但 describe(name, {skip}) 也合法（无 fn）。
-	_ = m.Set("describe", engine.NewFunction("describe", func(args []engine.Value) (engine.Value, error) {
+	// suite 是 describe 的别名（Node 22：suite === describe）。
+	descFn := engine.NewFunction("describe", func(args []engine.Value) (engine.Value, error) {
 		name, fn, opts := parseOptions(args)
-		if !fn.IsFunction() && !opts.skip {
+		if !fn.IsFunction() && !opts.skip && !opts.todo {
 			return engine.Undefined(), fmt.Errorf("%w: describe() requires a function", engine.ErrTypeError)
 		}
-		suite := &registeredSuite{name: name, skip: opts.skip}
+		suite := &registeredSuite{name: name, skip: opts.skip, only: opts.only}
 		regMu.Lock()
 		cur := regStack[len(regStack)-1]
 		cur.suites = append(cur.suites, suite)
@@ -140,9 +142,12 @@ func NewTest(ctx engine.Context) (engine.Value, error) {
 		regStack = regStack[:len(regStack)-1]
 		regMu.Unlock()
 		return engine.Undefined(), nil
-	}))
+	})
+	_ = m.Set("describe", descFn)
+	_ = m.Set("suite", descFn)
 
 	// it(name, fn) / it(fn) / it(name, {skip|todo|only}, fn)：注册用例到当前套件。
+	// Node 22 语义：it 与 test 是同一函数对象（alias）。
 	register := func(args []engine.Value) (engine.Value, error) {
 		name, fn, opts := parseOptions(args)
 		if !fn.IsFunction() && !opts.skip && !opts.todo {
@@ -159,8 +164,9 @@ func NewTest(ctx engine.Context) (engine.Value, error) {
 		regMu.Unlock()
 		return engine.Undefined(), nil
 	}
-	_ = m.Set("it", engine.NewFunction("it", register))
-	_ = m.Set("test", engine.NewFunction("test", register))
+	itFn := engine.NewFunction("test", register)
+	_ = m.Set("it", itFn)
+	_ = m.Set("test", itFn)
 
 	// it.skip / it.todo / test.skip / test.todo / describe.skip：标记注册。
 	skipReg := func(args []engine.Value) (engine.Value, error) {
@@ -203,20 +209,20 @@ func NewTest(ctx engine.Context) (engine.Value, error) {
 		regMu.Unlock()
 		return engine.Undefined(), nil
 	}
-	itFn, _ := m.Get("it")
-	if ito, ok := itFn.AsObject(); ok {
+	itV, _ := m.Get("it")
+	if ito, ok := itV.AsObject(); ok {
 		_ = ito.Set("skip", engine.NewFunction("skip", skipReg))
 		_ = ito.Set("todo", engine.NewFunction("todo", todoReg))
 		_ = ito.Set("only", engine.NewFunction("only", onlyReg))
 	}
-	testFn, _ := m.Get("test")
-	if tto, ok := testFn.AsObject(); ok {
+	testV, _ := m.Get("test")
+	if tto, ok := testV.AsObject(); ok {
 		_ = tto.Set("skip", engine.NewFunction("skip", skipReg))
 		_ = tto.Set("todo", engine.NewFunction("todo", todoReg))
 		_ = tto.Set("only", engine.NewFunction("only", onlyReg))
 	}
-	descFn, _ := m.Get("describe")
-	if dso, ok := descFn.AsObject(); ok {
+	descV, _ := m.Get("describe")
+	if dso, ok := descV.AsObject(); ok {
 		_ = dso.Set("skip", engine.NewFunction("skip", func(args []engine.Value) (engine.Value, error) {
 			name, fn, opts := parseOptions(args)
 			opts.skip = true
@@ -238,28 +244,49 @@ func NewTest(ctx engine.Context) (engine.Value, error) {
 			regMu.Unlock()
 			return engine.Undefined(), nil
 		}))
-		_ = dso.Set("only", engine.NewFunction("only", func(args []engine.Value) (engine.Value, error) {
-			name, fn, opts := parseOptions(args)
-			opts.only = true
-			if !fn.IsFunction() {
-				return engine.Undefined(), fmt.Errorf("%w: describe.only() requires a function", engine.ErrTypeError)
-			}
-			suite := &registeredSuite{name: name, only: true}
-			regMu.Lock()
-			cur := regStack[len(regStack)-1]
-			cur.suites = append(cur.suites, suite)
-			cur.children = append(cur.children, suiteChild{isSuite: true, suite: suite})
-			regStack = append(regStack, suite)
-			regMu.Unlock()
-			if f, ok := fn.AsFunction(); ok {
-				_, _ = f.Call(nil)
-			}
-			regMu.Lock()
-			regStack = regStack[:len(regStack)-1]
-			regMu.Unlock()
-			return engine.Undefined(), nil
-		}))
-	}
+			_ = dso.Set("only", engine.NewFunction("only", func(args []engine.Value) (engine.Value, error) {
+				name, fn, opts := parseOptions(args)
+				opts.only = true
+				if !fn.IsFunction() {
+					return engine.Undefined(), fmt.Errorf("%w: describe.only() requires a function", engine.ErrTypeError)
+				}
+				suite := &registeredSuite{name: name, only: true}
+				regMu.Lock()
+				cur := regStack[len(regStack)-1]
+				cur.suites = append(cur.suites, suite)
+				cur.children = append(cur.children, suiteChild{isSuite: true, suite: suite})
+				regStack = append(regStack, suite)
+				regMu.Unlock()
+				if f, ok := fn.AsFunction(); ok {
+					_, _ = f.Call(nil)
+				}
+				regMu.Lock()
+				regStack = regStack[:len(regStack)-1]
+				regMu.Unlock()
+				return engine.Undefined(), nil
+			}))
+			_ = dso.Set("todo", engine.NewFunction("todo", func(args []engine.Value) (engine.Value, error) {
+				name, fn, opts := parseOptions(args)
+				opts.todo = true
+				if !fn.IsFunction() {
+					fn = engine.Undefined() // Node 语义：describe.todo('x') 允许省略 fn
+				}
+				suite := &registeredSuite{name: name, skip: opts.skip, todo: opts.todo, only: opts.only}
+				regMu.Lock()
+				cur := regStack[len(regStack)-1]
+				cur.suites = append(cur.suites, suite)
+				cur.children = append(cur.children, suiteChild{isSuite: true, suite: suite})
+				regStack = append(regStack, suite)
+				regMu.Unlock()
+				if f, ok := fn.AsFunction(); ok {
+					_, _ = f.Call(nil)
+				}
+				regMu.Lock()
+				regStack = regStack[:len(regStack)-1]
+				regMu.Unlock()
+				return engine.Undefined(), nil
+			}))
+		}
 
 	// beforeEach(fn) / afterEach(fn) / before(fn) / after(fn)：挂到当前套件。
 	hook := func(key string) engine.Func {
@@ -292,7 +319,55 @@ func NewTest(ctx engine.Context) (engine.Value, error) {
 	// spy.mock.calls 记录调用参数；mock.restoreAll() 全部还原。
 	_ = m.Set("mock", newTestMock(ctx))
 
+	// 顶层 shorthand：skip/todo/only 是 test.skip/test.todo/test.only 的别名
+	// （Node 22 语义：test([name], { skip: true }[, fn])）。assert 导出
+	// node:assert 模块对象（Node 22：test.assert 可用）。
+	if av, err := NewAssert(ctx); err == nil {
+		_ = m.Set("assert", av)
+	}
+	if sv, err := m.Get("test"); err == nil {
+		if so, ok := sv.AsObject(); ok {
+			for _, key := range []string{"skip", "todo", "only"} {
+				if mv, gerr := so.Get(key); gerr == nil {
+					_ = m.Set(key, mv)
+				}
+			}
+		}
+	}
+
+	// register(name, fn)：注册自定义断言（Node 22.14 语义：注册后挂到
+	// 每个 TestContext 的 t.assert 上）。
+	_ = m.Set("register", engine.NewFunction("register", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("%w: register(name, fn) requires a name and a function", engine.ErrTypeError)
+		}
+		name := args[0].String()
+		if !args[1].IsFunction() {
+			return engine.Undefined(), fmt.Errorf("%w: register(name, fn): fn must be a function", engine.ErrTypeError)
+		}
+		registerCustomAssert(name, args[1])
+		return engine.Undefined(), nil
+	}))
+	// setDefaultSnapshotSerializers(serializers)：自定义快照序列化（P1 接受并忽略）。
+	_ = m.Set("setDefaultSnapshotSerializers", engine.NewFunction("setDefaultSnapshotSerializers", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+	// setResolveSnapshotPath(fn)：自定义快照文件路径（P1 接受并忽略）。
+	_ = m.Set("setResolveSnapshotPath", engine.NewFunction("setResolveSnapshotPath", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+
 	return m, nil
+}
+
+// customAsserts 是 register() 注册的自定义断言（name → fn）。
+var customAsserts = map[string]engine.Value{}
+
+// registerCustomAssert 注册自定义断言。
+func registerCustomAssert(name string, fn engine.Value) {
+	regMu.Lock()
+	customAsserts[name] = fn
+	regMu.Unlock()
 }
 
 // testOpts 用例选项（Node 语义：skip/todo/only）。
@@ -352,11 +427,38 @@ type mockSpy struct {
 	original engine.Value
 	spyFn    engine.Value
 	// calls 记录（Node 语义：arguments/error/result/stack/target/this）。
-	calls *engine.ArrayValue
-	isFn  bool // mock.fn 创建的独立函数（无 target）
+	calls    *engine.ArrayValue
+	accesses *engine.ArrayValue // property mock（getter/setter）的访问记录
+	isFn     bool               // mock.fn 创建的独立函数（无 target）
+	isProp   bool               // mock.getter/setter 创建的属性 mock
+	// 实现替换：mockImplementation / mockImplementationOnce。
+	impl     engine.Value
+	onceImpl engine.Value
+	// 归属的 spy 列表（全局 mock 或 t.mock 的 per-test 列表）。
+	list *[]*mockSpy
 }
 
+// mockSpies 全局 spy 列表（模块级 mock 对象持有）。
 var mockSpies []*mockSpy
+
+// newMockAccess 构造一次属性访问（get/set）记录。
+func newMockAccess(kind string, value engine.Value, thisVal engine.Value, err error) engine.Value {
+	acc := engine.NewObject()
+	_ = acc.Set("type", engine.Str(kind))
+	_ = acc.Set("result", value)
+	_ = acc.Set("error", engine.Undefined())
+	if err != nil {
+		errObj := engine.NewObject()
+		_ = errObj.Set("message", engine.Str(err.Error()))
+		_ = acc.Set("error", errObj)
+	}
+	if thisVal != nil {
+		_ = acc.Set("this", thisVal)
+	} else {
+		_ = acc.Set("this", engine.Undefined())
+	}
+	return acc
+}
 
 // newMockCall 构造一次调用的记录对象。
 func newMockCall(ca []engine.Value, thisVal engine.Value, result engine.Value, err error, hasResult bool, stack engine.Value) engine.Value {
@@ -385,31 +487,144 @@ func newMockCall(ca []engine.Value, thisVal engine.Value, result engine.Value, e
 	return call
 }
 
-// newMockCallsObj 构造 spy 的 .mock 对象（calls/restore）。
-// 注意：Node 22 已移除 mock.reset（实测 fn.mock.reset 不存在），
-// 仅保留 calls 与 restore。
+// detachSpy 从 spy 归属列表中移除（restore 时）。
+func detachSpy(spy *mockSpy) {
+	if spy.list == nil {
+		return
+	}
+	for i, s := range *spy.list {
+		if s == spy {
+			*spy.list = append((*spy.list)[:i], (*spy.list)[i+1:]...)
+			break
+		}
+	}
+}
+
+// newMockCallsObj 构造 spy 的 .mock 对象（calls + MockFunctionContext 方法）。
+// Node 22 语义：MockFunctionContext 暴露 calls/restore/resetCalls/callCount/
+// mockImplementation/mockImplementationOnce（MockTracker.reset 已移除）。
 func newMockCallsObj(spy *mockSpy) engine.Value {
 	calls := engine.NewArray(nil)
 	engine.SetProto(calls, nil)
 	spy.calls = calls
 	mo := engine.NewObject()
 	_ = mo.Set("calls", calls)
-	// mock.fn 的 restore：还原为原实现（无 target 时清空调用记录）。
+	// restore：还原为原实现（无 target 时清空调用记录）。
 	_ = mo.Set("restore", engine.NewFunction("restore", func(args []engine.Value) (engine.Value, error) {
 		spy.mu.Lock()
 		if !spy.isFn && spy.target != nil {
 			_ = spy.target.Set(spy.method, spy.original)
-			for i, s := range mockSpies {
-				if s == spy {
-					mockSpies = append(mockSpies[:i], mockSpies[i+1:]...)
-					break
-				}
-			}
+			detachSpy(spy)
+		}
+		spy.impl = engine.Undefined()
+		spy.onceImpl = engine.Undefined()
+		spy.mu.Unlock()
+		return engine.Undefined(), nil
+	}))
+	// resetCalls：清空调用历史（Node 语义：原地重置数组；这里重建数组并
+	// 更新 .mock.calls 引用，可观察行为一致——calls.length 归零）。
+	_ = mo.Set("resetCalls", engine.NewFunction("resetCalls", func(args []engine.Value) (engine.Value, error) {
+		spy.mu.Lock()
+		calls := engine.NewArray(nil)
+		engine.SetProto(calls, nil)
+		spy.calls = calls
+		_ = mo.Set("calls", calls)
+		spy.mu.Unlock()
+		return engine.Undefined(), nil
+	}))
+	// callCount：返回调用次数。
+	_ = mo.Set("callCount", engine.NewFunction("callCount", func(args []engine.Value) (engine.Value, error) {
+		spy.mu.Lock()
+		n := len(spy.calls.Elems())
+		spy.mu.Unlock()
+		return engine.Number(float64(n)), nil
+	}))
+	// mockImplementation(impl)：替换实现（后续调用使用 impl）。
+	_ = mo.Set("mockImplementation", engine.NewFunction("mockImplementation", func(args []engine.Value) (engine.Value, error) {
+		spy.mu.Lock()
+		spy.impl = engine.Undefined()
+		if len(args) > 0 && args[0].IsFunction() {
+			spy.impl = args[0]
+		}
+		spy.mu.Unlock()
+		return engine.Undefined(), nil
+	}))
+	// mockImplementationOnce(impl)：单次实现（本次调用后还原）。
+	_ = mo.Set("mockImplementationOnce", engine.NewFunction("mockImplementationOnce", func(args []engine.Value) (engine.Value, error) {
+		spy.mu.Lock()
+		spy.onceImpl = engine.Undefined()
+		if len(args) > 0 && args[0].IsFunction() {
+			spy.onceImpl = args[0]
 		}
 		spy.mu.Unlock()
 		return engine.Undefined(), nil
 	}))
 	return mo
+}
+
+// newMockPropObj 构造属性 mock 的 .mock 对象（accesses + 方法）。
+func newMockPropObj(spy *mockSpy) engine.Value {
+	accesses := engine.NewArray(nil)
+	engine.SetProto(accesses, nil)
+	spy.accesses = accesses
+	mo := engine.NewObject()
+	_ = mo.Set("accesses", accesses)
+	_ = mo.Set("restore", engine.NewFunction("restore", func(args []engine.Value) (engine.Value, error) {
+		spy.mu.Lock()
+		if spy.target != nil {
+			_ = spy.target.Set(spy.method, spy.original)
+			detachSpy(spy)
+		}
+		spy.mu.Unlock()
+		return engine.Undefined(), nil
+	}))
+	_ = mo.Set("resetAccesses", engine.NewFunction("resetAccesses", func(args []engine.Value) (engine.Value, error) {
+		spy.mu.Lock()
+		accesses := engine.NewArray(nil)
+		engine.SetProto(accesses, nil)
+		spy.accesses = accesses
+		_ = mo.Set("accesses", accesses)
+		spy.mu.Unlock()
+		return engine.Undefined(), nil
+	}))
+	_ = mo.Set("accessCount", engine.NewFunction("accessCount", func(args []engine.Value) (engine.Value, error) {
+		spy.mu.Lock()
+		n := len(spy.accesses.Elems())
+		spy.mu.Unlock()
+		return engine.Number(float64(n)), nil
+	}))
+	_ = mo.Set("mockImplementation", engine.NewFunction("mockImplementation", func(args []engine.Value) (engine.Value, error) {
+		spy.mu.Lock()
+		spy.impl = engine.Undefined()
+		if len(args) > 0 {
+			spy.impl = args[0]
+		}
+		spy.mu.Unlock()
+		return engine.Undefined(), nil
+	}))
+	_ = mo.Set("mockImplementationOnce", engine.NewFunction("mockImplementationOnce", func(args []engine.Value) (engine.Value, error) {
+		spy.mu.Lock()
+		spy.onceImpl = engine.Undefined()
+		if len(args) > 0 {
+			spy.onceImpl = args[0]
+		}
+		spy.mu.Unlock()
+		return engine.Undefined(), nil
+	}))
+	return mo
+}
+
+// mockCurrentImpl 解析当前应调用的实现：onceImpl（一次性）> impl > original。
+func (spy *mockSpy) mockCurrentImpl() engine.Value {
+	if spy.onceImpl != nil && !spy.onceImpl.IsUndefined() {
+		impl := spy.onceImpl
+		spy.onceImpl = engine.Undefined()
+		return impl
+	}
+	if spy.impl != nil && !spy.impl.IsUndefined() {
+		return spy.impl
+	}
+	return engine.Undefined()
 }
 
 // makeMockSpyFn 构造 spy 函数（记录调用 + 委托 impl/original）。
@@ -418,12 +633,13 @@ func makeMockSpyFn(vm *interpreter.VM, spy *mockSpy, impl engine.Value, original
 		spy.mu.Lock()
 		call := newMockCall(ca, this, engine.Undefined(), nil, false, engine.Undefined())
 		spy.calls.Append(call)
+		curImpl := spy.mockCurrentImpl()
 		spy.mu.Unlock()
 		var result engine.Value
 		var err error
 		// 委托 impl/original 时保持 this 绑定（Node 语义：
 		// mock 函数的 this 透传给原实现）。
-		target := impl
+		target := curImpl
 		if target == nil || !target.IsFunction() {
 			target = original
 		}
@@ -448,7 +664,28 @@ func makeMockSpyFn(vm *interpreter.VM, spy *mockSpy, impl engine.Value, original
 	})
 }
 
-func newTestMock(ctx engine.Context) engine.Value {
+// newScopedTestMock 构造 per-test MockTracker（t.mock）：spy 列表独立，
+// restoreFn 在测试结束时还原全部并清空列表。
+func newScopedTestMock(ctx engine.Context, st *testRunState) (engine.Value, func()) {
+	var spies []*mockSpy
+	tracker := newMockTracker(ctx, &spies)
+	restoreFn := func() {
+		for _, s := range spies {
+			if !s.isFn && !s.isProp && s.target != nil {
+				_ = s.target.Set(s.method, s.original)
+			}
+			if s.isProp && s.target != nil {
+				_ = s.target.Set(s.method, s.original)
+			}
+		}
+		spies = nil
+	}
+	return tracker, restoreFn
+}
+
+// newMockTracker 构造 MockTracker 对象（模块级或 per-test）。
+// list 指向该 tracker 的 spy 列表。
+func newMockTracker(ctx engine.Context, list *[]*mockSpy) engine.Value {
 	mockObj := engine.NewObject()
 	vm, _ := ctx.(*interpreter.VM)
 
@@ -458,7 +695,7 @@ func newTestMock(ctx engine.Context) engine.Value {
 		if len(args) > 0 && args[0].IsFunction() {
 			impl = args[0]
 		}
-		spy := &mockSpy{isFn: true}
+		spy := &mockSpy{isFn: true, impl: impl, list: list}
 		mo := newMockCallsObj(spy)
 		fn := makeMockSpyFn(vm, spy, impl, engine.Undefined(), mo)
 		if fo, ok := fn.AsObject(); ok {
@@ -466,10 +703,11 @@ func newTestMock(ctx engine.Context) engine.Value {
 		}
 		spy.spyFn = fn
 		spy.original = impl
-		mockSpies = append(mockSpies, spy)
+		*list = append(*list, spy)
 		return fn, nil
 	}))
 
+	// mock.method(target, name[, impl|options])：替换对象方法为 spy。
 	_ = mockObj.Set("method", engine.NewFunction("method", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Undefined(), fmt.Errorf("%w: mock.method(target, methodName)", engine.ErrTypeError)
@@ -487,7 +725,7 @@ func newTestMock(ctx engine.Context) engine.Value {
 		if len(args) >= 3 && args[2].IsFunction() {
 			impl = args[2]
 		}
-		spy := &mockSpy{target: target, method: method, original: original}
+		spy := &mockSpy{target: target, method: method, original: original, impl: impl, list: list}
 		mo := newMockCallsObj(spy)
 		spyFn := makeMockSpyFn(vm, spy, impl, original, mo)
 		if fo, ok := spyFn.AsObject(); ok {
@@ -495,20 +733,198 @@ func newTestMock(ctx engine.Context) engine.Value {
 		}
 		_ = target.Set(method, spyFn)
 		spy.spyFn = spyFn
-		mockSpies = append(mockSpies, spy)
+		*list = append(*list, spy)
 		return spyFn, nil
 	}))
 
+	// mock.getter(target, name[, value|fn])：mock 对象属性 getter
+	// （Node 语义：mock.getter = mock.method(..., { getter: true })）。
+	_ = mockObj.Set("getter", engine.NewFunction("getter", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("%w: mock.getter(target, property)", engine.ErrTypeError)
+		}
+		target, ok := args[0].AsObject()
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("%w: mock.getter target must be an object", engine.ErrTypeError)
+		}
+		name := args[1].String()
+		original, err := target.Get(name)
+		if err != nil {
+			original = engine.Undefined()
+		}
+		var impl engine.Value
+		if len(args) >= 3 {
+			impl = args[2]
+		}
+		spy := &mockSpy{target: target, method: name, original: original, impl: impl, isProp: true, list: list}
+		mo := newMockCallsObj(spy)
+		// getter spy：调用时记录 get 访问（Node 语义：mock.getter 的
+		// .mock 是 MockFunctionContext，调用记录在 calls）。
+		getterFn := interpreter.NewNativeMethod("mockGetter", func(this engine.Value, ca []engine.Value) (engine.Value, error) {
+			spy.mu.Lock()
+			cur := spy.mockCurrentImpl()
+			if cur == nil || cur.IsUndefined() {
+				cur = original
+			}
+			var result engine.Value
+			var err error
+			if cur.IsFunction() {
+				result, err = vm.InvokeFn(cur, this, nil)
+			} else {
+				result = cur
+			}
+			spy.calls.Append(newMockCall(nil, this, result, err, true, engine.Undefined()))
+			spy.mu.Unlock()
+			return result, err
+		})
+		if gof, ok := getterFn.AsObject(); ok {
+			_ = gof.Set("mock", mo)
+		}
+		// getter mock 存为访问器属性：引擎读属性时调用 getter 并记录访问。
+		_ = target.Set(name, engine.NewAccessor(getterFn, engine.Undefined()))
+		spy.spyFn = getterFn
+		*list = append(*list, spy)
+		return getterFn, nil
+	}))
+
+	// mock.setter(target, name[, fn])：mock 对象属性 setter。
+	_ = mockObj.Set("setter", engine.NewFunction("setter", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("%w: mock.setter(target, property)", engine.ErrTypeError)
+		}
+		target, ok := args[0].AsObject()
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("%w: mock.setter target must be an object", engine.ErrTypeError)
+		}
+		name := args[1].String()
+		original, err := target.Get(name)
+		if err != nil {
+			original = engine.Undefined()
+		}
+		var impl engine.Value
+		if len(args) >= 3 {
+			impl = args[2]
+		}
+		spy := &mockSpy{target: target, method: name, original: original, impl: impl, isProp: true, list: list}
+		mo := newMockCallsObj(spy)
+		// setter spy：调用时记录 set 访问（Node 语义：mock.setter 的
+		// .mock 是 MockFunctionContext，调用记录在 calls，arguments=[新值]）。
+		setterFn := interpreter.NewNativeMethod("mockSetter", func(this engine.Value, ca []engine.Value) (engine.Value, error) {
+			spy.mu.Lock()
+			cur := spy.mockCurrentImpl()
+			if cur == nil || cur.IsUndefined() {
+				cur = original
+			}
+			var result engine.Value
+			var err error
+			if cur.IsFunction() {
+				result, err = vm.InvokeFn(cur, this, ca)
+			} else {
+				result = engine.Undefined()
+			}
+			spy.calls.Append(newMockCall(ca, this, result, err, true, engine.Undefined()))
+			spy.mu.Unlock()
+			return result, err
+		})
+		if so, ok := setterFn.AsObject(); ok {
+			_ = so.Set("mock", mo)
+		}
+		_ = target.Set(name, engine.NewAccessor(engine.Undefined(), setterFn))
+		spy.spyFn = setterFn
+		*list = append(*list, spy)
+		return setterFn, nil
+	}))
+
+	// mock.property(target, name, value)：mock 对象属性值（get 返回 value）。
+	_ = mockObj.Set("property", engine.NewFunction("property", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 3 {
+			return engine.Undefined(), fmt.Errorf("%w: mock.property(target, property, value)", engine.ErrTypeError)
+		}
+		target, ok := args[0].AsObject()
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("%w: mock.property target must be an object", engine.ErrTypeError)
+		}
+		name := args[1].String()
+		original, err := target.Get(name)
+		if err != nil {
+			original = engine.Undefined()
+		}
+		value := args[2]
+		spy := &mockSpy{target: target, method: name, original: original, impl: value, isProp: true, list: list}
+		mo := newMockPropObj(spy)
+		getterFn := interpreter.NewNativeMethod("mockProperty", func(this engine.Value, ca []engine.Value) (engine.Value, error) {
+			spy.mu.Lock()
+			result := value
+			spy.accesses.Append(newMockAccess("get", result, this, nil))
+			spy.mu.Unlock()
+			return result, nil
+		})
+		if po, ok := getterFn.AsObject(); ok {
+			_ = po.Set("mock", mo)
+		}
+		_ = target.Set(name, engine.NewAccessor(getterFn, engine.Undefined()))
+		spy.spyFn = getterFn
+		*list = append(*list, spy)
+		return getterFn, nil
+	}))
+
 	_ = mockObj.Set("restoreAll", engine.NewFunction("restoreAll", func(args []engine.Value) (engine.Value, error) {
-		for _, s := range mockSpies {
+		for _, s := range *list {
 			if !s.isFn && s.target != nil {
 				_ = s.target.Set(s.method, s.original)
 			}
 		}
-		mockSpies = nil
+		*list = nil
 		return engine.Undefined(), nil
 	}))
 	return mockObj
+}
+
+func newTestMock(ctx engine.Context) engine.Value {
+	return newMockTracker(ctx, &mockSpies)
+}
+
+// newAbortSignal 构造独立 AbortSignal（复用全局 AbortSignal 构造器）。
+func newAbortSignal(ctx engine.Context) engine.Value {
+	if ctorV, err := ctx.Global().Get("AbortSignal"); err == nil {
+		if ctor, ok := ctorV.AsFunction(); ok {
+			if sig, cerr := ctor.Call(nil); cerr == nil && sig != nil {
+				return sig
+			}
+		}
+	}
+	return engine.NewObject()
+}
+
+// abortTestSignal 中断测试信号（t.signal）：设置 aborted/reason，触发
+// onabort 回调与 'abort' 事件（Node 语义：测试超时/取消时中断）。
+func abortTestSignal(sig engine.Value) {
+	if sig == nil {
+		return
+	}
+	o, ok := sig.AsObject()
+	if !ok {
+		return
+	}
+	if v, err := o.Get("aborted"); err == nil {
+		if b, ok := v.Bool(); ok && b {
+			return // 已中断
+		}
+	}
+	_ = o.Set("aborted", engine.Boolean(true))
+	_ = o.Set("reason", engine.Str("Test cancelled by parent"))
+	if v, err := o.Get("onabort"); err == nil && v.IsFunction() {
+		if f, ok := v.AsFunction(); ok {
+			_, _ = f.Call(nil)
+		}
+	}
+	if d, err := o.Get("dispatchEvent"); err == nil && d.IsFunction() {
+		if f, ok := d.AsFunction(); ok {
+			ev := engine.NewObject()
+			_ = ev.Set("type", engine.Str("abort"))
+			_, _ = f.Call([]engine.Value{ev})
+		}
+	}
 }
 
 // --- 执行器 ---------------------------------------------------------------
@@ -517,6 +933,8 @@ func newTestMock(ctx engine.Context) engine.Value {
 var (
 	// TestNamePattern 非 nil 时只运行匹配完整名称的用例（--test-name-pattern）。
 	TestNamePattern *regexp.Regexp
+	// TestSkipPattern 非 nil 时跳过匹配完整名称的用例（--test-skip-pattern）。
+	TestSkipPattern *regexp.Regexp
 	// TestOnly 启用 only 模式（--test-only）：只运行仅标记的用例。
 	TestOnly bool
 )
@@ -542,7 +960,7 @@ func RunRegisteredTests(vm *interpreter.VM) []TestResult {
 	root := regRoot
 	regMu.Unlock()
 	var results []TestResult
-	runSuite(vm, root, "", &results, false, TestOnly)
+	runSuite(vm, root, "", &results, false, false, TestOnly)
 	return results
 }
 
@@ -577,8 +995,9 @@ func joinName(prefix, name string) string {
 
 // runSuite 按注册顺序执行套件（children 混合遍历——Node 语义），
 // 处理套件级 before/after 钩子与 skip/only 传播。
-func runSuite(vm *interpreter.VM, s *registeredSuite, prefix string, results *[]TestResult, inheritedSkip, only bool) {
+func runSuite(vm *interpreter.VM, s *registeredSuite, prefix string, results *[]TestResult, inheritedSkip, inheritedTodo, only bool) {
 	skip := inheritedSkip || s.skip
+	todo := inheritedTodo || s.todo
 	only = only || s.only
 	pfx := joinName(prefix, s.name)
 
@@ -603,9 +1022,9 @@ func runSuite(vm *interpreter.VM, s *registeredSuite, prefix string, results *[]
 	// 注册顺序执行 children（tests 与 suites 混合）。
 	for _, ch := range s.children {
 		if ch.isSuite {
-			runSuite(vm, ch.suite, pfx, results, skip, only)
+			runSuite(vm, ch.suite, pfx, results, skip, todo, only)
 		} else {
-			if r := runTestCase(vm, s, ch.test, joinName(pfx, ch.test.name), skip, only); r != nil {
+			if r := runTestCase(vm, s, ch.test, joinName(pfx, ch.test.name), skip, todo, only); r != nil {
 				*results = append(*results, r...)
 			}
 		}
@@ -684,7 +1103,7 @@ func namePatternExcluded(full string) bool {
 // 返回 []TestResult：首元素为用例自身，其余为子测试（Node 统计语义：
 // 子测试独立计数）。钩子/用例的 promise 结果经 AwaitPromise 同步等待。
 // only 模式排除的用例返回 nil（Node 语义：--test-only 下完全隐藏，非 SKIP）。
-func runTestCase(vm *interpreter.VM, suite *registeredSuite, tc *registeredTest, full string, suiteSkip, only bool) []TestResult {
+func runTestCase(vm *interpreter.VM, suite *registeredSuite, tc *registeredTest, full string, suiteSkip, suiteTodo, only bool) []TestResult {
 	res := &TestResult{Name: tc.name, FullName: full, Passed: true}
 	start := time.Now()
 	defer func() { res.Duration = time.Since(start) }()
@@ -697,12 +1116,18 @@ func runTestCase(vm *interpreter.VM, suite *registeredSuite, tc *registeredTest,
 	if namePatternExcluded(full) {
 		return nil
 	}
+	// skip-pattern 过滤：匹配 → 完全排除（不执行、不计数——Node 实测语义：
+	// --test-skip-pattern 命中的测试从运行集合中移除，tests 计数不含它们）。
+	if TestSkipPattern != nil && TestSkipPattern.MatchString(full) {
+		return nil
+	}
 	// skip 判定：套件 skip || 用例 skip（显示 # SKIP）。
 	if suiteSkip || tc.skip {
 		res.Skipped = true
 		return []TestResult{*res}
 	}
-	if tc.todo {
+	// todo 判定：套件 todo 传播 || 用例 todo（Node 语义：todo 仍执行，失败不计）。
+	if tc.todo || suiteTodo {
 		res.Todo = true
 	}
 
@@ -726,6 +1151,14 @@ func runTestCase(vm *interpreter.VM, suite *registeredSuite, tc *registeredTest,
 	// 用例本体（t.plan 校验 + 子测试）。
 	st := newTestRunState(vm, tc.name, full, tc.fn)
 	cancelled := false
+	// t.mock 的 spy 在测试结束时自动还原（Node 语义）。
+	defer func() {
+		st.mu.Lock()
+		if st.mockRestore != nil {
+			st.mockRestore()
+		}
+		st.mu.Unlock()
+	}()
 	if err := invokeTestFnWithState(vm, tc.fn, st); err != nil {
 		if errors.Is(err, errTestSkipped) {
 			res.Skipped = true
@@ -768,7 +1201,9 @@ func runTestCase(vm *interpreter.VM, suite *registeredSuite, tc *registeredTest,
 		st.mu.Lock()
 		for _, sub := range st.subtests {
 			out = append(out, TestResult{Name: sub.name, FullName: sub.full, Passed: true, Cancelled: true})
+			abortTestSignal(sub.signal)
 		}
+		abortTestSignal(st.signal)
 		st.mu.Unlock()
 	} else {
 		out = append(out, st.subResults...)
@@ -818,9 +1253,17 @@ func runSubTestSync(vm *interpreter.VM, st *testRunState) TestResult {
 		st.mu.Lock()
 		for _, sub := range st.subtests {
 			st.subResults = append(st.subResults, TestResult{Name: sub.name, FullName: sub.full, Passed: true, Cancelled: true})
+			abortTestSignal(sub.signal)
 		}
+		abortTestSignal(st.signal)
 		st.mu.Unlock()
 	}
+	// t.mock 的 spy 在子测试结束时自动还原。
+	st.mu.Lock()
+	if st.mockRestore != nil {
+		st.mockRestore()
+	}
+	st.mu.Unlock()
 	return res
 }
 
@@ -847,10 +1290,11 @@ func parentSuite(target *registeredSuite) *registeredSuite {
 
 // testRunState 记录单个用例的运行状态（Node 语义）。
 type testRunState struct {
-	vm   *interpreter.VM
-	name string
-	full string
-	fn   engine.Value
+	vm       *interpreter.VM
+	name     string
+	full     string
+	fn       engine.Value
+	filePath string
 
 	mu            sync.Mutex
 	plan          int  // 0 = 未设置；>0 = 期望断言数
@@ -858,14 +1302,35 @@ type testRunState struct {
 	skipRequested bool // t.skip() 已调用
 	todo          bool // t.todo() 已调用
 	subtests      []*testRunState
+	subtestsRun   int // 已启动执行的子测试数（t.before/t.after 首末判定）
 	subResults    []TestResult              // 子测试执行结果（失败传播给父）
 	cancelled     bool                      // 子测试被取消（父未 await——Node 语义）
 	promise       *interpreter.PromiseValue // t.test 返回的 promise
+
+	// 子测试钩子（t.beforeEach/t.afterEach/t.before/t.after——Node 语义：
+	// 在父测试的子测试间生效）。
+	beforeHooks   []engine.Value
+	afterHooks    []engine.Value
+	beforeEachArr []engine.Value
+	afterEachArr  []engine.Value
+
+	// per-test MockTracker 的 spy 列表（测试结束时自动还原——Node 语义）。
+	mockSpies   []*mockSpy
+	mockRestore func() // t.mock 的还原函数（测试结束时调用）
+
+	signal engine.Value // t.signal（测试取消时中断）
 }
+
+// currentTestFilePath 记录当前测试文件绝对路径（t.filePath 用）。
+var currentTestFilePath string
 
 // newTestRunState 构造用例运行状态。
 func newTestRunState(vm *interpreter.VM, name, full string, fn engine.Value) *testRunState {
-	return &testRunState{vm: vm, name: name, full: full, fn: fn}
+	filePath := ""
+	snapshotMu.Lock()
+	filePath = currentTestFilePath
+	snapshotMu.Unlock()
+	return &testRunState{vm: vm, name: name, full: full, fn: fn, filePath: filePath}
 }
 
 // addAssert 由 t.assert 方法调用（t.plan 计数只含 t.assert——Node 语义）。
@@ -971,6 +1436,7 @@ func SetSnapshotFile(testFilePath string) {
 	defer snapshotMu.Unlock()
 	snapshotFile = testFilePath + ".snapshot"
 	snapshotCount = 0
+	currentTestFilePath = testFilePath
 }
 
 // SetUpdateSnapshots 启用/禁用快照更新模式（--test-update-snapshots）。
@@ -983,6 +1449,18 @@ func SetUpdateSnapshots(update bool) {
 // newTestContext 构造 TestContext 对象（状态绑定 st）。
 func newTestContext(vm *interpreter.VM, st *testRunState) engine.Value {
 	t := engine.NewObject()
+
+	// 只读属性：name / fullName / filePath / signal（Node 22 语义）。
+	_ = t.Set("name", engine.Str(st.name))
+	_ = t.Set("fullName", engine.Str(st.full))
+	_ = t.Set("filePath", engine.Str(st.filePath))
+	// t.signal：AbortSignal（Node 语义：测试超时/取消时中断）。复用全局
+	// AbortSignal 构造器创建独立信号；测试被父取消时置为中断。
+	signal := newAbortSignal(vm)
+	_ = t.Set("signal", signal)
+	st.mu.Lock()
+	st.signal = signal
+	st.mu.Unlock()
 
 	// t.assert：断言对象（复用 assert 模块 + snapshot）。
 	// 所有断言递增计数（t.plan 只计 t.assert——Node 语义）。
@@ -1010,14 +1488,14 @@ func newTestContext(vm *interpreter.VM, st *testRunState) engine.Value {
 	}))
 	_ = assertObj.Set("deepStrictEqual", engine.NewFunction("deepStrictEqual", func(args []engine.Value) (engine.Value, error) {
 		st.addAssert()
-		if len(args) < 2 || !deepEqual(args[0], args[1], true) {
+		if len(args) < 2 || !testDeepStrictEqual(args[0], args[1]) {
 			return engine.Undefined(), fmt.Errorf("%w: expected %s but got %s", engine.ErrAssertion, argString(args, 1), argString(args, 0))
 		}
 		return engine.Undefined(), nil
 	}))
 	_ = assertObj.Set("deepEqual", engine.NewFunction("deepEqual", func(args []engine.Value) (engine.Value, error) {
 		st.addAssert()
-		if len(args) < 2 || !deepEqual(args[0], args[1], false) {
+		if len(args) < 2 || !testDeepLooseEqual(args[0], args[1]) {
 			return engine.Undefined(), fmt.Errorf("%w: expected %s but got %s", engine.ErrAssertion, argString(args, 1), argString(args, 0))
 		}
 		return engine.Undefined(), nil
@@ -1026,6 +1504,86 @@ func newTestContext(vm *interpreter.VM, st *testRunState) engine.Value {
 		st.addAssert()
 		if len(args) >= 2 && strictEqual(args[0], args[1]) {
 			return engine.Undefined(), fmt.Errorf("%w: values should not be strictly equal", engine.ErrAssertion)
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("notEqual", engine.NewFunction("notEqual", func(args []engine.Value) (engine.Value, error) {
+		st.addAssert()
+		if len(args) >= 2 && looseEqual(args[0], args[1]) {
+			return engine.Undefined(), fmt.Errorf("%w: values should not be loosely equal", engine.ErrAssertion)
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("notDeepEqual", engine.NewFunction("notDeepEqual", func(args []engine.Value) (engine.Value, error) {
+		st.addAssert()
+		if len(args) >= 2 && testDeepLooseEqual(args[0], args[1]) {
+			return engine.Undefined(), fmt.Errorf("%w: values should not be deep equal", engine.ErrAssertion)
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("notDeepStrictEqual", engine.NewFunction("notDeepStrictEqual", func(args []engine.Value) (engine.Value, error) {
+		st.addAssert()
+		if len(args) >= 2 && testDeepStrictEqual(args[0], args[1]) {
+			return engine.Undefined(), fmt.Errorf("%w: values should not be deep strict equal", engine.ErrAssertion)
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("ifError", engine.NewFunction("ifError", func(args []engine.Value) (engine.Value, error) {
+		st.addAssert()
+		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
+			return engine.Undefined(), fmt.Errorf("%w: ifError got unwanted exception", engine.ErrAssertion)
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("fail", engine.NewFunction("fail", func(args []engine.Value) (engine.Value, error) {
+		st.addAssert()
+		msg := "assertion failed"
+		if len(args) > 0 {
+			msg = args[0].String()
+		}
+		return engine.Undefined(), fmt.Errorf("%w: %s", engine.ErrAssertion, msg)
+	}))
+	_ = assertObj.Set("match", engine.NewFunction("match", func(args []engine.Value) (engine.Value, error) {
+		st.addAssert()
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("%w: match: string and regexp required", engine.ErrTypeError)
+		}
+		s := args[0].String()
+		matched := false
+		if ro, ok := args[1].AsObject(); ok {
+			if tv, err := ro.Get("test"); err == nil && tv.IsFunction() {
+				if tf, ok := tv.AsFunction(); ok {
+					mv, merr := tf.Call([]engine.Value{engine.Str(s)})
+					if merr == nil {
+						matched, _ = mv.Bool()
+					}
+				}
+			}
+		}
+		if !matched {
+			return engine.Undefined(), fmt.Errorf("%w: match: %q does not match", engine.ErrAssertion, s)
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("doesNotMatch", engine.NewFunction("doesNotMatch", func(args []engine.Value) (engine.Value, error) {
+		st.addAssert()
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("%w: doesNotMatch: string and regexp required", engine.ErrTypeError)
+		}
+		s := args[0].String()
+		matched := false
+		if ro, ok := args[1].AsObject(); ok {
+			if tv, err := ro.Get("test"); err == nil && tv.IsFunction() {
+				if tf, ok := tv.AsFunction(); ok {
+					mv, merr := tf.Call([]engine.Value{engine.Str(s)})
+					if merr == nil {
+						matched, _ = mv.Bool()
+					}
+				}
+			}
+		}
+		if matched {
+			return engine.Undefined(), fmt.Errorf("%w: doesNotMatch: %q should not match", engine.ErrAssertion, s)
 		}
 		return engine.Undefined(), nil
 	}))
@@ -1044,6 +1602,53 @@ func newTestContext(vm *interpreter.VM, st *testRunState) engine.Value {
 		}
 		return engine.Undefined(), nil
 	}))
+	_ = assertObj.Set("rejects", engine.NewFunction("rejects", func(args []engine.Value) (engine.Value, error) {
+		st.addAssert()
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("%w: rejects: async function/promise required", engine.ErrTypeError)
+		}
+		var pv engine.Value
+		var err error
+		if f, ok := args[0].AsFunction(); ok {
+			pv, err = f.Call(nil)
+			if err != nil {
+				return engine.Undefined(), nil // 同步抛出也算拒绝
+			}
+		} else {
+			pv = args[0]
+		}
+		if prom, ok := pv.(*interpreter.PromiseValue); ok {
+			_, err := vm.AwaitPromise(prom)
+			if err != nil {
+				return engine.Undefined(), nil // 拒绝 → 通过
+			}
+			return engine.Undefined(), fmt.Errorf("%w: rejects: promise did not reject", engine.ErrAssertion)
+		}
+		return engine.Undefined(), fmt.Errorf("%w: rejects: value is not a promise", engine.ErrTypeError)
+	}))
+	_ = assertObj.Set("doesNotReject", engine.NewFunction("doesNotReject", func(args []engine.Value) (engine.Value, error) {
+		st.addAssert()
+		if len(args) == 0 {
+			return engine.Undefined(), nil
+		}
+		var pv engine.Value
+		if f, ok := args[0].AsFunction(); ok {
+			var err error
+			pv, err = f.Call(nil)
+			if err != nil {
+				return engine.Undefined(), fmt.Errorf("%w: doesNotReject: got unwanted rejection", engine.ErrAssertion)
+			}
+		} else {
+			pv = args[0]
+		}
+		if prom, ok := pv.(*interpreter.PromiseValue); ok {
+			_, err := vm.AwaitPromise(prom)
+			if err != nil {
+				return engine.Undefined(), fmt.Errorf("%w: doesNotReject: got unwanted rejection", engine.ErrAssertion)
+			}
+		}
+		return engine.Undefined(), nil
+	}))
 	// t.assert.snapshot(value)：快照断言（Node 22 experimental 语义）。
 	_ = assertObj.Set("snapshot", engine.NewFunction("snapshot", func(args []engine.Value) (engine.Value, error) {
 		st.addAssert()
@@ -1052,6 +1657,12 @@ func newTestContext(vm *interpreter.VM, st *testRunState) engine.Value {
 		}
 		return snapshotAssert(vm, args[0])
 	}))
+	// register() 注册的自定义断言挂到 t.assert（Node 22.14 语义）。
+	regMu.Lock()
+	for name, fn := range customAsserts {
+		_ = assertObj.Set(name, fn)
+	}
+	regMu.Unlock()
 	_ = t.Set("assert", assertObj)
 
 	// t.diagnostic(msg)：输出诊断信息（Node 语义：透传输出）。
@@ -1110,25 +1721,222 @@ func newTestContext(vm *interpreter.VM, st *testRunState) engine.Value {
 		sub.mu.Unlock()
 		// 子测试调度到微任务队列：父测试 await 时（AwaitPromise 驱动
 		// microtask）执行；父测试同步结束时该微任务仍挂起 → 子测试取消。
+		// 父测试的 t.before/t.after/t.beforeEach/t.afterEach 围绕子测试生效
+		// （Node 语义：before 首个子测试前一次，after 最后一个后一次）。
 		vm.EnqueueMicrotask(func() {
 			sub.mu.Lock()
 			cancelled := sub.cancelled
 			sub.mu.Unlock()
-			if !cancelled {
-				sr := runSubTestSync(vm, sub)
+			if cancelled {
+				p.Fulfill(engine.Undefined())
+				return
+			}
+			st.mu.Lock()
+			firstSub := st.subtestsRun == 0
+			st.subtestsRun++
+			beforeEachArr := append([]engine.Value(nil), st.beforeEachArr...)
+			afterEachArr := append([]engine.Value(nil), st.afterEachArr...)
+			beforeHooks := append([]engine.Value(nil), st.beforeHooks...)
+			lastSub := st.subtestsRun == len(st.subtests)
+			afterHooks := append([]engine.Value(nil), st.afterHooks...)
+			st.mu.Unlock()
+			hookErr := error(nil)
+			if firstSub {
+				for _, h := range beforeHooks {
+					if err := invokeTestFn(vm, h); err != nil {
+						hookErr = err
+						break
+					}
+				}
+			}
+			if hookErr == nil {
+				for _, h := range beforeEachArr {
+					if err := invokeTestFn(vm, h); err != nil {
+						hookErr = err
+						break
+					}
+				}
+			}
+			if hookErr != nil {
+				sr := TestResult{Name: sub.name, FullName: sub.full, Passed: false, Error: "subtest hook: " + testErrorMessage(vm, hookErr)}
 				st.mu.Lock()
 				st.subResults = append(st.subResults, sr)
 				st.mu.Unlock()
+				p.Fulfill(engine.Undefined())
+				return
+			}
+			sr := runSubTestSync(vm, sub)
+			for _, h := range afterEachArr {
+				if err := invokeTestFn(vm, h); err != nil {
+					sr.Passed = false
+					if sr.Error == "" {
+						sr.Error = "subtest afterEach: " + testErrorMessage(vm, err)
+					}
+				}
+			}
+			st.mu.Lock()
+			st.subResults = append(st.subResults, sr)
+			st.mu.Unlock()
+			if lastSub {
+				for _, h := range afterHooks {
+					if err := invokeTestFn(vm, h); err != nil {
+						st.mu.Lock()
+						st.subResults = append(st.subResults, TestResult{Name: sub.name, FullName: sub.full, Passed: false, Error: "subtest after: " + testErrorMessage(vm, err)})
+						st.mu.Unlock()
+						break
+					}
+				}
 			}
 			p.Fulfill(engine.Undefined())
 		})
 		return p, nil
 	}))
+
+	// t.before / t.after / t.beforeEach / t.afterEach：子测试钩子
+	// （Node 语义：作用域为当前测试的子测试）。
+	ctxHook := func(key string) engine.Func {
+		return func(args []engine.Value) (engine.Value, error) {
+			if len(args) == 0 || !args[0].IsFunction() {
+				return engine.Undefined(), fmt.Errorf("%w: t.%s() requires a function", engine.ErrTypeError, key)
+			}
+			st.mu.Lock()
+			switch key {
+			case "before":
+				st.beforeHooks = append(st.beforeHooks, args[0])
+			case "after":
+				st.afterHooks = append(st.afterHooks, args[0])
+			case "beforeEach":
+				st.beforeEachArr = append(st.beforeEachArr, args[0])
+			case "afterEach":
+				st.afterEachArr = append(st.afterEachArr, args[0])
+			}
+			st.mu.Unlock()
+			return engine.Undefined(), nil
+		}
+	}
+	_ = t.Set("before", engine.NewFunction("before", ctxHook("before")))
+	_ = t.Set("after", engine.NewFunction("after", ctxHook("after")))
+	_ = t.Set("beforeEach", engine.NewFunction("beforeEach", ctxHook("beforeEach")))
+	_ = t.Set("afterEach", engine.NewFunction("afterEach", ctxHook("afterEach")))
+
+	// t.waitFor(condition[, options])：轮询条件函数直至返回成功或超时
+	// （Node 22.14，P1 语义）。condition 返回 promise（resolve 即成功）；
+	// 超时（默认 Infinity）抛 TimeoutError。
+	_ = t.Set("waitFor", engine.NewFunction("waitFor", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 || !args[0].IsFunction() {
+			return engine.Undefined(), fmt.Errorf("%w: t.waitFor() requires a condition function", engine.ErrTypeError)
+		}
+		condFn := args[0]
+		// 轮询周期 10ms；timeout 默认 0 = Infinity。
+		timeoutMs := int64(0)
+		if len(args) > 1 {
+			if o, ok := args[1].AsObject(); ok {
+				if tv, err := o.Get("timeout"); err == nil && !tv.IsUndefined() {
+					if n, ok := tv.Int(); ok {
+						timeoutMs = int64(n)
+					}
+				}
+			}
+		}
+		// 反复调用条件函数直至成功（返回非拒绝 promise 或真值）。
+		deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+		for {
+			err := invokeTestFn(vm, condFn)
+			if err == nil {
+				return engine.Undefined(), nil
+			}
+			if timeoutMs > 0 && time.Now().After(deadline) {
+				return engine.Undefined(), fmt.Errorf("operation timed out")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+
+	// t.mock：per-test MockTracker（Node 语义：测试结束时自动还原全部 mock）。
+	scopedMock, restoreFn := newScopedTestMock(vm, st)
+	_ = t.Set("mock", scopedMock)
+	st.mu.Lock()
+	st.mockSpies = []*mockSpy{}
+	st.mockRestore = restoreFn
+	st.mu.Unlock()
 	return t
 }
 
 // errTestSkipped 标记 t.skip() 的用例（内部错误，不展示给用户）。
 var errTestSkipped = fmt.Errorf("test skipped via t.skip()")
+
+// testDeepStrictEqual 递归严格深度相等（Node assert.deepStrictEqual 语义）。
+// 对象键集一致且每键值严格深等；数组逐元素；原始值要求类型相同。
+func testDeepStrictEqual(a, b engine.Value) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if strictEqual(a, b) {
+		return true
+	}
+	if arrA, ok := a.(*engine.ArrayValue); ok {
+		arrB, ok := b.(*engine.ArrayValue)
+		if !ok {
+			return false
+		}
+		elemsA, elemsB := arrA.Elems(), arrB.Elems()
+		if len(elemsA) != len(elemsB) {
+			return false
+		}
+		for i := range elemsA {
+			if !testDeepStrictEqual(elemsA[i], elemsB[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	if oa, ok := a.AsObject(); ok {
+		ob, okb := b.AsObject()
+		if !okb {
+			return false
+		}
+		keysA := oa.Keys()
+		keysB := ob.Keys()
+		if len(keysA) != len(keysB) {
+			return false
+		}
+		for _, k := range keysA {
+			va, _ := oa.Get(k)
+			vb, err := ob.Get(k)
+			if err != nil {
+				return false
+			}
+			if !testDeepStrictEqual(va, vb) {
+				return false
+			}
+		}
+		return true
+	}
+	if a.Type() != b.Type() {
+		return false
+	}
+	return a.String() == b.String()
+}
+
+// testDeepLooseEqual 递归宽松深度相等（== 语义：数字/字符串可转换比较）。
+func testDeepLooseEqual(a, b engine.Value) bool {
+	if testDeepStrictEqual(a, b) {
+		return true
+	}
+	if a.Type() == engine.TypeNumber && b.Type() == engine.TypeString {
+		if bf, ok := b.Float(); ok {
+			af, _ := a.Float()
+			return af == bf
+		}
+	}
+	if a.Type() == engine.TypeString && b.Type() == engine.TypeNumber {
+		if af, ok := a.Float(); ok {
+			bf, _ := b.Float()
+			return af == bf
+		}
+	}
+	return false
+}
 
 // snapshotAssert 实现快照断言。
 // 序列化格式（Node 22）：字符串 → JSON 字符串（带引号）；对象 → JSON 2 空格。
