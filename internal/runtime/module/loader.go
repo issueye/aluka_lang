@@ -1,6 +1,7 @@
 package module
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -189,17 +190,17 @@ func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engin
 			return cached, nil
 		}
 		l.mu.Unlock()
-		// JSON 资源（M3）：直接解析嵌入字节，语义同文件模式的 loadJSON。
+		// JSON 资源（M3）：直接解析嵌入字节，语义同文件模式的 loadJSON
+		// （保序解析——对象键保持文档顺序）。
 		if l.embedded.ModuleTypeOf(key) == "json" {
 			data, ok := l.embedded.LoadJSON(key)
 			if !ok {
 				return engine.Undefined(), fmt.Errorf("module: compiled mode: JSON asset %q not found", key)
 			}
-			var v interface{}
-			if err := json.Unmarshal(data, &v); err != nil {
+			val, err := parseOrderedJSON(data)
+			if err != nil {
 				return engine.Undefined(), fmt.Errorf("module: invalid JSON in %q: %w", key, err)
 			}
-			val := jsonToValue(v)
 			l.mu.Lock()
 			l.cache[key] = val
 			l.mu.Unlock()
@@ -260,50 +261,92 @@ func (l *Loader) loadJSON(absPath string) (engine.Value, error) {
 		return engine.Undefined(), fmt.Errorf("module: cannot read %q: %w", absPath, err)
 	}
 
-	var v interface{}
-	if err := json.Unmarshal(data, &v); err != nil {
+	// 保序解析：JSON 对象键保持文档顺序（JSON.stringify 键序语义；
+	// encoding/json 的 map 解析键序随机，会造成键序偶发漂移）。
+	result, err := parseOrderedJSON(data)
+	if err != nil {
 		return engine.Undefined(), fmt.Errorf("module: invalid JSON in %q: %w", absPath, err)
 	}
-
-	result := jsonToValue(v)
 	l.mu.Lock()
 	l.cache[absPath] = result
 	l.mu.Unlock()
 	return result, nil
 }
 
+// parseOrderedJSON 保序解析 JSON 文本为 engine.Value
+// （对象键保持文档顺序，数组保持元素顺序）。
+func parseOrderedJSON(data []byte) (engine.Value, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	v, err := decodeJSONValue(dec)
+	if err != nil {
+		return engine.Undefined(), err
+	}
+	return v, nil
+}
+
+// decodeJSONValue 递归解码单个 JSON 值（保序）。
+func decodeJSONValue(dec *json.Decoder) (engine.Value, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return engine.Undefined(), err
+	}
+	switch t := tok.(type) {
+	case json.Delim:
+		switch t {
+		case '{':
+			obj := engine.NewObject()
+			for dec.More() {
+				keyTok, err := dec.Token()
+				if err != nil {
+					return engine.Undefined(), err
+				}
+				key, _ := keyTok.(string)
+				val, err := decodeJSONValue(dec)
+				if err != nil {
+					return engine.Undefined(), err
+				}
+				_ = obj.Set(key, val)
+			}
+			if _, err := dec.Token(); err != nil { // 消费 '}'
+				return engine.Undefined(), err
+			}
+			return obj, nil
+		case '[':
+			var elems []engine.Value
+			for dec.More() {
+				val, err := decodeJSONValue(dec)
+				if err != nil {
+					return engine.Undefined(), err
+				}
+				elems = append(elems, val)
+			}
+			if _, err := dec.Token(); err != nil { // 消费 ']'
+				return engine.Undefined(), err
+			}
+			return engine.NewArray(elems), nil
+		}
+		return engine.Undefined(), fmt.Errorf("module: unexpected delimiter %v", t)
+	case string:
+		return engine.Str(t), nil
+	case json.Number:
+		f, err := t.Float64()
+		if err != nil {
+			return engine.Undefined(), fmt.Errorf("module: bad number %q", t)
+		}
+		return engine.Number(f), nil
+	case bool:
+		return engine.Boolean(t), nil
+	case nil:
+		return engine.Null(), nil
+	}
+	return engine.Undefined(), fmt.Errorf("module: unexpected token %v", tok)
+}
+
 // loadJSONFile is like loadJSON but discards the return value (for Run).
 func (l *Loader) loadJSONFile(absPath string) error {
 	_, err := l.loadJSON(absPath)
 	return err
-}
-
-// jsonToValue converts a Go value (from encoding/json) to an engine.Value.
-func jsonToValue(v interface{}) engine.Value {
-	switch val := v.(type) {
-	case nil:
-		return engine.Null()
-	case bool:
-		return engine.Boolean(val)
-	case float64:
-		return engine.Number(val)
-	case string:
-		return engine.Str(val)
-	case []interface{}:
-		elems := make([]engine.Value, len(val))
-		for i, e := range val {
-			elems[i] = jsonToValue(e)
-		}
-		return engine.NewArray(elems)
-	case map[string]interface{}:
-		obj := engine.NewObject()
-		for k, e := range val {
-			_ = obj.Set(k, jsonToValue(e))
-		}
-		return obj
-	default:
-		return engine.Undefined()
-	}
 }
 
 // makeRequireFunc creates a JS require function for the given module path.

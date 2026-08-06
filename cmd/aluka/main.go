@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/pprof"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/builtin"
@@ -32,18 +33,54 @@ import (
 // version 在构建时通过 ldflags 注入。
 var version = "0.1.0-dev"
 
+// profileStop 是 --profile 的收尾函数（StopCPUProfile + heap dump）。
+// 经 osExit 统一调用，保证错误路径也能落盘（O1-C1）。
+var profileStop func()
+
+// icStats 启用 IC 命中统计输出（--ic-stats，O1 验收）。
+var icStats bool
+
+// osExit 统一的进程退出入口：先 flush profile 再退出。
+func osExit(code int) {
+	if profileStop != nil {
+		profileStop()
+		profileStop = nil
+	}
+	os.Exit(code)
+}
+
 func main() {
 	// 产物模式：自身携带编译产物（aluka build --compile）时直接执行。
 	// 检测零开销（仅读尾部 footer），普通 aluka 不受影响。
 	// 校验失败（截断/损坏）时告警并回退正常模式（B2.4.1）。
 	switch payload, status := detectCompiledPayload(); status {
 	case detectOK:
-		os.Exit(runCompiled(payload))
+		osExit(runCompiled(payload))
 	case detectCorrupt:
 		fmt.Fprintln(os.Stderr, "aluka: warning: compiled payload failed integrity check (sha256 mismatch); falling back to normal mode")
 	}
 
 	args := os.Args[1:]
+
+	// O1-C1：--profile <path> 全局开关——CPU profile 写 <path>，
+	// 命令结束（或错误退出）时追加内存堆快照到 <path>.heap。
+	if len(args) >= 2 && args[0] == "--profile" {
+		profileStop = startProfile(args[1])
+		args = args[2:]
+	} else if len(args) >= 1 && strings.HasPrefix(args[0], "--profile=") {
+		profileStop = startProfile(strings.TrimPrefix(args[0], "--profile="))
+		args = args[1:]
+	}
+	// O1 验收：--ic-stats 在运行结束后输出内联缓存命中率（任意位置）。
+	filtered := args[:0]
+	for _, a := range args {
+		if a == "--ic-stats" {
+			icStats = true
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	args = filtered
 
 	// 无参数 → 显示帮助
 	if len(args) == 0 {
@@ -82,6 +119,20 @@ func main() {
 		// 简写：aluka <file>
 		runFile(first, useVM(args), noCache(args))
 	}
+
+	// 正常结束：flush profile（CPU profile 数据在 StopCPUProfile 时落盘）。
+	if profileStop != nil {
+		profileStop()
+		profileStop = nil
+	}
+}
+
+// flushProfile 供 REPL 等长时间运行的命令在退出点调用。
+func flushProfile() {
+	if profileStop != nil {
+		profileStop()
+		profileStop = nil
+	}
 }
 
 // noCache scans args for the --no-cache flag.
@@ -110,7 +161,7 @@ func runCode(code string, filename string, vm bool) {
 	if err := execute(code, filename, vm); err != nil {
 		// 退出码：语法错误/未捕获异常 → 1
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		osExit(1)
 	}
 }
 
@@ -118,7 +169,7 @@ func runCode(code string, filename string, vm bool) {
 func runFile(path string, vm, disableCache bool) {
 	if err := runModule(path, vm, disableCache); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		osExit(1)
 	}
 }
 
@@ -157,7 +208,27 @@ func runModule(path string, vm, disableCache bool) error {
 	if vm, ok := ctx.(interface{ RunLoop() }); ok {
 		vm.RunLoop()
 	}
+	if icStats {
+		if vmv, ok := ctx.(*interpreter.VM); ok {
+			printICStats(vmv.ICStats())
+		}
+	}
 	return nil
+}
+
+// printICStats 输出内联缓存命中率报告（O1 验收）。
+func printICStats(s engine.ICStats) {
+	pct := func(hit, miss uint64) float64 {
+		total := hit + miss
+		if total == 0 {
+			return 100
+		}
+		return float64(hit) / float64(total) * 100
+	}
+	fmt.Printf("IC stats: get %d/%d (%.1f%%), set %d/%d (%.1f%%), call %d/%d (%.1f%%)\n",
+		s.GetHit, s.GetHit+s.GetMiss, pct(s.GetHit, s.GetMiss),
+		s.SetHit, s.SetHit+s.SetMiss, pct(s.SetHit, s.SetMiss),
+		s.CallHit, s.CallHit+s.CallMiss, pct(s.CallHit, s.CallMiss))
 }
 
 // cmdTest 实现 `aluka test` 子命令：发现并运行测试文件（node:test）。
@@ -193,7 +264,7 @@ func cmdTest(args []string) {
 				re, err := regexp.Compile(args[i])
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "aluka: invalid --test-name-pattern %q: %v\n", args[i], err)
-					os.Exit(1)
+					osExit(1)
 				}
 				namePattern = re
 			}
@@ -201,7 +272,7 @@ func cmdTest(args []string) {
 			re, err := regexp.Compile(strings.TrimPrefix(a, "--test-name-pattern="))
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "aluka: invalid --test-name-pattern %q: %v\n", a, err)
-				os.Exit(1)
+				osExit(1)
 			}
 			namePattern = re
 		default:
@@ -213,7 +284,7 @@ func cmdTest(args []string) {
 	files := discoverTestFiles(paths)
 	if len(files) == 0 {
 		fmt.Fprintln(os.Stderr, "aluka: no test files found")
-		os.Exit(1)
+		osExit(1)
 	}
 	passed, failed, skipped, todo, cancelled := 0, 0, 0, 0, 0
 	// 覆盖率统计（文件 → 已执行行集合）。
@@ -271,7 +342,7 @@ func cmdTest(args []string) {
 		printCoverageReport(fileCoverage)
 	}
 	if failed > 0 {
-		os.Exit(1)
+		osExit(1)
 	}
 }
 
@@ -694,7 +765,28 @@ Docs:    https://aluka.dev
 // fatalErr 输出错误到 stderr 并以非零码退出。
 func fatalErr(msg string) {
 	fmt.Fprintln(os.Stderr, msg)
-	os.Exit(1)
+	osExit(1)
+}
+
+// startProfile 启动 CPU profiling（O1-C1）：profile 写 path，
+// 返回的收尾函数停止采样并追加内存堆快照到 path.heap。
+func startProfile(path string) func() {
+	f, err := os.Create(path)
+	if err != nil {
+		fatalErr("aluka: cannot create profile file: " + err.Error())
+	}
+	if err := pprof.StartCPUProfile(f); err != nil {
+		_ = f.Close()
+		fatalErr("aluka: cannot start CPU profile: " + err.Error())
+	}
+	return func() {
+		pprof.StopCPUProfile()
+		_ = f.Close()
+		if hf, err := os.Create(path + ".heap"); err == nil {
+			_ = pprof.WriteHeapProfile(hf)
+			_ = hf.Close()
+		}
+	}
 }
 
 // 触发未使用 import 错误检测，防止 errors 在未来扩展时遗漏。

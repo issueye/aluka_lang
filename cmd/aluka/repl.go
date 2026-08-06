@@ -11,9 +11,9 @@ package main
 
 import (
 	"bufio"
-	"path/filepath"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -37,17 +37,17 @@ func startREPL(vm bool) {
 	ctx, err := eng.NewContext()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aluka: cannot create context:", err)
-		os.Exit(1)
+		osExit(1)
 	}
 	defer ctx.Close()
 
 	if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
 		fmt.Fprintln(os.Stderr, "aluka: cannot register console:", err)
-		os.Exit(1)
+		osExit(1)
 	}
 	if err := globals.NewProcess(ctx, globals.ProcessConfig{}); err != nil {
 		fmt.Fprintln(os.Stderr, "aluka: cannot register process:", err)
-		os.Exit(1)
+		osExit(1)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())
 	_ = ctx.Global().Set("global", ctx.Global())
@@ -132,6 +132,7 @@ func startREPL(vm bool) {
 		// 处理点命令（仅在无待完成输入时）
 		if pendingInput.Len() == 0 && strings.HasPrefix(line, ".") {
 			if handleDotCommand(line, ctx) {
+				flushProfile() // .exit：落盘 --profile 数据后再返回。
 				return
 			}
 			continue
@@ -181,6 +182,7 @@ func startREPL(vm bool) {
 		// 打印非空结果
 		printREPLResult(result)
 	}
+	flushProfile() // Ctrl+D 退出：落盘 --profile 数据。
 }
 
 // handleDotCommand 处理 REPL 点命令（.help/.exit/.editor/.version 等）。

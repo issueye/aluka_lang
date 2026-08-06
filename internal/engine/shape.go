@@ -12,10 +12,10 @@ package engine
 
 // Shape 是一组属性的布局描述。
 type Shape struct {
-	id    uint64             // 全局唯一标识（IC hash 用）
-	names []string           // 属性名（插入顺序，即槽位顺序）
-	index map[string]int     // 属性名 → 槽位索引
-	next  map[string]*Shape  // transition：加属性 name → 新 Shape
+	id    uint64            // 全局唯一标识（IC hash 用）
+	names []string          // 属性名（插入顺序，即槽位顺序）
+	index map[string]int    // 属性名 → 槽位索引
+	next  map[string]*Shape // transition：加属性 name → 新 Shape
 }
 
 // shapeCounter 分配 Shape 唯一 id。
@@ -81,9 +81,48 @@ type icEntry struct {
 	valid bool
 }
 
-// ICache 是 VM 级属性访问内联缓存。
+// callICSize 是方法调用 IC 表大小（per-PC 槽）。
+const callICSize = 4096
+
+// callICEntry 是单条方法调用 IC 记录（O1-C4）：
+// 缓存 (pc, shape, key) → 槽位 + 方法值。命中时验证 slots[idx] == fn
+// （方法被替换则自动失效），直接 invoke，跳过属性解析链。
+// key 必须参与匹配：不同函数模板可能在同一 pc 调用不同方法名。
+type callICEntry struct {
+	pc    int32
+	shape *Shape
+	key   string
+	idx   int32
+	fn    Value
+	valid bool
+}
+
+// ICache 是 VM 级属性访问内联缓存（读/写共用 entries 表——
+// (shape, key) → 槽位索引对读写一致）。
 type ICache struct {
 	entries [icSize]icEntry
+	calls   [callICSize]callICEntry // 方法调用缓存（O1-C4）
+
+	// 命中统计（--ic-stats 报告，O1 验收）。
+	getHit, getMiss   uint64
+	setHit, setMiss   uint64
+	callHit, callMiss uint64
+}
+
+// ICStats 是内联缓存命中统计。
+type ICStats struct {
+	GetHit, GetMiss   uint64
+	SetHit, SetMiss   uint64
+	CallHit, CallMiss uint64
+}
+
+// Stats 返回命中统计快照（O1：--ic-stats 报告）。
+func (c *ICache) Stats() ICStats {
+	return ICStats{
+		GetHit: c.getHit, GetMiss: c.getMiss,
+		SetHit: c.setHit, SetMiss: c.setMiss,
+		CallHit: c.callHit, CallMiss: c.callMiss,
+	}
 }
 
 // GetCached 尝试命中 obj 的 (key) 属性（仅对隐藏类对象有效）。
@@ -91,16 +130,20 @@ type ICache struct {
 func (c *ICache) GetCached(obj Value, key string) (Value, bool) {
 	ov, ok := obj.(*objectValue)
 	if !ok {
+		c.getMiss++
 		return Undefined(), false
 	}
 	h := icHash(ov.shape.id, key)
 	e := &c.entries[h]
 	if !e.valid || e.shape != ov.shape || e.key != key {
+		c.getMiss++
 		return Undefined(), false
 	}
 	if ov.deleted != nil && ov.deleted[key] {
+		c.getMiss++
 		return Undefined(), false // 已删除，缓存失效
 	}
+	c.getHit++
 	return ov.slots[e.idx], true
 }
 
@@ -115,6 +158,97 @@ func (c *ICache) CachePut(obj Value, key string) {
 		h := icHash(ov.shape.id, key)
 		c.entries[h] = icEntry{shape: ov.shape, key: key, idx: idx, valid: true}
 	}
+}
+
+// SetCached 尝试命中写入缓存：直接写槽位（O1-C3）。
+// 返回 true 表示已写入（隐藏类 own 属性、无 deleted 标记、缓存命中）。
+// 注：transition 写（属性首次添加，如对象字面量构建）在结构上不可
+// 命中——查询基于写前 shape 而缓存记录写后 shape——不计入 miss。
+func (c *ICache) SetCached(obj Value, key string, val Value) bool {
+	ov, ok := obj.(*objectValue)
+	if !ok {
+		c.setMiss++
+		return false
+	}
+	h := icHash(ov.shape.id, key)
+	e := &c.entries[h]
+	if !e.valid || e.shape != ov.shape || e.key != key {
+		if _, has := ov.shape.lookup(key); !has {
+			return false // transition 写（结构上不可缓存）
+		}
+		c.setMiss++
+		return false
+	}
+	if ov.deleted != nil && ov.deleted[key] {
+		c.setMiss++
+		return false // 已删除，缓存失效（走完整路径恢复）
+	}
+	c.setHit++
+	ov.slots[e.idx] = val
+	return true
+}
+
+// SetPut 在属性写入成功后记录写入缓存（O1-C3）。
+// 仅记录"已存在槽位"的属性（transition 新属性不记录）。
+func (c *ICache) SetPut(obj Value, key string) {
+	ov, ok := obj.(*objectValue)
+	if !ok {
+		return
+	}
+	if ov.deleted != nil && ov.deleted[key] {
+		return
+	}
+	if idx, ok := ov.shape.lookup(key); ok {
+		h := icHash(ov.shape.id, key)
+		c.entries[h] = icEntry{shape: ov.shape, key: key, idx: idx, valid: true}
+	}
+}
+
+// CallCached 尝试命中方法调用缓存（O1-C4）：返回缓存的方法函数。
+// 验证槽位当前值仍等于缓存值（方法被替换/删除自动失效）。
+func (c *ICache) CallCached(pc int, obj Value, key string) (Value, bool) {
+	ov, ok := obj.(*objectValue)
+	if !ok {
+		c.callMiss++
+		return Undefined(), false
+	}
+	h := uint32(pc) & (callICSize - 1)
+	e := &c.calls[h]
+	if !e.valid || int(e.pc) != pc || e.shape != ov.shape || e.key != key {
+		c.callMiss++
+		return Undefined(), false
+	}
+	if int(e.idx) >= len(ov.slots) {
+		c.callMiss++
+		return Undefined(), false
+	}
+	cur := ov.slots[e.idx]
+	if cur != e.fn {
+		c.callMiss++
+		return Undefined(), false // 方法已被替换/删除
+	}
+	c.callHit++
+	return e.fn, true
+}
+
+// CallPut 记录方法调用缓存（仅隐藏类 own 属性、非 accessor 值）。
+func (c *ICache) CallPut(pc int, obj Value, key string, fn Value) {
+	ov, ok := obj.(*objectValue)
+	if !ok || fn == nil {
+		return
+	}
+	if _, isAcc := fn.(*AccessorValue); isAcc {
+		return // accessor 走拦截路径
+	}
+	if ov.deleted != nil && ov.deleted[key] {
+		return
+	}
+	idx, ok := ov.shape.lookup(key)
+	if !ok {
+		return // 原型链属性不缓存
+	}
+	h := uint32(pc) & (callICSize - 1)
+	c.calls[h] = callICEntry{pc: int32(pc), shape: ov.shape, key: key, idx: int32(idx), fn: fn, valid: true}
 }
 
 // icHash 计算 (shapeId, key) 的槽位。

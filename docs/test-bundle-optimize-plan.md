@@ -127,13 +127,22 @@ aluka 的核心运行时能力（Node 22 兼容 M1-M5、打包 B2 payload 自附
 
 | ID | 任务 | 说明 | 状态 |
 |----|------|------|------|
-| O1-C1 | `--profile` 开关 | `aluka --profile file` 运行后写 pprof 文件（cpu/mem）；`aluka run --profile` 同 | [ ] |
-| O1-C2 | 基准矩阵扩展 | bench/ 增加：对象属性访问、字符串拼接、数组操作、GC 压力、调用开销基准 | [ ] |
-| O1-C3 | IC 扩展（OpSetProp） | 属性写入路径加 IC（复用 Shape transition 校验） | [ ] |
-| O1-C4 | IC 扩展（方法调用） | 方法调用（OpCallMethod）加 IC；per-PC 多态槽（2-4 条） | [ ] |
-| O1-C5 | 覆盖统计开关 | coverEnabled 分支改为编译期/启动期开关（常态零分支） | [ ] |
+| O1-C1 | `--profile` 开关 | `aluka --profile file` 运行后写 pprof 文件（cpu/mem）；`aluka run --profile` 同 | [x] |
+| O1-C2 | 基准矩阵扩展 | bench/ 增加：对象属性访问、字符串拼接、数组操作、GC 压力、调用开销基准 | [x] |
+| O1-C3 | IC 扩展（OpSetProp） | 属性写入路径加 IC（复用 Shape transition 校验） | [x] |
+| O1-C4 | IC 扩展（方法调用） | 方法调用（OpCallMethod）加 IC；per-PC 多态槽（2-4 条） | [x] |
+| O1-C5 | 覆盖统计开关 | coverEnabled 分支改为编译期/启动期开关（常态零分支） | [x] |
 
 **O1 验收**：`--profile` 产出可被 `go tool pprof` 分析的 profile；基准矩阵入库；IC 命中率报告（`--ic-stats`）显示提升。
+
+**O1 记录（2026-08-06）**：O1-C1~C5 完成。实现要点与踩坑：
+- **O1-C1 `--profile`**：全局开关（`--profile <path>` / `--profile=<path>`），CPU profile 写 `<path>`、命令结束时追加内存堆快照到 `<path>.heap`；统一进程退出入口 `osExit` + `flushProfile`（REPL 的 `.exit`/Ctrl+D 也落盘）；正常结束路径在 main 末尾显式 flush（pprof 数据在 `StopCPUProfile` 时才写入）。
+- **O1-C2 基准矩阵**：bench/matrix_test.go 增 9 项（属性读/写、方法调用、字符串拼接、数组 push/map、调用开销、闭包、GC 压力）；`go test ./bench -bench . -benchmem` 入库。
+- **O1-C3 写入 IC**：`ICache.SetCached` 直接写隐藏类 own 槽位；transition 写（属性首次添加、查询基于写前 shape）结构上不可命中，不计 miss；`SetPut` 在写后记录缓存。
+- **O1-C4 方法调用 IC**：`CallCached`/`CallPut` per-PC 槽（4096），命中时跳过 `getProperty` 解析链；**关键坑**：缓存键必须是 `(pc, shape, key)`——早期版本只匹配 `(pc, shape)`，不同函数模板的同一 PC（如 `pc=4`）会串用方法名，导致 `EventEmitter.on` 被替换为 `res.end`（http/net 测试 timeout）；已加 `key` 字段修复。
+- **O1-C5 覆盖开关**：`coverEnabled` 提为 `run()` 局部布尔，主循环零字段访问。
+- **`--ic-stats`**：get/set/call 命中率报告（任意位置，过滤后不影响参数解析）。
+- 验证：`go test ./...` 全绿（含此前 timeout 的 TestServerDataChunkIsBuffer/TestNetMultipleMessages）；node22 15/15；build 19/19；`--profile` 产出可被 `go tool pprof` 解析（Decode/run/pop 等 hot path）。
 
 ### 5.4 O2：优化进阶（P2-P3）
 
@@ -183,3 +192,4 @@ T1/T2 与 O1/O2 无交叉依赖，可双线并行
 | v1.0 | 2026-08-06 | 初稿：三方面基线现状（实测探测）、缺口分级 P0-P3、里程碑规划 T1/T2/O1/O2、验收策略 |
 | v1.1 | 2026-08-06 | **T1 完成**：before/after、skip/todo、t.plan、子测试（微任务调度 + await/取消语义）、--test-name-pattern/--test-only/--test-reporter tap；差分框架 15/15（新增 15-test-runner.cjs + run.sh `//@test` 模式） |
 | v1.2 | 2026-08-06 | **T2 完成**：tree-shaking（导入使用分析 + 模块/导出/re-export 剪除）、minify（DCE/未用声明/常量折叠）、--outdir 多入口、动态 import 常量折叠 + 不可解析警告；build 验收 19/19 |
+| v1.3 | 2026-08-06 | **O1 完成**：--profile（pprof cpu/heap）、基准矩阵（9 项）、写入 IC（O1-C3）、方法调用 IC（O1-C4，含 `(pc, shape, key)` 缓存键修复）、覆盖率开关局部化（O1-C5）、--ic-stats；go test 全绿 + node22 15/15 + build 19/19 |

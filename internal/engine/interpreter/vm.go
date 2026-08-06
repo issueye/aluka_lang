@@ -44,6 +44,11 @@ func (v *VM) EnableCoverage() {
 	v.coverLines = make(map[string]map[int]bool)
 }
 
+// ICStats 返回内联缓存命中统计（O1：--ic-stats 报告）。
+func (v *VM) ICStats() engine.ICStats {
+	return v.ic.Stats()
+}
+
 // CoverageLines 返回覆盖率统计（源文件 → 已执行行集合）。
 func (v *VM) CoverageLines() map[string]map[int]bool {
 	v.coverMu.Lock()
@@ -307,6 +312,9 @@ func (v *VM) local(slot int) *engine.Value {
 
 // run executes the current top frame until it returns.
 func (v *VM) run() (engine.Value, error) {
+	// 覆盖统计开关局部化（O1-C5）：coverage 在模块加载前启用、运行期间
+	// 不变——提为局部布尔，主循环零字段访问（常态分支预测为不跳转）。
+	coverEnabled := v.coverEnabled
 	for {
 		frame := v.cur()
 		tmpl := frame.tmpl
@@ -326,7 +334,7 @@ func (v *VM) run() (engine.Value, error) {
 			frame.pc = next
 
 			// 覆盖率统计（仅启用时）：记录 (源文件, 行) 执行。
-			if v.coverEnabled && tmpl.SourceFile != "" {
+			if coverEnabled && tmpl.SourceFile != "" {
 				if line := lineForPC(tmpl, pc); line > 0 {
 					v.coverMu.Lock()
 					m := v.coverLines[tmpl.SourceFile]
@@ -731,7 +739,7 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpCallMethod:
 				numArgs := int(operand >> 16)
 				nameIdx := int(operand & 0xFFFF)
-				result, err := v.doCallMethod(numArgs, nameIdx)
+				result, err := v.doCallMethod(numArgs, nameIdx, pc)
 				if err != nil {
 					return v.handleThrow(err)
 				}
@@ -1129,7 +1137,7 @@ func (v *VM) doCall(numArgs int, thisVal engine.Value) (engine.Value, error) {
 
 // doCallMethod handles obj.method(args) where the method name is a const index.
 // Stack: ... receiver arg0 ... argN-1
-func (v *VM) doCallMethod(numArgs, nameIdx int) (engine.Value, error) {
+func (v *VM) doCallMethod(numArgs, nameIdx, pc int) (engine.Value, error) {
 	argStart := len(v.stack) - numArgs
 	receiver := v.stack[argStart-1]
 	args := make([]engine.Value, numArgs)
@@ -1138,10 +1146,16 @@ func (v *VM) doCallMethod(numArgs, nameIdx int) (engine.Value, error) {
 	v.stack = v.stack[:argStart-1]
 
 	name := v.cur().tmpl.Constants[nameIdx].String()
+	// 方法调用内联缓存快速路径（O1-C4）：per-PC 槽命中（隐藏类 own
+	// 方法、槽值未变）→ 直接 invoke，跳过属性解析链。
+	if fn, hit := v.ic.CallCached(pc, receiver, name); hit {
+		return v.invoke(fn, receiver, args, false)
+	}
 	fn, err := v.getProperty(receiver, name)
 	if err != nil {
 		return engine.Undefined(), err
 	}
+	v.ic.CallPut(pc, receiver, name, fn)
 	return v.invoke(fn, receiver, args, false)
 }
 
@@ -1872,7 +1886,14 @@ func (v *VM) setProperty(obj engine.Value, key string, val engine.Value) error {
 		return arr.Set(key, val)
 	}
 	if o, ok := obj.AsObject(); ok {
-		return o.Set(key, val)
+		// 写入内联缓存快速路径（O1-C3）：隐藏类 own 属性直接写槽，
+		// 跳过 shape.index map 查找与 deleted 检查。
+		if v.ic.SetCached(obj, key, val) {
+			return nil
+		}
+		err := o.Set(key, val)
+		v.ic.SetPut(obj, key)
+		return err
 	}
 	// Primitives: silently ignore (strict mode would throw, but we don't enforce).
 	return nil
