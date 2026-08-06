@@ -2,6 +2,7 @@ package globals
 
 import (
 	"fmt"
+	"math/big"
 	"os"
 	"runtime"
 	"time"
@@ -215,7 +216,7 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 
 	// hrtime
 	startTime := time.Now()
-	_ = proc.Set("hrtime", engine.NewFunction("hrtime", func(args []engine.Value) (engine.Value, error) {
+	hrtimeVal := engine.NewFunction("hrtime", func(args []engine.Value) (engine.Value, error) {
 		elapsed := time.Since(startTime)
 		secs := int64(elapsed.Seconds())
 		nanos := int64(elapsed.Nanoseconds() - secs*1e9)
@@ -223,7 +224,15 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 			engine.IntValue(int(secs)),
 			engine.IntValue(int(nanos)),
 		}), nil
-	}))
+	})
+	// hrtime.bigint()：返回自引用点起的纳秒数（BigInt，Node 语义）。
+	if hrtimeObj, ok := hrtimeVal.AsObject(); ok {
+		_ = hrtimeObj.Set("bigint", engine.NewFunction("bigint", func(args []engine.Value) (engine.Value, error) {
+			elapsed := time.Since(startTime)
+			return engine.BigInt(new(big.Int).SetInt64(elapsed.Nanoseconds())), nil
+		}))
+	}
+	_ = proc.Set("hrtime", hrtimeVal)
 
 	// uptime
 	_ = proc.Set("uptime", engine.NewFunction("uptime", func(args []engine.Value) (engine.Value, error) {
@@ -355,4 +364,3 @@ func archName() string {
 		return runtime.GOARCH
 	}
 }
-

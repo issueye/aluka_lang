@@ -1286,6 +1286,12 @@ func (interp *Interpreter) setupNumberCtor() {
 		if len(args) == 0 {
 			return engine.Number(0), nil
 		}
+		// BigInt → Number：十进制文本解析为 float64（ES ToNumber 语义：
+		// 超精度时取近似值）。
+		if bi, ok := engine.BigIntValue(args[0]); ok {
+			f, _ := strconv.ParseFloat(bi.String(), 64)
+			return engine.Number(f), nil
+		}
 		f, ok := args[0].Float()
 		if !ok {
 			return engine.Number(math.NaN()), nil
