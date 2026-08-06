@@ -34,8 +34,12 @@ var version = "0.1.0-dev"
 func main() {
 	// 产物模式：自身携带编译产物（aluka build --compile）时直接执行。
 	// 检测零开销（仅读尾部 footer），普通 aluka 不受影响。
-	if payload, ok := detectCompiledPayload(); ok {
+	// 校验失败（截断/损坏）时告警并回退正常模式（B2.4.1）。
+	switch payload, status := detectCompiledPayload(); status {
+	case detectOK:
 		os.Exit(runCompiled(payload))
+	case detectCorrupt:
+		fmt.Fprintln(os.Stderr, "aluka: warning: compiled payload failed integrity check (sha256 mismatch); falling back to normal mode")
 	}
 
 	args := os.Args[1:]

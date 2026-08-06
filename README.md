@@ -32,7 +32,7 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 | 4 | Aluka 特有 API（兼容 Bun） | ✅ P0+P1+P2 完成 | ~100% |
 | 5 | 包管理器 | ✅ P0 完成（含 workspace、.npmrc） | ~95% |
 | Pi | 真实世界兼容（Pi Agent Harness 靶标） | ✅ 阶段 A/B/C 完成 | ~90% |
-| 6-8 | 测试器 / 打包器 / 优化 | 🔨 Phase 6 启动（node:test） | ~5% |
+| 6-8 | 测试器 / 打包器 / 优化 | 🔨 Phase 6 启动（node:test）；**Phase 7 `--compile` 单文件可执行完成**（bundle 模式未开始） | ~15% |
 
 ### 核心能力一览
 
@@ -98,6 +98,10 @@ aluka repl
 aluka install          # 安装 package.json 依赖
 aluka add is-number    # 添加依赖
 aluka remove is-number # 移除依赖
+
+# 单文件可执行产物（Phase 7，--compile）
+aluka build --compile --outfile app ./src/index.ts
+./app                  # 无 aluka/Go 环境直接运行（32MB，启动 ~50ms）
 ```
 
 ### 示例
@@ -134,6 +138,7 @@ $ aluka -e "var q = Aluka.SQL\`CREATE TABLE t (x INTEGER)\`.run().then(function(
 | `aluka test [dir]` | 测试运行器（node:test：describe/it + 目录递归发现） |
 | `aluka install [pkg]` | 安装依赖（Phase 5，含 workspace/.npmrc） |
 | `aluka add <pkg>` / `remove <pkg>` / `update` | 包管理 |
+| `aluka build --compile [--outfile app] [--base <bin>] <entry>` | 单文件可执行产物（Phase 7）：嵌入预编译字节码，无 aluka/Go 环境可运行；`--base` 指定目标平台基座（跨平台） |
 | `aluka --vm` / `--ast` | 选择字节码 VM（默认）或 AST 解释器 |
 | `aluka --no-cache` | 禁用字节码磁盘缓存 |
 

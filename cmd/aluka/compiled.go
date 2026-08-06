@@ -18,48 +18,58 @@ import (
 	modmodule "github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
+// detectResult 是启动检测的结果状态。
+const (
+	// detectNone：非产物（无 footer）——零开销回退，无噪音。
+	detectNone = iota
+	// detectCorrupt：产物但 sha256 校验失败（截断/损坏）——告警后回退。
+	detectCorrupt
+	// detectOK：产物且校验通过——进入产物模式。
+	detectOK
+)
+
 // detectCompiledPayload 检测当前可执行文件是否携带编译产物 payload。
-// 无 payload（普通 aluka）时零开销返回 (nil, false)，不影响正常启动。
-// 校验和失败视为非产物（回退正常模式，M4 将升级为告警）。
-func detectCompiledPayload() ([]byte, bool) {
+// 无 payload（普通 aluka）时零开销返回 detectNone。校验和失败返回
+// detectCorrupt（调用方告警，B2.4.1）。
+func detectCompiledPayload() ([]byte, int) {
 	exe, err := os.Executable()
 	if err != nil {
-		return nil, false
+		return nil, detectNone
 	}
 	f, err := os.Open(exe)
 	if err != nil {
-		return nil, false
+		return nil, detectNone
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil || info.Size() < compile.FooterSize {
-		return nil, false
+		return nil, detectNone
 	}
 	// 只读尾部 FooterSize 字节。
 	if _, err := f.Seek(info.Size()-compile.FooterSize, io.SeekStart); err != nil {
-		return nil, false
+		return nil, detectNone
 	}
 	footer := make([]byte, compile.FooterSize)
 	if _, err := io.ReadFull(f, footer); err != nil {
-		return nil, false
+		return nil, detectNone
 	}
 	offset, length, sum, ok := compile.ParseFooter(footer)
 	if !ok || offset > uint64(info.Size()) {
-		return nil, false
+		return nil, detectNone
 	}
 	// 读取 payload 并校验 sha256。
 	if _, err := f.Seek(int64(offset), io.SeekStart); err != nil {
-		return nil, false
+		return nil, detectNone
 	}
 	payload := make([]byte, length)
 	if _, err := io.ReadFull(f, payload); err != nil {
-		return nil, false
+		return nil, detectNone
 	}
 	if !compile.VerifyPayload(payload, sum) {
-		return nil, false
+		return nil, detectCorrupt
 	}
-	return payload, true
+	return payload, detectOK
 }
 
 // runCompiled 执行编译产物（payload 已校验）。返回进程退出码。

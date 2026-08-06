@@ -50,6 +50,24 @@ jobs:
           fi
           /tmp/aluka --version
 
+      # 真实环境 conformance（仅 ubuntu，需要 bash + curl；build 无外部依赖）
+      - name: Build conformance (--compile)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          go build -o /tmp/aluka ./cmd/aluka
+          ALUKA=/tmp/aluka bash tests/conformance/build/run.sh
+
+      - name: Express-demo conformance
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          go build -o /tmp/aluka ./cmd/aluka
+          cd demo/express-demo
+          npm install --silent
+          cd ../..
+          ALUKA=/tmp/aluka bash tests/conformance/express/run.sh
+
   # Lint（仅 ubuntu）
   lint:
     name: Lint
@@ -112,6 +130,19 @@ jobs:
         run: |
           OUT=$(./bin/aluka-linux-amd64 -e "console.log(42)" 2>&1)
           test "$OUT" = "42"
+
+      # 跨平台 --compile 产物验证（B2.4.2）：同一 payload 可追加到任意平台
+      # 基座（字节码平台无关）。跨平台产物无法在本机运行，验证结构：产物
+      # 大于基座（payload 追加）且 footer magic 位于距文件尾 56 字节处。
+      - name: Cross-platform compile artifact
+        if: matrix.os == 'linux' && matrix.arch == 'amd64'
+        run: |
+          printf 'console.log("cross platform");\n' > /tmp/cross.ts
+          ./bin/aluka-linux-amd64 build --compile \
+            --base ./bin/aluka-windows-amd64.exe \
+            --outfile /tmp/app-win.exe /tmp/cross.ts
+          test "$(stat -c%s /tmp/app-win.exe)" -gt "$(stat -c%s ./bin/aluka-windows-amd64.exe)"
+          test "$(tail -c 56 /tmp/app-win.exe | head -c 8)" = "ALUKAFTR"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

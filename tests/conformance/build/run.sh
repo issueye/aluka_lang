@@ -243,6 +243,13 @@ else
 fi
 
 echo ""
+# 13) M4 体积与启动基线（INFO 输出，非断言）。
+size_bytes=$(stat -c%s "$DIR/hello.exe" 2>/dev/null || stat -f%z "$DIR/hello.exe" 2>/dev/null)
+start_ms=$(date +%s%N)
+"$DIR/hello.exe" > /dev/null 2>&1
+end_ms=$(date +%s%N)
+echo "INFO  artifact size: ${size_bytes} bytes; startup: $(( (end_ms - start_ms) / 1000000 )) ms"
+
 echo "ℹ build conformance: $PASS passed, $FAIL failed"
 if [ "$FAIL" -gt 0 ]; then
   exit 1

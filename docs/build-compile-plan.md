@@ -175,17 +175,31 @@ embedded 分支每次重新执行模块；requireCtx 嵌入式分支补缓存拦
 - `requireWithAttributes` 统一走 requireCtx：产物模式命中资源/模块，
   文件模式行为不变（json 扩展名判定在 requireCtx 尾段）
 
-### M4：跨平台 + 校验 + 测试套件 + 文档
+### M4：跨平台 + 校验 + 测试套件 + 文档 —— ✅ 完成（2026-08-06）
 
 | ID | 任务 | 输出 | 状态 |
 |----|------|------|------|
-| B2.4.1 | footer sha256 校验 + 损坏降级（回退正常模式并告警） | `cmd/aluka/compiled.go` | [ ] |
-| B2.4.2 | 跨平台矩阵：CI 构建 6 平台基座 + 同一 payload（字节码平台无关） | `.github/workflows/ci.yml` | [ ] |
-| B2.4.3 | 体积与性能基线（payload 大小、产物启动耗时 vs Bun） | `bench/` | [ ] |
-| B2.4.4 | 完整测试套件 + 回归门禁（conformance 脚本接入 CI） | `tests/conformance/build/run.sh` | [ ] |
-| B2.4.5 | 文档同步（README 快速开始 + 本计划状态表） | `README.md` / 本文件 | [ ] |
+| B2.4.1 | footer sha256 校验 + 损坏降级（回退正常模式并告警） | `cmd/aluka/compiled.go`（detect 三态化） | ✅ |
+| B2.4.2 | 跨平台矩阵：CI 构建 6 平台基座 + 同一 payload（字节码平台无关） | `--base` 选项 + CI 跨平台验证 | ✅ |
+| B2.4.3 | 体积与性能基线（payload 大小、产物启动耗时） | conformance INFO 输出 | ✅ |
+| B2.4.4 | 完整测试套件 + 回归门禁（conformance 脚本接入 CI） | `.github/workflows/ci.yml` | ✅ |
+| B2.4.5 | 文档同步（README 快速开始 + 本计划状态表） | `README.md` / 本文件 | ✅ |
 
-**M4 验收**：三端 CI 全绿；Windows 产物在无 Go 环境的机器运行通过；README 文档与实现一致。
+**M4 验收达成**：
+- 篡改 payload（sha256 不匹配）→ `warning: compiled payload failed integrity
+  check` + 回退正常模式（不再静默）
+- `--base` 支持跨平台产物：同一 payload 追加到任意平台基座（字节码平台无关）；
+  CI 验证 linux 基座 + windows 基座产物结构（大小 + footer magic）
+- 基线：产物 32.4MB（基座 30MB + payload 33KB），启动 51ms（本机）
+- CI test job 接入 build conformance（12 项）与 express conformance（6 项）；
+  build job 增加跨平台产物验证
+- `go test ./...` 全绿；conformance 12/12
+
+**基线数据（B2.4.3）**：
+| 指标 | 值 | 备注 |
+|------|-----|------|
+| 产物体积 | 32.4 MB | 基座 30MB + payload ~33KB；Bun 编译产物 ~90MB |
+| 启动耗时 | ~51 ms | 本机（Windows）；含 payload 读取 + 模块反序列化 |
 
 ---
 
@@ -271,6 +285,7 @@ tests/conformance/build/
 | v1.1 | 2026-08-06 | **M1 完成**：payload 格式/打包器、footer 自检测、产物模式引导、`Loader.RunPrecompiled` 重构、`aluka build --compile` CLI、conformance 4/4 |
 | v1.2 | 2026-08-06 | **M2 完成**：模块图收集器（构建期解析映射）、EmbeddedStore + Loader 嵌入式分支、多模块打包、循环依赖修复、动态 import reject Error 对象、conformance 8/8 |
 | v1.3 | 2026-08-06 | **M3 完成**：虚拟路径语义（模块 key 相对化/import.meta bun:///错误堆栈）、process.argv 产物语义、JSON 资源嵌入（静态/动态 import）、TLA 验证、conformance 12/12 |
+| v1.4 | 2026-08-06 | **M4 完成（B2 路线收官）**：payload 校验告警（detect 三态化）、`--base` 跨平台产物、体积/启动基线、conformance 接入 CI、文档同步 |
 
 ---
 

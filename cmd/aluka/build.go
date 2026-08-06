@@ -21,10 +21,11 @@ import (
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
-// cmdBuild 实现 `aluka build [--compile] [--outfile <path>] <entry>`。
+// cmdBuild 实现 `aluka build [--compile] [--outfile <path>] [--base <path>] <entry>`。
 func cmdBuild(args []string) {
 	compileOnly := false
 	outfile := ""
+	basePath := ""
 	var entry string
 
 	for i := 0; i < len(args); i++ {
@@ -40,15 +41,23 @@ func cmdBuild(args []string) {
 			outfile = args[i]
 		case strings.HasPrefix(arg, "--outfile="):
 			outfile = strings.TrimPrefix(arg, "--outfile=")
+		case arg == "--base":
+			if i+1 >= len(args) {
+				fatalErr("aluka build: --base requires a path")
+			}
+			i++
+			basePath = args[i]
+		case strings.HasPrefix(arg, "--base="):
+			basePath = strings.TrimPrefix(arg, "--base=")
 		case strings.HasPrefix(arg, "--outdir"):
-			fatalErr("aluka build: --outdir (bundle mode) is not implemented in M1; use --compile --outfile <path>")
+			fatalErr("aluka build: --outdir (bundle mode) is not implemented; use --compile --outfile <path>")
 		case arg == "--minify" || arg == "--sourcemap" || arg == "--target":
-			fatalErr("aluka build: " + arg + " not implemented (M1 scope: --compile only)")
+			fatalErr("aluka build: " + arg + " not implemented (scope: --compile only)")
 		case strings.HasPrefix(arg, "-"):
 			fatalErr("aluka build: unknown option " + arg)
 		default:
 			if entry != "" {
-				fatalErr("aluka build: multiple entry files not supported in M1")
+				fatalErr("aluka build: multiple entry files not supported")
 			}
 			entry = arg
 		}
@@ -87,19 +96,23 @@ func cmdBuild(args []string) {
 		}
 	}
 
-	// 复制基座 + 追加 payload + footer。
-	base, err := os.Executable()
-	if err != nil {
-		fatalErr("aluka build: cannot locate base binary: " + err.Error())
+	// 基座：--base 指定（跨平台产物 = 目标平台基座 + 同一 payload，
+	// 字节码平台无关）；默认当前可执行文件。
+	if basePath == "" {
+		if exe, err := os.Executable(); err == nil {
+			basePath = exe
+		} else {
+			fatalErr("aluka build: cannot locate base binary: " + err.Error())
+		}
 	}
-	payloadOffset, err := writeCompiledBinary(base, outfile, payload)
+	payloadOffset, err := writeCompiledBinary(basePath, outfile, payload)
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
 	}
 
 	size, _ := os.Stat(outfile)
-	fmt.Printf("Compiled %s → %s (%d bytes, payload at %d, %d modules)\n",
-		entry, outfile, size.Size(), payloadOffset, len(graphResult.Modules))
+	fmt.Printf("Compiled %s → %s (%d bytes, payload at %d, %d modules, base %s)\n",
+		entry, outfile, size.Size(), payloadOffset, len(graphResult.Modules), basePath)
 }
 
 // writeCompiledBinary 复制基座到 outfile 并追加 payload + footer。
