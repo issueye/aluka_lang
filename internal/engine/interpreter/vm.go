@@ -96,6 +96,12 @@ func NewVM() (*VM, error) {
 // Interp returns the backing interpreter (for RegisterFunc / Global access).
 func (v *VM) Interp() *Interpreter { return v.interp }
 
+// EnqueueMicrotask 入队一个微任务（node:test 子测试调度等内置模块使用）。
+// 微任务在下一次 drainMicrotasks/AwaitPromise 时执行。
+func (v *VM) EnqueueMicrotask(fn func()) {
+	v.interp.enqueueMicrotask(fn)
+}
+
 // Global returns the global object (implements engine.Context).
 func (v *VM) Global() engine.Object { return v.interp.Global() }
 
@@ -402,8 +408,8 @@ func (v *VM) run() (engine.Value, error) {
 				_ = closure.obj.Set("prototype", proto)
 				v.push(closure)
 
-			// --- Binary arithmetic & bitwise ---
-		case bytecode.OpAdd:
+				// --- Binary arithmetic & bitwise ---
+			case bytecode.OpAdd:
 				r := v.pop()
 				l := v.pop()
 				// BigInt 与非 BigInt 的加法必须显式转换；保持运行时

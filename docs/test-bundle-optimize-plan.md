@@ -84,16 +84,23 @@ aluka 的核心运行时能力（Node 22 兼容 M1-M5、打包 B2 payload 自附
 
 | ID | 任务 | 说明 | 状态 |
 |----|------|------|------|
-| T1-A1 | before()/after() 套件级钩子 | 套件进入/退出时执行（Node 语义：before 在套件内首个用例前，after 在末个用例后） | [ ] |
-| T1-A2 | skip/todo 标记 | `it.skip`/`it.todo`/`describe.skip`/`it(name, {skip:true})`；skip 计入总数不失败，todo 输出标记 | [ ] |
-| T1-A3 | t.plan(n) 校验 | 记录断言计数，用例结束比对（Node 语义：断言数不符 → 失败） | [ ] |
-| T1-A4 | 子测试 t.test(name, fn) | TestContext.test 递归注册并执行，FullName 用 `父 > 子` 层级 | [ ] |
-| T1-A5 | `--test-name-pattern` | 正则过滤用例名（Node 语义：匹配则运行） | [ ] |
-| T1-A6 | `--test-only` | 只跑标记 `{only:true}` 的用例；无标记时跑全部 | [ ] |
-| T1-A7 | TAP 输出 / `--test-reporter` | 默认保持现有格式，`--test-reporter tap` 输出 TAP 13（Node 兼容） | [ ] |
+| T1-A1 | before()/after() 套件级钩子 | 套件进入/退出时执行（Node 语义：before 在套件内首个用例前，after 在末个用例后） | [x] |
+| T1-A2 | skip/todo 标记 | `it.skip`/`it.todo`/`describe.skip`/`it(name, {skip:true})`；skip 计入总数不失败，todo 输出标记 | [x] |
+| T1-A3 | t.plan(n) 校验 | 记录断言计数，用例结束比对（Node 语义：断言数不符 → 失败） | [x] |
+| T1-A4 | 子测试 t.test(name, fn) | TestContext.test 递归注册并执行，FullName 用 `父 > 子` 层级 | [x] |
+| T1-A5 | `--test-name-pattern` | 正则过滤用例名（Node 语义：匹配则运行） | [x] |
+| T1-A6 | `--test-only` | 只跑标记 `{only:true}` 的用例；无标记时跑全部 | [x] |
+| T1-A7 | TAP 输出 / `--test-reporter` | 默认保持现有格式，`--test-reporter tap` 输出 TAP 13（Node 兼容） | [x] |
 | T1-A8 | 并发执行（P2） | `--test-concurrency` 控制用例并行（Worker 隔离） | [ ] |
 
 **T1 验收**：node:test 差分新增 4 项（钩子顺序/skip 计数/plan 校验/子测试层级）全绿；`aluka test --test-name-pattern` 过滤行为与 node22 一致。
+
+**T1 记录（2026-08-06）**：T1-A1~A7 完成（T1-A8 并发执行留待 Worker 隔离成熟）。实现要点：
+- 执行器按注册顺序混合遍历（children），修复原 suites-first 顺序错误；before/after 套件级钩子（before 失败 → 套件全 fail）。
+- skip 不执行（# SKIP）；todo 执行（# TODO，失败不计）；`--test-only` 下非 only 完全隐藏（Node 语义，非 SKIP）；`--test-name-pattern` 不匹配同样隐藏。
+- t.plan 只计 t.assert 调用；t.skip() 抛内部错误标记跳过。
+- 子测试走微任务调度（VM.EnqueueMicrotask）：async 父 + `await t.test()` 完全对齐 Node；同步父未 await → 子测试 cancelledByParent + 父 `1 subtest failed`（Node 22.14+ 实测语义）；cancelled 独立统计。
+- 差分：15-test-runner.cjs（`//@test` 标记 → run.sh 用 `node --test`/`aluka test` + 输出归一化）；差分框架 15/15 全绿。
 
 ### 5.2 T2：打包器增强（P0-P1）
 
@@ -166,3 +173,4 @@ T1/T2 与 O1/O2 无交叉依赖，可双线并行
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v1.0 | 2026-08-06 | 初稿：三方面基线现状（实测探测）、缺口分级 P0-P3、里程碑规划 T1/T2/O1/O2、验收策略 |
+| v1.1 | 2026-08-06 | **T1 完成**：before/after、skip/todo、t.plan、子测试（微任务调度 + await/取消语义）、--test-name-pattern/--test-only/--test-reporter tap；差分框架 15/15（新增 15-test-runner.cjs + run.sh `//@test` 模式） |

@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/builtin"
@@ -162,26 +163,59 @@ func runModule(path string, vm, disableCache bool) error {
 // cmdTest 实现 `aluka test` 子命令：发现并运行测试文件（node:test）。
 // 无参数时按 Node 约定发现测试：cwd 下递归匹配 *.test.{js,ts,mjs,cjs}。
 func cmdTest(args []string) {
-	// 标志解析：--coverage / --test-update-snapshots（其余为测试文件/目录）。
+	// 标志解析：--coverage / --test-update-snapshots / --test-name-pattern /
+	// --test-only / --test-reporter（其余为测试文件/目录）。
 	coverage := false
 	updateSnaps := false
+	only := false
+	reporter := "spec" // spec | tap
+	var namePattern *regexp.Regexp
 	var paths []string
-	for _, a := range args {
-		switch a {
-		case "--coverage":
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--coverage":
 			coverage = true
-		case "--test-update-snapshots", "--update-snapshots":
+		case a == "--test-update-snapshots" || a == "--update-snapshots":
 			updateSnaps = true
+		case a == "--test-only":
+			only = true
+		case a == "--test-reporter":
+			if i+1 < len(args) {
+				i++
+				reporter = args[i]
+			}
+		case strings.HasPrefix(a, "--test-reporter="):
+			reporter = strings.TrimPrefix(a, "--test-reporter=")
+		case a == "--test-name-pattern":
+			if i+1 < len(args) {
+				i++
+				re, err := regexp.Compile(args[i])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "aluka: invalid --test-name-pattern %q: %v\n", args[i], err)
+					os.Exit(1)
+				}
+				namePattern = re
+			}
+		case strings.HasPrefix(a, "--test-name-pattern="):
+			re, err := regexp.Compile(strings.TrimPrefix(a, "--test-name-pattern="))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "aluka: invalid --test-name-pattern %q: %v\n", a, err)
+				os.Exit(1)
+			}
+			namePattern = re
 		default:
 			paths = append(paths, a)
 		}
 	}
+	builtin.TestNamePattern = namePattern
+	builtin.TestOnly = only
 	files := discoverTestFiles(paths)
 	if len(files) == 0 {
 		fmt.Fprintln(os.Stderr, "aluka: no test files found")
 		os.Exit(1)
 	}
-	passed, failed := 0, 0
+	passed, failed, skipped, todo, cancelled := 0, 0, 0, 0, 0
 	// 覆盖率统计（文件 → 已执行行集合）。
 	fileCoverage := map[string]map[int]bool{}
 	for _, f := range files {
@@ -204,17 +238,35 @@ func cmdTest(args []string) {
 			}
 		}
 		for _, r := range results {
-			if r.Passed {
+			switch {
+			case r.Cancelled:
+				cancelled++
+				printTestLine(reporter, "ok", r.FullName, "# cancelled", "")
+			case r.Skipped:
+				skipped++
+				printTestLine(reporter, "ok", r.FullName, "# SKIP", "")
+			case r.Todo:
+				todo++
+				if r.Passed {
+					printTestLine(reporter, "ok", r.FullName, "# TODO", "")
+				} else {
+					failed++
+					printTestLine(reporter, "not ok", r.FullName, "# TODO", r.Error)
+				}
+			case r.Passed:
 				passed++
-				fmt.Printf("ok    %s\n", r.FullName)
-			} else {
+				printTestLine(reporter, "ok", r.FullName, "", "")
+			default:
 				failed++
-				fmt.Printf("not ok %s\n", r.FullName)
-				fmt.Printf("       %s\n", r.Error)
+				printTestLine(reporter, "not ok", r.FullName, "", r.Error)
 			}
 		}
 	}
-	fmt.Printf("\nℹ tests %d\nℹ pass  %d\nℹ fail  %d\n", passed+failed, passed, failed)
+	if reporter == "tap" {
+		fmt.Printf("\n# tests %d\n# pass  %d\n# fail  %d\n# cancelled  %d\n# skipped  %d\n# todo  %d\n", passed+failed+skipped+todo+cancelled, passed, failed, cancelled, skipped, todo)
+	} else {
+		fmt.Printf("\nℹ tests %d\nℹ pass  %d\nℹ fail  %d\nℹ cancelled  %d\nℹ skipped  %d\nℹ todo  %d\n", passed+failed+skipped+todo+cancelled, passed, failed, cancelled, skipped, todo)
+	}
 	if coverage {
 		printCoverageReport(fileCoverage)
 	}
@@ -222,6 +274,37 @@ func cmdTest(args []string) {
 		os.Exit(1)
 	}
 }
+
+// printTestLine 按 reporter 输出单个用例结果行。
+// spec：`ok    name` / `not ok name`（缩进对齐）；tap：TAP 序号格式。
+func printTestLine(reporter, status, name, note, errMsg string) {
+	if reporter == "tap" {
+		// 序号由累计行数决定：TAP 中 ok/not ok 行全局编号（含 skip/todo）。
+		tapCount++
+		if note != "" {
+			note = " " + note
+		}
+		fmt.Printf("%s %d - %s%s\n", status, tapCount, name, note)
+		if errMsg != "" {
+			fmt.Printf("  ---\n  message: %s\n  ...\n", errMsg)
+		}
+		return
+	}
+	if note != "" {
+		note = " (" + strings.TrimPrefix(note, "# ") + ")"
+	}
+	if status == "ok" {
+		fmt.Printf("ok    %s%s\n", name, note)
+	} else {
+		fmt.Printf("not ok %s%s\n", name, note)
+		if errMsg != "" {
+			fmt.Printf("       %s\n", errMsg)
+		}
+	}
+}
+
+// tapCount TAP 输出序号（累计）。
+var tapCount int
 
 // printCoverageReport 输出 Node 风格覆盖率报告（line % / uncovered lines）。
 func printCoverageReport(fileCoverage map[string]map[int]bool) {

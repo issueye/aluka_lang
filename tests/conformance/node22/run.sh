@@ -29,6 +29,20 @@ fi
 PASS=0
 FAIL=0
 
+# norm_test_out 归一化测试模式输出（#@test 用例）：
+#  - 保留自定义观察行（HOOKS> 等，用例自身输出的 `KEY>value` 行）。
+#  - 统计行统一为 `tests=N/pass=N/fail=N/cancelled=N/skipped=N/todo=N`。
+#  - 丢弃 TAP 明细（duration_ms/type/location 等）与 spec 结果行
+#    （Node 的套件汇总名与 aluka 的扁平完整名格式不同，不做行级对比）。
+norm_test_out() {
+  echo "$1" \
+    | grep -E '^#?[[:space:]]*[A-Z]+>' \
+    | sed -E 's/^#?[[:space:]]*(HOOKS>)/\1/'
+  echo "$1" \
+    | grep -E '^# (tests|pass|fail|cancelled|skipped|todo) +|^ℹ (tests|pass|fail|cancelled|skipped|todo) +' \
+    | sed -E 's/^# (tests|pass|fail|cancelled|skipped|todo) +([0-9]+)/\1=\2/; s/^ℹ (tests|pass|fail|cancelled|skipped|todo) +([0-9]+)/\1=\2/'
+}
+
 run_case() { # run_case <用例文件>
   local case_file="$1"
   local name
@@ -37,8 +51,16 @@ run_case() { # run_case <用例文件>
   dir="$(dirname "$case_file")"
   local a_out n_out
   # 用例内 require 相对模块：cd 到用例目录执行。
-  a_out="$(cd "$dir" && "$ALUKA" "$name" 2>&1)"
-  n_out="$(cd "$dir" && "$NODE" "$name" 2>&1)"
+  if grep -q '^//@test' "$case_file"; then
+    # 测试模式用例：node --test 与 aluka test（输出归一化后对比）。
+    a_out="$(cd "$dir" && "$ALUKA" test "$name" 2>&1)"
+    n_out="$(cd "$dir" && "$NODE" --test "$name" 2>&1)"
+    a_out="$(norm_test_out "$a_out")"
+    n_out="$(norm_test_out "$n_out")"
+  else
+    a_out="$(cd "$dir" && "$ALUKA" "$name" 2>&1)"
+    n_out="$(cd "$dir" && "$NODE" "$name" 2>&1)"
+  fi
   if [ "$a_out" = "$n_out" ]; then
     PASS=$((PASS + 1))
     echo "PASS  $name"
