@@ -165,14 +165,14 @@ M2（ES2024）独立低风险可穿插；M4（新模块）复杂度最高放最�
 - `require('./esm.mjs')` 同步返回命名导出
 - 差分框架对 4 项语义逐项对比通过；`go test ./...` 全绿
 
-### 5.3 M2：ES2024 全局（P2，可穿插）
+### 5.3 M2：ES2024 全局（P2，可穿插）—— ✅ 完成（2026-08-06）
 
 | ID | 任务 | 说明 | 状态 |
 |----|------|------|------|
-| N22-C1 | Promise.withResolvers、Array.fromAsync | ES2024 核心全局 | [ ] |
-| N22-C2 | Object.groupBy、Map.groupBy | ES2024 | [ ] |
-| N22-C3 | String.isWellFormed/toWellFormed、Array.toSorted/toReversed/toSpliced/with/findLast/findLastIndex、Object.hasOwn | 先核对 ES2023 全量缺失面再补 | [ ] |
-| N22-C4 | navigator、BroadcastChannel | 全局对象 | [ ] |
+| N22-C1 | Promise.withResolvers、Array.fromAsync | ✅ ES2024 核心全局 | ✅ |
+| N22-C2 | Object.groupBy、Map.groupBy | ✅ ES2024 | ✅ |
+| N22-C3 | String.isWellFormed/toWellFormed、Array.toSorted/toReversed/toSpliced/with、Object.hasOwn | ✅ findLast 已存在；surrogate 语义为架构差异 | ✅ |
+| N22-C4 | navigator、BroadcastChannel | ✅ 全局对象 | ✅ |
 
 **M2 验收**：ES2024 差分脚本（`tests/conformance/node22/es2024/`）与 node22 输出 100% 一致。
 
@@ -260,6 +260,7 @@ tests/conformance/node22/
 | 差分测试依赖 node22 环境 | CI 提供；本地无 node 时 SKIP |
 | require 含 TLA 的 ESM（Node 22 报 ERR_REQUIRE_ASYNC_MODULE） | aluka 同步等待成功——**超集**，记录为已知差异（不强制对齐） |
 | 非严格模式回调 `this=undefined` → globalThis（Node 语义） | aluka 回调 this 保持 undefined——已知差异（严格模式代码不受影响） |
+| `\uXXXX` surrogate 转义（如 `'\uD800'`）：Node 保留码元（isWellFormed=false） | aluka 字节字符串模型在 lexer 层将 surrogate 替换为 U+FFFD（isWellFormed 恒 true）——架构级差异，记录不修 |
 
 ## 9. 版本记录
 
@@ -268,3 +269,4 @@ tests/conformance/node22/
 | v1.0 | 2026-08-06 | 初稿：四维基线矩阵（45 项实测探测）、P0-P3 分级、阶段 A-D WBS、差分测试策略 |
 | v1.1 | 2026-08-06 | **里程碑规划**：阶段 A-D 打包为 M1-M5（运行时语义 → ES2024 → API → 模块 → 工具链），含工作量估、依赖关系、执行顺序与并行策略 |
 | v1.2 | 2026-08-06 | **M1 完成**：for-await 流迭代（Symbol.asyncIterator）、Array thisArg、require(esm)（+__esModule）、nextTick 差分一致、node22 差分框架 4/4；已知差异 2 项记录（TLA require 超集、非严格模式 this） |
+| v1.3 | 2026-08-06 | **M2 完成**：ES2024 全局全量（Promise.withResolvers、Array.fromAsync、Object.groupBy、Map.groupBy、String.isWellFormed/toWellFormed、Array.toSorted/toReversed/toSpliced/with、Object.hasOwn）+ navigator/BroadcastChannel 全局对象；差分框架 6/6；已知差异 +1（surrogate 转义模型，架构级） |

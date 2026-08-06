@@ -506,6 +506,120 @@ func (interp *Interpreter) setupArrayProtoExt() {
 		}
 		return elems[idx], nil
 	}))
+
+	// ES2023 不可变方法（N22-C3）：返回副本，不改原数组。
+
+	// toReversed()：反转副本。
+	_ = p.Set("toReversed", interp.nativeMethod("toReversed", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		arr, ok := this.(*engine.ArrayValue)
+		if !ok {
+			return this, nil
+		}
+		elems := arr.Elems()
+		out := make([]engine.Value, len(elems))
+		for i, e := range elems {
+			out[len(elems)-1-i] = e
+		}
+		return interp.newArray(out), nil
+	}))
+
+	// toSorted(compareFn)：排序副本。
+	_ = p.Set("toSorted", interp.nativeMethod("toSorted", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		arr, ok := this.(*engine.ArrayValue)
+		if !ok {
+			return this, nil
+		}
+		elems := append([]engine.Value{}, arr.Elems()...)
+		cmp, err := arrayComparator(interp, args)
+		if err != nil {
+			return nil, err
+		}
+		var sortErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					if e, ok := r.(error); ok {
+						sortErr = e
+					} else {
+						sortErr = fmt.Errorf("%v", r)
+					}
+				}
+			}()
+			sort.SliceStable(elems, func(i, j int) bool {
+				return cmp(elems[i], elems[j]) < 0
+			})
+		}()
+		if sortErr != nil {
+			return nil, sortErr
+		}
+		return interp.newArray(elems), nil
+	}))
+
+	// toSpliced(start, deleteCount, ...items)：splice 副本。
+	_ = p.Set("toSpliced", interp.nativeMethod("toSpliced", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		arr, ok := this.(*engine.ArrayValue)
+		if !ok {
+			return this, nil
+		}
+		elems := append([]engine.Value{}, arr.Elems()...)
+		start := 0
+		if len(args) > 0 {
+			if n, ok := args[0].Int(); ok {
+				start = n
+			}
+		}
+		if start < 0 {
+			start += len(elems)
+			if start < 0 {
+				start = 0
+			}
+		}
+		if start > len(elems) {
+			start = len(elems)
+		}
+		deleteCount := len(elems) - start
+		if len(args) > 1 {
+			if n, ok := args[1].Int(); ok {
+				deleteCount = n
+				if deleteCount < 0 {
+					deleteCount = 0
+				}
+				if deleteCount > len(elems)-start {
+					deleteCount = len(elems) - start
+				}
+			}
+		}
+		var items []engine.Value
+		if len(args) > 2 {
+			items = args[2:]
+		}
+		out := make([]engine.Value, 0, len(elems)-deleteCount+len(items))
+		out = append(out, elems[:start]...)
+		out = append(out, items...)
+		out = append(out, elems[start+deleteCount:]...)
+		return interp.newArray(out), nil
+	}))
+
+	// with(index, value)：替换副本（负索引支持）。
+	_ = p.Set("with", interp.nativeMethod("with", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		arr, ok := this.(*engine.ArrayValue)
+		if !ok || len(args) < 2 {
+			return this, nil
+		}
+		elems := append([]engine.Value{}, arr.Elems()...)
+		idx, ok := args[0].Int()
+		if !ok {
+			return this, nil
+		}
+		if idx < 0 {
+			idx += len(elems)
+		}
+		if idx < 0 || idx >= len(elems) {
+			return engine.Undefined(), fmt.Errorf("%w: with index out of range", engine.ErrRangeError)
+		}
+		elems[idx] = args[1]
+		return interp.newArray(elems), nil
+	}))
 }
 
 // setupArrayCtorExt 注册 Array 构造器上的静态方法。
@@ -637,6 +751,103 @@ func (interp *Interpreter) setupArrayCtorExt(ctor engine.Object) {
 		engine.SetProto(out, interp.arrayProto)
 		return out, nil
 	}))
+
+	// Array.fromAsync(iterable) → Promise<Array>（ES2024，N22-C1）。
+	// 异步迭代器（Symbol.asyncIterator）优先，回退同步迭代器。
+	_ = ctor.Set("fromAsync", interp.makeFunc("fromAsync", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("%w: Array.fromAsync requires an iterable", engine.ErrTypeError)
+		}
+		result := NewPromiseValue(interp)
+		iterable := args[0]
+		items := []engine.Value{}
+		// 获取迭代器：async 优先，回退同步。
+		var iter engine.Value
+		if obj, ok := iterable.AsObject(); ok {
+			if m, err := obj.Get(engine.SymbolAsyncIterator.SymbolKey()); err == nil && !m.IsUndefined() {
+				if c, err := asCallable(m); err == nil {
+					if it, err := c.callWith(iterable, nil); err == nil {
+						iter = it
+					}
+				}
+			}
+			if iter == nil {
+				if m, err := obj.Get(engine.SymbolIterator.SymbolKey()); err == nil && !m.IsUndefined() {
+					if c, err := asCallable(m); err == nil {
+						if it, err := c.callWith(iterable, nil); err == nil {
+							iter = it
+						}
+					}
+				}
+			}
+		}
+		if iter == nil {
+			result.Reject(makeTypeError(interp, "value is not iterable"))
+			return result, nil
+		}
+		// 迭代：next() → Promise（或普通值）→ 收集 → 递归。
+		var collect func()
+		collect = func() {
+			iterObj, ok := iter.AsObject()
+			if !ok {
+				result.Reject(makeTypeError(interp, "iterator is not an object"))
+				return
+			}
+			nextMethod, err := iterObj.Get("next")
+			if err != nil || nextMethod.IsUndefined() {
+				result.Reject(makeTypeError(interp, "iterator has no next()"))
+				return
+			}
+			c, err := asCallable(nextMethod)
+			if err != nil {
+				result.Reject(makeTypeError(interp, "iterator next is not callable"))
+				return
+			}
+			r, err := c.callWith(iter, nil)
+			if err != nil {
+				result.Reject(extractThrowValue(err, interp))
+				return
+			}
+			// next() 返回 Promise（async 迭代器）或普通值（同步迭代器）。
+			p := promiseResolve(interp, r)
+			onFulfilled := interp.makeFunc("__fromAsyncNext", func(ca []engine.Value) (engine.Value, error) {
+				done := false
+				var value engine.Value = engine.Undefined()
+				if len(ca) > 0 {
+					if o, ok := ca[0].AsObject(); ok {
+						if d, err := o.Get("done"); err == nil {
+							if b, ok := d.Bool(); ok {
+								done = b
+							}
+						}
+						if v, err := o.Get("value"); err == nil {
+							value = v
+						}
+					}
+				}
+				if done {
+					arr := engine.NewArray(items)
+					engine.SetProto(arr, interp.arrayProto)
+					result.Resolve(arr)
+					return engine.Undefined(), nil
+				}
+				items = append(items, value)
+				collect()
+				return engine.Undefined(), nil
+			})
+			onRejected := interp.makeFunc("__fromAsyncErr", func(ca []engine.Value) (engine.Value, error) {
+				reason := engine.Undefined()
+				if len(ca) > 0 {
+					reason = ca[0]
+				}
+				result.Reject(reason)
+				return engine.Undefined(), nil
+			})
+			p.Then(onFulfilled, onRejected)
+		}
+		collect()
+		return result, nil
+	}))
 }
 
 // --- 辅助函数 ------------------------------------------------------------
@@ -759,4 +970,43 @@ func (interp *Interpreter) arrayEntryIterator(arr *engine.ArrayValue) engine.Val
 		return iterObj, nil
 	}))
 	return iterObj
+}
+
+// arrayComparator 构造数组排序比较器（sort/toSorted 共用）：
+// 提供比较函数时用其返回值；否则按字符串序比较。
+func arrayComparator(interp *Interpreter, args []engine.Value) (func(a, b engine.Value) int, error) {
+	if len(args) > 0 {
+		fn, err := asCallable(args[0])
+		if err != nil {
+			return nil, err
+		}
+		return func(a, b engine.Value) int {
+			v, err := fn.callWith(engine.Undefined(), []engine.Value{a, b})
+			if err != nil {
+				panic(err) // 由调用方 recover 捕获并转为 error
+			}
+			if n, ok := v.Int(); ok {
+				return n
+			}
+			if f, ok := v.Float(); ok {
+				if f < 0 {
+					return -1
+				}
+				if f > 0 {
+					return 1
+				}
+			}
+			return 0
+		}, nil
+	}
+	return func(a, b engine.Value) int {
+		sa, sb := a.String(), b.String()
+		if sa < sb {
+			return -1
+		}
+		if sa > sb {
+			return 1
+		}
+		return 0
+	}, nil
 }

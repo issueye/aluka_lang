@@ -324,6 +324,13 @@ func registerRuntimeGlobals(ctx engine.Context) error {
 	if err := globals.NewMessageChannel(ctx, globals.MessageConfig{}); err != nil {
 		return fmt.Errorf("register MessageChannel: %w", err)
 	}
+	// N22-C4：navigator + BroadcastChannel。
+	if err := globals.NewNavigator(ctx, globals.NavigatorConfig{}); err != nil {
+		return fmt.Errorf("register navigator: %w", err)
+	}
+	if err := globals.NewBroadcastChannel(ctx, globals.MessageConfig{}); err != nil {
+		return fmt.Errorf("register BroadcastChannel: %w", err)
+	}
 	if err := globals.NewWebSocket(ctx, globals.WebSocketConfig{}); err != nil {
 		return fmt.Errorf("register WebSocket: %w", err)
 	}
@@ -417,6 +424,13 @@ func execute(code string, filename string, vm bool) error {
 	}
 	if err := globals.NewMessageChannel(ctx, globals.MessageConfig{}); err != nil {
 		return fmt.Errorf("register MessageChannel: %w", err)
+	}
+	// N22-C4：navigator + BroadcastChannel。
+	if err := globals.NewNavigator(ctx, globals.NavigatorConfig{}); err != nil {
+		return fmt.Errorf("register navigator: %w", err)
+	}
+	if err := globals.NewBroadcastChannel(ctx, globals.MessageConfig{}); err != nil {
+		return fmt.Errorf("register BroadcastChannel: %w", err)
 	}
 	if err := globals.NewWebSocket(ctx, globals.WebSocketConfig{}); err != nil {
 		return fmt.Errorf("register WebSocket: %w", err)

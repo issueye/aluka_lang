@@ -558,6 +558,43 @@ func (interp *Interpreter) setupMap() {
 	_ = interp.mapProto.Set("constructor", mapCtor)
 	_ = interp.globalObj.Set("Map", mapCtor)
 	interp.constructors["Map"] = mapCtor
+
+	// Map.groupBy(items, callbackfn) → Map（ES2024，N22-C2）。
+	_ = mapCtor.Set("groupBy", interp.makeFunc("groupBy", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("%w: Map.groupBy requires an iterable and callback", engine.ErrTypeError)
+		}
+		fn, err := asCallable(args[1])
+		if err != nil {
+			return nil, err
+		}
+		m := NewMapValue(interp)
+		err = forEachIterable(interp, args[0], func(item engine.Value) error {
+			k, err := fn.callWith(engine.Undefined(), []engine.Value{item})
+			if err != nil {
+				return err
+			}
+			// Map 键语义（SameValueZero）：经 mapGet/mapSet 而非对象属性。
+			var arr *engine.ArrayValue
+			if v := m.mapGet(k); !v.IsUndefined() {
+				if a, ok := v.(*engine.ArrayValue); ok {
+					arr = a
+				}
+			}
+			if arr == nil {
+				arr = engine.NewArray(nil)
+				engine.SetProto(arr, interp.arrayProto)
+				m.mapSet(k, arr)
+			}
+			elems := arr.Elems()
+			_ = arr.Set(strconv.Itoa(len(elems)), item)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return m, nil
+	}))
 }
 
 func (interp *Interpreter) setupSet() {

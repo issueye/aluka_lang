@@ -117,7 +117,7 @@ func (ar *asyncRunner) processResult(result engine.Value, err error) {
 	// Normal return: resolve the promise with the return value.
 	// The frame was already cleaned up by doReturn inside run().
 	// If the return value is itself a Promise, resolve() will adopt it.
-	ar.promise.resolve(result)
+	ar.promise.Resolve(result)
 }
 
 // cleanupFrame removes the async function's frame from the VM stack. Called

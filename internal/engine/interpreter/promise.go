@@ -54,7 +54,7 @@ func (r *promiseReaction) run(state promiseState, result engine.Value) {
 		return
 	}
 	// Resolve derived with the handler's return value.
-	r.derived.resolve(retVal)
+	r.derived.Resolve(retVal)
 }
 
 // PromiseValue is a JavaScript Promise object. It implements engine.Value and
@@ -110,7 +110,7 @@ func (p *PromiseValue) Reject(reason engine.Value) {
 
 // resolve resolves the promise with the given value. If the value is a Promise,
 // the promise adopts the value's state. Otherwise, the promise is fulfilled.
-func (p *PromiseValue) resolve(value engine.Value) {
+func (p *PromiseValue) Resolve(value engine.Value) {
 	if p.state != promisePending {
 		return
 	}
@@ -303,7 +303,7 @@ func (interp *Interpreter) setupPromise() {
 			if len(args) > 0 {
 				val = args[0]
 			}
-			p.resolve(val)
+			p.Resolve(val)
 			return engine.Undefined(), nil
 		})
 		rejectFn := interp.nativeMethod("reject", func(this engine.Value, args []engine.Value) (engine.Value, error) {
@@ -338,7 +338,7 @@ func (interp *Interpreter) setupPromise() {
 			return pv, nil
 		}
 		p := NewPromiseValue(interp)
-		p.resolve(val)
+		p.Resolve(val)
 		return p, nil
 	}))
 
@@ -351,6 +351,33 @@ func (interp *Interpreter) setupPromise() {
 		p := NewPromiseValue(interp)
 		p.Reject(reason)
 		return p, nil
+	}))
+
+	// Promise.withResolvers() → { promise, resolve, reject }（ES2024，N22-C1）。
+	_ = promiseCtor.Set("withResolvers", interp.makeFunc("withResolvers", func(args []engine.Value) (engine.Value, error) {
+		p := NewPromiseValue(interp)
+		resolveFn := interp.makeFunc("resolve", func(a []engine.Value) (engine.Value, error) {
+			v := engine.Undefined()
+			if len(a) > 0 {
+				v = a[0]
+			}
+			p.Resolve(v)
+			return engine.Undefined(), nil
+		})
+		rejectFn := interp.makeFunc("reject", func(a []engine.Value) (engine.Value, error) {
+			v := engine.Undefined()
+			if len(a) > 0 {
+				v = a[0]
+			}
+			p.Reject(v)
+			return engine.Undefined(), nil
+		})
+		o := engine.NewObject()
+		engine.SetProto(o, interp.objectProto)
+		_ = o.Set("promise", p)
+		_ = o.Set("resolve", resolveFn)
+		_ = o.Set("reject", rejectFn)
+		return o, nil
 	}))
 
 	// Promise.all(iterable)
@@ -521,7 +548,7 @@ func promiseResolve(interp *Interpreter, value engine.Value) *PromiseValue {
 		return pv
 	}
 	p := NewPromiseValue(interp)
-	p.resolve(value)
+	p.Resolve(value)
 	return p
 }
 

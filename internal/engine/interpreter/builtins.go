@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 )
@@ -263,6 +264,17 @@ func (interp *Interpreter) setupObjectCtor() {
 		}
 		return interp.newArray(toValues(o.Keys())), nil
 	}))
+	// Object.hasOwn(obj, key) → bool（ES2022，N22-C3 核对补全）。
+	_ = obj.Set("hasOwn", interp.makeFunc("hasOwn", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Boolean(false), nil
+		}
+		o, ok := args[0].AsObject()
+		if !ok {
+			return engine.Boolean(false), nil
+		}
+		return engine.Boolean(hasOwn(o, propertyKeyOf(args[1]))), nil
+	}))
 	_ = obj.Set("values", interp.makeFunc("values", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return interp.newArray(nil), nil
@@ -293,6 +305,43 @@ func (interp *Interpreter) setupObjectCtor() {
 			entries = append(entries, entry)
 		}
 		return interp.newArray(entries), nil
+	}))
+	// Object.groupBy(items, callbackfn) → null-prototype 对象（ES2024，N22-C2）。
+	// 分组键经 ToPropertyKey（propertyKeyOf）。
+	_ = obj.Set("groupBy", interp.makeFunc("groupBy", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("%w: Object.groupBy requires an iterable and callback", engine.ErrTypeError)
+		}
+		fn, err := asCallable(args[1])
+		if err != nil {
+			return nil, err
+		}
+		groups := engine.NewObject() // proto nil = null-prototype（规范语义）
+		err = forEachIterable(interp, args[0], func(item engine.Value) error {
+			k, err := fn.callWith(engine.Undefined(), []engine.Value{item})
+			if err != nil {
+				return err
+			}
+			key := propertyKeyOf(k)
+			var arr *engine.ArrayValue
+			if v, err := groups.Get(key); err == nil && !v.IsUndefined() {
+				if a, ok := v.(*engine.ArrayValue); ok {
+					arr = a
+				}
+			}
+			if arr == nil {
+				arr = engine.NewArray(nil)
+				engine.SetProto(arr, interp.arrayProto)
+				_ = groups.Set(key, arr)
+			}
+			elems := arr.Elems()
+			_ = arr.Set(strconv.Itoa(len(elems)), item)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return groups, nil
 	}))
 	_ = obj.Set("assign", interp.makeFunc("assign", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
@@ -968,6 +1017,15 @@ func (interp *Interpreter) setupStringProto() {
 			b.WriteString(a.String())
 		}
 		return engine.Str(b.String()), nil
+	}))
+	// isWellFormed()：无孤立 surrogate（ES2024，N22-C3）。
+	// 孤立 surrogate 在 Go string 中为无效 UTF-8 或 surrogate 码点。
+	_ = p.Set("isWellFormed", interp.nativeMethod("isWellFormed", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		return engine.Boolean(stringIsWellFormed(this.String())), nil
+	}))
+	// toWellFormed()：孤立 surrogate 替换为 U+FFFD（ES2024，N22-C3）。
+	_ = p.Set("toWellFormed", interp.nativeMethod("toWellFormed", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		return engine.Str(stringToWellFormed(this.String())), nil
 	}))
 	_ = p.Set("padStart", interp.nativeMethod("padStart", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		s := this.String()
@@ -1738,4 +1796,41 @@ func toValues(keys []string) []engine.Value {
 		vals[i] = engine.Str(k)
 	}
 	return vals
+}
+
+// stringIsWellFormed 判断字符串是否含孤立 surrogate（ES2024 String.prototype.isWellFormed）。
+// 孤立 surrogate 在 Go string 中表现为：无效 UTF-8 序列（utf8.DecodeRuneInString
+// 返回 RuneError+size1）或 surrogate 码点（U+D800-U+DFFF）。
+func stringIsWellFormed(s string) bool {
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			return false
+		}
+		if r >= 0xD800 && r <= 0xDFFF {
+			return false
+		}
+		i += size
+	}
+	return true
+}
+
+// stringToWellFormed 把孤立 surrogate 替换为 U+FFFD（ES2024 toWellFormed）。
+func stringToWellFormed(s string) string {
+	if stringIsWellFormed(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b.WriteRune(0xFFFD)
+			i++
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String()
 }
