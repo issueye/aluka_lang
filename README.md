@@ -208,6 +208,9 @@ ALUKA=./aluka bash tests/conformance/install/run.sh
 
 # express-demo 真实环境验证（HTTP 全链路：中间件/路由/body 解析/500 并发，6/6）
 ALUKA=./aluka bash tests/conformance/express/run.sh
+
+# build --compile conformance（单入口产物可执行 + 普通模式回退，4/4）
+ALUKA=./aluka bash tests/conformance/build/run.sh
 ```
 
 ## 设计原则

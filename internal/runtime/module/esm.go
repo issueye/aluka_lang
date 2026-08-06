@@ -41,93 +41,142 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	// Check if the source actually has import/export; if not, treat as CJS.
 	// 例外：.mjs 强制 ESM（Node 语义）；含顶层 await（TLA）也按 ESM
 	// （无 import/export 的纯 TLA 模块，如 scripts/*.mjs）。
-	if !hasESMDecls(prog) && !ast.HasTopLevelAwait(prog) && filepath.Ext(absPath) != ".mjs" {
+	if !HasESMDecls(prog) && !ast.HasTopLevelAwait(prog) && filepath.Ext(absPath) != ".mjs" {
 		return l.loadCJS(absPath)
 	}
 
 	// Transform ESM AST to CJS-equivalent AST
-	transformed := transformESMToCJS(prog, absPath)
+	transformed := TransformESMToCJS(prog, absPath)
 
-	// Use the VM's EvalProgram to compile and run the transformed AST.
+	// 包装转换后的 AST 为模块函数（P0-1）：require/module/exports 等作为
+	// 词法参数注入，使 async/回调中的引用在异步恢复后依然可用。
+	prog2 := WrapESMAST(transformed, absPath)
+
+	// 编译转换后的 AST（优先字节码缓存），然后执行。
+	// 字节码缓存（1C.14）：缓存键基于源文件元数据（转换是确定性的）。
 	vm, ok := l.ctx.(*interpreter.VM)
 	if !ok {
 		return engine.Undefined(), fmt.Errorf("module: ESM requires the bytecode VM engine")
+	}
+	mod, compileErr := l.bcCache.compileOrLoad(absPath, func() (*bytecode.Module, error) {
+		return vm.CompileAST(prog2, absPath)
+	})
+	if compileErr != nil {
+		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, compileErr)
+	}
+	return l.RunPrecompiled(absPath, mod, true)
+}
+
+// RunPrecompiled 执行一个已编译的模块（文件模式与构建产物模式共用）。
+//
+// path 是模块标识路径（产物模式为构建时记录的路径，可为虚拟路径）；
+// isESM 决定词法参数集（ESM 多 __importMeta/__importReq）与 TLA 等待语义。
+//
+// 流程：构造 module/exports → 缓存预填（循环依赖）→ RunModule → 以词法
+// 参数 InvokeFn → TLA settle + 排空微任务 → 读取最终 exports 更新缓存。
+func (l *Loader) RunPrecompiled(path string, mod *bytecode.Module, isESM bool) (engine.Value, error) {
+	vm, ok := l.ctx.(*interpreter.VM)
+	if !ok {
+		return engine.Undefined(), fmt.Errorf("module: RunPrecompiled requires the bytecode VM engine")
 	}
 
 	// Create module/exports objects
 	exports := l.newExports()
 	moduleObj := engine.NewObject()
 	_ = moduleObj.Set("exports", exports)
+	_ = moduleObj.Set("id", engine.Str(path))
+	_ = moduleObj.Set("filename", engine.Str(path))
+	_ = moduleObj.Set("loaded", engine.Boolean(false))
+	_ = moduleObj.Set("path", engine.Str(filepath.Dir(path)))
 
-	// Pre-populate cache
+	// Pre-populate cache for circular dependencies.
 	l.mu.Lock()
-	l.cache[absPath] = exports
+	l.cache[path] = exports
 	l.mu.Unlock()
 
-	// 包装转换后的 AST 为模块函数（P0-1）：require/module/exports 等作为
-	// 词法参数注入，使 async/回调中的引用在异步恢复后依然可用。
-	prog2 := wrapESMAST(transformed, absPath)
-
-	// 编译转换后的 AST（优先字节码缓存），然后执行。
-	// 字节码缓存（1C.14）：缓存键基于源文件元数据（转换是确定性的）。
-	mod, compileErr := l.bcCache.compileOrLoad(absPath, func() (*bytecode.Module, error) {
-		return vm.CompileAST(prog2, absPath)
-	})
-	var evalErr error
-	var wrapper engine.Value
-	if compileErr != nil {
-		evalErr = compileErr
-	} else {
-		wrapper, evalErr = vm.RunModule(mod)
-	}
+	wrapper, evalErr := vm.RunModule(mod)
 	if evalErr != nil {
 		l.mu.Lock()
-		delete(l.cache, absPath)
+		delete(l.cache, path)
 		l.mu.Unlock()
-		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, evalErr)
+		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", path, evalErr)
 	}
 
-	// 以词法参数调用模块函数（this = exports）。
-	requireFn := l.makeRequireFunc(absPath)
-	importFn := l.makeImportFunc(absPath)
-	importMetaFn := l.makeImportMetaFunc(absPath)
-	importReqFn := l.makeImportReqFunc(absPath)
-	modResult, evalErr := vm.InvokeFn(wrapper, exports, []engine.Value{
-		requireFn,
-		moduleObj,
-		exports,
-		engine.Str(absPath),
-		engine.Str(filepath.Dir(absPath)),
-		importFn,
-		importMetaFn,
-		importReqFn,
-	})
-	// TLA：模块函数为 async，InvokeFn 返回 promise——同步等待 settle
+	// 以词法参数调用模块函数（this = exports）。ESM 额外注入
+	// __importMeta/__importReq；CJS 无 TLA（模块函数非 async）。
+	requireFn := l.makeRequireFunc(path)
+	importFn := l.makeImportFunc(path)
+	var args []engine.Value
+	if isESM {
+		args = []engine.Value{
+			requireFn,
+			moduleObj,
+			exports,
+			engine.Str(path),
+			engine.Str(filepath.Dir(path)),
+			importFn,
+			l.makeImportMetaFunc(path),
+			l.makeImportReqFunc(path),
+		}
+	} else {
+		args = []engine.Value{
+			requireFn,
+			moduleObj,
+			exports,
+			engine.Str(path),
+			engine.Str(filepath.Dir(path)),
+			importFn,
+		}
+	}
+	modResult, evalErr := vm.InvokeFn(wrapper, exports, args)
+	// TLA：ESM 模块函数为 async，InvokeFn 返回 promise——同步等待 settle
 	// （驱动微任务/任务队列，直至顶层 await 链完成）。
-	if pv, ok := modResult.(*interpreter.PromiseValue); ok {
-		_, evalErr = vm.AwaitPromise(pv)
+	if isESM {
+		if pv, ok := modResult.(*interpreter.PromiseValue); ok {
+			_, evalErr = vm.AwaitPromise(pv)
+		}
 	}
 	vm.DrainMicrotasks()
 	if evalErr != nil {
 		l.mu.Lock()
-		delete(l.cache, absPath)
+		delete(l.cache, path)
 		l.mu.Unlock()
-		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, evalErr)
+		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", path, evalErr)
 	}
 
+	// Get the final module.exports (may have been reassigned).
+	// 注意：module.exports 可能被 Object.defineProperty 重定义为 getter 访问器
+	// （如 ansi-styles）。Go 侧 moduleObj.Get 不触发 JS getter，故经 VM 调用
+	// getter 取真实值。
+	var finalExports engine.Value
+	finalExports = exports
+	if v, err := moduleObj.Get("exports"); err == nil && v != nil {
+		if acc, ok := v.(*engine.AccessorValue); ok {
+			if !acc.Getter.IsUndefined() {
+				if gv, gerr := vm.InvokeFn(acc.Getter, moduleObj, nil); gerr == nil {
+					finalExports = gv
+				}
+			}
+		} else if !v.IsUndefined() && !v.IsNull() {
+			finalExports = v
+		}
+	}
+
+	// Mark as loaded
+	_ = moduleObj.Set("loaded", engine.Boolean(true))
+
 	// Update cache with final exports
-	finalExports, _ := moduleObj.Get("exports")
 	l.mu.Lock()
-	l.cache[absPath] = finalExports
+	l.cache[path] = finalExports
 	l.mu.Unlock()
 
 	return finalExports, nil
 }
 
-// wrapESMAST 将转换后的 ESM AST 包装为模块函数表达式：
+// WrapESMAST 将转换后的 ESM AST 包装为模块函数表达式（构建产物模式复用）：
 //
 //	(function(require, module, exports, __filename, __dirname, __import, __importMeta, __importReq) { <body> })
-func wrapESMAST(prog *ast.Program, filename string) *ast.Program {
+func WrapESMAST(prog *ast.Program, filename string) *ast.Program {
 	params := []*ast.Identifier{
 		{Name: "require"},
 		{Name: "module"},
@@ -158,8 +207,8 @@ func wrapESMAST(prog *ast.Program, filename string) *ast.Program {
 	}
 }
 
-// hasESMDecls returns true if the program contains import/export declarations.
-func hasESMDecls(prog *ast.Program) bool {
+// HasESMDecls returns true if the program contains import/export declarations.
+func HasESMDecls(prog *ast.Program) bool {
 	for _, stmt := range prog.Body {
 		switch stmt.(type) {
 		case *ast.ImportDecl, *ast.ExportDecl, *ast.ExportDefaultDecl:
@@ -169,7 +218,8 @@ func hasESMDecls(prog *ast.Program) bool {
 	return false
 }
 
-// transformESMToCJS rewrites an ESM program's AST to use CJS equivalents:
+// TransformESMToCJS rewrites an ESM program's AST to use CJS equivalents
+// （构建产物模式复用，产物在执行前已转换，运行时零开销）：
 //
 //	import x from 'mod'           →  var __imp_N = require('mod'); var x = __imp_N.default !== undefined ? __imp_N.default : __imp_N
 //	import * as ns from 'mod'     →  var ns = require('mod')
@@ -182,7 +232,7 @@ func hasESMDecls(prog *ast.Program) bool {
 //	export {a, b as c}            →  (plus module.exports.a = a; module.exports.c = b at end)
 //	export default expr           →  (plus module.exports.default = expr at end)
 //	export * from 'mod'           →  Object.assign(module.exports, require('mod'))
-func transformESMToCJS(prog *ast.Program, filename string) *ast.Program {
+func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 	var newBody []ast.Statement
 	var exportAssignments []ast.Statement
 	lazyBindings := make(map[string]ast.Expression)

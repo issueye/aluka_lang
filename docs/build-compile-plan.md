@@ -95,19 +95,29 @@ B2 成立的前提已核实：**字节码序列化格式稳定**（`bytecode.Ser
 
 ## 4. 里程碑与任务分解（WBS）
 
-### M1：payload 格式 + 启动检测 + 单模块产物（核心链路验证）
+### M1：payload 格式 + 启动检测 + 单模块产物（核心链路验证）—— ✅ 完成（2026-08-06）
 
 | ID | 任务 | 输出 | 状态 |
 |----|------|------|------|
-| B2.1.1 | payload 格式定义（header/manifest/模块流布局 + PayloadVersion） | `internal/bundler/compile/payload.go` | [ ] |
-| B2.1.2 | payload 打包器（单模块：打包/解包/校验和） | 同上 | [ ] |
-| B2.1.3 | footer 自检测（`main()` 最早期读自身尾部 16 字节，零开销回退） | `cmd/aluka/main.go` 产物分支 | [ ] |
-| B2.1.4 | 产物模式引导（复用引擎引导 + 加载入口模块 + RunLoop） | `cmd/aluka/compiled.go` | [ ] |
-| B2.1.5 | `transformESMToCJS`/`wrapESMAST` 提为模块包公共函数（重构，含回归） | `internal/runtime/module/esm.go` | [ ] |
-| B2.1.6 | `aluka build --compile` CLI 最小实现（`--outfile`/入口参数） | `cmd/aluka/build.go` | [ ] |
-| B2.1.7 | M1 测试：单入口 hello.ts 产物可执行 | `tests/conformance/build/` | [ ] |
+| B2.1.1 | payload 格式定义（header/manifest/模块流布局 + PayloadVersion） | `internal/bundler/compile/payload.go` | ✅ |
+| B2.1.2 | payload 打包器（单模块：打包/解包/校验和） | 同上 | ✅ |
+| B2.1.3 | footer 自检测（`main()` 最早期读自身尾部 16 字节，零开销回退） | `cmd/aluka/main.go` 产物分支 | ✅ |
+| B2.1.4 | 产物模式引导（复用引擎引导 + 加载入口模块 + RunLoop） | `cmd/aluka/compiled.go` | ✅ |
+| B2.1.5 | `transformESMToCJS`/`wrapESMAST` 提为模块包公共函数（重构，含回归） | `internal/runtime/module/esm.go` | ✅ |
+| B2.1.6 | `aluka build --compile` CLI 最小实现（`--outfile`/入口参数） | `cmd/aluka/build.go` | ✅ |
+| B2.1.7 | M1 测试：单入口 hello.ts 产物可执行 | `tests/conformance/build/run.sh` | ✅ |
 
-**M1 验收**：`aluka build --compile --outfile app hello.ts` → `./app` 输出 hello；无 payload 的 `aluka run` 行为不变；`go test ./...` 全绿。
+**M1 验收达成**：
+- `aluka build --compile --outfile app hello.ts` → `./app` 输出 hello（CJS/ESM 双路径验证通过）
+- 无 payload 的 `aluka run`/`-e` 行为不变；尾部垃圾（非法 footer）回退普通模式
+- `go test ./...` 全绿；build conformance 4/4
+
+**M1 关键实现**：
+- `Loader.RunPrecompiled`（`esm.go`）：文件模式与产物模式共用的"执行预编译模块"路径
+  （module/exports 构造 + 缓存预填 + RunModule + 词法参数 InvokeFn + TLA + AccessorValue）
+- `CompileFile`（`compile.go`）：构建期编译管线与 loader 判定一致（无 import/export 按 CJS）
+- payload 布局：header(20B) + manifest(JSON) + 模块流 + footer(56B, 含 sha256)
+- 产物 = 基座 + payload + footer，单二进制、无 Go 依赖
 
 ### M2：模块图收集 + Loader 存储抽象 + 多文件依赖
 
@@ -228,6 +238,7 @@ tests/conformance/build/
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v1.0 | 2026-08-06 | 初稿：B2 路线选定、M1-M4 里程碑、WBS 分解、payload 格式设计 |
+| v1.1 | 2026-08-06 | **M1 完成**：payload 格式/打包器、footer 自检测、产物模式引导、`Loader.RunPrecompiled` 重构、`aluka build --compile` CLI、conformance 4/4 |
 
 ---
 

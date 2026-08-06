@@ -35,44 +35,25 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 		return engine.Undefined(), fmt.Errorf("module: cannot read %q: %w", absPath, err)
 	}
 	// 剥离 UTF-8 BOM。文件开头若有 BOM（常见于 Windows 编辑器），若保留并
-	// 被 wrapCJSSource 嵌入到包装函数体中间，lexer 会因 BOM 字符无法前进而
+	// 被 WrapCJSSource 嵌入到包装函数体中间，lexer 会因 BOM 字符无法前进而
 	// 死循环（CPU/内存暴涨）。Node 同样会在编译前剥离 BOM。
 	src = stripBOM(src)
-
-	// Create module and exports objects
-	exports := l.newExports()
-	moduleObj := engine.NewObject()
-	_ = moduleObj.Set("exports", exports)
-	_ = moduleObj.Set("id", engine.Str(absPath))
-	_ = moduleObj.Set("filename", engine.Str(absPath))
-	_ = moduleObj.Set("loaded", engine.Boolean(false))
-	_ = moduleObj.Set("path", engine.Str(filepath.Dir(absPath)))
-
-	// Pre-populate cache with the initial exports object to handle
-	// circular dependencies (Node returns the current module.exports).
-	l.mu.Lock()
-	l.cache[absPath] = exports
-	l.mu.Unlock()
 
 	vm, ok := l.ctx.(*interpreter.VM)
 	if !ok {
 		// 非 VM 引擎（AST 解释器）：退化为旧的全局 save/restore 方案。
+		exports := l.newExports()
+		moduleObj := engine.NewObject()
+		_ = moduleObj.Set("exports", exports)
 		return l.loadCJSViaGlobals(absPath, string(src), moduleObj, exports)
 	}
 
 	// 包装源码为模块函数（P0-1），保持行号与缓存键稳定（包装为固定前缀/后缀）。
-	wrapped := wrapCJSSource(string(src))
-	var evalErr error
-	var wrapper engine.Value
-	if mod, err := l.bcCache.compileOrLoad(absPath, func() (*bytecode.Module, error) {
+	wrapped := WrapCJSSource(string(src))
+	mod, err := l.bcCache.compileOrLoad(absPath, func() (*bytecode.Module, error) {
 		return vm.Compile(wrapped, absPath)
-	}); err != nil {
-		evalErr = err
-	} else {
-		wrapper, evalErr = vm.RunModule(mod)
-	}
-
-	if evalErr != nil {
+	})
+	if err != nil {
 		// Node 22 的 module-syntax detection：typeless .js 文件解析为 CJS
 		// 失败但含顶层 import/export 语法时，重新按 ESM 加载（Node 22.7+）。
 		if hasESMSyntax(string(src)) {
@@ -84,66 +65,16 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 		l.mu.Lock()
 		delete(l.cache, absPath)
 		l.mu.Unlock()
-		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, evalErr)
+		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, err)
 	}
 
-	// 以词法参数调用模块函数：require/module/exports/__filename/__dirname/__import。
-	// `this` 绑定为 module.exports（CJS 顶层 this 语义）。
-	requireFn := l.makeRequireFunc(absPath)
-	importFn := l.makeImportFunc(absPath)
-	_, evalErr = vm.InvokeFn(wrapper, exports, []engine.Value{
-		requireFn,
-		moduleObj,
-		exports,
-		engine.Str(absPath),
-		engine.Str(filepath.Dir(absPath)),
-		importFn,
-	})
-	// 模块函数执行完毕后在顶层排空微任务队列（Promise reactions/async 继续），
-	// 使 import().then(...) 等顶层异步回调在 loadCJS 返回前完成（P0-1）。
-	vm.DrainMicrotasks()
-	if evalErr != nil {
-		l.mu.Lock()
-		delete(l.cache, absPath)
-		l.mu.Unlock()
-		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, evalErr)
-	}
-
-	// Get the final module.exports (may have been reassigned).
-	// 注意：module.exports 可能被 Object.defineProperty 重定义为 getter 访问器
-	// （如 ansi-styles）。Go 侧 moduleObj.Get 不触发 JS getter，故在模块源码
-	// 末尾注入导出语句，让 getter 在原 module 上下文求值。
-	var finalExports engine.Value
-	finalExports = exports
-	// 尝试经 moduleObj.Get 读取；若结果是 AccessorValue（含 get/set），说明
-	// exports 被重定义为访问器（如 ansi-styles 的 Object.defineProperty(module,
-	// 'exports', {get})）——经 VM 调用 getter 取真实值。
-	if v, err := moduleObj.Get("exports"); err == nil && v != nil {
-		if acc, ok := v.(*engine.AccessorValue); ok {
-			if !acc.Getter.IsUndefined() {
-				if gv, gerr := vm.InvokeFn(acc.Getter, moduleObj, nil); gerr == nil {
-					finalExports = gv
-				}
-			}
-		} else if !v.IsUndefined() && !v.IsNull() {
-			finalExports = v
-		}
-	}
-
-	// Mark as loaded
-	_ = moduleObj.Set("loaded", engine.Boolean(true))
-
-	// Update cache with final exports
-	l.mu.Lock()
-	l.cache[absPath] = finalExports
-	l.mu.Unlock()
-
-	return finalExports, nil
+	return l.RunPrecompiled(absPath, mod, false)
 }
 
-// wrapCJSSource 将模块源码包装为带模块作用域参数的函数表达式。
+// WrapCJSSource 将模块源码包装为带模块作用域参数的函数表达式
+// （构建产物模式复用，产物在执行前已包装）。
 // 包装为常量前缀/后缀，保证字节码缓存的键（源文件 mtime/size）稳定。
-func wrapCJSSource(src string) string {
+func WrapCJSSource(src string) string {
 	const prefix = "(function(require, module, exports, __filename, __dirname, __import) {\n"
 	const suffix = "\n});\n"
 	return prefix + src + suffix

@@ -32,6 +32,12 @@ import (
 var version = "0.1.0-dev"
 
 func main() {
+	// 产物模式：自身携带编译产物（aluka build --compile）时直接执行。
+	// 检测零开销（仅读尾部 footer），普通 aluka 不受影响。
+	if payload, ok := detectCompiledPayload(); ok {
+		os.Exit(runCompiled(payload))
+	}
+
 	args := os.Args[1:]
 
 	// 无参数 → 显示帮助
@@ -63,6 +69,8 @@ func main() {
 		cmdPkg(first, args[1:])
 	case first == "test":
 		cmdTest(args[1:])
+	case first == "build":
+		cmdBuild(args[1:])
 	case strings.HasPrefix(first, "-"):
 		fatalErr("aluka: unknown option " + first)
 	default:
