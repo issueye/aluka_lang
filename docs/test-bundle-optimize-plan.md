@@ -106,14 +106,22 @@ aluka 的核心运行时能力（Node 22 兼容 M1-M5、打包 B2 payload 自附
 
 | ID | 任务 | 说明 | 状态 |
 |----|------|------|------|
-| T2-B1 | tree-shaking | 基于模块图的导出使用分析：未被引用的导出/分支模块剪除（ESM 静态分析，CJS 保守保留） | [ ] |
-| T2-B2 | minify 基础 | 标识符压缩（局部变量/参数短名）+ 空白/注释删除；保留全局名与字符串字面量 | [ ] |
-| T2-B3 | `--outdir` 多入口 | 多入口分别产出字节码 payload；共享模块去重 | [ ] |
-| T2-B4 | 动态 import 增强 | 非字面量动态 import 的静态分析（可解析表达式常量折叠）；运行时 fallback 报错 | [ ] |
+| T2-B1 | tree-shaking | 基于模块图的导出使用分析：未被引用的导出/分支模块剪除（ESM 静态分析，CJS 保守保留） | [x] |
+| T2-B2 | minify 基础 | 标识符压缩（局部变量/参数短名）+ 空白/注释删除；保留全局名与字符串字面量 | [x] |
+| T2-B3 | `--outdir` 多入口 | 多入口分别产出字节码 payload；共享模块去重 | [x] |
+| T2-B4 | 动态 import 增强 | 非字面量动态 import 的静态分析（可解析表达式常量折叠）；运行时 fallback 报错 | [x] |
 | T2-B5 | sourcemap（P2） | 字节码 → 源码行映射（复用 LineStarts）；`--sourcemap` 输出 | [ ] |
-| T2-B6 | 产物体积/行为验证 | tests/conformance/build/ 扩展：tree-shake 前后体积对比、minify 后行为一致 | [ ] |
+| T2-B6 | 产物体积/行为验证 | tests/conformance/build/ 扩展：tree-shake 前后体积对比、minify 后行为一致 | [x] |
 
 **T2 验收**：tree-shaking 后产物中未用模块消失（体积对比用例）；minify 产物运行行为与未压缩一致；多入口构建可运行。
+
+**T2 记录（2026-08-06）**：T2-B1~B4、B6 完成（T2-B5 sourcemap 留待 P2）。实现要点：
+- `internal/bundler/astutil`：标识符引用收集、表达式副作用判定、常量折叠（字面量二元/一元/逻辑/条件、无插值模板）。
+- `internal/bundler/shake`：导入使用分析传播——引用的导入标记目标导出 used 并保留；未用导入剪枝（目标无副作用时可整句删除，有副作用保留为 side-effect import）；re-export 名字传播（未用语句删除）；CJS 模块保守保留且其依赖导出全量 used（require 使用不可静态分析）；ESM 模块内 require()/动态 import 依赖兜底全保留。剪枝后模块经 `compile.CompileProgramType` 显式 ESM 重编译（防止失去 import/export 声明后被误判 CJS）。
+- `internal/bundler/minify`：常量条件 if/while 分支消除、return 后不可达语句删除、未用局部声明删除（初始化无副作用）、表达式常量折叠；函数名保留（Function.name/堆栈语义）。字节码局部变量按 slot 索引故无标识符压缩收益。
+- `--tree-shake`（默认开）/`--no-tree-shake`/`--minify`/`--outdir`；多入口分别产出独立产物（共享模块构建期编译一次）。
+- 动态 import 常量折叠（`import('./dyn' + '-lib.js')`）；不可解析 → 构建期警告（非致命），产物运行时报错。
+- 验证：tests/conformance/build/run.sh 扩至 19 项（12 旧 + 7 新）；shake/minify Go 单测（未用模块剪除/副作用保留/CJS 导出保留/re-export 剪枝/折叠/DCE/行为一致）。
 
 ### 5.3 O1：优化基座（P0-P1）
 
@@ -174,3 +182,4 @@ T1/T2 与 O1/O2 无交叉依赖，可双线并行
 |------|------|------|
 | v1.0 | 2026-08-06 | 初稿：三方面基线现状（实测探测）、缺口分级 P0-P3、里程碑规划 T1/T2/O1/O2、验收策略 |
 | v1.1 | 2026-08-06 | **T1 完成**：before/after、skip/todo、t.plan、子测试（微任务调度 + await/取消语义）、--test-name-pattern/--test-only/--test-reporter tap；差分框架 15/15（新增 15-test-runner.cjs + run.sh `//@test` 模式） |
+| v1.2 | 2026-08-06 | **T2 完成**：tree-shaking（导入使用分析 + 模块/导出/re-export 剪除）、minify（DCE/未用声明/常量折叠）、--outdir 多入口、动态 import 常量折叠 + 不可解析警告；build 验收 19/19 |

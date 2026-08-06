@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/aluka-lang/aluka/internal/bundler/astutil"
 	"github.com/aluka-lang/aluka/internal/bundler/compile"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
@@ -28,10 +29,15 @@ type Dep struct {
 
 // Result 是模块图构建的产物：编译后的模块列表 + 构建期解析映射 + JSON 资源。
 type Result struct {
-	Entry       string
-	Modules     []*compile.EntryData
-	Resolutions map[string]map[string]string // 父模块虚拟路径 → specifier → 目标模块虚拟路径
-	Assets      map[string][]byte            // JSON 资源：虚拟路径 → 原始字节（M3）
+	Entry   string
+	RootDir string // 入口文件所在目录（绝对路径）：虚拟路径的源码读取基准
+	Modules []*compile.EntryData
+	// Resolutions 父模块虚拟路径 → specifier → 目标模块虚拟路径。
+	Resolutions map[string]map[string]string
+	Assets      map[string][]byte // JSON 资源：虚拟路径 → 原始字节（M3）
+	// UnresolvedDynamic 无法静态解析的动态 import 所在模块（T2-B4：
+	// 非字面量且不能常量折叠 → 产物运行时会失败，构建期给出警告）。
+	UnresolvedDynamic []string
 }
 
 // Build 从入口构建模块图并编译所有模块。
@@ -45,6 +51,7 @@ func Build(vm *interpreter.VM, resolver *module.Resolver, entry string) (*Result
 	entryDir := filepath.Dir(entryAbs)
 	r := &Result{
 		Entry:       "",
+		RootDir:     entryDir,
 		Modules:     make([]*compile.EntryData, 0),
 		Resolutions: make(map[string]map[string]string),
 		Assets:      make(map[string][]byte),
@@ -104,7 +111,19 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 	if err != nil {
 		return fmt.Errorf("graph: parse error in %q: %w", fsPath, err)
 	}
-	deps := collectDeps(prog)
+	deps := collectDeps(prog, key, &r.UnresolvedDynamic)
+	// 反射遍历可能重复收集同一调用节点——去重。
+	if len(r.UnresolvedDynamic) > 0 {
+		seen := make(map[string]bool)
+		uniq := r.UnresolvedDynamic[:0]
+		for _, k := range r.UnresolvedDynamic {
+			if !seen[k] {
+				seen[k] = true
+				uniq = append(uniq, k)
+			}
+		}
+		r.UnresolvedDynamic = uniq
+	}
 
 	// 记录本模块的解析映射并递归。
 	table := make(map[string]string, len(deps))
@@ -148,7 +167,10 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 //	export * from 'mod' / export {a} from 'm' → ExportDecl.Source（import 语境）
 //	import('mod')（动态）                      → __import('mod')（import 语境）
 //	require('mod')                            → require('mod')（require 语境）
-func collectDeps(prog *ast.Program) []Dep {
+//
+// T2-B4：动态 import 的非字面量参数尝试常量折叠（字符串拼接/模板字符串
+// 等）；无法折叠的记入 unresolved（模块 key）。
+func collectDeps(prog *ast.Program, key string, unresolved *[]string) []Dep {
 	var deps []Dep
 	var walk func(v reflect.Value)
 	walk = func(v reflect.Value) {
@@ -160,13 +182,13 @@ func collectDeps(prog *ast.Program) []Dep {
 			if v.IsNil() {
 				return
 			}
-			collectNode(v.Elem().Interface(), &deps, walk)
+			collectNode(v.Elem().Interface(), &deps, key, unresolved, walk)
 			walk(v.Elem())
 		case reflect.Pointer:
 			if v.IsNil() {
 				return
 			}
-			collectNode(v.Interface(), &deps, walk)
+			collectNode(v.Interface(), &deps, key, unresolved, walk)
 			walk(v.Elem())
 		case reflect.Slice, reflect.Array:
 			for i := 0; i < v.Len(); i++ {
@@ -183,7 +205,7 @@ func collectDeps(prog *ast.Program) []Dep {
 }
 
 // collectNode 在节点类型层面收集依赖（在字段遍历前处理，避免重复收集）。
-func collectNode(n interface{}, deps *[]Dep, walk func(reflect.Value)) {
+func collectNode(n interface{}, deps *[]Dep, key string, unresolved *[]string, walk func(reflect.Value)) {
 	switch node := n.(type) {
 	case *ast.ImportDecl:
 		if node.Source != "" {
@@ -195,13 +217,26 @@ func collectNode(n interface{}, deps *[]Dep, walk func(reflect.Value)) {
 		}
 	case *ast.CallExpr:
 		if id, ok := node.Callee.(*ast.Identifier); ok && len(node.Arguments) > 0 {
-			if lit, ok := node.Arguments[0].(*ast.StringLit); ok {
-				switch id.Name {
-				case "require":
+			arg := node.Arguments[0]
+			switch id.Name {
+			case "require":
+				if lit, ok := arg.(*ast.StringLit); ok {
 					*deps = append(*deps, Dep{Spec: lit.Value, ImportCtx: false})
-				case "__import": // 动态 import() 经 parser lower 的形式
-					*deps = append(*deps, Dep{Spec: lit.Value, ImportCtx: true})
 				}
+			case "__import": // 动态 import() 经 parser lower 的形式
+				if lit, ok := arg.(*ast.StringLit); ok {
+					*deps = append(*deps, Dep{Spec: lit.Value, ImportCtx: true})
+					break
+				}
+				// T2-B4：非字面量 → 常量折叠（字符串拼接/无插值模板等）。
+				if v, ok := astutil.FoldConst(arg); ok {
+					if s, isStr := v.(string); isStr {
+						*deps = append(*deps, Dep{Spec: s, ImportCtx: true})
+						break
+					}
+				}
+				// 无法静态解析：构建期警告，产物运行时报错。
+				*unresolved = append(*unresolved, key)
 			}
 		}
 	}

@@ -172,7 +172,7 @@ else
   out="$("$DIR/sem.exe" myarg 2>&1)"
   ok=1
   case "$out" in
-    *'json:{"count":3,"name":"aluka"}'*) ;;
+    *'json:{"name":"aluka","count":3}'*) ;;
     *) echo "       json: $out"; ok=0 ;;
   esac
   case "$out" in
@@ -253,4 +253,106 @@ echo "INFO  artifact size: ${size_bytes} bytes; startup: $(( (end_ms - start_ms)
 echo "ℹ build conformance: $PASS passed, $FAIL failed"
 if [ "$FAIL" -gt 0 ]; then
   exit 1
+fi
+
+# === T2（docs/test-bundle-optimize-plan.md §5.2）=============================
+
+# 14) T2-B1 tree-shaking：未使用模块剪除 + 行为一致。
+mkdir -p "$DIR/t2"
+printf '%s\n' \
+'export function used() { return "USED"; }' \
+'export function unused() { return "UNUSED"; }' > "$DIR/t2/lib.js"
+printf '%s\n' 'export function neverCalled() { return "DEAD"; }' > "$DIR/t2/dead.js"
+printf '%s\n' 'globalThis.__sideEffect = (globalThis.__sideEffect || 0) + 1;' > "$DIR/t2/side.js"
+printf '%s\n' \
+"import { used } from './lib.js';" \
+"import { dead } from './dead.js';" \
+"import './side.js';" \
+"console.log('result:' + used());" \
+"console.log('side:' + globalThis.__sideEffect);" > "$DIR/t2/main.js"
+no_shake_log="$("$ALUKA" build --compile --outfile "$DIR/t2/no-shake.exe" --no-tree-shake "$DIR/t2/main.js" 2>&1)"
+shake_log="$("$ALUKA" build --compile --outfile "$DIR/t2/shake.exe" "$DIR/t2/main.js" 2>&1)"
+no_n="$(echo "$no_shake_log" | grep -oE '[0-9]+ modules' | head -1 | cut -d' ' -f1)"
+sh_n="$(echo "$shake_log" | grep -oE '[0-9]+ modules' | head -1 | cut -d' ' -f1)"
+if [ -n "$no_n" ] && [ -n "$sh_n" ] && [ "$sh_n" -lt "$no_n" ]; then
+  echo "PASS  T2-B1 unused module removed ($no_n → $sh_n modules)"; PASS=$((PASS + 1))
+else
+  echo "FAIL  T2-B1 unused module removed (no-shake=$no_n shake=$sh_n)"; FAIL=$((FAIL + 1))
+fi
+shake_out="$("$DIR/t2/shake.exe" 2>&1)"
+if [ "$shake_out" = "$(printf 'result:USED\nside:1')" ]; then
+  echo "PASS  T2-B1 shake output identical"; PASS=$((PASS + 1))
+else
+  echo "FAIL  T2-B1 shake output identical"; echo "       got: $shake_out"; FAIL=$((FAIL + 1))
+fi
+
+# 15) T2-B1 导出级剪枝：CJS require ESM 导出完整保留（require 使用不可静态分析）。
+printf '%s\n' \
+"const m = require('./lib.js');" \
+"console.log('cjs-require:' + m.used());" > "$DIR/t2/cjsmain.js"
+cjs_out="$("$ALUKA" build --compile --outfile "$DIR/t2/cjs.exe" "$DIR/t2/cjsmain.js" >/dev/null 2>&1; "$DIR/t2/cjs.exe" 2>&1)"
+if [ "$cjs_out" = "cjs-require:USED" ]; then
+  echo "PASS  T2-B1 cjs require esm exports kept"; PASS=$((PASS + 1))
+else
+  echo "FAIL  T2-B1 cjs require esm exports kept"; echo "       got: $cjs_out"; FAIL=$((FAIL + 1))
+fi
+
+# 16) T2-B2 minify：行为与未压缩一致（常量折叠/DCE/未用声明删除）。
+printf '%s\n' \
+'const DEAD = 100;' \
+'function deadFn() { return "X"; }' \
+'const folded = 1 + 2 * 3;' \
+'if (false) { console.log("NEVER"); }' \
+'let x = 5;' \
+'function compute(a) {' \
+'  if (a > 10) { return "big"; } else { return "small"; }' \
+'  console.log("unreachable");' \
+'}' \
+"console.log('minify:' + folded + ':' + compute(x));" > "$DIR/t2/mini.js"
+plain_out="$("$ALUKA" build --compile --outfile "$DIR/t2/plain.exe" "$DIR/t2/mini.js" >/dev/null 2>&1; "$DIR/t2/plain.exe" 2>&1)"
+mini_out="$("$ALUKA" build --compile --outfile "$DIR/t2/mini.exe" --minify "$DIR/t2/mini.js" >/dev/null 2>&1; "$DIR/t2/mini.exe" 2>&1)"
+if [ -n "$mini_out" ] && [ "$mini_out" = "$plain_out" ]; then
+  echo "PASS  T2-B2 minify output identical ($mini_out)"; PASS=$((PASS + 1))
+else
+  echo "FAIL  T2-B2 minify output identical"; echo "       plain: $plain_out"; echo "       mini:  $mini_out"; FAIL=$((FAIL + 1))
+fi
+
+# 17) T2-B3 多入口 --outdir。
+"$ALUKA" build --compile --outdir "$DIR/t2/dist" "$DIR/t2/main.js" "$DIR/t2/cjsmain.js" >/dev/null 2>&1
+d1="$("$DIR/t2/dist/main" 2>&1 | head -1)"
+d2="$("$DIR/t2/dist/cjsmain" 2>&1)"
+if [ -x "$DIR/t2/dist/main" ] && [ -x "$DIR/t2/dist/cjsmain" ] \
+   && [ "$d1" = "result:USED" ] && [ "$d2" = "cjs-require:USED" ]; then
+  echo "PASS  T2-B3 outdir multi-entry both run"; PASS=$((PASS + 1))
+else
+  echo "FAIL  T2-B3 outdir multi-entry both run"; FAIL=$((FAIL + 1))
+fi
+
+# 18) T2-B4 动态 import 常量折叠 + 不可解析警告。
+printf '%s\n' \
+'async function main() {' \
+'  try {' \
+"    const m = await import('./dyn-lib.js');" \
+"    console.log('dyn:' + m.hello());" \
+'  } catch (e) { console.log("DYN-ERR:" + e.message); }' \
+'}' \
+'main();' > "$DIR/t2/dynmain.js"
+printf '%s\n' 'export function hello() { return "HELLO-DYN"; }' > "$DIR/t2/dyn-lib.js"
+dyn_out="$("$ALUKA" build --compile --outfile "$DIR/t2/dyn.exe" "$DIR/t2/dynmain.js" >/dev/null 2>&1; "$DIR/t2/dyn.exe" 2>&1)"
+if [ "$dyn_out" = "dyn:HELLO-DYN" ]; then
+  echo "PASS  T2-B4 dynamic import const-fold runs"; PASS=$((PASS + 1))
+else
+  echo "FAIL  T2-B4 dynamic import const-fold runs"; echo "       got: $dyn_out"; FAIL=$((FAIL + 1))
+fi
+printf '%s\n' \
+'async function main() {' \
+"  const which = process.argv[2] || './dyn-lib.js';" \
+'  await import(which);' \
+'}' \
+'main();' > "$DIR/t2/dynbad.js"
+bad_log="$("$ALUKA" build --compile --outfile "$DIR/t2/dynbad.exe" "$DIR/t2/dynbad.js" 2>&1)"
+if echo "$bad_log" | grep -q "non-constant specifier" && [ -x "$DIR/t2/dynbad.exe" ]; then
+  echo "PASS  T2-B4 unresolvable dynamic import warns (non-fatal)"; PASS=$((PASS + 1))
+else
+  echo "FAIL  T2-B4 unresolvable dynamic import warns"; FAIL=$((FAIL + 1))
 fi

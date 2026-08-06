@@ -43,10 +43,22 @@ func CompileFile(vm *interpreter.VM, path, key string) (*EntryData, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile: parse error in %q: %w", absPath, err)
 	}
+	return CompileProgram(vm, prog, src, key)
+}
 
-	// 模块类型判定（与 loader.loadESMModule 一致）：.mjs 强制 ESM；含顶层
-	// await（TLA）按 ESM；无 import/export 声明的其他文件按 CJS。
-	if !module.HasESMDecls(prog) && !ast.HasTopLevelAwait(prog) && filepath.Ext(absPath) != ".mjs" {
+// CompileProgram 从已解析的 AST 编译（tree-shaking/minify 变换后的模块
+// 复用同一编译管线）。src 为原始源码（CJS 包装需要）；key 为模块标识。
+// 模块类型自动判定（与 CompileFile 一致）。
+func CompileProgram(vm *interpreter.VM, prog *ast.Program, src []byte, key string) (*EntryData, error) {
+	return CompileProgramType(vm, prog, src, key, module.HasESMDecls(prog) || ast.HasTopLevelAwait(prog) || filepath.Ext(key) == ".mjs")
+}
+
+// CompileProgramType 按显式模块类型编译。isESM=true 走 ESM 转换路径；
+// false 走 CJS 包装（仅 CompileFile 自动判定时使用——tree-shaking/minify
+// 变换后的模块可能失去 import/export 声明，必须显式传入原始模块类型，
+// 否则误判 CJS 会用原始源码包装而丢失变换）。
+func CompileProgramType(vm *interpreter.VM, prog *ast.Program, src []byte, key string, isESM bool) (*EntryData, error) {
+	if !isESM {
 		wrapped := module.WrapCJSSource(string(src))
 		mod, err := vm.Compile(wrapped, key)
 		if err != nil {
