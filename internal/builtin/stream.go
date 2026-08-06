@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // NewStream 构造 node:stream 模块的导出对象。
@@ -31,6 +32,27 @@ func NewStream(ctx engine.Context) (engine.Value, error) {
 	// Readable.from(iterable)：从数组/字符串创建可读流。
 	_ = rObj.Set("from", engine.NewFunction("from", func(args []engine.Value) (engine.Value, error) {
 		return newReadableFrom(args), nil
+	}))
+	// Readable.fromWeb(webStream)：把 Web ReadableStream 包装为 Node 可读流
+	// （Node ≥ 17）。经 getReader().read() Promise 链桥接数据到 push()。
+	// Pi 的 tools-manager 用 pipeline(Readable.fromWeb(response.body), fileStream)。
+	_ = rObj.Set("fromWeb", engine.NewFunction("fromWeb", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 || !args[0].IsObject() {
+			return engine.Undefined(), fmt.Errorf("%w: Readable.fromWeb requires a ReadableStream", engine.ErrTypeError)
+		}
+		web := args[0]
+		nodeStream := newReadableStream(nil)
+		vm, ok := ctx.(*interpreter.VM)
+		if !ok {
+			return nodeStream, nil
+		}
+		// reader = web.getReader()（this 绑定经 VM.InvokeFn）。
+		reader, err := invokeMethod(vm, web, "getReader")
+		if err != nil || reader == nil {
+			return nodeStream, nil
+		}
+		bridgeWebRead(vm, reader, nodeStream)
+		return nodeStream, nil
 	}))
 	_ = mObj.Set("Readable", readableCtor)
 
@@ -118,13 +140,23 @@ func newReadableStream(args []engine.Value) engine.Value {
 				state.ended = true
 				if state.flowing {
 					finishReadable(state)
+					// 结束 pipe 目标流（触发其 finish 事件），否则
+					// pipeline 等依赖目标流 finish 的链路会挂起。
+					endPipeDest(stream)
 				}
 				return engine.Boolean(false), nil
 			}
 			if !chunk.IsUndefined() {
 				state.buffer = append(state.buffer, chunk)
 				if state.flowing {
-					drainBuffer(state, "data")
+					// 已 pipe：写入目标流（drainToDest）；未 pipe：
+					// 发 'data' 事件。只发事件会让 pipe 后的数据丢失
+					// （pipe 只经 drainToDest 写目标，无 data 监听者）。
+					if dest := pipeDest(stream); dest != nil {
+						drainToDest(state, dest)
+					} else {
+						drainBuffer(state, "data")
+					}
 				}
 			}
 		}
@@ -170,6 +202,11 @@ func newReadableStream(args []engine.Value) engine.Value {
 		// 触发 flowing
 		state.flowing = true
 		drainToDest(state, dest)
+		// 源流已结束（push(null) 早于 pipe）：结束目标流，触发其 finish
+		// （pipeline 依赖目标流的 finish 事件判定完成）。
+		if state.ended {
+			endPipeDest(stream)
+		}
 		return dest, nil
 	}))
 
@@ -407,6 +444,25 @@ func makePipeline(ctx engine.Context) engine.Func {
 			return engine.Undefined(), fmt.Errorf("pipeline: requires at least 2 streams")
 		}
 
+		// 先监听最后一个流的 finish 事件，再串联 pipe——pipe 可能同步完成
+		// （数据已缓冲时在 pipe 内部触发 finish），后注册会丢失事件导致
+		// pipeline 永不完成。
+		if callback != nil {
+			lastStream := streams[len(streams)-1]
+			if o, ok := lastStream.AsObject(); ok {
+				if onFn, err := o.Get("on"); err == nil && onFn.IsFunction() {
+					f, _ := onFn.AsFunction()
+					cbWrapper := engine.NewFunction("pipelineCb", func(cbArgs []engine.Value) (engine.Value, error) {
+						if cb, ok := callback.AsFunction(); ok {
+							_, _ = cb.Call(nil)
+						}
+						return engine.Undefined(), nil
+					})
+					_, _ = f.Call([]engine.Value{engine.Str("finish"), cbWrapper})
+				}
+			}
+		}
+
 		// 串联 pipe：source.pipe(dest1).pipe(dest2)...
 		current := streams[0]
 		for i := 1; i < len(streams); i++ {
@@ -427,22 +483,6 @@ func makePipeline(ctx engine.Context) engine.Func {
 				}
 			}
 			current = streams[i]
-		}
-
-		// 监听最后一个流的 finish 事件。
-		if callback != nil {
-			if o, ok := current.AsObject(); ok {
-				if onFn, err := o.Get("on"); err == nil && onFn.IsFunction() {
-					f, _ := onFn.AsFunction()
-					cbWrapper := engine.NewFunction("pipelineCb", func(cbArgs []engine.Value) (engine.Value, error) {
-						if cb, ok := callback.AsFunction(); ok {
-							_, _ = cb.Call(nil)
-						}
-						return engine.Undefined(), nil
-					})
-					_, _ = f.Call([]engine.Value{engine.Str("finish"), cbWrapper})
-				}
-			}
 		}
 
 		return streams[len(streams)-1], nil
@@ -505,11 +545,111 @@ func drainToDest(state *streamState, dest engine.Value) {
 		state.buffer = state.buffer[1:]
 		if chunk.IsNull() {
 			finishReadable(state)
+			if o, ok := dest.AsObject(); ok {
+				if endFn, err := o.Get("end"); err == nil && endFn.IsFunction() {
+					if f, ok := endFn.AsFunction(); ok {
+						_, _ = f.Call(nil)
+					}
+				}
+			}
 			return
 		}
 		if o, ok := dest.AsObject(); ok {
 			if writeFn, err := o.Get("write"); err == nil && writeFn.IsFunction() {
 				f, _ := writeFn.AsFunction()
+				_, _ = f.Call([]engine.Value{chunk})
+			}
+		}
+	}
+}
+
+// pipeDest 返回流的 pipe 目标（未 pipe 时 nil）。
+func pipeDest(src engine.Object) engine.Value {
+	if d, err := src.Get("__pipeDest"); err == nil {
+		return d
+	}
+	return nil
+}
+
+// endPipeDest 结束 pipe 目标流（调用其 end()，触发 finish 事件）。
+// pipeline 等依赖目标流 finish 判定完成；source 结束（push(null)）时
+// 必须显式结束目标，否则链路挂起。
+func endPipeDest(src engine.Object) {
+	if d, err := src.Get("__pipeDest"); err == nil && d != nil {
+		if o, ok := d.AsObject(); ok {
+			if endFn, err := o.Get("end"); err == nil && endFn.IsFunction() {
+				if f, ok := endFn.AsFunction(); ok {
+					_, _ = f.Call(nil)
+				}
+			}
+		}
+	}
+}
+
+// invokeMethod 带 this 调用对象方法（VM.InvokeFn——engine.Function.Call
+// 无 this 绑定，JS 方法（nativeMethod/原型方法）需要 this）。
+func invokeMethod(vm *interpreter.VM, obj engine.Value, method string, args ...engine.Value) (engine.Value, error) {
+	o, ok := obj.AsObject()
+	if !ok {
+		return engine.Undefined(), fmt.Errorf("invokeMethod: not an object")
+	}
+	fn, err := o.Get(method)
+	if err != nil || !fn.IsFunction() {
+		return engine.Undefined(), fmt.Errorf("invokeMethod: no method %q", method)
+	}
+	f, _ := fn.AsFunction()
+	return vm.InvokeFn(f, obj, args)
+}
+
+// bridgeWebRead 循环读取 Web ReadableStream reader，把数据推入 Node 流。
+// reader.read() 返回 Promise——经 Then 链逐块桥接，done 时 push(null)。
+func bridgeWebRead(vm *interpreter.VM, reader, nodeStream engine.Value) {
+	p, err := invokeMethod(vm, reader, "read")
+	if err != nil || p == nil {
+		return
+	}
+	pv, ok := p.(*interpreter.PromiseValue)
+	if !ok {
+		return
+	}
+	onFulfilled := engine.NewFunction("__fromWebNext", func(ca []engine.Value) (engine.Value, error) {
+		// result = { done, value }
+		done := false
+		var value engine.Value = engine.Undefined()
+		if len(ca) > 0 {
+			if o, ok := ca[0].AsObject(); ok {
+				if d, err := o.Get("done"); err == nil {
+					if b, ok := d.Bool(); ok {
+						done = b
+					}
+				}
+				if v, err := o.Get("value"); err == nil {
+					value = v
+				}
+			}
+		}
+		if done {
+			pushToStream(nodeStream, engine.Null())
+			return engine.Undefined(), nil
+		}
+		if !value.IsUndefined() {
+			pushToStream(nodeStream, value)
+		}
+		bridgeWebRead(vm, reader, nodeStream) // 递归读取下一块
+		return engine.Undefined(), nil
+	})
+	onRejected := engine.NewFunction("__fromWebErr", func(ca []engine.Value) (engine.Value, error) {
+		pushToStream(nodeStream, engine.Null()) // 出错视为流结束
+		return engine.Undefined(), nil
+	})
+	pv.Then(onFulfilled, onRejected)
+}
+
+// pushToStream 调用流的 push 方法（闭包方法，不依赖 this）。
+func pushToStream(stream engine.Value, chunk engine.Value) {
+	if o, ok := stream.AsObject(); ok {
+		if p, err := o.Get("push"); err == nil && p.IsFunction() {
+			if f, ok := p.AsFunction(); ok {
 				_, _ = f.Call([]engine.Value{chunk})
 			}
 		}

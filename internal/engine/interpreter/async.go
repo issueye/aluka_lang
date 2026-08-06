@@ -31,6 +31,7 @@ type asyncRunner struct {
 	savedStack    []engine.Value
 	savedPC       int
 	savedTryStack []*vmTryHandler
+	savedBase     int // 挂起时的栈基址（恢复时重建栈段的基准）
 	hasState      bool
 
 	// closedUps 记录挂起时被关闭的 upvalues（闭包捕获的局部变量）。
@@ -110,7 +111,7 @@ func (ar *asyncRunner) processResult(result engine.Value, err error) {
 		// Real error (throw not caught inside the async body): clean up the
 		// frame (run() does NOT pop it on error) and reject the promise.
 		ar.cleanupFrame()
-		ar.promise.reject(extractThrowValue(err, ar.vm.interp))
+		ar.promise.Reject(extractThrowValue(err, ar.vm.interp))
 		return
 	}
 	// Normal return: resolve the promise with the return value.
@@ -159,10 +160,19 @@ func (ar *asyncRunner) setupFrame() {
 func (ar *asyncRunner) restoreFrame() {
 	frame := vmFrame{
 		tmpl:     ar.tmpl,
-		base:     len(ar.vm.stack),
+		base:     ar.savedBase,
 		upvalues: ar.upvalues,
 		pc:       ar.savedPC,
 		tryStack: ar.savedTryStack,
+	}
+	// 栈段重建：挂起截断到 savedBase 后，外层函数返回会进一步把栈截断
+	// （async 挂起帧的栈段不保留），恢复时栈可能已空——先对齐到挂起时的
+	// base 再追加局部，保证 closedUps 写回与函数体槽位正确。
+	if len(ar.vm.stack) > ar.savedBase {
+		ar.vm.stack = ar.vm.stack[:ar.savedBase]
+	}
+	for len(ar.vm.stack) < ar.savedBase {
+		ar.vm.stack = append(ar.vm.stack, engine.Undefined())
 	}
 	ar.vm.appendValues(ar.savedStack)
 	ar.savedStack = nil
@@ -170,9 +180,9 @@ func (ar *asyncRunner) restoreFrame() {
 	// 恢复被闭包捕获的局部变量：挂起期间闭包（如定时器回调）可能修改了
 	// upvalue 的 closed 值，写回函数体读写的栈槽保持共享语义。
 	for _, cu := range ar.closedUps {
-		relIdx := cu.absIdx - frame.base
-		if relIdx >= 0 && relIdx < len(ar.vm.stack)-frame.base {
-			ar.vm.stack[frame.base+relIdx] = cu.uv.closed
+		relIdx := cu.absIdx - ar.savedBase
+		if relIdx >= 0 && relIdx < len(ar.vm.stack)-ar.savedBase {
+			ar.vm.stack[ar.savedBase+relIdx] = cu.uv.closed
 		}
 	}
 	ar.closedUps = nil
@@ -187,6 +197,7 @@ func (ar *asyncRunner) suspendAtAwait(awaitedVal engine.Value) {
 	frame := ar.vm.cur()
 	ar.savedStack = make([]engine.Value, len(ar.vm.stack)-frame.base)
 	copy(ar.savedStack, ar.vm.stack[frame.base:])
+	ar.savedBase = frame.base
 	ar.savedPC = frame.pc
 	ar.savedTryStack = frame.tryStack
 	// Close upvalues and pop the frame (same as generator suspension).
@@ -220,7 +231,7 @@ func (ar *asyncRunner) suspendAtAwait(awaitedVal engine.Value) {
 		return engine.Undefined(), nil
 	})
 
-	awaitedPromise.then(onFulfilled, onRejected)
+	awaitedPromise.Then(onFulfilled, onRejected)
 }
 
 // doAwait is called by the VM's OpAwait handler. It pops the awaited value

@@ -508,3 +508,97 @@ func TestUtilIsDeepStrictEqual(t *testing.T) {
 		t.Errorf("isDeepStrictEqual('a','a') = %q, want true", got.String())
 	}
 }
+
+// TestAssertStrictModule：node:assert/strict 子路径（Pi conformance.ts 依赖）：
+// 解构 deepStrictEqual/ok/rejects/strictEqual 可用（Node 语义 ≡ assert.strict）。
+func TestAssertStrictModule(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var { deepStrictEqual, ok, rejects, strictEqual } = require('node:assert/strict');
+strictEqual(1 + 1, 2);
+deepStrictEqual({ a: 1 }, { a: 1 });
+ok(true);
+rejects(Promise.reject(new Error('boom')), /boom/).then(function() {
+  rejects(async function() { throw new Error('x'); }).then(function() {
+    globalThis.__r = 'all-ok';
+  });
+});
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "all-ok" {
+		t.Errorf("assert/strict = %q, want all-ok", got)
+	}
+}
+
+// TestAssertRejectsDoesNotReject：rejects/doesNotReject 语义（fulfill 时
+// rejects 失败、reject 时 doesNotReject 失败）。
+func TestAssertRejectsDoesNotReject(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var { rejects, doesNotReject } = require('node:assert/strict');
+var bad1 = rejects(Promise.resolve(1));
+var bad2 = doesNotReject(Promise.reject(new Error('nope')));
+Promise.all([bad1, bad2]).then(
+  function() { globalThis.__r = 'unexpected'; },
+  function() { globalThis.__r = 'both-rejected-as-expected'; }
+);
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "both-rejected-as-expected" {
+		t.Errorf("rejects negative cases = %q", got)
+	}
+}
+
+// TestStreamPromisesPipeline：node:stream/promises.pipeline 完成并传数据。
+func TestStreamPromisesPipeline(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var { pipeline } = require('node:stream/promises');
+var { Readable, Writable } = require('node:stream');
+async function main() {
+  var out = '';
+  var src = new Readable();
+  var dst = new Writable({ write: function(c, e, cb) { out += c.toString(); cb(); } });
+  src.push('hello');
+  src.push(null);
+  await pipeline(src, dst);
+  globalThis.__r = out;
+}
+main();
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "hello" {
+		t.Errorf("pipeline = %q, want hello", got)
+	}
+}
+
+// TestReadableFromWebPipeline：Readable.fromWeb + pipeline（Pi tools-manager 模式）。
+func TestReadableFromWebPipeline(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var { pipeline } = require('node:stream/promises');
+var { Readable, Writable } = require('node:stream');
+async function main() {
+  var web = new ReadableStream({
+    start: function(c) { c.enqueue('web1'); c.enqueue('web2'); c.close(); }
+  });
+  var out = '';
+  var dst = new Writable({ write: function(c, e, cb) { out += c.toString(); cb(); } });
+  await pipeline(Readable.fromWeb(web), dst);
+  globalThis.__r = out;
+}
+main();
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "web1web2" {
+		t.Errorf("fromWeb pipeline = %q, want web1web2", got)
+	}
+}

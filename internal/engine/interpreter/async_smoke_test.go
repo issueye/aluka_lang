@@ -359,3 +359,43 @@ foo().then(function(v) { globalThis.__r = v });
 		t.Errorf("await null/undefined = %q, want null|undefined", got)
 	}
 }
+
+// TestAsyncClosureMutationAcrossAwait：async 函数内 let 变量被异步回调
+// （微任务）修改后，await 恢复时必须读到修改后的值。
+// 回归：挂起帧的栈段在外层函数返回时被截断，恢复时 base 错位导致
+// closedUps 写回失败（变量恢复为挂起前快照）。
+func TestAsyncClosureMutationAcrossAwait(t *testing.T) {
+	got := vmEvalPromise(t, `
+async function main() {
+  let out = '';
+  const p = new Promise(function(resolve) {
+    Promise.resolve().then(function() { out += 'x'; resolve(); });
+  });
+  await p;
+  globalThis.__r = out;
+}
+main();
+`)
+	if got != "x" {
+		t.Errorf("closure mutation across await = %q, want x", got)
+	}
+}
+
+// TestAsyncClosureMutationMulti：异步回调多次修改 + await 恢复。
+func TestAsyncClosureMutationMulti(t *testing.T) {
+	got := vmEvalPromise(t, `
+async function main() {
+  let out = '';
+  const p = new Promise(function(resolve) {
+    Promise.resolve().then(function() { out += 'a'; });
+    Promise.resolve().then(function() { out += 'b'; resolve(); });
+  });
+  await p;
+  globalThis.__r = out;
+}
+main();
+`)
+	if got != "ab" {
+		t.Errorf("multi closure mutation = %q, want ab", got)
+	}
+}

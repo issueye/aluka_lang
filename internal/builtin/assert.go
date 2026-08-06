@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // NewAssert 构造 node:assert 模块的导出对象。
@@ -134,6 +135,11 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 		return engine.Undefined(), fmt.Errorf("%w: %s", engine.ErrAssertion, msg)
 	}))
 
+	// assert.rejects(promise|fn, [error], [message]) → Promise：断言目标 reject。
+	// assert.doesNotReject(...)：断言目标 resolve（Node ≥ 10 语义）。
+	_ = m.Set("rejects", engine.NewFunction("rejects", makeAssertPromise(ctx, true)))
+	_ = m.Set("doesNotReject", engine.NewFunction("doesNotReject", makeAssertPromise(ctx, false)))
+
 	// assert.strict 子对象（所有方法用严格模式）
 	strict := engine.NewObject()
 	if v, _ := m.Get("strictEqual"); v != nil {
@@ -151,9 +157,191 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	if v, _ := m.Get("throws"); v != nil {
 		_ = strict.Set("throws", v)
 	}
+	// 补全严格版方法（node:assert/strict 直接解构使用，Pi 用到
+	// deepStrictEqual/strictEqual/rejects）。
+	for _, name := range []string{"strictEqual", "notStrictEqual", "deepStrictEqual",
+		"notEqual", "doesNotThrow", "ifError", "fail", "rejects", "doesNotReject"} {
+		if v, _ := m.Get(name); v != nil {
+			_ = strict.Set(name, v)
+		}
+	}
 	_ = m.Set("strict", strict)
 
 	return m, nil
+}
+
+// NewAssertStrict 构造 node:assert/strict 模块导出——与 assert.strict 相同
+// （Node 语义：node:assert/strict ≡ assert.strict，比较均为严格模式）。
+func NewAssertStrict(ctx engine.Context) (engine.Value, error) {
+	m, err := NewAssert(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if mo, ok := m.AsObject(); ok {
+		if v, err := mo.Get("strict"); err == nil && v != nil {
+			return v, nil
+		}
+	}
+	return m, nil
+}
+
+// makeAssertPromise 构造 rejects/doesNotReject 的 Promise 断言
+// （Node ≥ 10 语义）。expectReject=true 时断言目标 reject（rejects），
+// false 时断言目标 resolve（doesNotReject）。
+//
+// 目标为函数时先调用（同步 throw 视为 reject）；随后经 then 链监听
+// fulfill/reject。期望错误 error（可选）按 Node 语义匹配：构造函数
+// （instanceof）/正则（test message）/对象（属性相等）/其他（严格相等）。
+func makeAssertPromise(ctx engine.Context, expectReject bool) engine.Func {
+	return func(args []engine.Value) (engine.Value, error) {
+		vm, ok := ctx.(*interpreter.VM)
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("assert.rejects: requires the VM engine")
+		}
+		p := interpreter.NewPromiseValue(vm.Interp())
+		if len(args) == 0 {
+			p.Reject(makeErrorValue(ctx, fmt.Errorf("assert.rejects: missing promise argument")))
+			return p, nil
+		}
+
+		var expected engine.Value = engine.Undefined()
+		if len(args) > 1 {
+			expected = args[1]
+		}
+
+		// 目标为函数：先调用（同步 throw 按 reject 处理）。
+		var target engine.Value
+		if f, ok := args[0].AsFunction(); ok {
+			v, err := f.Call(nil)
+			if err != nil {
+				settleAssertPromise(p, makeErrorValue(ctx, err), expected, expectReject, ctx)
+				return p, nil
+			}
+			target = v
+		} else {
+			target = args[0]
+		}
+
+		onFulfilled := engine.NewFunction("__assertFulfilled", func(ca []engine.Value) (engine.Value, error) {
+			if expectReject {
+				p.Reject(makeErrorValue(ctx, fmt.Errorf("%w: expected promise to reject, but it fulfilled", engine.ErrAssertion)))
+			} else {
+				p.Fulfill(engine.Undefined())
+			}
+			return engine.Undefined(), nil
+		})
+		onRejected := engine.NewFunction("__assertRejected", func(ca []engine.Value) (engine.Value, error) {
+			reason := engine.Undefined()
+			if len(ca) > 0 {
+				reason = ca[0]
+			}
+			settleAssertPromise(p, reason, expected, expectReject, ctx)
+			return engine.Undefined(), nil
+		})
+		// 真 Promise：经 Go 层 Then 挂接（engine.Function.Call 无 this
+		// 绑定，不能经 JS 的 target.then() 调用）。
+		if pv, ok := target.(*interpreter.PromiseValue); ok {
+			pv.Then(onFulfilled, onRejected)
+		} else if o, ok := target.AsObject(); ok {
+			if thenFn, err := o.Get("then"); err == nil && thenFn.IsFunction() {
+				if tf, ok := thenFn.AsFunction(); ok {
+					_, _ = tf.Call([]engine.Value{onFulfilled, onRejected})
+				}
+			}
+		}
+		return p, nil
+	}
+}
+
+// settleAssertPromise 按断言结果定值 promise。
+func settleAssertPromise(p *interpreter.PromiseValue, reason, expected engine.Value, expectReject bool, ctx engine.Context) {
+	if expectReject {
+		if assertErrorMatches(ctx, reason, expected) {
+			p.Fulfill(engine.Undefined())
+		} else {
+			p.Reject(makeErrorValue(ctx, fmt.Errorf("%w: expected promise to reject with a matching error, got %v", engine.ErrAssertion, reason)))
+		}
+	} else {
+		p.Reject(reason)
+	}
+}
+
+// assertErrorMatches 检查实际 reject 值是否匹配期望错误（Node assert 语义）：
+// 未提供期望 → 匹配；构造函数 → instanceof（原型链）；正则 → test(message)；
+// 对象 → 属性相等；其他 → 严格相等。
+func assertErrorMatches(ctx engine.Context, actual, expected engine.Value) bool {
+	if expected.IsUndefined() || expected.IsNull() {
+		return true
+	}
+	// 构造函数 → instanceof（沿原型链查找）。
+	if expected.IsFunction() {
+		if eo, ok := expected.AsObject(); ok {
+			if pv, err := eo.Get("prototype"); err == nil {
+				target, ok := pv.AsObject()
+				if !ok {
+					return false
+				}
+				for cur := engine.GetProto(actual); cur != nil; cur = engine.GetProto(cur) {
+					if cur == target {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+	if eo, ok := expected.AsObject(); ok {
+		// 正则 → test(actual 的 message 或字符串形式)。
+		// RegExp.prototype.test 是 this 感知的原生方法，Go 侧
+		// engine.Function.Call 无 this 绑定——经 Eval 桥接执行
+		// __re.test(__msg)（JS 成员调用语义）。
+		if testFn, err := eo.Get("test"); err == nil && testFn.IsFunction() {
+			msg := engine.Undefined()
+			if ao, ok := actual.AsObject(); ok {
+				if m, err := ao.Get("message"); err == nil {
+					msg = m
+				}
+			}
+			if msg.IsUndefined() {
+				msg = actual
+			}
+			_ = ctx.Global().Set("__assertRe", expected)
+			_ = ctx.Global().Set("__assertMsg", msg)
+			defer ctx.Global().Delete("__assertRe")
+			defer ctx.Global().Delete("__assertMsg")
+			if v, err := ctx.Eval("__assertRe.test(__assertMsg)", "assert_rejects.js"); err == nil {
+				if b, ok := v.Bool(); ok {
+					return b
+				}
+			}
+			return false
+		}
+		// 普通对象 → 属性相等（期望对象的每个属性都匹配）。
+		if ao, ok := actual.AsObject(); ok {
+			for _, k := range eo.Keys() {
+				ev, _ := eo.Get(k)
+				av, _ := ao.Get(k)
+				if !strictEqual(av, ev) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	// 其他 → 严格相等。
+	return strictEqual(actual, expected)
+}
+
+// makeErrorValue 构造带 message 的 Error 对象（Error("msg") 与 new Error 等价）。
+func makeErrorValue(ctx engine.Context, err error) engine.Value {
+	if errCtor, ge := ctx.Global().Get("Error"); ge == nil && errCtor.IsFunction() {
+		if ef, ok := errCtor.AsFunction(); ok {
+			if ev, ce := ef.Call([]engine.Value{engine.Str(err.Error())}); ce == nil {
+				return ev
+			}
+		}
+	}
+	return engine.Str(err.Error())
 }
 
 // truthy 判断值是否为 JS truthy。

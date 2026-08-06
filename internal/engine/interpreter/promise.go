@@ -11,7 +11,7 @@ import (
 type promiseState int
 
 const (
-	promisePending   promiseState = iota
+	promisePending promiseState = iota
 	promiseFulfilled
 	promiseRejected
 )
@@ -20,8 +20,8 @@ const (
 // settles, each reaction is enqueued as a microtask. The reaction calls the
 // appropriate handler and resolves/rejects the derived promise.
 type promiseReaction struct {
-	onFulfilled engine.Value // function value or undefined (passthrough)
-	onRejected  engine.Value // function value or undefined (passthrough)
+	onFulfilled engine.Value  // function value or undefined (passthrough)
+	onRejected  engine.Value  // function value or undefined (passthrough)
 	derived     *PromiseValue // promise to settle with the handler's result
 }
 
@@ -39,9 +39,9 @@ func (r *promiseReaction) run(state promiseState, result engine.Value) {
 	// Passthrough: if no handler, settle derived with the same outcome.
 	if !isCallable(handler) {
 		if state == promiseFulfilled {
-			r.derived.fulfill(result)
+			r.derived.Fulfill(result)
 		} else {
-			r.derived.reject(result)
+			r.derived.Reject(result)
 		}
 		return
 	}
@@ -50,7 +50,7 @@ func (r *promiseReaction) run(state promiseState, result engine.Value) {
 	callable, _ := asCallable(handler)
 	retVal, err := callable.callWith(engine.Undefined(), []engine.Value{result})
 	if err != nil {
-		r.derived.reject(extractThrowValue(err, r.derived.interp))
+		r.derived.Reject(extractThrowValue(err, r.derived.interp))
 		return
 	}
 	// Resolve derived with the handler's return value.
@@ -87,9 +87,9 @@ func (p *PromiseValue) State() int { return int(p.state) }
 // Result 返回 promise 已定值结果（pending 时为 undefined）。
 func (p *PromiseValue) Result() engine.Value { return p.result }
 
-// fulfill transitions the promise to fulfilled and schedules reactions.
-// Unlike resolve, fulfill does NOT unwrap Promise/thenable values.
-func (p *PromiseValue) fulfill(value engine.Value) {
+// Fulfill transitions the promise to fulfilled and schedules reactions.
+// Unlike resolve, Fulfill does NOT unwrap Promise/thenable values.
+func (p *PromiseValue) Fulfill(value engine.Value) {
 	if p.state != promisePending {
 		return
 	}
@@ -98,8 +98,8 @@ func (p *PromiseValue) fulfill(value engine.Value) {
 	p.triggerReactions()
 }
 
-// reject transitions the promise to rejected and schedules reactions.
-func (p *PromiseValue) reject(reason engine.Value) {
+// Reject transitions the promise to rejected and schedules reactions.
+func (p *PromiseValue) Reject(reason engine.Value) {
 	if p.state != promisePending {
 		return
 	}
@@ -116,27 +116,27 @@ func (p *PromiseValue) resolve(value engine.Value) {
 	}
 	// Resolving with self → TypeError.
 	if value == p {
-		p.reject(makeTypeError(p.interp, "Cannot resolve a promise with itself"))
+		p.Reject(makeTypeError(p.interp, "Cannot resolve a promise with itself"))
 		return
 	}
 	// If value is a Promise, adopt its state.
 	if pv, ok := value.(*PromiseValue); ok {
 		resolveFn := p.interp.nativeMethod("resolve", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 			if len(args) > 0 {
-				p.fulfill(args[0])
+				p.Fulfill(args[0])
 			}
 			return engine.Undefined(), nil
 		})
 		rejectFn := p.interp.nativeMethod("reject", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 			if len(args) > 0 {
-				p.reject(args[0])
+				p.Reject(args[0])
 			}
 			return engine.Undefined(), nil
 		})
-		pv.then(resolveFn, rejectFn)
+		pv.Then(resolveFn, rejectFn)
 		return
 	}
-	p.fulfill(value)
+	p.Fulfill(value)
 }
 
 // triggerReactions enqueues all pending reactions as microtasks.
@@ -154,7 +154,7 @@ func (p *PromiseValue) triggerReactions() {
 }
 
 // then adds onFulfilled/onRejected handlers and returns a new derived Promise.
-func (p *PromiseValue) then(onFulfilled, onRejected engine.Value) *PromiseValue {
+func (p *PromiseValue) Then(onFulfilled, onRejected engine.Value) *PromiseValue {
 	derived := NewPromiseValue(p.interp)
 	reaction := promiseReaction{
 		onFulfilled: onFulfilled,
@@ -175,15 +175,15 @@ func (p *PromiseValue) then(onFulfilled, onRejected engine.Value) *PromiseValue 
 }
 
 // catch is shorthand for then(undefined, onRejected).
-func (p *PromiseValue) catch(onRejected engine.Value) *PromiseValue {
-	return p.then(engine.Undefined(), onRejected)
+func (p *PromiseValue) Catch(onRejected engine.Value) *PromiseValue {
+	return p.Then(engine.Undefined(), onRejected)
 }
 
 // finally adds a handler that runs regardless of state, passing through the
 // value or reason to the derived promise.
-func (p *PromiseValue) finally(onFinally engine.Value) *PromiseValue {
+func (p *PromiseValue) Finally(onFinally engine.Value) *PromiseValue {
 	if !isCallable(onFinally) {
-		return p.then(engine.Undefined(), engine.Undefined())
+		return p.Then(engine.Undefined(), engine.Undefined())
 	}
 
 	// onFulfilled wrapper: call onFinally(), then pass through the value.
@@ -212,7 +212,7 @@ func (p *PromiseValue) finally(onFinally engine.Value) *PromiseValue {
 		return engine.Undefined(), nil
 	})
 
-	return p.then(onFulfilled, onRejected)
+	return p.Then(onFulfilled, onRejected)
 }
 
 // === engine.Value interface ================================================
@@ -235,7 +235,7 @@ func (p *PromiseValue) Get(key string) (engine.Value, error) { return p.obj.Get(
 func (p *PromiseValue) Set(key string, val engine.Value) error {
 	return p.obj.Set(key, val)
 }
-func (p *PromiseValue) Keys() []string       { return p.obj.Keys() }
+func (p *PromiseValue) Keys() []string         { return p.obj.Keys() }
 func (p *PromiseValue) Delete(key string) bool { return p.obj.Delete(key) }
 
 // === setupPromise: register Promise constructor and prototype ==============
@@ -258,7 +258,7 @@ func (interp *Interpreter) setupPromise() {
 		if len(args) > 1 {
 			onRejected = args[1]
 		}
-		return p.then(onFulfilled, onRejected), nil
+		return p.Then(onFulfilled, onRejected), nil
 	})
 	_ = interp.promiseProto.Set("then", thenMethod)
 
@@ -272,7 +272,7 @@ func (interp *Interpreter) setupPromise() {
 		if len(args) > 0 {
 			onRejected = args[0]
 		}
-		return p.catch(onRejected), nil
+		return p.Catch(onRejected), nil
 	})
 	_ = interp.promiseProto.Set("catch", catchMethod)
 
@@ -286,7 +286,7 @@ func (interp *Interpreter) setupPromise() {
 		if len(args) > 0 {
 			onFinally = args[0]
 		}
-		return p.finally(onFinally), nil
+		return p.Finally(onFinally), nil
 	})
 	_ = interp.promiseProto.Set("finally", finallyMethod)
 
@@ -311,7 +311,7 @@ func (interp *Interpreter) setupPromise() {
 			if len(args) > 0 {
 				reason = args[0]
 			}
-			p.reject(reason)
+			p.Reject(reason)
 			return engine.Undefined(), nil
 		})
 
@@ -320,7 +320,7 @@ func (interp *Interpreter) setupPromise() {
 		_, err := executor.callWith(engine.Undefined(), []engine.Value{resolveFn, rejectFn})
 		if err != nil {
 			// If executor throws, reject the promise with the thrown value.
-			p.reject(extractThrowValue(err, interp))
+			p.Reject(extractThrowValue(err, interp))
 		}
 		return p, nil
 	})
@@ -342,14 +342,14 @@ func (interp *Interpreter) setupPromise() {
 		return p, nil
 	}))
 
-	// Promise.reject(reason)
+	// Promise.Reject(reason)
 	_ = promiseCtor.Set("reject", interp.makeFunc("reject", func(args []engine.Value) (engine.Value, error) {
 		var reason engine.Value = engine.Undefined()
 		if len(args) > 0 {
 			reason = args[0]
 		}
 		p := NewPromiseValue(interp)
-		p.reject(reason)
+		p.Reject(reason)
 		return p, nil
 	}))
 
@@ -366,7 +366,7 @@ func (interp *Interpreter) setupPromise() {
 		if len(values) == 0 {
 			arr := engine.NewArray(nil)
 			engine.SetProto(arr, interp.arrayProto)
-			result.fulfill(arr)
+			result.Fulfill(arr)
 			return result, nil
 		}
 		results := make([]engine.Value, len(values))
@@ -383,17 +383,17 @@ func (interp *Interpreter) setupPromise() {
 				if remaining == 0 {
 					arr := engine.NewArray(results)
 					engine.SetProto(arr, interp.arrayProto)
-					result.fulfill(arr)
+					result.Fulfill(arr)
 				}
 				return engine.Undefined(), nil
 			})
 			onRejected := interp.nativeMethod("", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 				if len(args) > 0 {
-					result.reject(args[0])
+					result.Reject(args[0])
 				}
 				return engine.Undefined(), nil
 			})
-			pv.then(onFulfilled, onRejected)
+			pv.Then(onFulfilled, onRejected)
 		}
 		return result, nil
 	}))
@@ -412,17 +412,17 @@ func (interp *Interpreter) setupPromise() {
 			pv := promiseResolve(interp, v)
 			onFulfilled := interp.nativeMethod("", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 				if len(args) > 0 {
-					result.fulfill(args[0])
+					result.Fulfill(args[0])
 				}
 				return engine.Undefined(), nil
 			})
 			onRejected := interp.nativeMethod("", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 				if len(args) > 0 {
-					result.reject(args[0])
+					result.Reject(args[0])
 				}
 				return engine.Undefined(), nil
 			})
-			pv.then(onFulfilled, onRejected)
+			pv.Then(onFulfilled, onRejected)
 		}
 		return result, nil
 	}))
@@ -440,7 +440,7 @@ func (interp *Interpreter) setupPromise() {
 		if len(values) == 0 {
 			arr := engine.NewArray(nil)
 			engine.SetProto(arr, interp.arrayProto)
-			result.fulfill(arr)
+			result.Fulfill(arr)
 			return result, nil
 		}
 		results := make([]engine.Value, len(values))
@@ -460,7 +460,7 @@ func (interp *Interpreter) setupPromise() {
 				if remaining == 0 {
 					arr := engine.NewArray(results)
 					engine.SetProto(arr, interp.arrayProto)
-					result.fulfill(arr)
+					result.Fulfill(arr)
 				}
 				return engine.Undefined(), nil
 			})
@@ -476,11 +476,11 @@ func (interp *Interpreter) setupPromise() {
 				if remaining == 0 {
 					arr := engine.NewArray(results)
 					engine.SetProto(arr, interp.arrayProto)
-					result.fulfill(arr)
+					result.Fulfill(arr)
 				}
 				return engine.Undefined(), nil
 			})
-			pv.then(onFulfilled, onRejected)
+			pv.Then(onFulfilled, onRejected)
 		}
 		return result, nil
 	}))

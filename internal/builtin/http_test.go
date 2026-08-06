@@ -43,6 +43,10 @@ func newHTTPEnv(t *testing.T) *httpTestEnv {
 	if err := globals.NewWebCrypto(ctx, globals.WebCryptoConfig{}); err != nil {
 		t.Fatal(err)
 	}
+	// Web ReadableStream（Readable.fromWeb 测试需要）。
+	if err := globals.NewStream(ctx, globals.StreamConfig{}); err != nil {
+		t.Fatal(err)
+	}
 	if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
 		t.Fatal(err)
 	}
