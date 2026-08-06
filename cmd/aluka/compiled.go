@@ -92,6 +92,8 @@ func runCompiled(payload []byte) int {
 	loader := modmodule.NewLoader(ctx)
 	builtin.RegisterAll(loader)
 	_ = builtin.InstallGetBuiltinModule(ctx, loader)
+	// M2：嵌入式模块存储——require/import 按构建期解析映射加载嵌入模块。
+	loader.SetEmbedded(compile.NewEmbedded(manifest, data))
 
 	isESM := manifest.ModuleTypeOf(entry) == compile.ModuleTypeESM
 	if _, err := loader.RunPrecompiled(entry, mod, isESM); err != nil {

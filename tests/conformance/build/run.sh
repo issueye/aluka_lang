@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# build --compile conformance（M1：单入口产物可执行，docs/build-compile-plan.md）。
+# build --compile conformance（docs/build-compile-plan.md）。
 #
-# 验证：
-#   1) CJS 入口（无 import/export .ts）→ 产物直接运行输出正确
-#   2) ESM 入口（含 export）→ 产物直接运行输出正确
-#   3) 普通 aluka（无 payload）行为不变
-#   4) 尾部非 footer 垃圾 → 回退普通模式
+# M1：单入口产物可执行 + 普通模式回退。
+# M2：多文件 + node_modules 静态依赖 + 循环依赖 + 动态 import + 未嵌入报错。
 #
 # 用法：
 #   ALUKA=<aluka 可执行路径> bash run.sh
@@ -73,6 +70,86 @@ check "normal mode unaffected" "2" "$($ALUKA -e 'console.log(1+1)' 2>&1)"
 cp "$ALUKA" "$DIR/junk.exe"
 printf 'JUNKJUNKJUNKJUNK' >> "$DIR/junk.exe"
 check "corrupt footer falls back" "2" "$("$DIR/junk.exe" -e 'console.log(1+1)' 2>&1)"
+
+# 5) M2 多文件 + node_modules 静态依赖（ESM 导入 + CJS require 混合）。
+mkdir -p "$DIR/multi/node_modules/smallpkg"
+cat > "$DIR/multi/main.ts" <<'EOF'
+import { greet } from './util.ts';
+import { double } from './num.cjs';
+const { magic } = require('smallpkg');
+console.log(greet('aluka'), double(21), 'magic=' + magic());
+EOF
+cat > "$DIR/multi/util.ts" <<'EOF'
+export function greet(n) { return 'hi ' + n; }
+EOF
+cat > "$DIR/multi/num.cjs" <<'EOF'
+module.exports = { double: (x) => x * 2 };
+EOF
+cat > "$DIR/multi/node_modules/smallpkg/package.json" <<'EOF'
+{ "name": "smallpkg", "version": "1.0.0", "main": "./index.js" }
+EOF
+cat > "$DIR/multi/node_modules/smallpkg/index.js" <<'EOF'
+module.exports = { magic: () => 7 };
+EOF
+if ! $ALUKA build --compile --outfile "$DIR/multi.exe" "$DIR/multi/main.ts" >"$DIR/build5.log" 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL  build multi-file"
+  sed 's/^/       /' "$DIR/build5.log" | head -5
+else
+  check "multi-file + node_modules" "hi aluka 42 magic=7" "$("$DIR/multi.exe" 2>&1)"
+fi
+
+# 6) M2 循环依赖（a↔b）不栈溢出。
+mkdir -p "$DIR/cycle"
+cat > "$DIR/cycle/a.ts" <<'EOF'
+import { b } from './b.ts';
+export const a = 'A' + b;
+console.log('a = ' + a);
+EOF
+cat > "$DIR/cycle/b.ts" <<'EOF'
+import { a } from './a.ts';
+export const b = 'B';
+EOF
+if ! $ALUKA build --compile --outfile "$DIR/cycle.exe" "$DIR/cycle/a.ts" >"$DIR/build6.log" 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL  build circular deps"
+  sed 's/^/       /' "$DIR/build6.log" | head -5
+else
+  check "circular deps" "a = AB" "$("$DIR/cycle.exe" 2>&1)"
+fi
+
+# 7) M2 动态 import 字面量（产物内模块）。
+cat > "$DIR/dyn.ts" <<'EOF'
+import('./lazy.ts').then(m => console.log('dynamic: ' + m.msg));
+EOF
+cat > "$DIR/lazy.ts" <<'EOF'
+export const msg = 'lazy loaded';
+EOF
+if ! $ALUKA build --compile --outfile "$DIR/dyn.exe" "$DIR/dyn.ts" >"$DIR/build7.log" 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL  build dynamic import"
+  sed 's/^/       /' "$DIR/build7.log" | head -5
+else
+  check "dynamic import" "dynamic: lazy loaded" "$("$DIR/dyn.exe" 2>&1)"
+fi
+
+# 8) M2 未嵌入模块：动态 import 变量形式（构建期无法静态收集）在运行期
+#    报清晰错误；静态 require 不存在的文件在构建期即失败（正确把关）。
+cat > "$DIR/external.ts" <<'EOF'
+const name = './not-embedded.ts';
+import(name).then(() => console.log('unexpected'), (e) => console.log('ERR: ' + e.message));
+EOF
+if ! $ALUKA build --compile --outfile "$DIR/external.exe" "$DIR/external.ts" >"$DIR/build8.log" 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL  build external-ref entry"
+  sed 's/^/       /' "$DIR/build8.log" | head -5
+else
+  out="$("$DIR/external.exe" 2>&1)"
+  case "$out" in
+    *"cannot load external module"*) echo "PASS  unembedded module errors clearly"; PASS=$((PASS + 1)) ;;
+    *) echo "FAIL  unembedded module errors clearly"; echo "       got: $out"; FAIL=$((FAIL + 1)) ;;
+  esac
+fi
 
 echo ""
 echo "ℹ build conformance: $PASS passed, $FAIL failed"

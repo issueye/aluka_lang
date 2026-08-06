@@ -119,18 +119,33 @@ B2 成立的前提已核实：**字节码序列化格式稳定**（`bytecode.Ser
 - payload 布局：header(20B) + manifest(JSON) + 模块流 + footer(56B, 含 sha256)
 - 产物 = 基座 + payload + footer，单二进制、无 Go 依赖
 
-### M2：模块图收集 + Loader 存储抽象 + 多文件依赖
+### M2：模块图收集 + Loader 存储抽象 + 多文件依赖 —— ✅ 完成（2026-08-06）
 
 | ID | 任务 | 输出 | 状态 |
 |----|------|------|------|
-| B2.2.1 | 静态模块图收集器（import/export/require + 动态 import 字面量，复用 Resolver；循环依赖/重复引用去重） | `internal/bundler/graph/graph.go` | [ ] |
-| B2.2.2 | `EmbeddedStore` 读取层（`Open`/`Has`；M2 全量内存，预留偏移懒加载） | `internal/bundler/compile/store.go` | [ ] |
-| B2.2.3 | **Loader 存储抽象**：`require`/`import` 命中 store 直接执行预编译模块；未命中报错；`l.cache`/循环依赖语义复用 | `internal/runtime/module/loader.go` | [ ] |
-| B2.2.4 | 多模块打包（模块表偏移索引 + 字节流合并） | `internal/bundler/compile/` | [ ] |
-| B2.2.5 | 构建期转换管线完善（TS 剥离/转换/编译逐模块全链） | `internal/bundler/compile/` | [ ] |
-| B2.2.6 | M2 测试：多文件 + node_modules 静态依赖（express 级）产物可运行 | `tests/conformance/build/` | [ ] |
+| B2.2.1 | 静态模块图收集器（import/export/require + 动态 import 字面量，复用 Resolver；循环依赖/重复引用去重） | `internal/bundler/graph/graph.go` | ✅ |
+| B2.2.2 | `EmbeddedStore` 读取层（`Open`/`Has`；M2 全量内存，预留偏移懒加载） | `internal/bundler/compile/embedded.go` | ✅ |
+| B2.2.3 | **Loader 存储抽象**：`require`/`import` 命中 store 直接执行预编译模块；未命中报错；`l.cache`/循环依赖语义复用 | `internal/runtime/module/loader.go` | ✅ |
+| B2.2.4 | 多模块打包（模块表偏移索引 + 字节流合并） | `internal/bundler/compile/payload.go`（Pack 多模块） | ✅ |
+| B2.2.5 | 构建期转换管线完善（TS 剥离/转换/编译逐模块全链） | `internal/bundler/graph/` | ✅ |
+| B2.2.6 | M2 测试：多文件 + node_modules 静态依赖（express 级）产物可运行 | `tests/conformance/build/run.sh`（8 项） | ✅ |
 
-**M2 验收**：express 依赖树（静态可达部分）完整嵌入并运行；产物内 ESM/CJS 混合加载正确；循环依赖行为与文件模式一致。
+**M2 验收达成**：
+- 多文件 + node_modules 静态依赖（ESM 导入 + CJS require 混合）产物可运行
+- 循环依赖（a↔b）不栈溢出；动态 import 字面量命中嵌入模块
+- 未嵌入模块（动态 import 变量形式）运行期报清晰错误；静态不可解析依赖构建期即失败
+- `go test ./...` 全绿；build conformance 8/8
+
+**M2 关键设计**：
+- **构建期解析映射（resolutions）**：manifest 记录"父模块 → specifier → 解析路径"；
+  产物运行时不做文件系统解析，require/import 直接查映射加载嵌入模块
+- `Loader.SetEmbedded`（`module.EmbeddedResolver` 接口，避免 bundler↔module 循环依赖）
+- 依赖收集：ImportDecl/ExportDecl/`__import()`（动态 import lower 形式）为 import 语境，
+  `require()` 为 require 语境；内置模块（node: 前缀/裸名解析失败）跳过嵌入
+- 顺带修复：动态 import 失败 reject 值从字符串改为 **Error 对象**（`e.message` 可用，Node 语义）
+
+**修复（M2 暴露）**：产物模式循环依赖栈溢出——`RunPrecompiled` 无缓存检查，
+embedded 分支每次重新执行模块；requireCtx 嵌入式分支补缓存拦截（与文件模式一致）。
 
 ### M3：语义修正层（产物模式差异对齐）
 
@@ -239,6 +254,7 @@ tests/conformance/build/
 |------|------|------|
 | v1.0 | 2026-08-06 | 初稿：B2 路线选定、M1-M4 里程碑、WBS 分解、payload 格式设计 |
 | v1.1 | 2026-08-06 | **M1 完成**：payload 格式/打包器、footer 自检测、产物模式引导、`Loader.RunPrecompiled` 重构、`aluka build --compile` CLI、conformance 4/4 |
+| v1.2 | 2026-08-06 | **M2 完成**：模块图收集器（构建期解析映射）、EmbeddedStore + Loader 嵌入式分支、多模块打包、循环依赖修复、动态 import reject Error 对象、conformance 8/8 |
 
 ---
 

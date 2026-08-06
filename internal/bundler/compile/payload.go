@@ -60,8 +60,12 @@ type Manifest struct {
 	FormatVersion  uint32      `json:"formatVersion"` // 字节码格式版本（运行时校验）
 	Entry          string      `json:"entry"`         // 入口模块路径
 	Modules        []EntryInfo `json:"modules"`
-	Platform       string      `json:"platform"` // 构建平台（GOOS/GOARCH）
-	CreatedAt      string      `json:"createdAt"`
+	// Resolutions 是构建期解析映射：父模块路径 → specifier → 解析后的模块
+	// 路径（构建机绝对路径）。产物运行时不做文件系统解析，直接查映射加载
+	// 嵌入的预编译模块（M2，docs/build-compile-plan.md §5.3）。
+	Resolutions map[string]map[string]string `json:"resolutions,omitempty"`
+	Platform    string                       `json:"platform"` // 构建平台（GOOS/GOARCH）
+	CreatedAt   string                       `json:"createdAt"`
 }
 
 // EntryData 是一个待打包模块（编译产物）。
@@ -72,8 +76,9 @@ type EntryData struct {
 }
 
 // Pack 打包 payload 数据段（不含 footer；footer 由 Build 阶段写入文件）。
-// modules 按路径排序保证输出确定性（M2 多模块时幂等）。
-func Pack(entryPath string, modules []*EntryData) ([]byte, error) {
+// modules 按路径排序保证输出确定性；resolutions 为构建期解析映射
+// （M2 多模块；M1 单模块可传 nil）。
+func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[string]string) ([]byte, error) {
 	sorted := make([]*EntryData, len(modules))
 	copy(sorted, modules)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
@@ -99,6 +104,7 @@ func Pack(entryPath string, modules []*EntryData) ([]byte, error) {
 		FormatVersion:  bytecode.FormatVersion,
 		Entry:          entryPath,
 		Modules:        entries,
+		Resolutions:    resolutions,
 		Platform:       platformString(),
 		CreatedAt:      time.Now().Format(time.RFC3339),
 	}

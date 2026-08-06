@@ -9,7 +9,21 @@ import (
 	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/bytecode"
 )
+
+// EmbeddedResolver 是产物模式（aluka build --compile）的嵌入式模块存储
+// 接口（M2）。产物运行时不做文件系统解析：按构建期解析映射（resolutions）
+// 直接加载嵌入的预编译模块。实现位于 internal/bundler/compile（本包不依赖
+// compile 包，避免 bundler ↔ module 循环依赖）。
+type EmbeddedResolver interface {
+	// ResolveEmbedded 按构建期解析映射解析 specifier（父模块路径 → 模块路径）。
+	ResolveEmbedded(specifier, parentPath string) (string, bool)
+	// ModuleTypeOf 返回模块类型（"esm" | "cjs"）。
+	ModuleTypeOf(key string) string
+	// LoadModule 反序列化嵌入的预编译模块（实现内部可缓存）。
+	LoadModule(key string) (*bytecode.Module, error)
+}
 
 // Loader loads and caches modules. It supports both CommonJS (require) and
 // ESM (import/export) module formats.
@@ -22,6 +36,10 @@ type Loader struct {
 
 	// bcCache 是字节码磁盘缓存（1C.14），命中时跳过 parse+compile。
 	bcCache bytecodeCache
+
+	// embedded 非 nil 时进入产物模式：require/import 走构建期解析映射，
+	// 未命中报错（不加载外部文件，Bun 编译产物同语义）。
+	embedded EmbeddedResolver
 
 	// builtins 注册 Node.js 内置模块（node:fs / node:path 等）。
 	// key 为去掉 node: 前缀的模块名（如 "path"、"fs/promises"）。
@@ -48,6 +66,12 @@ func NewLoader(ctx engine.Context) *Loader {
 // SetNoCache 禁用字节码缓存（对应 --no-cache）。
 func (l *Loader) SetNoCache(disabled bool) {
 	l.bcCache.disabled = disabled
+}
+
+// SetEmbedded 启用产物模式（aluka build --compile）：require/import 按构建期
+// 解析映射加载嵌入模块，未命中报错（不访问文件系统）。
+func (l *Loader) SetEmbedded(er EmbeddedResolver) {
+	l.embedded = er
 }
 
 // stripBOM 剥离开头的 UTF-8 BOM（EF BB BF）。若文件内容以 BOM 开头则移除，
@@ -146,6 +170,28 @@ func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engin
 	// （Node.js 语义，内置模块优先于 node_modules 同名包）。
 	if isBareSpecifier(specifier) && l.hasBuiltin(specifier) {
 		return l.loadBuiltin("node:" + specifier)
+	}
+
+	// 产物模式（M2）：按构建期解析映射加载嵌入模块，未命中报错
+	// （不加载外部文件，Bun 编译产物同语义）。
+	if l.embedded != nil {
+		key, ok := l.embedded.ResolveEmbedded(specifier, parentPath)
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("module: compiled mode: cannot load external module %q from %q (not embedded; rebuild with aluka build)", specifier, parentPath)
+		}
+		// 循环依赖/重复 require：模块已在执行或完成时返回缓存
+		// （RunPrecompiled 内部会预填 cache）。
+		l.mu.Lock()
+		if cached, ok := l.cache[key]; ok {
+			l.mu.Unlock()
+			return cached, nil
+		}
+		l.mu.Unlock()
+		mod, err := l.embedded.LoadModule(key)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return l.RunPrecompiled(key, mod, l.embedded.ModuleTypeOf(key) == "esm")
 	}
 
 	var resolved string
@@ -416,6 +462,8 @@ func (l *Loader) resolveImport(v engine.Value) (engine.Value, error) {
 }
 
 // rejectImport wraps an error in a rejected Promise via the global Promise.reject.
+// reject 值为 Error 对象（Node 语义：import() 失败 reject Error，`e.message`
+// 可用）——曾 reject 字符串导致 `e.message` 为 undefined。
 func (l *Loader) rejectImport(err error) (engine.Value, error) {
 	promiseCtor, e := l.ctx.Global().Get("Promise")
 	if e != nil || !promiseCtor.IsFunction() {
@@ -426,8 +474,16 @@ func (l *Loader) rejectImport(err error) (engine.Value, error) {
 		rejectFn, e := ctorObj.Get("reject")
 		if e == nil && rejectFn.IsFunction() {
 			if rf, ok := rejectFn.AsFunction(); ok {
-				// 用字符串包装错误消息（后续可改为构造 Error 对象）。
+				// Error("msg") 与 new Error("msg") 等价（ES 规范），
+				// 构造带 message 的 Error 对象。
 				errVal := engine.Str(err.Error())
+				if errCtor, ge := l.ctx.Global().Get("Error"); ge == nil && errCtor.IsFunction() {
+					if ef, ok := errCtor.AsFunction(); ok {
+						if ev, ce := ef.Call([]engine.Value{errVal}); ce == nil {
+							errVal = ev
+						}
+					}
+				}
 				return rf.Call([]engine.Value{errVal})
 			}
 		}

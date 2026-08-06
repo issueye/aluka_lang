@@ -16,7 +16,9 @@ import (
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/bundler/compile"
+	"github.com/aluka-lang/aluka/internal/bundler/graph"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
 // cmdBuild 实现 `aluka build [--compile] [--outfile <path>] <entry>`。
@@ -59,18 +61,19 @@ func cmdBuild(args []string) {
 		fatalErr("aluka build: missing entry file")
 	}
 
-	// 编译入口模块。
+	// 构建模块图：入口 + 静态可达依赖（import/export/require/动态 import
+	// 字面量），编译全部模块并记录构建期解析映射。
 	vm, err := interpreter.NewVM()
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
 	}
-	entryData, err := compile.CompileFile(vm, entry)
+	graphResult, err := graph.Build(vm, module.NewResolver(), entry)
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
 	}
 
-	// 打包 payload。
-	payload, err := compile.Pack(entryData.Path, []*compile.EntryData{entryData})
+	// 打包 payload（多模块 + 解析映射）。
+	payload, err := compile.Pack(graphResult.Entry, graphResult.Modules, graphResult.Resolutions)
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
 	}
@@ -95,8 +98,8 @@ func cmdBuild(args []string) {
 	}
 
 	size, _ := os.Stat(outfile)
-	fmt.Printf("Compiled %s → %s (%d bytes, payload at %d, entry %s)\n",
-		entry, outfile, size.Size(), payloadOffset, entryData.ModuleType)
+	fmt.Printf("Compiled %s → %s (%d bytes, payload at %d, %d modules)\n",
+		entry, outfile, size.Size(), payloadOffset, len(graphResult.Modules))
 }
 
 // writeCompiledBinary 复制基座到 outfile 并追加 payload + footer。

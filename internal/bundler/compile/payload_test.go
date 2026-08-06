@@ -69,7 +69,7 @@ func TestPackParseRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	payload, err := Pack(main, []*EntryData{entry})
+	payload, err := Pack(main, []*EntryData{entry}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestParsePayloadVersionMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	orig, err := Pack(main, []*EntryData{entry})
+	orig, err := Pack(main, []*EntryData{entry}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
