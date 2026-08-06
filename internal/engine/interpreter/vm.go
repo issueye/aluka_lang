@@ -762,7 +762,16 @@ func (v *VM) run() (engine.Value, error) {
 
 			// --- Objects & arrays ---
 			case bytecode.OpNewObject:
-				obj := engine.NewObject()
+				propCount := int(operand)
+				var obj engine.Object
+				if propCount == 0 {
+					obj = engine.NewObject()
+				} else {
+					pairCount := propCount * 2
+					start := len(v.stack) - pairCount
+					obj = engine.NewObjectFromPairs(v.stack[start:])
+					v.stack = v.stack[:start]
+				}
 				engine.SetProto(obj, v.interp.objectProto)
 				v.push(obj)
 			case bytecode.OpNewArray:
@@ -1763,7 +1772,8 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 	// String primitives: handle length + indexed access + string proto methods.
 	if obj.Type() == engine.TypeString {
 		if key == "length" {
-			return engine.IntValue(len(obj.String())), nil
+			n, _ := engine.StringLen(obj)
+			return engine.IntValue(n), nil
 		}
 		// Numeric index → character.
 		if n, err := strconv.Atoi(key); err == nil {
@@ -1925,7 +1935,7 @@ func (v *VM) setProperty(obj engine.Value, key string, val engine.Value) error {
 
 func (v *VM) binAdd(l, r engine.Value) engine.Value {
 	if l.Type() == engine.TypeString || r.Type() == engine.TypeString {
-		return engine.Str(l.String() + r.String())
+		return engine.ConcatStrings(l, r)
 	}
 	ln, _ := l.Float()
 	rn, _ := r.Float()

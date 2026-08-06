@@ -327,7 +327,7 @@ func (op Opcode) HasOperand() bool {
 		return true
 	case OpTryEnter, OpTryExit, OpTryExitFinally:
 		return true
-	case OpNewArray, OpForInNext:
+	case OpNewObject, OpNewArray, OpForInNext:
 		return true
 	case OpMakeClass, OpCallThis, OpConstructThis:
 		return true

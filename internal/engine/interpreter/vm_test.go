@@ -71,6 +71,17 @@ func TestVMStringConcat(t *testing.T) {
 	}
 }
 
+func TestVMStringConcatRopeSemantics(t *testing.T) {
+	got := vmEvalStr(t, `
+let s = "";
+for (let i = 0; i < 10000; i++) s += "chunk" + i;
+[s.length, s === ("chunk0" + s.slice(6)), s.slice(-9)].join("|");
+`)
+	if got != "88890|true|chunk9999" {
+		t.Fatalf("rope string semantics = %q, want %q", got, "88890|true|chunk9999")
+	}
+}
+
 func TestVMTemplateLiteral(t *testing.T) {
 	got := vmEvalStr(t, "`hello world`")
 	if got != "hello world" {
@@ -289,6 +300,18 @@ func TestVMObjectLiteral(t *testing.T) {
 	got := vmEvalStr(t, "var o = {a: 1, b: 2}; o.a + o.b")
 	if got != "3" {
 		t.Errorf("object access = %q, want 3", got)
+	}
+}
+
+func TestVMObjectLiteralBatchConstruction(t *testing.T) {
+	got := vmEvalStr(t, `
+let order = "";
+function value(label, result) { order += label; return result; }
+const o = { a: value("a", 1), b: value("b", 2), a: value("c", 3) };
+[order, o.a, o.b, Object.keys(o).join("")].join("|");
+`)
+	if got != "abc|3|2|ab" {
+		t.Fatalf("batch object literal semantics = %q, want %q", got, "abc|3|2|ab")
 	}
 }
 

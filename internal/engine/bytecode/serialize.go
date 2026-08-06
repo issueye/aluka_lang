@@ -20,7 +20,8 @@ import (
 // v4 → v5：新增 FuncTemplate.ArgumentsSlot（实现函数级 `arguments` 对象）。
 // v5 → v6：新增解构参数（ParamPatterns）编译语义。
 // v9 → v10：新增 OpGetPropLocal superinstruction（O2-D1）。
-const FormatVersion = 10
+// v10 → v11：OpNewObject operand 携带批量对象字面量属性数量（ME-2）。
+const FormatVersion = 11
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")

@@ -4,6 +4,10 @@
 > 依据：2026-08-06 对 aluka 的 API 探测矩阵（45 项实测）+ 代码核查 + Node 22.12 LTS 特性清单
 > 配套文档：[开发计划文档](./development-plan.md) / [Pi 兼容计划](./pi-compat-plan.md) / [打包器计划](./build-compile-plan.md)
 
+> **范围说明**：本文的“完成”指精选常用 API 与 15 个差分场景完成，不代表
+> Node.js 22 全部公开 API 完整兼容。完整清单、L0-L4 验收口径与 M0-M10
+> 里程碑见 [Node.js 22 及以前完整公开 API 兼容开发计划](./node22-full-api-development-plan.md)。
+
 ---
 
 ## 1. 背景与目标

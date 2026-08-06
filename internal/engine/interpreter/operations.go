@@ -14,7 +14,7 @@ func applyBinaryOp(op string, l, r engine.Value) engine.Value {
 	case "+":
 		// If either operand is a string, concatenate
 		if l.Type() == engine.TypeString || r.Type() == engine.TypeString {
-			return engine.Str(toStr(l) + toStr(r))
+			return engine.ConcatStrings(l, r)
 		}
 		ln, lok := l.Float()
 		rn, rok := r.Float()

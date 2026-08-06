@@ -411,7 +411,7 @@ func applyBinaryOp(op string, l, r Value) Value {
 	case "+":
 		// JS +：若任一方为字符串则连接，否则数字加
 		if l.Type() == TypeString || r.Type() == TypeString {
-			return Str(l.String() + r.String())
+			return ConcatStrings(l, r)
 		}
 		ln, lok := l.Float()
 		rn, rok := r.Float()

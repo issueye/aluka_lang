@@ -986,7 +986,8 @@ func (interp *Interpreter) getProperty(obj engine.Value, key string) (engine.Val
 	switch obj.Type() {
 	case engine.TypeString:
 		if key == "length" {
-			return engine.IntValue(len(obj.String())), nil
+			n, _ := engine.StringLen(obj)
+			return engine.IntValue(n), nil
 		}
 		if interp.stringProto != nil {
 			return interp.stringProto.Get(key)

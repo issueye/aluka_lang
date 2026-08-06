@@ -1419,6 +1419,17 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 		}
 		return nil
 	case *ast.ObjectLit:
+		if isSimpleObjectLiteral(n) {
+			for _, prop := range n.Properties {
+				keyIdx := c.cur().tmpl.AddStringConst(propKey(prop.Key))
+				c.emit(bytecode.OpPushConst, uint32(keyIdx))
+				if err := c.compileExpr(prop.Value); err != nil {
+					return err
+				}
+			}
+			c.emit(bytecode.OpNewObject, uint32(len(n.Properties)))
+			return nil
+		}
 		c.emit(bytecode.OpNewObject, 0)
 		for _, prop := range n.Properties {
 			if prop.Kind == ast.PropertySpread {
@@ -1514,6 +1525,19 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 		return c.compileAwait(n)
 	}
 	return fmt.Errorf("unsupported expression %T", e)
+}
+
+// isSimpleObjectLiteral reports whether a literal can be built in one batch.
+// Computed keys, spread, and accessors need the partially-built object and keep
+// using the incremental instruction sequence.
+func isSimpleObjectLiteral(n *ast.ObjectLit) bool {
+	for _, prop := range n.Properties {
+		if prop.Computed || prop.Kind == ast.PropertySpread ||
+			prop.Kind == ast.PropertyGet || prop.Kind == ast.PropertySet {
+			return false
+		}
+	}
+	return true
 }
 
 // compileTaggedTemplate compiles a tagged template `tag`a${x}b“.
