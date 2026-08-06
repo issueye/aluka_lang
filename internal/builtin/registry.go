@@ -47,6 +47,7 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("dgram", NewDgram)
 	loader.RegisterBuiltin("http2", NewHTTP2)
 	loader.RegisterBuiltin("cluster", NewCluster)
+	loader.RegisterBuiltin("trace_events", NewTraceEvents)
 	loader.RegisterBuiltin("readline", NewReadline)
 	loader.RegisterBuiltin("repl", NewReplModule)
 	loader.RegisterBuiltin("child_process", NewChildProcess)

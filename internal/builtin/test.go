@@ -17,7 +17,12 @@ package builtin
 // 用例/钩子支持同步与 async（返回 promise，经 vm.AwaitPromise 驱动）。
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -149,12 +154,125 @@ type mockSpy struct {
 	method   string
 	original engine.Value
 	spyFn    engine.Value
+	// calls 记录（Node 语义：arguments/error/result/stack/target/this）。
+	calls  *engine.ArrayValue
+	isFn   bool // mock.fn 创建的独立函数（无 target）
 }
 
 var mockSpies []*mockSpy
 
+// newMockCall 构造一次调用的记录对象。
+func newMockCall(ca []engine.Value, thisVal engine.Value, result engine.Value, err error, hasResult bool, stack engine.Value) engine.Value {
+	call := engine.NewObject()
+	argsArr := engine.NewArray(append([]engine.Value{}, ca...))
+	_ = call.Set("arguments", argsArr)
+	_ = call.Set("error", engine.Undefined())
+	if hasResult {
+		_ = call.Set("result", result)
+	} else {
+		_ = call.Set("result", engine.Undefined())
+	}
+	if err != nil {
+		errObj := engine.NewObject()
+		_ = errObj.Set("message", engine.Str(err.Error()))
+		_ = call.Set("error", errObj)
+	}
+	_ = call.Set("stack", stack)
+	_ = call.Set("target", engine.Undefined())
+	// Node 语义：this 键始终存在（值为调用时的 this，可能 undefined）。
+	if thisVal != nil {
+		_ = call.Set("this", thisVal)
+	} else {
+		_ = call.Set("this", engine.Undefined())
+	}
+	return call
+}
+
+// newMockCallsObj 构造 spy 的 .mock 对象（calls/restore）。
+// 注意：Node 22 已移除 mock.reset（实测 fn.mock.reset 不存在），
+// 仅保留 calls 与 restore。
+func newMockCallsObj(spy *mockSpy) engine.Value {
+	calls := engine.NewArray(nil)
+	engine.SetProto(calls, nil)
+	spy.calls = calls
+	mo := engine.NewObject()
+	_ = mo.Set("calls", calls)
+	// mock.fn 的 restore：还原为原实现（无 target 时清空调用记录）。
+	_ = mo.Set("restore", engine.NewFunction("restore", func(args []engine.Value) (engine.Value, error) {
+		spy.mu.Lock()
+		if !spy.isFn && spy.target != nil {
+			_ = spy.target.Set(spy.method, spy.original)
+			for i, s := range mockSpies {
+				if s == spy {
+					mockSpies = append(mockSpies[:i], mockSpies[i+1:]...)
+					break
+				}
+			}
+		}
+		spy.mu.Unlock()
+		return engine.Undefined(), nil
+	}))
+	return mo
+}
+
+// makeMockSpyFn 构造 spy 函数（记录调用 + 委托 impl/original）。
+func makeMockSpyFn(vm *interpreter.VM, spy *mockSpy, impl engine.Value, original engine.Value, mo engine.Value) engine.Value {
+	return interpreter.NewNativeMethod("mockSpy", func(this engine.Value, ca []engine.Value) (engine.Value, error) {
+		spy.mu.Lock()
+		call := newMockCall(ca, this, engine.Undefined(), nil, false, engine.Undefined())
+		spy.calls.Append(call)
+		spy.mu.Unlock()
+		var result engine.Value
+		var err error
+		// 委托 impl/original 时保持 this 绑定（Node 语义：
+		// mock 函数的 this 透传给原实现）。
+		target := impl
+		if target == nil || !target.IsFunction() {
+			target = original
+		}
+		if target != nil && target.IsFunction() && vm != nil {
+			result, err = vm.InvokeFn(target, this, ca)
+		}
+		// 更新调用记录（result/error）。
+		spy.mu.Lock()
+		elems := spy.calls.Elems()
+		if len(elems) > 0 {
+			if last, ok := elems[len(elems)-1].(engine.Object); ok {
+				_ = last.Set("result", result)
+				if err != nil {
+					errObj := engine.NewObject()
+					_ = errObj.Set("message", engine.Str(err.Error()))
+					_ = last.Set("error", errObj)
+				}
+			}
+		}
+		spy.mu.Unlock()
+		return result, err
+	})
+}
+
 func newTestMock(ctx engine.Context) engine.Value {
 	mockObj := engine.NewObject()
+	vm, _ := ctx.(*interpreter.VM)
+
+	// mock.fn([impl]) → 独立 spy 函数（Node 22 语义）。
+	_ = mockObj.Set("fn", engine.NewFunction("fn", func(args []engine.Value) (engine.Value, error) {
+		var impl engine.Value
+		if len(args) > 0 && args[0].IsFunction() {
+			impl = args[0]
+		}
+		spy := &mockSpy{isFn: true}
+		mo := newMockCallsObj(spy)
+		fn := makeMockSpyFn(vm, spy, impl, engine.Undefined(), mo)
+		if fo, ok := fn.AsObject(); ok {
+			_ = fo.Set("mock", mo)
+		}
+		spy.spyFn = fn
+		spy.original = impl
+		mockSpies = append(mockSpies, spy)
+		return fn, nil
+	}))
+
 	_ = mockObj.Set("method", engine.NewFunction("method", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Undefined(), fmt.Errorf("%w: mock.method(target, methodName)", engine.ErrTypeError)
@@ -173,38 +291,22 @@ func newTestMock(ctx engine.Context) engine.Value {
 			impl = args[2]
 		}
 		spy := &mockSpy{target: target, method: method, original: original}
-		calls := engine.NewArray(nil)
-		engine.SetProto(calls, nil)
-		callsObj := engine.NewObject()
-		_ = callsObj.Set("calls", calls)
-		spyFn := engine.NewFunction(method, func(ca []engine.Value) (engine.Value, error) {
-			spy.mu.Lock()
-			call := engine.NewArray(append([]engine.Value{}, ca...))
-			calls.Append(call)
-			spy.mu.Unlock()
-			if impl != nil && impl.IsFunction() {
-				if f, ok := impl.AsFunction(); ok {
-					return f.Call(ca)
-				}
-			}
-			if original.IsFunction() {
-				if f, ok := original.AsFunction(); ok {
-					return f.Call(ca)
-				}
-			}
-			return engine.Undefined(), nil
-		})
+		mo := newMockCallsObj(spy)
+		spyFn := makeMockSpyFn(vm, spy, impl, original, mo)
 		if fo, ok := spyFn.AsObject(); ok {
-			_ = fo.Set("mock", callsObj)
+			_ = fo.Set("mock", mo)
 		}
 		_ = target.Set(method, spyFn)
 		spy.spyFn = spyFn
 		mockSpies = append(mockSpies, spy)
 		return spyFn, nil
 	}))
+
 	_ = mockObj.Set("restoreAll", engine.NewFunction("restoreAll", func(args []engine.Value) (engine.Value, error) {
 		for _, s := range mockSpies {
-			_ = s.target.Set(s.method, s.original)
+			if !s.isFn && s.target != nil {
+				_ = s.target.Set(s.method, s.original)
+			}
 		}
 		mockSpies = nil
 		return engine.Undefined(), nil
@@ -314,10 +416,12 @@ func parentSuite(target *registeredSuite) *registeredSuite {
 	return find(regRoot)
 }
 
-// invokeTestFn 调用 JS 函数；返回 promise 时同步等待 settle。
+// invokeTestFn 调用测试函数。Node 语义：回调接收 TestContext（t）参数，
+// t.assert 提供断言（含 snapshot 快照断言），t.diagnostic 输出诊断信息。
 func invokeTestFn(vm *interpreter.VM, fn engine.Value) error {
-	if f, ok := fn.AsFunction(); ok {
-		result, err := f.Call(nil)
+	if fn.IsFunction() {
+		t := newTestContext(vm)
+		result, err := vm.InvokeFn(fn, engine.Undefined(), []engine.Value{t})
 		if err != nil {
 			return err
 		}
@@ -328,6 +432,295 @@ func invokeTestFn(vm *interpreter.VM, fn engine.Value) error {
 		return nil
 	}
 	return fmt.Errorf("%w: not a function", engine.ErrTypeError)
+}
+
+// --- TestContext（t 参数）--------------------------------------------------
+
+// snapshotState 记录当前测试文件的快照状态（文件路径 + 调用计数）。
+var snapshotMu sync.Mutex
+var snapshotFile string       // 当前测试文件对应的快照文件路径
+var snapshotCount int         // 当前文件内 snapshot 调用计数
+var updateSnapshots bool      // --test-update-snapshots 模式
+
+// SetSnapshotFile 由测试运行器设置当前测试文件（用于快照定位）。
+func SetSnapshotFile(testFilePath string) {
+	snapshotMu.Lock()
+	defer snapshotMu.Unlock()
+	snapshotFile = testFilePath + ".snapshot"
+	snapshotCount = 0
+}
+
+// SetUpdateSnapshots 启用/禁用快照更新模式（--test-update-snapshots）。
+func SetUpdateSnapshots(update bool) {
+	snapshotMu.Lock()
+	updateSnapshots = update
+	snapshotMu.Unlock()
+}
+
+// newTestContext 构造 TestContext 对象。
+func newTestContext(vm *interpreter.VM) engine.Value {
+	t := engine.NewObject()
+
+	// t.assert：断言对象（复用 assert 模块 + snapshot）。
+	assertObj := engine.NewObject()
+	_ = assertObj.Set("ok", engine.NewFunction("ok", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 || !truthy(args[0]) {
+			return engine.Undefined(), fmt.Errorf("%w: expected value to be truthy", engine.ErrAssertion)
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("strictEqual", engine.NewFunction("strictEqual", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 || !strictEqual(args[0], args[1]) {
+			return engine.Undefined(), fmt.Errorf("%w: expected %s but got %s", engine.ErrAssertion, argString(args, 1), argString(args, 0))
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("equal", engine.NewFunction("equal", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 || !looseEqual(args[0], args[1]) {
+			return engine.Undefined(), fmt.Errorf("%w: expected %s but got %s", engine.ErrAssertion, argString(args, 1), argString(args, 0))
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("deepStrictEqual", engine.NewFunction("deepStrictEqual", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 || !deepEqual(args[0], args[1], true) {
+			return engine.Undefined(), fmt.Errorf("%w: expected %s but got %s", engine.ErrAssertion, argString(args, 1), argString(args, 0))
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("deepEqual", engine.NewFunction("deepEqual", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 || !deepEqual(args[0], args[1], false) {
+			return engine.Undefined(), fmt.Errorf("%w: expected %s but got %s", engine.ErrAssertion, argString(args, 1), argString(args, 0))
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("notStrictEqual", engine.NewFunction("notStrictEqual", func(args []engine.Value) (engine.Value, error) {
+		if len(args) >= 2 && strictEqual(args[0], args[1]) {
+			return engine.Undefined(), fmt.Errorf("%w: values should not be strictly equal", engine.ErrAssertion)
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = assertObj.Set("throws", engine.NewFunction("throws", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("%w: throws: function required", engine.ErrAssertion)
+		}
+		f, ok := args[0].AsFunction()
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("%w: throws: first argument must be a function", engine.ErrAssertion)
+		}
+		_, err := f.Call(nil)
+		if err == nil {
+			return engine.Undefined(), fmt.Errorf("%w: throws: expected exception but none was thrown", engine.ErrAssertion)
+		}
+		return engine.Undefined(), nil
+	}))
+	// t.assert.snapshot(value)：快照断言（Node 22 experimental 语义）。
+	_ = assertObj.Set("snapshot", engine.NewFunction("snapshot", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("%w: snapshot: value required", engine.ErrTypeError)
+		}
+		return snapshotAssert(vm, args[0])
+	}))
+	_ = t.Set("assert", assertObj)
+
+	// t.diagnostic(msg)：输出诊断信息（Node 语义：透传输出）。
+	_ = t.Set("diagnostic", engine.NewFunction("diagnostic", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			fmt.Printf("# %s\n", args[0].String())
+		}
+		return engine.Undefined(), nil
+	}))
+
+	// t.skip/t.todo/t.plan/t.runOnly：最小面（空操作/标记）。
+	_ = t.Set("skip", engine.NewFunction("skip", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+	_ = t.Set("todo", engine.NewFunction("todo", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+	_ = t.Set("plan", engine.NewFunction("plan", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+	_ = t.Set("runOnly", engine.NewFunction("runOnly", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+	// t.test(name, fn)：子测试（最小面：直接注册为用例）。
+	_ = t.Set("test", engine.NewFunction("test", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+	return t
+}
+
+// snapshotAssert 实现快照断言。
+// 序列化格式（Node 22）：字符串 → JSON 字符串（带引号）；对象 → JSON 2 空格。
+// 快照文件：<testfile>.snapshot，条目格式 exports[`snap <n>`] = `\n<serialized>\n`;
+func snapshotAssert(vm *interpreter.VM, value engine.Value) (engine.Value, error) {
+	snapshotMu.Lock()
+	file := snapshotFile
+	snapshotCount++
+	idx := snapshotCount
+	update := updateSnapshots
+	snapshotMu.Unlock()
+
+	if file == "" {
+		return engine.Undefined(), fmt.Errorf("%w: snapshot: no test file context", engine.ErrAssertion)
+	}
+
+	// 序列化。
+	var serialized string
+	switch value.Type() {
+	case engine.TypeString:
+		b, _ := json.Marshal(value.String())
+		serialized = string(b)
+	default:
+		serialized = snapshotJSON(vm, value)
+	}
+	entry := fmt.Sprintf("exports[`snap %d`] = `\n%s\n`;\n", idx, serialized)
+
+	// 读取现有快照文件。
+	existing := ""
+	if data, err := os.ReadFile(file); err == nil {
+		existing = string(data)
+	}
+
+	if update {
+		// 更新模式：写回整个文件（保留其他条目，替换当前编号）。
+		merged := snapshotReplaceEntry(existing, idx, entry)
+		_ = os.MkdirAll(filepath.Dir(file), 0755)
+		return engine.Undefined(), os.WriteFile(file, []byte(merged), 0644)
+	}
+
+	// 比较模式。
+	if existing == "" {
+		return engine.Undefined(), fmt.Errorf("%w: snapshot not found (run with --test-update-snapshots)", engine.ErrAssertion)
+	}
+	if !strings.Contains(existing, fmt.Sprintf("exports[`snap %d`]", idx)) {
+		return engine.Undefined(), fmt.Errorf("%w: snapshot %d not found in %s", engine.ErrAssertion, idx, file)
+	}
+	if strings.Contains(existing, entry) {
+		return engine.Undefined(), nil // 匹配
+	}
+	return engine.Undefined(), fmt.Errorf("%w: snapshot %d mismatch", engine.ErrAssertion, idx)
+}
+
+// snapshotReplaceEntry 替换/追加编号条目。
+func snapshotReplaceEntry(existing string, idx int, entry string) string {
+	marker := fmt.Sprintf("exports[`snap %d`]", idx)
+	// 按块分割（每个条目以 exports[`snap N`] 开头）。
+	lines := strings.Split(existing, "\n")
+	var out []string
+	replaced := false
+	var cur []string
+	flush := func() {
+		if len(cur) > 0 {
+			block := strings.Join(cur, "\n")
+			if strings.Contains(block, marker) {
+				out = append(out, entry)
+				replaced = true
+			} else {
+				out = append(out, block)
+			}
+		}
+		cur = nil
+	}
+	for _, ln := range lines {
+		if strings.HasPrefix(ln, "exports[`snap ") {
+			flush()
+		}
+		cur = append(cur, ln)
+	}
+	flush()
+	if !replaced {
+		out = append(out, entry)
+	}
+	return strings.Join(out, "\n")
+}
+
+// snapshotJSON 序列化快照值：对象 → JSON 2 空格缩进（Node 快照格式）；
+// 键序保持插入序；不做 HTML 转义。
+func snapshotJSON(vm *interpreter.VM, value engine.Value) string {
+	data, err := snapToGo(value)
+	if err != nil {
+		return value.String()
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(data); err != nil {
+		return value.String()
+	}
+	s := buf.String()
+	return strings.TrimRight(s, "\n")
+}
+
+// snapOrdered 保持插入键序的 JSON 容器。
+type snapOrdered struct {
+	keys []string
+	vals []interface{}
+}
+
+func (o *snapOrdered) MarshalJSON() ([]byte, error) {
+	parts := make([]string, len(o.keys))
+	for i, k := range o.keys {
+		kb, err := json.Marshal(k)
+		if err != nil {
+			return nil, err
+		}
+		vb, err := json.Marshal(o.vals[i])
+		if err != nil {
+			return nil, err
+		}
+		parts[i] = string(kb) + ":" + string(vb)
+	}
+	return []byte("{" + strings.Join(parts, ",") + "}"), nil
+}
+
+// snapToGo 把 engine.Value 转为可 JSON 序列化的 Go 结构（插入键序）。
+func snapToGo(v engine.Value) (interface{}, error) {
+	if v == nil || v.IsUndefined() || v.IsNull() {
+		return nil, nil
+	}
+	switch v.Type() {
+	case engine.TypeBoolean:
+		b, _ := v.Bool()
+		return b, nil
+	case engine.TypeNumber:
+		f, _ := v.Float()
+		return f, nil
+	case engine.TypeString:
+		return v.String(), nil
+	}
+	if arr, ok := v.(*engine.ArrayValue); ok {
+		out := make([]interface{}, 0, len(arr.Elems()))
+		for _, e := range arr.Elems() {
+			ev, err := snapToGo(e)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, ev)
+		}
+		return out, nil
+	}
+	if o, ok := v.AsObject(); ok {
+		so := &snapOrdered{}
+		for _, k := range o.Keys() {
+			if k == "length" {
+				continue
+			}
+			val, _ := o.Get(k)
+			if val.IsFunction() || val.IsUndefined() {
+				continue
+			}
+			ev, err := snapToGo(val)
+			if err != nil {
+				return nil, err
+			}
+			so.keys = append(so.keys, k)
+			so.vals = append(so.vals, ev)
+		}
+		return so, nil
+	}
+	return nil, nil
 }
 
 // testErrorMessage 从 Go error 提取 JS 错误消息（jsThrow → 错误对象 message）。

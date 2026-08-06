@@ -162,18 +162,46 @@ func runModule(path string, vm, disableCache bool) error {
 // cmdTest 实现 `aluka test` 子命令：发现并运行测试文件（node:test）。
 // 无参数时按 Node 约定发现测试：cwd 下递归匹配 *.test.{js,ts,mjs,cjs}。
 func cmdTest(args []string) {
-	files := discoverTestFiles(args)
+	// 标志解析：--coverage / --test-update-snapshots（其余为测试文件/目录）。
+	coverage := false
+	updateSnaps := false
+	var paths []string
+	for _, a := range args {
+		switch a {
+		case "--coverage":
+			coverage = true
+		case "--test-update-snapshots", "--update-snapshots":
+			updateSnaps = true
+		default:
+			paths = append(paths, a)
+		}
+	}
+	files := discoverTestFiles(paths)
 	if len(files) == 0 {
 		fmt.Fprintln(os.Stderr, "aluka: no test files found")
 		os.Exit(1)
 	}
 	passed, failed := 0, 0
+	// 覆盖率统计（文件 → 已执行行集合）。
+	fileCoverage := map[string]map[int]bool{}
 	for _, f := range files {
-		results, err := runTestFile(f)
+		builtin.SetSnapshotFile(f)
+		builtin.SetUpdateSnapshots(updateSnaps)
+		results, cov, err := runTestFile(f, coverage)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", f, err)
 			failed++
 			continue
+		}
+		if cov != nil {
+			for src, lines := range cov {
+				if _, ok := fileCoverage[src]; !ok {
+					fileCoverage[src] = map[int]bool{}
+				}
+				for ln := range lines {
+					fileCoverage[src][ln] = true
+				}
+			}
 		}
 		for _, r := range results {
 			if r.Passed {
@@ -187,9 +215,78 @@ func cmdTest(args []string) {
 		}
 	}
 	fmt.Printf("\nℹ tests %d\nℹ pass  %d\nℹ fail  %d\n", passed+failed, passed, failed)
+	if coverage {
+		printCoverageReport(fileCoverage)
+	}
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// printCoverageReport 输出 Node 风格覆盖率报告（line % / uncovered lines）。
+func printCoverageReport(fileCoverage map[string]map[int]bool) {
+	fmt.Println("# start of coverage report")
+	fmt.Println("# ----------------------------------------------------------------")
+	fmt.Println("# file            | line % | branch % | funcs % | uncovered lines")
+	fmt.Println("# ----------------------------------------------------------------")
+	totalLines, coveredLines := 0, 0
+	for src, executed := range fileCoverage {
+		// 文件总行数（物理行）。
+		total := sourceLineCount(src)
+		covered := len(executed)
+		// 只统计在文件范围内的已执行行。
+		for ln := range executed {
+			if ln > total {
+				covered--
+			}
+		}
+		pct := 0.0
+		if total > 0 {
+			pct = float64(covered) / float64(total) * 100
+		}
+		uncovered := uncoveredLineList(executed, total)
+		name := filepath.Base(src)
+		fmt.Printf("# %-15s | %6.2f | %6.2f | %6.2f | %s\n", name, pct, pct, pct, uncovered)
+		totalLines += total
+		coveredLines += covered
+	}
+	allPct := 0.0
+	if totalLines > 0 {
+		allPct = float64(coveredLines) / float64(totalLines) * 100
+	}
+	fmt.Println("# ----------------------------------------------------------------")
+	fmt.Printf("# %-15s | %6.2f | %6.2f | %6.2f | \n", "all files", allPct, allPct, allPct)
+	fmt.Println("# ----------------------------------------------------------------")
+	fmt.Println("# end of coverage report")
+}
+
+// sourceLineCount 统计文件物理行数。
+func sourceLineCount(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, b := range data {
+		if b == '\n' {
+			n++
+		}
+	}
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		n++
+	}
+	return n
+}
+
+// uncoveredLineList 未覆盖行列表（逗号分隔；Node 格式）。
+func uncoveredLineList(executed map[int]bool, total int) string {
+	var parts []string
+	for ln := 1; ln <= total; ln++ {
+		if !executed[ln] {
+			parts = append(parts, fmt.Sprintf("%d", ln))
+		}
+	}
+	return strings.Join(parts, ",")
 }
 
 // discoverTestFiles 收集测试文件：显式路径或递归发现。
@@ -239,34 +336,46 @@ func findTestFilesIn(dir string) []string {
 }
 
 // runTestFile 加载一个测试文件并执行其中注册的用例，返回结果列表。
-func runTestFile(path string) ([]builtin.TestResult, error) {
+// coverage 非 nil 时启用行级覆盖率统计。
+func runTestFile(path string, enableCoverage bool) ([]builtin.TestResult, map[string]map[int]bool, error) {
 	var eng engine.Engine = interpreter.NewVMEngine()
 	defer eng.Shutdown()
 
 	ctx, err := eng.NewContext()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer ctx.Close()
 
 	if err := registerRuntimeGlobals(ctx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	loader := modmodule.NewLoader(ctx)
 	builtin.RegisterAll(loader)
 	_ = builtin.InstallGetBuiltinModule(ctx, loader)
 	builtin.ResetTestRegistry()
+	// 覆盖率统计需覆盖文件加载阶段（顶层注册代码），故在 loader.Run 前启用。
+	if enableCoverage {
+		vm, _ := ctx.(*interpreter.VM)
+		if vm != nil {
+			vm.EnableCoverage()
+		}
+	}
 	if err := loader.Run(path); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	vm, ok := ctx.(*interpreter.VM)
 	if !ok {
-		return nil, fmt.Errorf("aluka: test runner requires the VM engine")
+		return nil, nil, fmt.Errorf("aluka: test runner requires the VM engine")
 	}
-	vm.RunLoop()
-	return builtin.RunRegisteredTests(vm), nil
+	// 注意：此处不调用 vm.RunLoop()——用例执行（RunRegisteredTests）期间
+	// 的异步任务（定时器/IO）由 AwaitPromise 内部驱动；若先 RunLoop 会
+	// 在无 pending 任务时置 loopDone，导致后续 PostTask 被丢弃（async
+	// 测试挂起）。
+	results := builtin.RunRegisteredTests(vm)
+	return results, vm.CoverageLines(), nil
 }
 
 // registerRuntimeGlobals 注册全局对象（runModule 与测试运行器共用）。

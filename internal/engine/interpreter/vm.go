@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -30,6 +31,32 @@ type VM struct {
 
 	// ic 是属性访问内联缓存（隐藏类 shape 缓存，1B.5）。
 	ic engine.ICache
+
+	// 覆盖率统计（aluka test --coverage 启用；常态零开销）。
+	coverEnabled bool
+	coverMu      sync.Mutex
+	coverLines   map[string]map[int]bool // 源文件 → 已执行行集合
+}
+
+// EnableCoverage 启用行级覆盖率统计。
+func (v *VM) EnableCoverage() {
+	v.coverEnabled = true
+	v.coverLines = make(map[string]map[int]bool)
+}
+
+// CoverageLines 返回覆盖率统计（源文件 → 已执行行集合）。
+func (v *VM) CoverageLines() map[string]map[int]bool {
+	v.coverMu.Lock()
+	defer v.coverMu.Unlock()
+	out := make(map[string]map[int]bool, len(v.coverLines))
+	for f, lines := range v.coverLines {
+		m := make(map[int]bool, len(lines))
+		for ln := range lines {
+			m[ln] = true
+		}
+		out[f] = m
+	}
+	return out
 }
 
 type vmFrame struct {
@@ -291,6 +318,20 @@ func (v *VM) run() (engine.Value, error) {
 			}
 			op, operand, next := bytecode.Decode(code, pc)
 			frame.pc = next
+
+			// 覆盖率统计（仅启用时）：记录 (源文件, 行) 执行。
+			if v.coverEnabled && tmpl.SourceFile != "" {
+				if line := lineForPC(tmpl, pc); line > 0 {
+					v.coverMu.Lock()
+					m := v.coverLines[tmpl.SourceFile]
+					if m == nil {
+						m = make(map[int]bool)
+						v.coverLines[tmpl.SourceFile] = m
+					}
+					m[line] = true
+					v.coverMu.Unlock()
+				}
+			}
 
 			switch op {
 			// --- Literals & stack ---

@@ -71,6 +71,9 @@ type loopCtx struct {
 type funcCtx struct {
 	tmpl *bytecode.FuncTemplate
 
+	// curLine 是当前编译语句的源行号（覆盖率 LineStarts 用）。
+	curLine int
+
 	scopes []*scope // scope chain; scopes[0] is the function scope
 
 	// upvalueIndex maps a name to its index in tmpl.Upvalues.
@@ -454,6 +457,10 @@ func (c *Compiler) compileStmts(stmts []ast.Statement) error {
 }
 
 func (c *Compiler) compileStmt(s ast.Statement) error {
+	// 记录语句起始行（覆盖率 LineStarts 用）。
+	if n, ok := s.(interface{ Pos() ast.Pos }); ok {
+		c.cur().curLine = n.Pos().Line
+	}
 	switch n := s.(type) {
 	case *ast.VarDecl:
 		return c.compileVarDecl(n)
@@ -2556,6 +2563,14 @@ func (c *Compiler) hoistLetConst(decls []ast.VarDeclarator) {
 // === helpers ==============================================================
 
 func (c *Compiler) emit(op bytecode.Opcode, operand uint32) int {
+	// LineStarts：行号变化点（稀疏表，lineForPC 二分查找用）。
+	// 每行只记录第一条指令的 PC；同一行的后续指令共享行号。
+	if line := c.cur().curLine; line > 0 {
+		ls := &c.cur().tmpl.LineStarts
+		if len(*ls) == 0 || (*ls)[len(*ls)-1].Line != line {
+			*ls = append(*ls, bytecode.LineEntry{PC: len(c.cur().tmpl.Code), Line: line})
+		}
+	}
 	return bytecode.Encode(&c.cur().tmpl.Code, op, operand)
 }
 

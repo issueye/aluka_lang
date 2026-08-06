@@ -11,6 +11,7 @@ package main
 
 import (
 	"bufio"
+	"path/filepath"
 	"fmt"
 	"os"
 	"strings"
@@ -64,8 +65,38 @@ func startREPL(vm bool) {
 	// pendingInput 累积当前未完成的多行输入。
 	var pendingInput strings.Builder
 	historyLines := 0 // sessionHistory 中的行数（用于分隔）
+	// editorMode：.editor 模式（空行结束并执行）。
+	editorMode := false
+	// replHistory：历史记录（成功执行的输入，跨会话持久化）。
+	var replHistory []string
+	historyPath := replHistoryPath()
+	if data, err := os.ReadFile(historyPath); err == nil {
+		for _, ln := range strings.Split(string(data), "\n") {
+			if ln != "" {
+				replHistory = append(replHistory, ln)
+			}
+		}
+	}
+	// 退出时写回历史文件。
+	defer func() {
+		_ = os.MkdirAll(filepath.Dir(historyPath), 0755)
+		f, err := os.Create(historyPath)
+		if err == nil {
+			defer f.Close()
+			for _, h := range replHistory {
+				_, _ = f.WriteString(h + "\n")
+			}
+		}
+	}()
 
 	for {
+		// .editor 请求（点命令置位）→ 进入编辑器模式。
+		if replEditorRequested {
+			replEditorRequested = false
+			editorMode = true
+			continue
+		}
+
 		// 选择提示符
 		prompt := replPrompt
 		if pendingInput.Len() > 0 {
@@ -80,9 +111,29 @@ func startREPL(vm bool) {
 		}
 		line := scanner.Text()
 
+		// .editor 模式：空行结束并执行累积内容。
+		if editorMode {
+			if line == "" {
+				editorMode = false
+				line = pendingInput.String()
+				pendingInput.Reset()
+				if strings.TrimSpace(line) == "" {
+					continue
+				}
+			} else {
+				if pendingInput.Len() > 0 {
+					pendingInput.WriteString("\n")
+				}
+				pendingInput.WriteString(line)
+				continue
+			}
+		}
+
 		// 处理点命令（仅在无待完成输入时）
 		if pendingInput.Len() == 0 && strings.HasPrefix(line, ".") {
-			handleDotCommand(line, ctx)
+			if handleDotCommand(line, ctx) {
+				return
+			}
 			continue
 		}
 
@@ -124,29 +175,50 @@ func startREPL(vm bool) {
 		sessionHistory.WriteString(newInput)
 		historyLines++
 
+		// 历史记录（跨会话持久化）。
+		replHistory = append(replHistory, newInput)
+
 		// 打印非空结果
 		printREPLResult(result)
 	}
 }
 
-// handleDotCommand 处理 REPL 点命令（.help/.exit/.version 等）。
+// handleDotCommand 处理 REPL 点命令（.help/.exit/.editor/.version 等）。
 // 返回 true 表示应退出 REPL（仅 .exit）。
 func handleDotCommand(line string, ctx engine.Context) bool {
 	cmd := strings.TrimSpace(line)
 	switch {
 	case cmd == ".exit" || cmd == ".quit":
-		os.Exit(0)
+		return true
 	case cmd == ".help":
 		fmt.Println(`REPL commands:
   .help     Show this help
   .exit     Exit REPL (or Ctrl+D)
+  .editor   Enter editor mode (empty line executes)
   .version  Print aluka version`)
+	case cmd == ".editor":
+		// 进入编辑器模式：由主循环处理（空行结束并执行）。
+		fmt.Println("Entering editor mode (Ctrl+D to finish, empty line to execute)")
+		// 用全局标志通知主循环。
+		replEditorRequested = true
 	case cmd == ".version":
 		fmt.Println("aluka " + version)
 	default:
 		fmt.Fprintln(os.Stderr, "aluka: unknown REPL command:", cmd, "(try .help)")
 	}
 	return false
+}
+
+// replEditorRequested 由 .editor 命令置位，主循环下一轮进入编辑器模式。
+var replEditorRequested bool
+
+// replHistoryPath 历史文件路径（跨会话持久化，Node 风格 ~/.aluka_repl_history）。
+func replHistoryPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".aluka_repl_history"
+	}
+	return filepath.Join(home, ".aluka_repl_history")
 }
 
 // printREPLResult 按格式打印求值结果。

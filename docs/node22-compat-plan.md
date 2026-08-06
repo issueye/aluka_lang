@@ -200,13 +200,13 @@ M2（ES2024）独立低风险可穿插；M4（新模块）复杂度最高放最�
 
 **M4 验收**：echo（UDP）、fork+IPC（cluster）、流式请求（http2）差分通过；inspector API 面存在性验证。
 
-### 5.6 M5：测试与工具链（P3）
+### 5.6 M5：测试与工具链（P3）—— ✅ 完成（2026-08-06）
 
 | ID | 任务 | 说明 | 状态 |
 |----|------|------|------|
-| N22-D1 | node:test 补全 | mock（mock.fn/mock.method）、coverage（`aluka test --coverage`）、snapshot、spawn | [ ] |
-| N22-D2 | REPL 补全 | 多行编辑、.editor、历史文件 | [ ] |
-| N22-D3 | trace_events | 可选：Tracing 对象最小面 | [ ] |
+| N22-D1 | node:test 补全 | ✅ mock.fn/method（calls 全属性+restore）、t.assert.snapshot、TestContext、--coverage 行级报告 | ✅ |
+| N22-D2 | REPL 补全 | ✅ 多行输入、.editor 模式、~/.aluka_repl_history 持久化 | ✅ |
+| N22-D3 | trace_events | ✅ createTracing/getEnabledCategories 最小面 | ✅ |
 
 **M5 验收**：node:test 差分（mock/coverage 场景）与 node22 一致；REPL 交互基线。
 
@@ -272,3 +272,4 @@ tests/conformance/node22/
 | v1.3 | 2026-08-06 | **M2 完成**：ES2024 全局全量（Promise.withResolvers、Array.fromAsync、Object.groupBy、Map.groupBy、String.isWellFormed/toWellFormed、Array.toSorted/toReversed/toSpliced/with、Object.hasOwn）+ navigator/BroadcastChannel 全局对象；差分框架 6/6；已知差异 +1（surrogate 转义模型，架构级） |
 | v1.4 | 2026-08-06 | **M3 完成**：常用 API 补全（assert.match 系、util.parseArgs 按 node 源码移植、fs.cp/glob 40+ 差分、path.matchesGlob、crypto.X509Certificate 全属性、Buffer.isUtf8/isAscii、process.umask/cpuUsage、spawnSync 三件套、http.Agent）；顺带修复 JSON.stringify 键序/HTML 转义、Infinity/NaN String() 格式；差分框架 8/8 |
 | v1.5 | 2026-08-06 | **M4 完成**：缺失模块补全——node:inspector（Session/open/close/url/console API 面）、node:dgram（UDP createSocket/send/bind/message/address，echo 差分通过）、node:http2（constants/getDefaultSettings/connect/createServer/sensitiveHeaders Symbol）、node:cluster（fork/isPrimary/settings/Worker/disconnect，复用 child_process.fork + ALUKA_WORKER_ID）；差分框架 12/12 |
+| v1.6 | 2026-08-06 | **M5 完成**：测试与工具链——node:test mock.fn/mock.method（calls 全属性 arguments/error/result/stack/target/this + restore，Node 22 已移除 reset 对齐）、TestContext（t.assert.snapshot 快照断言 + t.diagnostic）、`aluka test --coverage` 行级覆盖率（编译器 LineStarts + VM 统计 + Node 风格报告）、修复 async 测试挂起（RunLoop 提前退出致 PostTask 丢弃）；REPL .editor 模式 + ~/.aluka_repl_history 历史持久化；node:trace_events 最小面；差分框架 14/14 |
