@@ -399,17 +399,45 @@ func TestResolverPackageExports(t *testing.T) {
 	pkgDir := filepath.Join(dir, "node_modules", "typebox")
 	os.MkdirAll(filepath.Join(pkgDir, "build", "compile"), 0755)
 	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
-  "exports": {"./compile": {"import": "./build/compile/index.mjs", "default": "./fallback.js"}}
+  "exports": {"./compile": {"import": "./build/compile/index.mjs", "require": "./build/compile/index.cjs", "default": "./fallback.js"}}
 }`), 0644)
 	want := filepath.Join(pkgDir, "build", "compile", "index.mjs")
+	wantCJS := filepath.Join(pkgDir, "build", "compile", "index.cjs")
 	os.WriteFile(want, []byte(""), 0644)
+	os.WriteFile(wantCJS, []byte(""), 0644)
 
-	resolved, err := NewResolver().Resolve("typebox/compile", filepath.Join(dir, "src", "main.ts"))
+	// import 语境（ESM 静态导入，如 main.ts）：匹配 import 条件。
+	resolved, err := NewResolver().ResolveImport("typebox/compile", filepath.Join(dir, "src", "main.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resolved != want {
-		t.Errorf("package exports: got %q, want %q", resolved, want)
+		t.Errorf("package exports (import ctx): got %q, want %q", resolved, want)
+	}
+
+	// require 语境（CJS require）：匹配 require 条件。
+	resolved, err = NewResolver().Resolve("typebox/compile", filepath.Join(dir, "src", "main.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != wantCJS {
+		t.Errorf("package exports (require ctx): got %q, want %q", resolved, wantCJS)
+	}
+
+	// require 语境下 exports 只有 import 条件时回退 default。
+	pkgDir2 := filepath.Join(dir, "node_modules", "onlyimport")
+	os.MkdirAll(pkgDir2, 0755)
+	os.WriteFile(filepath.Join(pkgDir2, "package.json"), []byte(`{
+  "exports": {"./compile": {"import": "./build/compile/index.mjs", "default": "./fallback.js"}}
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir2, "fallback.js"), []byte(""), 0644)
+	fallbackWant := filepath.Join(pkgDir2, "fallback.js")
+	resolved, err = NewResolver().Resolve("onlyimport/compile", filepath.Join(dir, "src", "main.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != fallbackWant {
+		t.Errorf("package exports (require ctx, no require condition): got %q, want %q (default fallback)", resolved, fallbackWant)
 	}
 }
 
@@ -508,5 +536,32 @@ module.exports = F;
 	env.run(t, "main.cjs")
 	if got := env.globalGet("__result"); got != "42" {
 		t.Errorf("const closure in module = %q, want 42", got)
+	}
+}
+
+// TestPackageExportsRequireCondition：exports 条件解析必须按 require 语境
+// 匹配——require('is-promise') 应返回函数而非 ESM 命名空间 {default: fn}。
+// 回归：conditionalExportTarget 曾把 "import" 列为候选，导致 require 语境
+// 错误匹配 import 条件（加载 index.mjs），express 的 router 调用
+// `isPromise(ret)` 时抛 "not a function"。
+func TestPackageExportsRequireCondition(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"node_modules/is-promise/package.json": `{
+			"name": "is-promise",
+			"main": "./index.js",
+			"exports": {
+				".": [
+					{ "import": "./index.mjs", "require": "./index.js", "default": "./index.js" }
+				]
+			}
+		}`,
+		"node_modules/is-promise/index.js":  `module.exports = function isPromise(o) { return !!(o && o.then); };`,
+		"node_modules/is-promise/index.mjs": `export default function isPromise(o) { return true; }`,
+		"main.cjs": `var isPromise = require('is-promise');
+			globalThis.__t = (typeof isPromise === 'function' && isPromise({ then: 1 })) ? 'fn' : 'ns:' + typeof isPromise;`,
+	})
+	env.run(t, "main.cjs")
+	if got := env.globalGet("__t"); got != "fn" {
+		t.Errorf("require('is-promise') = %q, want 'fn' (require condition must win over import)", got)
 	}
 }

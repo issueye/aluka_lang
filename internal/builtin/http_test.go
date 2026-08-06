@@ -218,3 +218,41 @@ order.push('sync2');
 		t.Errorf("immediate order = %q, want sync,sync2,immediate", got)
 	}
 }
+
+// TestServerDataChunkIsBuffer：http 'data' 事件 chunk 必须是 Buffer（Node
+// 语义）。回归：emitIncomingData 曾发 string chunk，raw-body/body-parser
+// 用 Buffer.concat 合并时静默丢弃，导致 express.json() 的 req.body 为空。
+func TestServerDataChunkIsBuffer(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var http = require('node:http');
+var server = http.createServer(function(req, res) {
+  var chunks = [];
+  var isBuf = true;
+  req.on('data', function(c) { chunks.push(c); if (!Buffer.isBuffer(c)) isBuf = false; });
+  req.on('end', function() {
+    var merged = Buffer.concat(chunks).toString();
+    globalThis.__chunkIsBuffer = isBuf;
+    globalThis.__merged = merged;
+    res.end('ok');
+  });
+});
+server.listen(0, function() {
+  var port = server.address().port;
+  http.request({ host: '127.0.0.1', port: port, path: '/', method: 'POST' }, function(res) {
+    var out = '';
+    res.on('data', function(c) { out += c; });
+    res.on('end', function() { server.close(); });
+  }).end('ping-pong');
+});
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__chunkIsBuffer"); got != "true" {
+		t.Errorf("data chunk isBuffer = %q, want true (Node semantics: Buffer chunks)", got)
+	}
+	if got := env.globalGet("__merged"); got != "ping-pong" {
+		t.Errorf("Buffer.concat merged = %q, want ping-pong", got)
+	}
+}

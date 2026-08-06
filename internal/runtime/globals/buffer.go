@@ -188,21 +188,32 @@ func newBufferExports() engine.Value {
 			return engine.Undefined(), fmt.Errorf("%w: Buffer.concat expects an array", engine.ErrTypeError)
 		}
 		elems := a.Elems()
+		// 提取字节：Buffer 或 Uint8Array；其他类型（如 string）按 Node 语义
+		// 抛 TypeError——静默跳过会掩盖"chunk 类型错误"类缺陷（如 raw-body
+		// 收到 string chunk 时 body 静默为空）。
+		chunks := make([][]byte, 0, len(elems))
+		for _, e := range elems {
+			var data []byte
+			if b, ok := engine.AsBuffer(e); ok {
+				data = b
+			} else if t, ok := e.(*engine.TypedArrayValue); ok && t.Kind() == engine.KindUint8 {
+				data = t.Bytes()
+			} else {
+				return engine.Undefined(), fmt.Errorf("%w: Buffer.concat argument must be an instance of Buffer or Uint8Array", engine.ErrTypeError)
+			}
+			chunks = append(chunks, data)
+		}
 		total := 0
 		if len(args) > 1 && !args[1].IsUndefined() {
 			total = argInt(args, 1, 0)
 		} else {
-			for _, e := range elems {
-				if b, ok := engine.AsBuffer(e); ok {
-					total += len(b)
-				}
+			for _, c := range chunks {
+				total += len(c)
 			}
 		}
 		out := make([]byte, 0, total)
-		for _, e := range elems {
-			if b, ok := engine.AsBuffer(e); ok {
-				out = append(out, b...)
-			}
+		for _, c := range chunks {
+			out = append(out, c...)
 		}
 		if len(out) > total {
 			out = out[:total]

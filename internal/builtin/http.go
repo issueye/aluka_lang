@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
 // NewHTTP 构造 node:http 模块的导出对象。
@@ -358,9 +359,13 @@ func newIncomingMessage(r *http.Request, body []byte) engine.Value {
 
 // emitIncomingData 在消息对象上发射请求/响应体事件 'data'/'end'。
 // 必须在 handler/回调返回之后调用，此时监听器已注册完成。
+//
+// chunk 按 Node 语义发射 Buffer 而非 string：依赖方（如 raw-body/body-parser）
+// 用 Buffer.concat 合并 chunk，string chunk 会被静默丢弃导致请求体为空。
+// Buffer 的 String() 返回内容，`body += chunk` 等字符串拼接路径行为不变。
 func emitIncomingData(msg engine.Value, body []byte) {
 	if len(body) > 0 {
-		emitEvent(msg, "data", engine.Str(string(body)))
+		emitEvent(msg, "data", globals.NewBufferInstance(body))
 	}
 	emitEvent(msg, "end")
 }

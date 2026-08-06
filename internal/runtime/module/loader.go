@@ -129,6 +129,15 @@ func (l *Loader) Run(path string) error {
 // require is the CJS require function for a given parent module path.
 // It resolves the specifier, checks the cache, and loads the module.
 func (l *Loader) require(specifier, parentPath string) (engine.Value, error) {
+	return l.requireCtx(specifier, parentPath, false)
+}
+
+// requireCtx 是 require 的内部实现，importCtx 指定解析语境（false = require
+// 语境，true = import 语境）。Node 语义：ESM 静态导入/动态 import() 用
+// import 语境解析 exports 条件（含 "import"），CJS require 用 require 语境
+// （不含 "import"）——否则 require 一个带 {"import":..., "require":...}
+// 条件的包会错误加载 ESM 入口。
+func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engine.Value, error) {
 	// 内置模块拦截：node: 前缀（如 node:fs、node:path、node:fs/promises）。
 	if isBuiltinSpecifier(specifier) {
 		return l.loadBuiltin(specifier)
@@ -139,7 +148,13 @@ func (l *Loader) require(specifier, parentPath string) (engine.Value, error) {
 		return l.loadBuiltin("node:" + specifier)
 	}
 
-	resolved, err := l.resolver.Resolve(specifier, parentPath)
+	var resolved string
+	var err error
+	if importCtx {
+		resolved, err = l.resolver.ResolveImport(specifier, parentPath)
+	} else {
+		resolved, err = l.resolver.Resolve(specifier, parentPath)
+	}
 	if err != nil {
 		return engine.Undefined(), err
 	}
@@ -285,6 +300,18 @@ func (l *Loader) makeImportFunc(modulePath string) engine.Function {
 	})
 }
 
+// makeImportReqFunc 构造 ESM 静态导入的同步加载函数（__importReq）。
+// 与 require 的区别仅在解析语境：import 条件（含 "import"）。返回
+// module.exports——transformESMToCJS 生成的代码按 .default/.命名 访问。
+func (l *Loader) makeImportReqFunc(modulePath string) engine.Function {
+	return engine.NewFunction("__importReq", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("__importReq: missing module specifier")
+		}
+		return l.requireCtx(args[0].String(), modulePath, true)
+	})
+}
+
 // makeImportMetaFunc 构造 import.meta 元数据访问函数（__importMeta()）。
 // 返回当前模块的元数据对象：{ url, dirname, filename, resolve }。
 // parser 把 import.meta lower 为对全局 __importMeta() 的调用。
@@ -298,7 +325,8 @@ func (l *Loader) makeImportMetaFunc(modulePath string) engine.Value {
 		if len(args) == 0 {
 			return engine.Undefined(), fmt.Errorf("import.meta.resolve: missing specifier")
 		}
-		resolved, err := l.resolver.Resolve(args[0].String(), modulePath)
+		// import.meta.resolve 按 import 语境解析（Node 语义）。
+		resolved, err := l.resolver.ResolveImport(args[0].String(), modulePath)
 		if err != nil {
 			return engine.Undefined(), err
 		}
@@ -324,10 +352,10 @@ func pathToFileURLString(abs string) string {
 
 // requireWithAttributes 按 import attributes 加载模块：
 // type 为 "json" 时强制走 JSON 模块加载；"module" 或不指定走常规加载；
-// 其他 type 报错。
+// 其他 type 报错。动态 import() 语境（import 条件解析）。
 func (l *Loader) requireWithAttributes(specifier, parentPath, attrType string) (engine.Value, error) {
 	if attrType == "json" {
-		resolved, err := l.resolver.Resolve(specifier, parentPath)
+		resolved, err := l.resolver.ResolveImport(specifier, parentPath)
 		if err != nil {
 			return engine.Undefined(), err
 		}
@@ -340,7 +368,7 @@ func (l *Loader) requireWithAttributes(specifier, parentPath, attrType string) (
 	if attrType != "" && attrType != "module" {
 		return engine.Undefined(), fmt.Errorf("import: unsupported import attribute type %q", attrType)
 	}
-	return l.require(specifier, parentPath)
+	return l.requireCtx(specifier, parentPath, true)
 }
 
 // importAttributeType 从 import 第二参数提取 attributes：

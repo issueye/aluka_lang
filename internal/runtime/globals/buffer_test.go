@@ -1,6 +1,7 @@
 package globals
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -217,5 +218,24 @@ globalThis.__r = btoa('hello') + ':' + atob('aGVsbG8=');
 `, "__r")
 	if got != "aGVsbG8=:hello" {
 		t.Errorf("atob/btoa = %q, want aGVsbG8=:hello", got)
+	}
+}
+
+// TestBufferConcatTypeValidation：Buffer.concat 对非 Buffer/Uint8Array 元素
+// 抛 TypeError（Node 语义）。回归：曾静默跳过 string 元素返回空 Buffer，
+// 掩盖 raw-body/body-parser 收到 string chunk 时 body 静默为空的问题。
+func TestBufferConcatTypeValidation(t *testing.T) {
+	ctx := newBufferTestContext(t)
+
+	// 合法：Buffer 与 Uint8Array 混合拼接。
+	if got := evalGet(t, ctx,
+		`var r = Buffer.concat([Buffer.from('ab'), new Uint8Array([99])]).toString(); globalThis.__r = r;`,
+		"__r"); got != "abc" {
+		t.Errorf("Buffer.concat(Buffer+Uint8Array) = %q, want abc", got)
+	}
+
+	// 非法：string 元素必须抛 TypeError。
+	if _, err := ctx.Eval(`Buffer.concat(['ab'])`, "concat_test.js"); err == nil || !strings.Contains(err.Error(), "TypeError") {
+		t.Errorf("Buffer.concat(['ab']) error = %v, want TypeError", err)
 	}
 }

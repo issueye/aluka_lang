@@ -91,6 +91,7 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	requireFn := l.makeRequireFunc(absPath)
 	importFn := l.makeImportFunc(absPath)
 	importMetaFn := l.makeImportMetaFunc(absPath)
+	importReqFn := l.makeImportReqFunc(absPath)
 	modResult, evalErr := vm.InvokeFn(wrapper, exports, []engine.Value{
 		requireFn,
 		moduleObj,
@@ -99,6 +100,7 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 		engine.Str(filepath.Dir(absPath)),
 		importFn,
 		importMetaFn,
+		importReqFn,
 	})
 	// TLA：模块函数为 async，InvokeFn 返回 promise——同步等待 settle
 	// （驱动微任务/任务队列，直至顶层 await 链完成）。
@@ -124,7 +126,7 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 
 // wrapESMAST 将转换后的 ESM AST 包装为模块函数表达式：
 //
-//	(function(require, module, exports, __filename, __dirname, __import, __importMeta) { <body> })
+//	(function(require, module, exports, __filename, __dirname, __import, __importMeta, __importReq) { <body> })
 func wrapESMAST(prog *ast.Program, filename string) *ast.Program {
 	params := []*ast.Identifier{
 		{Name: "require"},
@@ -134,6 +136,7 @@ func wrapESMAST(prog *ast.Program, filename string) *ast.Program {
 		{Name: "__dirname"},
 		{Name: "__import"},
 		{Name: "__importMeta"},
+		{Name: "__importReq"},
 	}
 	fnExpr := &ast.FunctionExpr{
 		Name:     nil,
@@ -387,14 +390,18 @@ func rewriteImportedReflect(v reflect.Value, fieldName string, bindings map[stri
 	}
 }
 
-// makeRequireCall creates: var __imp_N = require('mod')
+// makeRequireCall creates: var __imp_N = __importReq('mod')
+//
+// 用 __importReq 而非 require：ESM 静态导入按 import 语境解析 exports 条件
+// （含 "import"），与 Node 的 import 语义一致；require 语境（不含 "import"）
+// 会让 `import x from 'pkg'` 与 require('pkg') 解析到不同入口。
 func makeRequireCall(varName, source string, loc ast.Pos) *ast.VarDecl {
 	return &ast.VarDecl{
 		Kind: "var",
 		Decls: []ast.VarDeclarator{{
 			Name: &ast.Identifier{Name: varName, Loc: loc},
 			Init: &ast.CallExpr{
-				Callee:    &ast.Identifier{Name: "require", Loc: loc},
+				Callee:    &ast.Identifier{Name: "__importReq", Loc: loc},
 				Arguments: []ast.Expression{&ast.StringLit{Value: source, Loc: loc}},
 				Loc:       loc,
 			},
@@ -494,7 +501,7 @@ func makeExportAssignmentFrom(exported, impVar, local string, loc ast.Pos) ast.S
 	}
 }
 
-// makeStarReexport creates: Object.assign(module.exports, require('mod'))
+// makeStarReexport creates: Object.assign(module.exports, __importReq('mod'))
 func makeStarReexport(source string, loc ast.Pos) ast.Statement {
 	return &ast.ExprStmt{
 		Expr: &ast.CallExpr{
@@ -510,14 +517,13 @@ func makeStarReexport(source string, loc ast.Pos) ast.Statement {
 					Loc:      loc,
 				},
 				&ast.CallExpr{
-					Callee:    &ast.Identifier{Name: "require", Loc: loc},
+					Callee:    &ast.Identifier{Name: "__importReq", Loc: loc},
 					Arguments: []ast.Expression{&ast.StringLit{Value: source, Loc: loc}},
 					Loc:       loc,
 				},
 			},
 			Loc: loc,
 		},
-		Loc: loc,
 	}
 }
 

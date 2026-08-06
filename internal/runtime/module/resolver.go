@@ -41,7 +41,21 @@ func NewResolver() *Resolver {
 // Resolve resolves a module specifier to an absolute file path.
 // parentPath is the path of the module that initiated the resolution (for
 // relative paths and node_modules lookup); it may be empty for the entry point.
+//
+// 以 require 语境解析（CJS require / require.resolve）——exports 条件集合
+// 不含 "import"，与 Node 的 require() 语义一致。
 func (r *Resolver) Resolve(specifier, parentPath string) (string, error) {
+	return r.resolve(specifier, parentPath, requireConditions)
+}
+
+// ResolveImport 以 import 语境解析（ESM 静态导入 / 动态 import() /
+// import.meta.resolve）——exports 条件集合含 "import" 不含 "require"，
+// 与 Node 的 import 语义一致。
+func (r *Resolver) ResolveImport(specifier, parentPath string) (string, error) {
+	return r.resolve(specifier, parentPath, importConditions)
+}
+
+func (r *Resolver) resolve(specifier, parentPath string, conditions []string) (string, error) {
 	// Absolute path (e.g. /foo/bar.js or C:\foo\bar.js)
 	if filepath.IsAbs(specifier) {
 		return r.resolveFileOrDir(specifier)
@@ -72,7 +86,7 @@ func (r *Resolver) Resolve(specifier, parentPath string) (string, error) {
 	}
 
 	// Bare specifier: walk up node_modules
-	return r.resolveBare(specifier, parentPath)
+	return r.resolveBare(specifier, parentPath, conditions)
 }
 
 // resolvePackageImports 解析 package.json 的 "imports" 映射（如 chalk 的
@@ -231,7 +245,7 @@ func (r *Resolver) readPackageType(dir string) string {
 
 // resolveBare resolves a bare specifier (e.g. "lodash") by walking up
 // the directory tree looking for node_modules/<specifier>.
-func (r *Resolver) resolveBare(specifier, parentPath string) (string, error) {
+func (r *Resolver) resolveBare(specifier, parentPath string, conditions []string) (string, error) {
 	pkgName, subPath := splitPackageSpecifier(specifier)
 	if pkgName == "" {
 		return "", fmt.Errorf("module: invalid package specifier %q", specifier)
@@ -247,7 +261,7 @@ func (r *Resolver) resolveBare(specifier, parentPath string) (string, error) {
 		candidate := filepath.Join(searchDir, "node_modules", filepath.FromSlash(pkgName))
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			// Found the package
-			if resolved, hasExports, err := r.resolvePackageExports(candidate, subPath); hasExports {
+			if resolved, hasExports, err := r.resolvePackageExports(candidate, subPath, conditions); hasExports {
 				if err != nil {
 					return "", fmt.Errorf("module: package %q: %w", pkgName, err)
 				}
@@ -298,7 +312,7 @@ func splitPackageSpecifier(specifier string) (pkgName, subPath string) {
 // resolvePackageExports resolves package.json exports for the requested
 // package subpath. hasExports distinguishes an absent exports field (where
 // legacy main/index fallback applies) from an unexported subpath.
-func (r *Resolver) resolvePackageExports(pkgDir, subPath string) (resolved string, hasExports bool, err error) {
+func (r *Resolver) resolvePackageExports(pkgDir, subPath string, conditions []string) (resolved string, hasExports bool, err error) {
 	data, readErr := os.ReadFile(filepath.Join(pkgDir, "package.json"))
 	if readErr != nil {
 		return "", false, nil
@@ -314,11 +328,11 @@ func (r *Resolver) resolvePackageExports(pkgDir, subPath string) (resolved strin
 	if subPath != "" {
 		requestKey = "./" + filepath.ToSlash(subPath)
 	}
-	rawTarget, ok := matchPackageExport(pkg.Exports, requestKey)
+	rawTarget, ok := matchPackageExport(pkg.Exports, requestKey, conditions)
 	if !ok {
 		return "", true, fmt.Errorf("subpath %q is not exported", requestKey)
 	}
-	target := conditionalExportTarget(rawTarget)
+	target := conditionalExportTarget(rawTarget, conditions)
 	if target == "" || !strings.HasPrefix(target, "./") {
 		return "", true, fmt.Errorf("subpath %q has no supported target", requestKey)
 	}
@@ -330,7 +344,7 @@ func (r *Resolver) resolvePackageExports(pkgDir, subPath string) (resolved strin
 	return resolved, true, nil
 }
 
-func matchPackageExport(exports json.RawMessage, requestKey string) (json.RawMessage, bool) {
+func matchPackageExport(exports json.RawMessage, requestKey string, conditions []string) (json.RawMessage, bool) {
 	var direct string
 	if json.Unmarshal(exports, &direct) == nil {
 		if requestKey == "." {
@@ -378,7 +392,7 @@ func matchPackageExport(exports json.RawMessage, requestKey string) (json.RawMes
 		return nil, false
 	}
 	raw := obj[bestKey]
-	target := conditionalExportTarget(raw)
+	target := conditionalExportTarget(raw, conditions)
 	if target == "" {
 		return nil, false
 	}
@@ -386,7 +400,22 @@ func matchPackageExport(exports json.RawMessage, requestKey string) (json.RawMes
 	return replaced, true
 }
 
-func conditionalExportTarget(raw json.RawMessage) string {
+// requireConditions / importConditions 是 exports 条件解析的候选条件集合，
+// 按加载语境区分（Node 语义：条件集合由解析语境决定）。
+//
+//   - require 语境（CJS require）：["require", "node", "default"]——不含
+//     "import"。若把 "import" 列为候选，require 一个带 exports 条件的包
+//     （如 is-promise 的 {"import": "./index.mjs", "require": "./index.js"}）
+//     会错误匹配 import 条件加载 ESM 入口，返回 {default: fn} 命名空间对象，
+//     导致 `require(...) is not a function`。
+//   - import 语境（ESM 静态导入/动态 import/import.meta.resolve）：
+//     ["import", "node", "default"]。
+var (
+	requireConditions = []string{"require", "node", "default"}
+	importConditions  = []string{"import", "node", "default"}
+)
+
+func conditionalExportTarget(raw json.RawMessage, conditions []string) string {
 	var target string
 	if json.Unmarshal(raw, &target) == nil {
 		return target
@@ -394,17 +423,17 @@ func conditionalExportTarget(raw json.RawMessage) string {
 	var alternatives []json.RawMessage
 	if json.Unmarshal(raw, &alternatives) == nil {
 		for _, alternative := range alternatives {
-			if target := conditionalExportTarget(alternative); target != "" {
+			if target := conditionalExportTarget(alternative, conditions); target != "" {
 				return target
 			}
 		}
 		return ""
 	}
-	var conditions map[string]json.RawMessage
-	if json.Unmarshal(raw, &conditions) == nil {
-		for _, condition := range []string{"node", "import", "require", "default"} {
-			if value, ok := conditions[condition]; ok {
-				if target := conditionalExportTarget(value); target != "" {
+	var cond map[string]json.RawMessage
+	if json.Unmarshal(raw, &cond) == nil {
+		for _, condition := range conditions {
+			if value, ok := cond[condition]; ok {
+				if target := conditionalExportTarget(value, conditions); target != "" {
 					return target
 				}
 			}
