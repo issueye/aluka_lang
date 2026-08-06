@@ -2276,6 +2276,19 @@ func (c *Compiler) compileMember(n *ast.MemberExpr) error {
 		c.beginOptionalChain()
 	}
 
+	// O2-D1 superinstruction：`localVar.prop`（非计算、非可选、对象为局部
+	// 变量）合并为单条 OpGetPropLocal（slot<<16 | nameIdx），省 1 次
+	// dispatch 与压栈/弹栈。
+	if !n.Computed && !n.Optional && !chainHead {
+		if id, ok := n.Object.(*ast.Identifier); ok {
+			if kind, idx := c.resolve(id.Name); kind == "local" {
+				nameIdx := c.cur().tmpl.AddStringConst(n.Property.(*ast.Identifier).Name)
+				c.emit(bytecode.OpGetPropLocal, uint32(idx)<<16|uint32(nameIdx&0xFFFF))
+				return nil
+			}
+		}
+	}
+
 	if err := c.compileExpr(n.Object); err != nil {
 		return err
 	}

@@ -163,6 +163,11 @@ const (
 	OpSetGetterObj
 	OpSetSetterObj
 
+	// --- Superinstructions (O2-D1) ---
+	// OpGetPropLocal：合并 LoadLocal slot; GetProp name（slot<<16 | nameIdx）。
+	// 读取 local 槽位值并取属性，省 1 次 dispatch 与压栈/弹栈。
+	OpGetPropLocal
+
 	OpEnd // sentinel marking end of code (for safety)
 )
 
@@ -235,6 +240,7 @@ var opNames = [...]string{
 	OpNewObject:          "NEW_OBJECT",
 	OpNewArray:           "NEW_ARRAY",
 	OpGetProp:            "GET_PROP",
+	OpGetPropLocal:       "GET_PROP_LOCAL",
 	OpSetProp:            "SET_PROP",
 	OpSetPropObj:         "SET_PROP_OBJ",
 	OpSetPropTop:         "SET_PROP_TOP",
@@ -309,7 +315,7 @@ func (op Opcode) HasOperand() bool {
 		return true
 	case OpCall, OpCallMethod, OpCallWithThis, OpNew:
 		return true
-	case OpGetProp, OpSetProp, OpSetPropObj, OpSetPropTop:
+	case OpGetProp, OpGetPropLocal, OpSetProp, OpSetPropObj, OpSetPropTop:
 		return true
 	case OpSetGetterObj, OpSetSetterObj:
 		return true

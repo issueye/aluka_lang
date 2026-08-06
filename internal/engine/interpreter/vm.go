@@ -330,8 +330,11 @@ func (v *VM) run() (engine.Value, error) {
 				// Ran off the end without OpReturn — treat as undefined return.
 				return v.doReturn(engine.Undefined()), nil
 			}
-			op, operand, next := bytecode.Decode(code, pc)
-			frame.pc = next
+			// O2-D2：Decode 内联展开（去掉函数调用与 `pc+3 < len(code)` 边界
+			// 检查——pc 是定长指令起始，上述 `pc >= len(code)` 已保证合法）。
+			op := bytecode.Opcode(code[pc])
+			operand := uint32(code[pc+1])<<16 | uint32(code[pc+2])<<8 | uint32(code[pc+3])
+			frame.pc = pc + bytecode.InstrSize
 
 			// 覆盖率统计（仅启用时）：记录 (源文件, 行) 执行。
 			if coverEnabled && tmpl.SourceFile != "" {
@@ -784,6 +787,18 @@ func (v *VM) run() (engine.Value, error) {
 				name := tmpl.Constants[operand].String()
 				obj := v.pop()
 				val, err := v.getProperty(obj, name)
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(val)
+			case bytecode.OpGetPropLocal:
+				// O2-D1 superinstruction：LoadLocal slot + GetProp name
+				// （operand 高 16 位 slot，低 16 位 name-const 索引）。
+				slot := int(operand >> 16)
+				nameIdx := int(operand & 0xFFFF)
+				name := tmpl.Constants[nameIdx].String()
+				obj := v.local(slot)
+				val, err := v.getProperty(*obj, name)
 				if err != nil {
 					return v.handleThrow(err)
 				}
@@ -1731,6 +1746,13 @@ func propertyKeyOf(key engine.Value) string {
 
 // getProperty reads a property from a value, handling primitives via prototypes.
 func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
+	// O2-D2 快速路径：隐藏类对象 IC 命中直接返回（跳过 Null/Proxy/String/
+	// Array/Accessor 等类型分派）。accessor 值排除——getter 需走拦截。
+	if cv, hit := v.ic.GetCached(obj, key); hit {
+		if _, isAcc := cv.(*engine.AccessorValue); !isAcc {
+			return cv, nil
+		}
+	}
 	if obj.IsNull() || obj.IsUndefined() {
 		return engine.Undefined(), fmt.Errorf("%w: Cannot read properties of %s (reading '%s')", engine.ErrTypeError, obj.String(), key)
 	}

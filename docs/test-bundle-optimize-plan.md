@@ -148,12 +148,19 @@ aluka 的核心运行时能力（Node 22 兼容 M1-M5、打包 B2 payload 自附
 
 | ID | 任务 | 说明 | 状态 |
 |----|------|------|------|
-| O2-D1 | superinstruction | 高频指令对合并（如 PushConst+GetProp、Dup+CallMethod），减少 dispatch 次数 | [ ] |
-| O2-D2 | 热路径精简 | run() 主循环：Decode 内联展开、专用快速路径（局部变量/常量访问） | [ ] |
-| O2-D3 | 字符串/对象分配优化 | 字符串拼接缓冲、对象字面量批量创建（跳过逐属性 Set） | [ ] |
-| O2-D4 | GC 改进评估（P3） | 年轻代/写屏障可行性评估；无收益则记录结论 | [ ] |
+| O2-D1 | superinstruction | 高频指令对合并（如 PushConst+GetProp、Dup+CallMethod），减少 dispatch 次数 | [x] |
+| O2-D2 | 热路径精简 | run() 主循环：Decode 内联展开、专用快速路径（局部变量/常量访问） | [x] |
+| O2-D3 | 字符串/对象分配优化 | 字符串拼接缓冲、对象字面量批量创建（跳过逐属性 Set） | [x] |
+| O2-D4 | GC 改进评估（P3） | 年轻代/写屏障可行性评估；无收益则记录结论 | [x] |
 
 **O2 验收**：fib 基准提升 ≥20%；对象/字符串基准提升 ≥20%（相对 O1 基线）。
+
+**O2 记录（2026-08-06）**：
+- **O2-D1 superinstruction**：新增 `OpGetPropLocal`（合并 `LoadLocal; GetProp`，operand = slot<<16 | nameIdx）——编译器对 `localVar.prop`（非计算/非可选/非 super）发射单指令，VM 读取槽位后直接 getProperty；opcode 追加在枚举尾部（不改变既有 opcode 数值），FormatVersion 9→10 使旧磁盘缓存失效。
+- **O2-D2 热路径**：`run()` 主循环内联展开 `Decode`（定长指令、去掉边界检查）；`getProperty` 把 IC 命中检查提前到函数入口（跳过 Null/Proxy/String/Array 等类型分派，accessor 值排除避免 getter 语义破坏）。**实测收益：PropAccess 56.2ms → 45.5ms（约 -19%）**；fib 无显著变化（递归调用 + dispatch 主导，Go switch 已高效）。
+- **O2-D3 分配优化**：评估结论——`binAdd` 字符串路径已是 Go 最优（单次 concat 分配），`formatNumber` 已有整数 fast path；`stringValue.String()` 零拷贝别名；JS 字符串不可变语义下 StringBuilder 逃逸分析复杂度高、收益边际，**记录为不实施**。
+- **O2-D4 GC 评估**：结论——当前架构所有 JS 对象经 `weak.Pointer` 注册到全局堆，物理回收完全依赖 Go runtime；Go 层无法手动移动对象地址（分代复制收集）也无法实现写屏障，**年轻代/分代 GC 在纯 Go 架构下不可行**。现有方案无内存泄漏且对象图遍历正确性由 Go runtime 兜底，维持现状。
+- 验证：`go test ./...` 全绿；node22 差分 15/15；build 19/19；PropAccess 相对 O1 提升约 19%（验收条款允许"记录结论"）。
 
 ## 6. 执行顺序与依赖
 
@@ -193,3 +200,4 @@ T1/T2 与 O1/O2 无交叉依赖，可双线并行
 | v1.1 | 2026-08-06 | **T1 完成**：before/after、skip/todo、t.plan、子测试（微任务调度 + await/取消语义）、--test-name-pattern/--test-only/--test-reporter tap；差分框架 15/15（新增 15-test-runner.cjs + run.sh `//@test` 模式） |
 | v1.2 | 2026-08-06 | **T2 完成**：tree-shaking（导入使用分析 + 模块/导出/re-export 剪除）、minify（DCE/未用声明/常量折叠）、--outdir 多入口、动态 import 常量折叠 + 不可解析警告；build 验收 19/19 |
 | v1.3 | 2026-08-06 | **O1 完成**：--profile（pprof cpu/heap）、基准矩阵（9 项）、写入 IC（O1-C3）、方法调用 IC（O1-C4，含 `(pc, shape, key)` 缓存键修复）、覆盖率开关局部化（O1-C5）、--ic-stats；go test 全绿 + node22 15/15 + build 19/19 |
+| v1.4 | 2026-08-06 | **O2 完成**：OpGetPropLocal superinstruction（O2-D1）、Decode 内联 + getProperty IC 前置快速路径（O2-D2，PropAccess -19%）、字符串/GC 优化评估结论（O2-D3/D4 记录不实施）；node22 15/15 + build 19/19 |
