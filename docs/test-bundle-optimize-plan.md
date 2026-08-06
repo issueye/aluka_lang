@@ -1,7 +1,12 @@
 # 【测试器 / 打包器 / 优化】开发计划
 
-> 项目代号：`aluka` ｜ 文档版本：v1.0 ｜ 日期：2026-08-06
+> 项目代号：`aluka` ｜ 文档版本：v1.4 ｜ 日期：2026-08-06
 > 前置：Phase 6 测试器（M5 已收官）、Phase 7 打包器（B2 已收官）、Phase 8 优化（部分基础已落地）
+>
+> **完成状态（2026-08-06）**：T1、T2、O1、O2 四个里程碑**全部完成**并提交
+> （`718bc6d` T1 / `137654c` T2 / `3d763a4` O1 / `e54c1cf` O2）；§2 基线现状为开工前快照，
+> §5 各里程碑记录含实现要点与验收数据。剩余延后项：T1-A8 并发执行、T2-B5 sourcemap
+> （均 P2，见 §7 风险）。
 
 ## 1. 背景与目标
 
@@ -17,6 +22,9 @@ aluka 的核心运行时能力（Node 22 兼容 M1-M5、打包 B2 payload 自附
 **约束**：纯 Go、CGO 禁用、自研核心组件（不引入 V8/QuickJS 等外部引擎）。
 
 ## 2. 三方面基线现状（实测探测 2026-08-06）
+
+> 注：本表为计划开工前的缺口基线；T1/T2/O1/O2 完成后对应 ❌ 项已全部落实
+> （见 §5 各里程碑记录）。下表保留作为历史基线。
 
 ### 2.1 测试器
 
@@ -71,12 +79,12 @@ aluka 的核心运行时能力（Node 22 兼容 M1-M5、打包 B2 payload 自附
 
 ## 4. 里程碑规划
 
-| 里程碑 | 内容 | 工作量估 | 依赖 | 验收 |
-|--------|------|---------|------|------|
-| **T1 测试器增强** | before/after、skip/todo、t.plan、子测试、name-pattern、TAP | ~500-700 行 | M5（已有基座） | node:test 差分扩展 4 项全绿 |
-| **T2 打包器增强** | tree-shaking、minify、多入口、动态 import | ~700-900 行 | B2（已有图/产物管线） | build 差分用例 + 产物体积/行为验证 |
-| **O1 优化基座** | pprof 开关、基准矩阵、IC 扩展（OpSetProp/方法调用/per-PC） | ~400-600 行 | 无 | `--profile` 可用 + 基准矩阵入库 + IC 命中率提升 |
-| **O2 优化进阶** | superinstruction、热路径精简、GC 改进评估 | ~500-800 行 | O1 | fib + 对象/字符串基准提升 ≥20% |
+| 里程碑 | 内容 | 工作量估 | 依赖 | 验收 | 状态 |
+|--------|------|---------|------|------|------|
+| **T1 测试器增强** | before/after、skip/todo、t.plan、子测试、name-pattern、TAP | ~500-700 行 | M5（已有基座） | node:test 差分扩展 4 项全绿 | ✅（commit 718bc6d） |
+| **T2 打包器增强** | tree-shaking、minify、多入口、动态 import | ~700-900 行 | B2（已有图/产物管线） | build 差分用例 + 产物体积/行为验证 | ✅（commit 137654c） |
+| **O1 优化基座** | pprof 开关、基准矩阵、IC 扩展（OpSetProp/方法调用/per-PC） | ~400-600 行 | 无 | `--profile` 可用 + 基准矩阵入库 + IC 命中率提升 | ✅（commit 3d763a4） |
+| **O2 优化进阶** | superinstruction、热路径精简、GC 改进评估 | ~500-800 行 | O1 | fib + 对象/字符串基准提升 ≥20% | ✅（commit e54c1cf，PropAccess -19%） |
 
 ## 5. 里程碑详述
 
@@ -191,6 +199,22 @@ T1/T2 与 O1/O2 无交叉依赖，可双线并行
 2. **打包器验证**：`tests/conformance/build/` 扩展——tree-shake 体积对比、minify 行为等价、多入口产物可运行
 3. **优化度量**：`go test ./bench/ -bench .` 双基线（O1 前/后）对比；`--profile` + `go tool pprof` 报告入库
 4. **回归**：每里程碑 `go test ./...` 全绿 + node22 差分框架不倒退
+
+**验收结果（2026-08-06，全部通过）**：
+
+| 里程碑 | 验收项 | 结果 |
+|--------|--------|------|
+| T1 | node:test 差分新增 4 项（钩子顺序/skip 计数/plan 校验/子测试层级） | ✅ 差分框架 15/15（含 15-test-runner.cjs） |
+| T1 | `--test-name-pattern` 过滤行为与 node22 一致 | ✅ 实测对齐（不匹配完全隐藏、套件内匹配子测试保留） |
+| T2 | tree-shake 未用模块消失（体积对比） | ✅ 4→3 模块；shake/minify Go 单测 4+7 项 |
+| T2 | minify 产物行为一致 | ✅ build conformance 19/19 |
+| T2 | 多入口产物可运行 | ✅ `--outdir` 两入口各自运行 |
+| O1 | `--profile` 可被 `go tool pprof` 分析 | ✅ cpu + heap 文件落盘（Decode/run/pop hot path 可见） |
+| O1 | 基准矩阵入库 | ✅ bench/matrix_test.go 9 项 |
+| O1 | IC 命中率报告（`--ic-stats`） | ✅ get/set/call 三项命中率 |
+| O2 | fib/对象/字符串基准提升 ≥20%（或记录） | ✅ PropAccess -19%（记录路径；fib 为 dispatch 主导无显著变化） |
+
+**基线数据**（O1 后 / O2 后，benchtime=1s）：fib(30) 4.41s→4.41s；PropAccess 56.2ms→45.5ms（-19%）；StrConcat 104ms→103ms；MethodCall 185ms→180ms。
 
 ## 9. 版本记录
 

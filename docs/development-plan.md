@@ -921,13 +921,19 @@ func init() {
 
 ### 验收清单
 
-- [ ] `aluka test` 跑通 hello world 测试
-- [ ] expect 全部 matchers 工作
-- [ ] mock 系统工作（`jest.fn()` 返回值记录调用）
-- [ ] 快照测试生成/更新
-- [ ] 并行执行无干扰
-- [ ] coverage 报告生成（LCOV + HTML）
+- [x] `aluka test` 跑通 hello world 测试
+- [x] expect 全部 matchers 工作（`t.assert` 断言族：ok/strictEqual/equal/deepStrictEqual/deepEqual/notStrictEqual/throws/snapshot）
+- [x] mock 系统工作（`mock.fn()`/`mock.method()`/`restoreAll()`，Node 22 语义）
+- [x] 快照测试生成/更新（`--test-update-snapshots`）
+- [ ] 并行执行无干扰（T1-A8 并发执行，P2 延后）
+- [x] coverage 报告生成（`--coverage` 行级报告，Node 风格）
 - [ ] 跑通 lodash 测试套件子集 ≥ 50%
+
+> **实现进度（2026-08-06）**：核心跑通。实现为 **node:test 兼容**（非 Jest/bun:test）：
+> describe/it/test/before/after/beforeEach/afterEach、skip/todo/only 标记、t.plan(n)、
+> 子测试（微任务调度 + await/取消语义）、`--test-name-pattern`/`--test-only`/
+> `--test-reporter tap`；node:test 差分框架 15/15（含 15-test-runner.cjs）。
+> 详见 docs/test-bundle-optimize-plan.md §5.1（T1，commit 718bc6d）。
 
 ### 风险
 
@@ -970,12 +976,16 @@ func init() {
 
 ### 验收清单
 
-- [ ] `aluka build ./src/index.ts --outdir ./dist` 生成打包文件
-- [ ] tree-shaking 移除未使用 export
-- [ ] minify 减小体积 ≥ 40%
-- [ ] `--compile --outfile app` 生成单文件可执行
-- [ ] `./app` 在无 aluka 安装的机器上运行
-- [ ] source map 正确还原行号
+- [x] `aluka build ./src/index.ts --outdir ./dist` 生成打包文件（多入口 `--outdir` 各自产物）
+- [x] tree-shaking 移除未使用 export（导入使用分析 + 模块/导出/re-export 剪枝）
+- [ ] minify 减小体积 ≥ 40%（实现为 AST 级 DCE/未用声明/常量折叠，字节码无标识符压缩）
+- [x] `--compile --outfile app` 生成单文件可执行（payload 自附着 + sha256 校验）
+- [x] `./app` 在无 aluka 安装的机器上运行（字节码平台无关）
+- [ ] source map 正确还原行号（T2-B5，P2 延后）
+
+> **实现进度（2026-08-06）**：`--compile`（B2）+ tree-shaking/minify/多入口/动态
+> import 常量折叠（T2）。`--tree-shake`（默认开）/`--minify`/`--outdir`；build
+> conformance 19/19。详见 docs/test-bundle-optimize-plan.md §5.2（T2，commit 137654c）。
 
 ### 风险
 
@@ -1022,12 +1032,19 @@ func init() {
 
 ### 验收清单
 
-- [ ] 性能 benchmark：HTTP RPS ≥ Bun 60%，启动延迟 ≥ Bun 80%
+- [ ] 性能 benchmark：HTTP RPS ≥ Bun 60%，启动延迟 ≥ Bun 80%（已建立基准矩阵，差距仍大）
 - [ ] test262 通过率 ≥ 85%
 - [ ] Top 500 npm 包 ≥ 80% 可加载
 - [ ] 文档站上线
 - [ ] VSCode 插件发布
 - [ ] `--inspect` 可在 Chrome DevTools 中调试
+- [x] Profile 工具可用（`--profile` pprof cpu/heap）
+
+> **实现进度（2026-08-06）**：`--profile`（pprof）+ 基准矩阵（9 项）+ 写入/方法调用
+> IC + superinstruction（OpGetPropLocal）+ getProperty IC 前置（PropAccess -19%）+
+> 覆盖率开关局部化 + `--ic-stats`。GC 分代/写屏障评估结论：纯 Go 架构不可行，维持
+> weak.Pointer + Go runtime 回收。详见 docs/test-bundle-optimize-plan.md §5.3/§5.4
+> （O1 commit 3d763a4、O2 commit e54c1cf）。
 
 ---
 
@@ -1294,3 +1311,5 @@ go install github.com/aluka-lang/aluka/cmd/aluka@latest
 | v1.15 | 2026-08-04 | **Phase 4 完成（Aluka 特有 API，兼容 Bun）**。**重命名**——全局对象 `Bun` → `Aluka`（保留 `Bun` 兼容别名，`Bun === Aluka` 为 true）。**基础 API（4.1/4.3-4.8）**——`globals/aluka.go` 新增 `NewAluka`：version/platform/arch/cwd/origin/main/nanoseconds/env（与 process.env 同源）/sleep/sleepSync/gc/file（BunFile：text/json/arrayBuffer/size）/write/stdout/stderr/stdin。**serve（4.2）**——`Aluka.serve({port, hostname, fetch})` 基于 Go net/http：同步 `net.Listen` 立即暴露实际端口（port:0 由 OS 分配，此前经 PostTask 异步设置导致 `srv.port` undefined）、`fetch(req)` 构造 Request（method/url/headers/body）在 JS 线程执行、`stop()` 返回 Promise（Close + AddRef 释放）；响应头经 Headers 内部 `_pairs` 属性直读（此前遍历函数键导致响应头错误）、响应体读内部 `_body` 同步写回（规避 `Promise.then` 无 this 绑定的引擎限制导致 body 回调永不执行）。**fetch 侧修复**——补 `Response.json`（JSON.stringify + 默认 Content-Type: application/json）/`Response.redirect`（302 Location）；`fetch` 支持 `redirect: "follow|manual|error"`（Go CheckRedirect 三态）；Buffer 实例原型挂到构造器 prototype + 注册 `Uint8Array` 全局别名，使 `buf instanceof Uint8Array` 成立（engine `SetProto`/`GetProto` 补 BufferValue 分支）。**P1 API（4.9-4.16）**——`Aluka.$`（跨平台 shell：Windows cmd /C、其余 sh -c，返回 {stdout/stderr/exitCode/text()/json()}）；`Aluka.password`（scrypt hash/verify，格式 `aluka-scrypt$N$salt$hash`）；`Aluka.hash`（FNV-1a 64 → BigInt + sha1/sha256/sha512 hex）；`Aluka.deflateSync/inflateSync/gzipSync/gunzipSync` + 异步 deflate/inflate/gzip/gunzip（Go compress/zlib + compress/gzip）；`Aluka.peek`（Promise 状态查询，`PromiseValue` 新增导出 `State()/Result()`）/deepEquals/deepAssign/which/escapeHTML/isTerminal/dns.lookup；`Aluka.CSV/TSV/TOML/YAML`（parse/stringify，CSV/TSV 用 encoding/csv，TOML/YAML 自研子集解析器——TOML 支持 table/数组/引号注释剥离，YAML 支持缩进嵌套、列表项、顶层列表、内联 `- key: value`）；`Aluka.spawn`（Subprocess：pid/stdout/stderr ReadableStream/exited Promise/kill）/`spawnSync`（含 env 合并、cwd）。**P2 stub（4.17-4.20）**——`Aluka.SQL`/`Redis`/`S3` API 骨架（方法存在、调用返回 rejected Promise 提示驱动待接入），不引入 pgx/redis/aws-sdk 重依赖。**测试**——新增 `aluka_test.go` 11 个测试（基础信息、file/write、hash、password、compress、util、encoding、$ shell、spawnSync、serve 完整闭环 Go http.Get、SQL/Redis/S3 stub）；测试总数 565→580+；全量测试 + node conformance 10/10 + test262 5/5 无回归。 |
 
 | v1.16 | 2026-08-04 | **Phase 5 启动：npm 兼容包管理器 + 引擎缺陷修复**。**包管理器（WBS 5.1-5.9）**——`internal/pkgmanager/semver`（自研 npm 语义化版本：解析 v 前缀/缺失组件/prerelease/build，范围 ^/~/>=/<=/>/</=、x 通配、空格 AND、|| OR、prerelease 排除规则、MaxSatisfying）；`internal/pkgmanager/registry`（npm registry HTTP 客户端：包元数据 + tarball 下载，scoped 包转义、鉴权 token、自定义 registry）；`internal/pkgmanager/resolver`（依赖解析 BFS + 简化 hoisting 先到先得，dependencies+peerDependencies 合并、optionalDependencies 失败跳过）；`internal/pkgmanager/installer`（node_modules 布局 + 并发下载解压，archive/tar+compress/gzip，剥离 package/ 顶层前缀，路径穿越防护，单文件 256MB 上限）；`internal/pkgmanager/lockfile`（aluka.lock 文本格式，bun.lock 兼容子集）；CLI `aluka install [pkg]`/`add`/`remove`/`update` 子命令（package.json 读写、最新版本经 dist-tags 解析、^ 前缀）。**真实 npm 验证**——`aluka add is-number` 安装并 `require` 运行成功；`aluka add chalk@4` 解析并安装 6 个传递依赖（chalk/ansi-styles/supports-color/color-convert/color-name/has-flag）。**引擎缺陷修复（真实包暴露）**——(1) 一元加 `+"x"` 错误返回 0 → 实现 `jsToNumber`/`jsStringToNumber`（ES ToNumber 语义：非数字字符串→NaN、""→0、0x/0o 前缀、trim）；(2) parser 不支持 `~` 按位非 → parseUnary 增加 `~` case + AST 解释器 OpBitNot；(3) `require('os')` 裸内置模块名不拦截 → require 层增加 `isBareSpecifier + hasBuiltin` 检查（Node 内置优先于 node_modules 同名包）；(4) 计算成员调用 `obj[key](args)` 不支持（报错且 for-of+嵌套函数上下文中编译器提前 panic）→ compiler 用 OpDup+OpGetElem+OpSwap+OpCallWithThis 实现（保留 this 绑定，含 spread 分支）；(5) compileFunction 编译 body 出错时未 pop funcStack 导致 c.cur() 残留 → 错误路径先 pop 再返回 error。**内置模块补充**——`node:tty`（isatty/ReadStream/WriteStream，chalk 依赖）。**测试**——新增 `phase5_fixes_test.go`（一元加、~、计算成员调用、for-of 嵌套函数）+ semver 4 个测试（35 用例）；全量测试 + node conformance 10/10 + test262 5/5 无回归。**已知限制**——部分真实包（chalk、supports-color、left-pad）require 时失败，根因为函数声明在 `module.exports` 赋值时尚未提升（引擎 hoisting 缺陷，P1 范畴），Phase 5 包管理器核心功能不受影响。 |
+| v1.17 | 2026-08-05 | **Node 22 兼容线（docs/node22-compat-plan.md）M1-M4 完成**。M1 常用 API 补全：assert.match/doesNotMatch、util.parseArgs（移植 Node v22 parse_args.js）、fs.cp/glob、path.matchesGlob、crypto.X509Certificate、Buffer.isUtf8/isAscii、process.umask/cpuUsage、spawnSync 三件套、http.Agent；M2 ES2024 globals：Object.groupBy/Map.groupBy、Promise.withResolvers、Array.fromAsync、String.isWellFormed/toWellFormed、Uint8Array.{fromBase64,toBase64,setFromBase64,setFromHex,toHex}、Temporal（面）；M3 缺失模块：node:dgram/cluster/http2/inspector；M4 测试与工具链：node:test（mock/snapshot/coverage 差分）、REPL（.editor/历史持久化）、trace_events；差分框架 tests/conformance/node22 14/14 |
+| v1.18 | 2026-08-06 | **Node 22 兼容 M5 + 测试器/打包器/优化三线收官**。M5：TypeScript declare 环境声明擦除、包 exports 解析、node:test mock/snapshot/coverage/REPL/trace_events 收尾。**T1 测试器增强**（commit 718bc6d）：before/after 套件钩子、skip/todo/only 标记、t.plan(n)、子测试（微任务调度 + await/取消语义）、--test-name-pattern/--test-only/--test-reporter tap；node:test 差分 15/15。**T2 打包器增强**（commit 137654c）：tree-shaking（导入使用分析 + 模块/导出/re-export 剪枝）、minify（DCE/未用声明/常量折叠）、--outdir 多入口、动态 import 常量折叠；build conformance 19/19。**O1 优化基座**（commit 3d763a4）：--profile（pprof cpu/heap）、基准矩阵 9 项、写入 IC、方法调用 IC、覆盖开关局部化、--ic-stats。**O2 优化进阶**（commit e54c1cf）：OpGetPropLocal superinstruction、Decode 内联 + getProperty IC 前置（PropAccess -19%）、字符串/GC 优化评估结论。go test 全绿 + node22 15/15 + build 19/19 |
