@@ -40,9 +40,16 @@ func (e *Embedded) ResolveEmbedded(specifier, parentPath string) (string, bool) 
 	return target, ok
 }
 
-// ModuleTypeOf 返回模块类型（ModuleTypeESM | ModuleTypeCJS）。
+// ModuleTypeOf 返回模块类型（ModuleTypeESM | ModuleTypeCJS | "json"——
+// JSON 资源不在模块表，经 Assets 判定）。
 func (e *Embedded) ModuleTypeOf(key string) string {
-	return e.manifest.ModuleTypeOf(key)
+	if t := e.manifest.ModuleTypeOf(key); t != "" {
+		return t
+	}
+	if _, ok := e.manifest.Assets[key]; ok {
+		return "json"
+	}
+	return ""
 }
 
 // LoadModule 反序列化嵌入的预编译模块（带缓存）。
@@ -58,4 +65,13 @@ func (e *Embedded) LoadModule(key string) (*bytecode.Module, error) {
 	}
 	e.cache[key] = mod
 	return mod, nil
+}
+
+// LoadJSON 读取嵌入的 JSON 资源（M3，B2.3.4）。未找到返回 ok=false。
+func (e *Embedded) LoadJSON(key string) ([]byte, bool) {
+	raw, ok := e.manifest.Assets[key]
+	if !ok {
+		return nil, false
+	}
+	return []byte(raw), true
 }

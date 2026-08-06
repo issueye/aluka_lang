@@ -21,10 +21,14 @@ func stripBOM(src []byte) []byte {
 
 // CompileFile 将单个源文件编译为可打包的 EntryData（M1：单模块产物）。
 //
+// path 是文件系统路径（用于读取源码）；key 是模块标识（写入字节码
+// SourceFile 与 EntryData.Path，M3 起为相对入口的虚拟路径，产物运行时的
+// __filename/import.meta/错误堆栈均基于它）。
+//
 // 编译管线与 loader 完全一致：解析 → 模块类型判定（无 import/export 且非
 // .mjs 按 CJS）→ ESM 转换 + 包装（或 CJS 包装）→ 编译为字节码 Module。
 // 产物在执行前已完成转换/包装，运行时零开销（docs/build-compile-plan.md §3.2）。
-func CompileFile(vm *interpreter.VM, path string) (*EntryData, error) {
+func CompileFile(vm *interpreter.VM, path, key string) (*EntryData, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("compile: cannot resolve path %q: %w", path, err)
@@ -44,18 +48,18 @@ func CompileFile(vm *interpreter.VM, path string) (*EntryData, error) {
 	// await（TLA）按 ESM；无 import/export 声明的其他文件按 CJS。
 	if !module.HasESMDecls(prog) && !ast.HasTopLevelAwait(prog) && filepath.Ext(absPath) != ".mjs" {
 		wrapped := module.WrapCJSSource(string(src))
-		mod, err := vm.Compile(wrapped, absPath)
+		mod, err := vm.Compile(wrapped, key)
 		if err != nil {
-			return nil, fmt.Errorf("compile: %q: %w", absPath, err)
+			return nil, fmt.Errorf("compile: %q: %w", key, err)
 		}
-		return &EntryData{Path: absPath, ModuleType: ModuleTypeCJS, Module: mod}, nil
+		return &EntryData{Path: key, ModuleType: ModuleTypeCJS, Module: mod}, nil
 	}
 
-	transformed := module.TransformESMToCJS(prog, absPath)
-	prog2 := module.WrapESMAST(transformed, absPath)
-	mod, err := vm.CompileAST(prog2, absPath)
+	transformed := module.TransformESMToCJS(prog, key)
+	prog2 := module.WrapESMAST(transformed, key)
+	mod, err := vm.CompileAST(prog2, key)
 	if err != nil {
-		return nil, fmt.Errorf("compile: %q: %w", absPath, err)
+		return nil, fmt.Errorf("compile: %q: %w", key, err)
 	}
-	return &EntryData{Path: absPath, ModuleType: ModuleTypeESM, Module: mod}, nil
+	return &EntryData{Path: key, ModuleType: ModuleTypeESM, Module: mod}, nil
 }

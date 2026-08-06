@@ -209,7 +209,7 @@ ALUKA=./aluka bash tests/conformance/install/run.sh
 # express-demo 真实环境验证（HTTP 全链路：中间件/路由/body 解析/500 并发，6/6）
 ALUKA=./aluka bash tests/conformance/express/run.sh
 
-# build --compile conformance（单入口/多文件/node_modules/循环依赖/动态 import，8/8）
+# build --compile conformance（单入口/多文件/循环依赖/动态 import/JSON 资源/argv/import.meta/TLA，12/12）
 ALUKA=./aluka bash tests/conformance/build/run.sh
 ```
 

@@ -147,18 +147,33 @@ B2 成立的前提已核实：**字节码序列化格式稳定**（`bytecode.Ser
 **修复（M2 暴露）**：产物模式循环依赖栈溢出——`RunPrecompiled` 无缓存检查，
 embedded 分支每次重新执行模块；requireCtx 嵌入式分支补缓存拦截（与文件模式一致）。
 
-### M3：语义修正层（产物模式差异对齐）
+### M3：语义修正层（产物模式差异对齐）—— ✅ 完成（2026-08-06）
 
 | ID | 任务 | 输出 | 状态 |
 |----|------|------|------|
-| B2.3.1 | 虚拟路径语义：`__filename`/`__dirname`/`import.meta`（构建时相对路径，`bun://` 风格 URL） | `loader.go` makeImportMetaFunc 分支 | [ ] |
-| B2.3.2 | `process.argv` 产物语义（argv[1] = 虚拟入口路径，后续为应用参数） | `cmd/aluka/compiled.go` | [ ] |
-| B2.3.3 | 动态 `import()` 命中/未命中语义（字面量命中 store；变量形式 reject 带清晰报错） | `loader.go` makeImportFunc 分支 | [ ] |
-| B2.3.4 | JSON 资源嵌入与加载（复用 `loadJSON`；manifest 资源表） | `internal/bundler/compile/` + loader | [ ] |
-| B2.3.5 | 错误堆栈 SourceFile 虚拟路径核对（构建期已写入字节码，验证即可） | 测试验证 | [ ] |
-| B2.3.6 | M3 测试：argv/import.meta/TLA/JSON 资源/错误堆栈语义 | `tests/conformance/build/` | [ ] |
+| B2.3.1 | 虚拟路径语义：`__filename`/`__dirname`/`import.meta`（构建时相对路径，`bun://` 风格 URL） | `graph.go`（虚拟 key）+ `loader.go`（bun://） | ✅ |
+| B2.3.2 | `process.argv` 产物语义（argv[1] = 虚拟入口路径，后续为应用参数） | `cmd/aluka/compiled.go` | ✅ |
+| B2.3.3 | 动态 `import()` 命中/未命中语义（字面量命中 store；变量形式 reject 带清晰报错） | M2 已完成，核对通过 | ✅ |
+| B2.3.4 | JSON 资源嵌入与加载（复用 `loadJSON`；manifest 资源表） | `payload.go` Assets + `embedded.go` LoadJSON + loader json 分支 | ✅ |
+| B2.3.5 | 错误堆栈 SourceFile 虚拟路径核对（构建期已写入字节码，验证即可） | 验证通过（`at boom (err.ts)`） | ✅ |
+| B2.3.6 | M3 测试：argv/import.meta/TLA/JSON 资源/错误堆栈语义 | `tests/conformance/build/run.sh`（12 项） | ✅ |
 
-**M3 验收**：与 Bun 编译产物对照，argv/import.meta/错误信息语义一致（Node 22 + Bun 差分验证）；TLA 入口正常。
+**M3 验收达成**：
+- 模块标识全部虚拟化（相对入口，`/` 分隔）：`__filename`/`import.meta.dirname`/
+  错误堆栈均为虚拟路径，不泄露构建机绝对路径
+- `import.meta.url` = `bun://main.ts`（Bun 编译产物风格）
+- `process.argv[1]` = 虚拟入口路径，argv[2:] = 应用参数
+- JSON 资源：静态 `import x from './d.json' with {type:'json'}` 与动态
+  `import('./d.json', {with:{type:'json'}})` 均命中嵌入资源
+- TLA 入口正常；`go test ./...` 全绿；build conformance 12/12
+
+**M3 关键实现**：
+- 虚拟 key：`virtualKey(entryDir, absPath)` = 相对入口目录的 `/` 分隔路径
+  （入口 = `main.ts`；依赖 = `src/util.ts`/`node_modules/x/index.js`）
+- manifest 增加 `Assets`（虚拟路径 → JSON 原始字节）；`.json` 依赖收集为
+  资源而非模块；`Embedded.ModuleTypeOf` 对资源返回 `"json"`
+- `requireWithAttributes` 统一走 requireCtx：产物模式命中资源/模块，
+  文件模式行为不变（json 扩展名判定在 requireCtx 尾段）
 
 ### M4：跨平台 + 校验 + 测试套件 + 文档
 
@@ -255,6 +270,7 @@ tests/conformance/build/
 | v1.0 | 2026-08-06 | 初稿：B2 路线选定、M1-M4 里程碑、WBS 分解、payload 格式设计 |
 | v1.1 | 2026-08-06 | **M1 完成**：payload 格式/打包器、footer 自检测、产物模式引导、`Loader.RunPrecompiled` 重构、`aluka build --compile` CLI、conformance 4/4 |
 | v1.2 | 2026-08-06 | **M2 完成**：模块图收集器（构建期解析映射）、EmbeddedStore + Loader 嵌入式分支、多模块打包、循环依赖修复、动态 import reject Error 对象、conformance 8/8 |
+| v1.3 | 2026-08-06 | **M3 完成**：虚拟路径语义（模块 key 相对化/import.meta bun:///错误堆栈）、process.argv 产物语义、JSON 资源嵌入（静态/动态 import）、TLA 验证、conformance 12/12 |
 
 ---
 

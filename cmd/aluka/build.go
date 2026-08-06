@@ -72,8 +72,8 @@ func cmdBuild(args []string) {
 		fatalErr("aluka build: " + err.Error())
 	}
 
-	// 打包 payload（多模块 + 解析映射）。
-	payload, err := compile.Pack(graphResult.Entry, graphResult.Modules, graphResult.Resolutions)
+	// 打包 payload（多模块 + 解析映射 + JSON 资源）。
+	payload, err := compile.Pack(graphResult.Entry, graphResult.Modules, graphResult.Resolutions, graphResult.Assets)
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
 	}

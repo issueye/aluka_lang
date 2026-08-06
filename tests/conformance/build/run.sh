@@ -151,6 +151,97 @@ else
   esac
 fi
 
+# 9) M3 JSON 资源（import attributes 静态导入）+ argv + import.meta。
+mkdir -p "$DIR/sem"
+cat > "$DIR/sem/main.ts" <<'EOF'
+import cfg from './data.json' with { type: 'json' };
+console.log('json:' + JSON.stringify(cfg));
+console.log('argv1:' + process.argv[1]);
+console.log('argv2:' + process.argv[2]);
+console.log('meta:' + import.meta.url);
+console.log('dirname:' + JSON.stringify(import.meta.dirname));
+EOF
+cat > "$DIR/sem/data.json" <<'EOF'
+{ "name": "aluka", "count": 3 }
+EOF
+if ! $ALUKA build --compile --outfile "$DIR/sem.exe" "$DIR/sem/main.ts" >"$DIR/build9.log" 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL  build semantics"
+  sed 's/^/       /' "$DIR/build9.log" | head -5
+else
+  out="$("$DIR/sem.exe" myarg 2>&1)"
+  ok=1
+  case "$out" in
+    *'json:{"count":3,"name":"aluka"}'*) ;;
+    *) echo "       json: $out"; ok=0 ;;
+  esac
+  case "$out" in
+    *"argv1:main.ts"*) ;;
+    *) ok=0 ;;
+  esac
+  case "$out" in
+    *"argv2:myarg"*) ;;
+    *) ok=0 ;;
+  esac
+  case "$out" in
+    *"meta:bun://main.ts"*) ;;
+    *) ok=0 ;;
+  esac
+  if [ "$ok" = "1" ]; then
+    echo "PASS  json resource + argv + import.meta"; PASS=$((PASS + 1))
+  else
+    echo "FAIL  json resource + argv + import.meta"; echo "       got: $out"; FAIL=$((FAIL + 1))
+  fi
+fi
+
+# 10) M3 错误堆栈显示虚拟路径（不泄露构建机绝对路径）。
+cat > "$DIR/err.ts" <<'EOF'
+function boom() { throw new Error('kaboom'); }
+boom();
+EOF
+if ! $ALUKA build --compile --outfile "$DIR/err.exe" "$DIR/err.ts" >"$DIR/build10.log" 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL  build error entry"
+  sed 's/^/       /' "$DIR/build10.log" | head -5
+else
+  out="$("$DIR/err.exe" 2>&1)"
+  case "$out" in
+    *"err.ts"*"kaboom"*)
+      if echo "$out" | grep -q "AppData\|/tmp/\|C:"; then
+        echo "FAIL  error stack leaks build-machine path"; echo "       got: $out"; FAIL=$((FAIL + 1))
+      else
+        echo "PASS  error stack uses virtual path"; PASS=$((PASS + 1))
+      fi ;;
+    *) echo "FAIL  error stack"; echo "       got: $out"; FAIL=$((FAIL + 1)) ;;
+  esac
+fi
+
+# 11) M3 顶层 await（TLA）入口。
+cat > "$DIR/tla.ts" <<'EOF'
+const x = await Promise.resolve(42);
+console.log('tla:' + x);
+EOF
+if ! $ALUKA build --compile --outfile "$DIR/tla.exe" "$DIR/tla.ts" >"$DIR/build11.log" 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL  build tla entry"
+  sed 's/^/       /' "$DIR/build11.log" | head -5
+else
+  check "top-level await" "tla:42" "$("$DIR/tla.exe" 2>&1)"
+fi
+
+# 12) M3 动态 import JSON（import attributes 动态形式）。
+cat > "$DIR/dynjson.ts" <<'EOF'
+import('./data.json', { with: { type: 'json' } }).then(m => console.log('dyn:' + m.default.name));
+EOF
+cp "$DIR/sem/data.json" "$DIR/data.json"
+if ! $ALUKA build --compile --outfile "$DIR/dynjson.exe" "$DIR/dynjson.ts" >"$DIR/build12.log" 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL  build dynamic json"
+  sed 's/^/       /' "$DIR/build12.log" | head -5
+else
+  check "dynamic import json" "dyn:aluka" "$("$DIR/dynjson.exe" 2>&1)"
+fi
+
 echo ""
 echo "ℹ build conformance: $PASS passed, $FAIL failed"
 if [ "$FAIL" -gt 0 ]; then

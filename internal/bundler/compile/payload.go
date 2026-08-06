@@ -64,8 +64,11 @@ type Manifest struct {
 	// 路径（构建机绝对路径）。产物运行时不做文件系统解析，直接查映射加载
 	// 嵌入的预编译模块（M2，docs/build-compile-plan.md §5.3）。
 	Resolutions map[string]map[string]string `json:"resolutions,omitempty"`
-	Platform    string                       `json:"platform"` // 构建平台（GOOS/GOARCH）
-	CreatedAt   string                       `json:"createdAt"`
+	// Assets 是嵌入的 JSON 资源（M3，B2.3.4）：虚拟路径 → 原始 JSON 字节。
+	// import x from './data.json' 的依赖在构建期收集为资源而非模块。
+	Assets    map[string]string `json:"assets,omitempty"`
+	Platform  string            `json:"platform"` // 构建平台（GOOS/GOARCH）
+	CreatedAt string            `json:"createdAt"`
 }
 
 // EntryData 是一个待打包模块（编译产物）。
@@ -77,8 +80,8 @@ type EntryData struct {
 
 // Pack 打包 payload 数据段（不含 footer；footer 由 Build 阶段写入文件）。
 // modules 按路径排序保证输出确定性；resolutions 为构建期解析映射
-// （M2 多模块；M1 单模块可传 nil）。
-func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[string]string) ([]byte, error) {
+// （M2）；assets 为嵌入的 JSON 资源（M3，虚拟路径 → 原始字节）。
+func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[string]string, assets map[string][]byte) ([]byte, error) {
 	sorted := make([]*EntryData, len(modules))
 	copy(sorted, modules)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
@@ -99,12 +102,18 @@ func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[str
 		})
 	}
 
+	assetStrings := make(map[string]string, len(assets))
+	for k, v := range assets {
+		assetStrings[k] = string(v)
+	}
+
 	manifest := Manifest{
 		PayloadVersion: PayloadVersion,
 		FormatVersion:  bytecode.FormatVersion,
 		Entry:          entryPath,
 		Modules:        entries,
 		Resolutions:    resolutions,
+		Assets:         assetStrings,
 		Platform:       platformString(),
 		CreatedAt:      time.Now().Format(time.RFC3339),
 	}

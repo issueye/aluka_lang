@@ -21,7 +21,7 @@ func TestCompileFileCJS(t *testing.T) {
 	if err := os.WriteFile(hello, []byte("console.log('hi');"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	entry, err := CompileFile(vm, hello)
+	entry, err := CompileFile(vm, hello, "hello.ts")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestCompileFileESM(t *testing.T) {
 	if err := os.WriteFile(main, []byte("export const x = 42;"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	entry, err := CompileFile(vm, main)
+	entry, err := CompileFile(vm, main, "main.ts")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,12 +64,12 @@ func TestPackParseRoundTrip(t *testing.T) {
 	if err := os.WriteFile(main, []byte("export const x = 42;"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	entry, err := CompileFile(vm, main)
+	entry, err := CompileFile(vm, main, "main.ts")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	payload, err := Pack(main, []*EntryData{entry}, nil)
+	payload, err := Pack("main.ts", []*EntryData{entry}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +77,8 @@ func TestPackParseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Entry != main {
-		t.Errorf("entry = %q, want %q", manifest.Entry, main)
+	if manifest.Entry != "main.ts" {
+		t.Errorf("entry = %q, want main.ts (module key)", manifest.Entry)
 	}
 	if manifest.FormatVersion == 0 {
 		t.Error("formatVersion not recorded")
@@ -86,10 +86,10 @@ func TestPackParseRoundTrip(t *testing.T) {
 	if len(manifest.Modules) != 1 {
 		t.Fatalf("modules = %d, want 1", len(manifest.Modules))
 	}
-	if got := manifest.ModuleTypeOf(main); got != ModuleTypeESM {
+	if got := manifest.ModuleTypeOf("main.ts"); got != ModuleTypeESM {
 		t.Errorf("moduleType = %q, want esm", got)
 	}
-	mod, err := manifest.LoadModule(data, main)
+	mod, err := manifest.LoadModule(data, "main.ts")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,11 +121,11 @@ func TestParsePayloadVersionMismatch(t *testing.T) {
 	if err := os.WriteFile(main, []byte("1;"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	entry, err := CompileFile(vm, main)
+	entry, err := CompileFile(vm, main, "main.ts")
 	if err != nil {
 		t.Fatal(err)
 	}
-	orig, err := Pack(main, []*EntryData{entry}, nil)
+	orig, err := Pack("main.ts", []*EntryData{entry}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -26,6 +26,7 @@ func newTestEnv(t *testing.T, files map[string]string) string {
 }
 
 // TestBuildMultiFile：ESM 导入 + CJS require + node_modules 包的多模块图。
+// 模块标识为相对入口的虚拟路径（M3，B2.3.1）。
 func TestBuildMultiFile(t *testing.T) {
 	dir := newTestEnv(t, map[string]string{
 		"main.ts": `import { greet } from './util.ts';
@@ -40,38 +41,64 @@ func TestBuildMultiFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry := filepath.Join(dir, "main.ts")
-	res, err := Build(vm, module.NewResolver(), entry)
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res.Modules) != 3 {
 		t.Errorf("modules = %d, want 3 (main/util/smallpkg)", len(res.Modules))
 	}
-	// 解析映射：main → util.ts（import 语境）与 smallpkg（require 语境）。
-	mainAbs, _ := filepath.Abs(entry)
-	table, ok := res.Resolutions[mainAbs]
+	if res.Entry != "main.ts" {
+		t.Errorf("entry = %q, want main.ts (virtual path)", res.Entry)
+	}
+	// 解析映射（虚拟 key）：main.ts → util.ts 与 node_modules 包。
+	table, ok := res.Resolutions["main.ts"]
 	if !ok {
-		t.Fatalf("no resolutions for entry %q", mainAbs)
+		t.Fatalf("no resolutions for entry key %q", "main.ts")
 	}
-	utilAbs, _ := filepath.Abs(filepath.Join(dir, "util.ts"))
-	if table["./util.ts"] != utilAbs {
-		t.Errorf("resolutions['./util.ts'] = %q, want %q", table["./util.ts"], utilAbs)
+	if table["./util.ts"] != "util.ts" {
+		t.Errorf("resolutions['./util.ts'] = %q, want util.ts", table["./util.ts"])
 	}
-	pkgAbs, _ := filepath.Abs(filepath.Join(dir, "node_modules", "smallpkg", "index.js"))
-	if table["smallpkg"] != pkgAbs {
-		t.Errorf("resolutions['smallpkg'] = %q, want %q", table["smallpkg"], pkgAbs)
+	if table["smallpkg"] != "node_modules/smallpkg/index.js" {
+		t.Errorf("resolutions['smallpkg'] = %q, want node_modules/smallpkg/index.js", table["smallpkg"])
 	}
 	// 模块类型判定：util.ts 为 ESM，smallpkg/index.js 为 CJS。
 	types := map[string]string{}
 	for _, m := range res.Modules {
 		types[m.Path] = m.ModuleType
 	}
-	if types[utilAbs] != "esm" {
-		t.Errorf("util.ts type = %q, want esm", types[utilAbs])
+	if types["util.ts"] != "esm" {
+		t.Errorf("util.ts type = %q, want esm", types["util.ts"])
 	}
-	if types[pkgAbs] != "cjs" {
-		t.Errorf("smallpkg type = %q, want cjs", types[pkgAbs])
+	if types["node_modules/smallpkg/index.js"] != "cjs" {
+		t.Errorf("smallpkg type = %q, want cjs", types["node_modules/smallpkg/index.js"])
+	}
+}
+
+// TestBuildJSONAsset：.json 依赖收集为资源（Assets）而非模块。
+func TestBuildJSONAsset(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"main.ts":   `import cfg from './data.json' with { type: 'json' }; console.log(cfg.name);`,
+		"data.json": `{ "name": "aluka", "count": 3 }`,
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Modules) != 1 {
+		t.Errorf("modules = %d, want 1 (json is asset not module)", len(res.Modules))
+	}
+	data, ok := res.Assets["data.json"]
+	if !ok || string(data) != `{ "name": "aluka", "count": 3 }` {
+		t.Errorf("assets['data.json'] = %q, want json bytes", string(data))
+	}
+	table := res.Resolutions["main.ts"]
+	if table["./data.json"] != "data.json" {
+		t.Errorf("resolutions['./data.json'] = %q, want data.json", table["./data.json"])
 	}
 }
 

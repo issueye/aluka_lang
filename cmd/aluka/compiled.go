@@ -13,6 +13,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/builtin"
 	"github.com/aluka-lang/aluka/internal/bundler/compile"
+	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	modmodule "github.com/aluka-lang/aluka/internal/runtime/module"
 )
@@ -94,6 +95,19 @@ func runCompiled(payload []byte) int {
 	_ = builtin.InstallGetBuiltinModule(ctx, loader)
 	// M2：嵌入式模块存储——require/import 按构建期解析映射加载嵌入模块。
 	loader.SetEmbedded(compile.NewEmbedded(manifest, data))
+
+	// M3：产物模式 process.argv 语义（Bun 编译产物一致）：
+	// argv[0] = 可执行文件路径，argv[1] = 虚拟入口路径，其余为应用参数。
+	if proc, err := ctx.Global().Get("process"); err == nil {
+		if po, ok := proc.AsObject(); ok {
+			argvVals := []engine.Value{engine.Str(os.Args[0]), engine.Str(manifest.Entry)}
+			for _, a := range os.Args[1:] {
+				argvVals = append(argvVals, engine.Str(a))
+			}
+			_ = po.Set("argv", engine.NewArray(argvVals))
+			_ = po.Set("argv0", engine.Str(os.Args[0]))
+		}
+	}
 
 	isESM := manifest.ModuleTypeOf(entry) == compile.ModuleTypeESM
 	if _, err := loader.RunPrecompiled(entry, mod, isESM); err != nil {

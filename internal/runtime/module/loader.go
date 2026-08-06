@@ -19,10 +19,12 @@ import (
 type EmbeddedResolver interface {
 	// ResolveEmbedded 按构建期解析映射解析 specifier（父模块路径 → 模块路径）。
 	ResolveEmbedded(specifier, parentPath string) (string, bool)
-	// ModuleTypeOf 返回模块类型（"esm" | "cjs"）。
+	// ModuleTypeOf 返回模块类型（"esm" | "cjs" | "json"）。
 	ModuleTypeOf(key string) string
 	// LoadModule 反序列化嵌入的预编译模块（实现内部可缓存）。
 	LoadModule(key string) (*bytecode.Module, error)
+	// LoadJSON 读取嵌入的 JSON 资源（M3：import x from './data.json'）。
+	LoadJSON(key string) ([]byte, bool)
 }
 
 // Loader loads and caches modules. It supports both CommonJS (require) and
@@ -187,6 +189,22 @@ func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engin
 			return cached, nil
 		}
 		l.mu.Unlock()
+		// JSON 资源（M3）：直接解析嵌入字节，语义同文件模式的 loadJSON。
+		if l.embedded.ModuleTypeOf(key) == "json" {
+			data, ok := l.embedded.LoadJSON(key)
+			if !ok {
+				return engine.Undefined(), fmt.Errorf("module: compiled mode: JSON asset %q not found", key)
+			}
+			var v interface{}
+			if err := json.Unmarshal(data, &v); err != nil {
+				return engine.Undefined(), fmt.Errorf("module: invalid JSON in %q: %w", key, err)
+			}
+			val := jsonToValue(v)
+			l.mu.Lock()
+			l.cache[key] = val
+			l.mu.Unlock()
+			return val, nil
+		}
 		mod, err := l.embedded.LoadModule(key)
 		if err != nil {
 			return engine.Undefined(), err
@@ -361,10 +379,15 @@ func (l *Loader) makeImportReqFunc(modulePath string) engine.Function {
 // makeImportMetaFunc 构造 import.meta 元数据访问函数（__importMeta()）。
 // 返回当前模块的元数据对象：{ url, dirname, filename, resolve }。
 // parser 把 import.meta lower 为对全局 __importMeta() 的调用。
+// 产物模式下 url 用 bun:// 前缀（虚拟路径，Bun 编译产物风格）；
+// 文件模式保持 file:// URL。
 func (l *Loader) makeImportMetaFunc(modulePath string) engine.Value {
 	meta := engine.NewObject()
-	fileURL := pathToFileURLString(modulePath)
-	_ = meta.Set("url", engine.Str(fileURL))
+	if l.embedded != nil {
+		_ = meta.Set("url", engine.Str("bun://"+filepath.ToSlash(modulePath)))
+	} else {
+		_ = meta.Set("url", engine.Str(pathToFileURLString(modulePath)))
+	}
 	_ = meta.Set("dirname", engine.Str(filepath.Dir(modulePath)))
 	_ = meta.Set("filename", engine.Str(modulePath))
 	_ = meta.Set("resolve", engine.NewFunction("resolve", func(args []engine.Value) (engine.Value, error) {
@@ -399,19 +422,10 @@ func pathToFileURLString(abs string) string {
 // requireWithAttributes 按 import attributes 加载模块：
 // type 为 "json" 时强制走 JSON 模块加载；"module" 或不指定走常规加载；
 // 其他 type 报错。动态 import() 语境（import 条件解析）。
+// json 与常规分支统一走 requireCtx：产物模式命中嵌入模块/JSON 资源；
+// 文件模式走文件系统解析（.json 扩展名由 requireCtx 尾段判定为 loadJSON）。
 func (l *Loader) requireWithAttributes(specifier, parentPath, attrType string) (engine.Value, error) {
-	if attrType == "json" {
-		resolved, err := l.resolver.ResolveImport(specifier, parentPath)
-		if err != nil {
-			return engine.Undefined(), err
-		}
-		absPath, err := filepath.Abs(resolved)
-		if err != nil {
-			return engine.Undefined(), fmt.Errorf("module: cannot resolve path: %w", err)
-		}
-		return l.loadJSON(absPath)
-	}
-	if attrType != "" && attrType != "module" {
+	if attrType != "" && attrType != "module" && attrType != "json" {
 		return engine.Undefined(), fmt.Errorf("import: unsupported import attribute type %q", attrType)
 	}
 	return l.requireCtx(specifier, parentPath, true)

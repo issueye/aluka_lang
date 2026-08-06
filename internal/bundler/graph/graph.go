@@ -26,56 +26,83 @@ type Dep struct {
 	ImportCtx bool // true = import 语境（ESM 导入/动态 import），false = require 语境
 }
 
-// Result 是模块图构建的产物：编译后的模块列表 + 构建期解析映射。
+// Result 是模块图构建的产物：编译后的模块列表 + 构建期解析映射 + JSON 资源。
 type Result struct {
 	Entry       string
 	Modules     []*compile.EntryData
-	Resolutions map[string]map[string]string // parentPath → specifier → 解析后的绝对路径
+	Resolutions map[string]map[string]string // 父模块虚拟路径 → specifier → 目标模块虚拟路径
+	Assets      map[string][]byte            // JSON 资源：虚拟路径 → 原始字节（M3）
 }
 
 // Build 从入口构建模块图并编译所有模块。
+// 模块标识使用虚拟路径（相对入口文件所在目录，/ 分隔）：产物运行时的
+// __filename/import.meta/错误堆栈均基于虚拟路径，与构建机位置无关。
 func Build(vm *interpreter.VM, resolver *module.Resolver, entry string) (*Result, error) {
+	entryAbs, err := filepath.Abs(entry)
+	if err != nil {
+		return nil, fmt.Errorf("graph: cannot resolve entry %q: %w", entry, err)
+	}
+	entryDir := filepath.Dir(entryAbs)
 	r := &Result{
 		Entry:       "",
 		Modules:     make([]*compile.EntryData, 0),
 		Resolutions: make(map[string]map[string]string),
+		Assets:      make(map[string][]byte),
 	}
 	visited := make(map[string]bool)
-	if err := r.walk(vm, resolver, entry, visited); err != nil {
+	if err := r.walk(vm, resolver, entryAbs, virtualKey(entryDir, entryAbs), entryDir, visited); err != nil {
 		return nil, err
 	}
 	return r, nil
 }
 
-// walk 编译一个模块并递归收集其依赖。
-func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, path string, visited map[string]bool) error {
-	absPath, err := filepath.Abs(path)
+// virtualKey 将绝对路径转为相对入口目录的虚拟路径（/ 分隔）。
+// 入口本身得到文件名（如 "main.ts"）；依赖得到相对路径
+// （如 "src/util.ts"、"node_modules/smallpkg/index.js"）。
+func virtualKey(entryDir, absPath string) string {
+	rel, err := filepath.Rel(entryDir, absPath)
 	if err != nil {
-		return fmt.Errorf("graph: cannot resolve path %q: %w", path, err)
+		return filepath.ToSlash(absPath)
 	}
-	if visited[absPath] {
+	return filepath.ToSlash(rel)
+}
+
+// walk 编译一个模块并递归收集其依赖。fsPath 用于文件系统操作，key 是
+// 模块标识（虚拟路径），entryDir 是入口目录（虚拟 key 的基准）。
+func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key, entryDir string, visited map[string]bool) error {
+	if visited[fsPath] {
 		return nil
 	}
-	visited[absPath] = true
+	visited[fsPath] = true
 
-	entryData, err := compile.CompileFile(vm, absPath)
+	// JSON 文件是资源而非模块：读取原始字节嵌入（M3，B2.3.4）。
+	if strings.EqualFold(filepath.Ext(fsPath), ".json") {
+		data, err := os.ReadFile(fsPath)
+		if err != nil {
+			return fmt.Errorf("graph: cannot read %q: %w", fsPath, err)
+		}
+		r.Assets[key] = data
+		return nil
+	}
+
+	entryData, err := compile.CompileFile(vm, fsPath, key)
 	if err != nil {
 		return err
 	}
 	r.Modules = append(r.Modules, entryData)
 	if r.Entry == "" {
-		r.Entry = absPath
+		r.Entry = key
 	}
 
 	// 解析源码收集静态依赖（CompileFile 内部已 parse，此处重新 parse 收集
 	// specifier；M2 规模下开销可接受，后续可合并为一次 parse）。
-	src, err := os.ReadFile(absPath)
+	src, err := os.ReadFile(fsPath)
 	if err != nil {
-		return fmt.Errorf("graph: cannot read %q: %w", absPath, err)
+		return fmt.Errorf("graph: cannot read %q: %w", fsPath, err)
 	}
 	prog, err := parser.ParseModule(string(stripBOM(src)))
 	if err != nil {
-		return fmt.Errorf("graph: parse error in %q: %w", absPath, err)
+		return fmt.Errorf("graph: parse error in %q: %w", fsPath, err)
 	}
 	deps := collectDeps(prog)
 
@@ -87,9 +114,9 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, path string
 		}
 		var resolved string
 		if dep.ImportCtx {
-			resolved, err = resolver.ResolveImport(dep.Spec, absPath)
+			resolved, err = resolver.ResolveImport(dep.Spec, fsPath)
 		} else {
-			resolved, err = resolver.Resolve(dep.Spec, absPath)
+			resolved, err = resolver.Resolve(dep.Spec, fsPath)
 		}
 		if err != nil {
 			// 裸名解析失败可能命中运行时内置（如 require('path')）——
@@ -97,19 +124,20 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, path string
 			if isBareSpecifier(dep.Spec) {
 				continue
 			}
-			return fmt.Errorf("graph: cannot resolve %q from %q: %w", dep.Spec, absPath, err)
+			return fmt.Errorf("graph: cannot resolve %q from %q: %w", dep.Spec, key, err)
 		}
 		rAbs, err := filepath.Abs(resolved)
 		if err != nil {
 			return err
 		}
-		table[dep.Spec] = rAbs
-		if err := r.walk(vm, resolver, rAbs, visited); err != nil {
+		depKey := virtualKey(entryDir, rAbs)
+		table[dep.Spec] = depKey
+		if err := r.walk(vm, resolver, rAbs, depKey, entryDir, visited); err != nil {
 			return err
 		}
 	}
 	if len(table) > 0 {
-		r.Resolutions[absPath] = table
+		r.Resolutions[key] = table
 	}
 	return nil
 }
