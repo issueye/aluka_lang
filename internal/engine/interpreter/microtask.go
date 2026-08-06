@@ -3,7 +3,23 @@ package interpreter
 // enqueueMicrotask adds a job to the microtask queue. Microtasks run after the
 // current synchronous execution completes (i.e., after the VM's top-level
 // runModule returns).
+//
+// 异步上下文传播（AsyncLocalStorage）：入队时捕获当前异步上下文，执行时恢复
+// ——使 Promise reaction / async 续体 / queueMicrotask 能继承入队时刻的 store。
+// 钩子未安装时零开销（AsyncContextCapture/Restore 为 nil）。
 func (interp *Interpreter) enqueueMicrotask(fn func()) {
+	if AsyncContextCapture != nil {
+		captured := AsyncContextCapture()
+		interp.microtaskQueue = append(interp.microtaskQueue, func() {
+			if AsyncContextRestore != nil && captured != nil {
+				saved := AsyncContextCapture()
+				AsyncContextRestore(captured)
+				defer func() { AsyncContextRestore(saved) }()
+			}
+			fn()
+		})
+		return
+	}
 	interp.microtaskQueue = append(interp.microtaskQueue, fn)
 }
 

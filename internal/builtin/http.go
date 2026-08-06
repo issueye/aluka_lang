@@ -12,6 +12,8 @@ package builtin
 // 从 Go goroutine 出发的 JS 调用必须经 PostTask。
 
 import (
+	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -20,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
@@ -30,7 +33,7 @@ func NewHTTP(ctx engine.Context) (engine.Value, error) {
 	m := engine.NewObject()
 
 	// http.Agent + globalAgent（keepAlive 连接复用）。
-	registerHttpAgent(m)
+	registerHttpAgent(ctx, m)
 
 	// http.createServer([handler]) → Server 对象。
 	_ = m.Set("createServer", engine.NewFunction("createServer", func(args []engine.Value) (engine.Value, error) {
@@ -76,7 +79,15 @@ func NewHTTP(ctx engine.Context) (engine.Value, error) {
 	// ServerResponse.prototype)` 构造响应原型对象，缺失时读取 'prototype'
 	// 报 TypeError。实际响应对象由 newServerResponse 构造，且在 handler
 	// 派发时被 express 以 Object.setPrototypeOf 重新挂到 app.response 上。
-	_ = m.Set("ServerResponse", newServerResponseCtor())
+	_ = m.Set("ServerResponse", newServerResponseCtor(ctx))
+
+	// http.validateHeaderName/validateHeaderValue：低层校验（no-op 返回 undefined）。
+	_ = m.Set("validateHeaderName", engine.NewFunction("validateHeaderName", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+	_ = m.Set("validateHeaderValue", engine.NewFunction("validateHeaderValue", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
 
 	return m, nil
 }
@@ -99,6 +110,7 @@ func newIncomingMessageCtor() engine.Value {
 // httpServerState 是 HTTP 服务器的内部状态。
 type httpServerState struct {
 	ctx           engine.Context
+	server        engine.Value // 服务器对象（EventEmitter）
 	handler       engine.Value // 用户 handler
 	httpSrv       *http.Server
 	tlsConfig     *tls.Config // 非 nil 时启用 HTTPS
@@ -118,7 +130,45 @@ func newHTTPServer(ctx engine.Context, handler engine.Value) engine.Value {
 // newHTTPServerWithTLS 创建 Server 对象；tlsConfig 非 nil 时启用 HTTPS。
 func newHTTPServerWithTLS(ctx engine.Context, handler engine.Value, tlsConfig *tls.Config) engine.Value {
 	server := newEmitterInstance().(engine.Object)
-	state := &httpServerState{ctx: ctx, handler: handler, tlsConfig: tlsConfig}
+	state := &httpServerState{ctx: ctx, handler: handler, tlsConfig: tlsConfig, server: server}
+
+	// Node 表面属性（server.timeout/keepAliveTimeout 等）。
+	_ = server.Set("listening", engine.Boolean(false))
+	_ = server.Set("timeout", engine.IntValue(0))
+	_ = server.Set("keepAliveTimeout", engine.IntValue(5000))
+	_ = server.Set("maxHeadersCount", engine.Null())
+	_ = server.Set("headersTimeout", engine.IntValue(60000))
+	_ = server.Set("requestTimeout", engine.IntValue(300000))
+	_ = server.Set("maxRequestsPerSocket", engine.IntValue(0))
+
+	// server.setTimeout([msecs][, callback])：超时默认 0（禁），no-op 兼容。
+	_ = server.Set("setTimeout", engine.NewFunction("setTimeout", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 && args[0].Type() == engine.TypeNumber {
+			if n, ok := args[0].Int(); ok {
+				_ = server.Set("timeout", engine.IntValue(n))
+			}
+		}
+		if len(args) > 1 && args[1].IsFunction() {
+			if f, ok := args[1].AsFunction(); ok {
+				_, _ = f.Call(nil)
+			}
+		}
+		return server, nil
+	}))
+	_ = server.Set("closeAllConnections", engine.NewFunction("closeAllConnections", func(args []engine.Value) (engine.Value, error) {
+		return server, nil
+	}))
+	_ = server.Set("closeIdleConnections", engine.NewFunction("closeIdleConnections", func(args []engine.Value) (engine.Value, error) {
+		return server, nil
+	}))
+	_ = server.Set("getConnections", engine.NewFunction("getConnections", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 && args[0].IsFunction() {
+			if f, ok := args[0].AsFunction(); ok {
+				_, _ = f.Call([]engine.Value{engine.Null(), engine.IntValue(0)})
+			}
+		}
+		return server, nil
+	}))
 
 	// server.listen(port[, hostname][, callback])
 	_ = server.Set("listen", engine.NewFunction("listen", func(args []engine.Value) (engine.Value, error) {
@@ -165,6 +215,7 @@ func newHTTPServerWithTLS(ctx engine.Context, handler engine.Value, tlsConfig *t
 		state.httpSrv = srv
 		state.listening = true
 		state.mu.Unlock()
+		_ = server.Set("listening", engine.Boolean(true))
 
 		// 在 goroutine 监听（不阻塞 JS）。
 		go func() {
@@ -214,6 +265,7 @@ func newHTTPServerWithTLS(ctx engine.Context, handler engine.Value, tlsConfig *t
 		state.mu.Lock()
 		srv := state.httpSrv
 		state.listening = false
+		_ = server.Set("listening", engine.Boolean(false))
 		var release func()
 		if !state.closed {
 			state.closed = true
@@ -286,6 +338,13 @@ func newHTTPServerWithTLS(ctx engine.Context, handler engine.Value, tlsConfig *t
 // 并阻塞等待 handler 完成——确保响应体在 Go handler 返回前写入
 // （否则 Go net/http 会先发送空响应）。
 func (s *httpServerState) handleRequest(w http.ResponseWriter, r *http.Request) {
+	// HTTP Upgrade / CONNECT 请求：Node 语义为触发 server 'upgrade'/'connect'
+	// 事件并把原始 socket 交给用户，而不是走普通 handler。用 Go http.Hijacker
+	// 劫持连接后构造 net.Socket 投递给 JS 线程。
+	if isUpgradeRequest(r) {
+		s.handleUpgradeRequest(w, r)
+		return
+	}
 	if s.handler == nil || !s.handler.IsFunction() {
 		w.WriteHeader(500)
 		_, _ = w.Write([]byte("no handler"))
@@ -294,27 +353,82 @@ func (s *httpServerState) handleRequest(w http.ResponseWriter, r *http.Request) 
 	// 读取请求体（同步，阻塞 net/http goroutine 但可接受）。
 	body, _ := io.ReadAll(r.Body)
 
-	// 在 JS 线程构造并调用 handler，完成后才返回（响应已写入）。
-	done := make(chan struct{})
+	// 在 JS 线程构造并调用 handler；回调必须尽快返回，把等待放在
+	// http goroutine 上——否则阻塞 JS 线程导致定时器/IO 回调无法执行。
+	resCh := make(chan *respState, 1)
 	s.ctx.PostTask(func() {
 		req := newIncomingMessage(r, body)
-		res := newServerResponse(w)
+		res, resState := newServerResponse(s.ctx, w)
+		resCh <- resState
 		if f, ok := s.handler.AsFunction(); ok {
 			_, _ = f.Call([]engine.Value{req, res})
 		}
-		// 异步 handler（Promise/async 链式 res.end）：同步返回后响应尚未
-		// 完成，需在 JS 线程持续排空微任务，直到 res.end 被调用（finished）。
-		// 否则 Go net/http 会在本次返回后发送空响应，丢失异步写入的 body。
-		for i := 0; i < 1000000 && !resFinished(res); i++ {
-			if !s.ctx.FlushMicrotasks() {
-				break // 无待执行微任务：handler 依赖定时器/IO 等，超出本层处理
-			}
-		}
-		// handler 注册完监听器后发射请求体事件（'data'/'end'）。
+		// 驱动已就绪的微任务（async/await 链）；定时器/IO 触发的 res.end
+		// 由事件循环的后续任务自然驱动。
+		s.ctx.FlushMicrotasks()
+		// handler 同步部分已注册监听器，发射请求体事件（'data'/'end'）。
 		emitIncomingData(req, body)
-		close(done)
 	})
-	<-done
+
+	// http goroutine 等待响应完成（res.end → done 关闭）。
+	resState := <-resCh
+	select {
+	case <-resState.done:
+	case <-time.After(30 * time.Second):
+	}
+	// 兜底：异常路径仍未 end，提交已缓冲内容（避免空响应）。
+	if !resState.finished {
+		resState.flushHeadersOnce()
+		resState.writeBuffered()
+		resState.sendTrailers()
+		resState.finished = true
+	}
+}
+
+// isUpgradeRequest 判断请求是否为 HTTP Upgrade（Connection: Upgrade 等）或
+// CONNECT 方法（Node 分别触发 server 的 'upgrade' 与 'connect' 事件）。
+func isUpgradeRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.Method == "CONNECT" {
+		return true
+	}
+	for _, v := range r.Header.Values("Connection") {
+		if strings.Contains(strings.ToLower(v), "upgrade") {
+			return true
+		}
+	}
+	return strings.TrimSpace(r.Header.Get("Upgrade")) != ""
+}
+
+// handleUpgradeRequest 劫持连接并触发 server 'upgrade'/'connect' 事件。
+func (s *httpServerState) handleUpgradeRequest(w http.ResponseWriter, r *http.Request) {
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		w.WriteHeader(500)
+		return
+	}
+	conn, rw, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	// head：hijack 后可能已缓冲的请求头之后的数据。
+	var head []byte
+	if rw != nil && rw.Reader != nil && rw.Reader.Buffered() > 0 {
+		head, _ = rw.Reader.Peek(rw.Reader.Buffered())
+	}
+	event := "upgrade"
+	if r.Method == "CONNECT" {
+		event = "connect"
+	}
+	serverObj := s.server
+	// 构造 net.Socket（立即启动读循环）。
+	socket, _ := newNetSocket(s.ctx, conn)
+	s.ctx.PostTask(func() {
+		req := newIncomingMessage(r, nil)
+		emitEvent(serverObj, event, req, socket, globals.NewBufferInstance(head))
+	})
 }
 
 // resFinishedKey 记录响应是否已结束（res.end 调用）的隐藏属性。
@@ -392,9 +506,10 @@ func emitIncomingData(msg engine.Value, body []byte) {
 }
 
 // newServerResponseCtor 构造 ServerResponse 构造器（含可继承的 prototype）。
-func newServerResponseCtor() engine.Value {
+func newServerResponseCtor(ctx engine.Context) engine.Value {
 	ctor := engine.NewFunction("ServerResponse", func(args []engine.Value) (engine.Value, error) {
-		return newServerResponse(nil), nil
+		v, _ := newServerResponse(ctx, nil)
+		return v, nil
 	})
 	proto := engine.NewObject()
 	_ = proto.Set("constructor", ctor)
@@ -405,39 +520,60 @@ func newServerResponseCtor() engine.Value {
 }
 
 // newServerResponse 构造 ServerResponse 对象（响应）。
-func newServerResponse(w http.ResponseWriter) engine.Value {
+// 返回 (对象, 内部状态)，状态供 handleRequest 在 handler 未 end 时兜底 flush。
+func newServerResponse(ctx engine.Context, w http.ResponseWriter) (engine.Value, *respState) {
 	res := newEmitterInstance().(engine.Object)
 
 	state := &respState{
+		ctx:      ctx,
 		w:        w,
 		status:   200,
-		headers:  make(map[string]string),
+		headers:  make(map[string][]string),
+		trailers: make(map[string][]string),
 		finished: false,
+		done:     make(chan struct{}),
 	}
 
-	// res.statusCode
-	_ = res.Set("statusCode", engine.IntValue(200))
+	// res.statusCode：accessor（Node 语义 res.statusCode = N 修改实际状态码）。
+	statusGet := engine.NewFunction("statusCodeGet", func(args []engine.Value) (engine.Value, error) {
+		return engine.IntValue(state.status), nil
+	})
+	statusSet := engine.NewFunction("statusCodeSet", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			state.status = intArg(args, 0, 200)
+		}
+		return engine.Undefined(), nil
+	})
+	engine.SetAccessor(res, "statusCode", statusGet, statusSet)
 
-	// res.writeHead(statusCode[, headers])：立即写入状态码与 headers。
+	// res.writableEnded：response 是否已 end。
+	_ = res.Set("writableEnded", engine.Boolean(false))
+
+	// res.writeHead(statusCode[, statusMessage][, headers])：立即写入状态码与 headers。
 	_ = res.Set("writeHead", engine.NewFunction("writeHead", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 0 {
 			state.status = intArg(args, 0, 200)
-			_ = res.Set("statusCode", engine.IntValue(state.status))
 		}
-		if len(args) > 1 {
-			if h, ok := args[1].AsObject(); ok {
-				state.applyHeaders(h)
+		// (statusCode, statusMessage, headers) / (statusCode, headers) 两种形式。
+		for i := 1; i < len(args); i++ {
+			if args[i].IsObject() {
+				if h, ok := args[i].AsObject(); ok {
+					state.applyHeaders(h)
+				}
+				break
 			}
 		}
 		state.flushHeadersOnce() // 立即提交 headers
+		state.flushed = true     // 后续 write 直写（Node writeHead 语义）
 		return res, nil
 	}))
 
-	// res.write(chunk)：首次 write 前 flush headers。
+	// res.write(chunk)：缓冲到内存，end 时统一提交——保证 addTrailers 在
+	// WriteHeader 前声明（Go 语义：Trailer 头必须在 WriteHeader 前设置）。
+	// 超过阈值或显式 flushHeaders 后直写。
 	_ = res.Set("write", engine.NewFunction("write", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 0 && !state.finished {
-			state.flushHeadersOnce()
-			_, _ = state.w.Write([]byte(args[0].String()))
+			state.writeChunk([]byte(args[0].String()))
 		}
 		return engine.Boolean(true), nil
 	}))
@@ -447,22 +583,30 @@ func newServerResponse(w http.ResponseWriter) engine.Value {
 		if state.finished {
 			return res, nil
 		}
-		// 先 flush headers（含状态码），再写 body，避免重复 WriteHeader。
-		state.flushHeadersOnce()
 		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() && !args[0].IsFunction() {
-			_, _ = state.w.Write([]byte(args[0].String()))
+			state.writeChunk([]byte(args[0].String()))
 		}
+		// 先 flush headers（含状态码与 Trailer 声明），再写 body + trailers。
+		state.flushHeadersOnce()
+		state.writeBuffered()
+		state.sendTrailers()
 		state.finished = true
 		_ = res.Set(resFinishedKey, engine.Boolean(true))
-		emitEvent(res, "finish")
-		emitEvent(res, "close")
+		_ = res.Set("writableEnded", engine.Boolean(true))
+		state.signalDone() // 通知 handleRequest 等待循环
+		// Node 语义：'finish'/'close' 在响应提交后异步触发（先于其注册的
+		// 监听器也能收到）。用 PostTask 延迟到当前同步执行结束后发射。
+		state.ctx.PostTask(func() {
+			emitEvent(res, "finish")
+			emitEvent(res, "close")
+		})
 		return res, nil
 	}))
 
 	// res.setHeader(name, value)
 	_ = res.Set("setHeader", engine.NewFunction("setHeader", func(args []engine.Value) (engine.Value, error) {
 		if len(args) >= 2 {
-			state.headers[args[0].String()] = args[1].String()
+			state.headers[strings.ToLower(args[0].String())] = headerValues(args[1])
 		}
 		return res, nil
 	}))
@@ -470,32 +614,152 @@ func newServerResponse(w http.ResponseWriter) engine.Value {
 	// res.getHeader(name)
 	_ = res.Set("getHeader", engine.NewFunction("getHeader", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 0 {
-			if v, ok := state.headers[args[0].String()]; ok {
-				return engine.Str(v), nil
+			if vals, ok := state.headers[strings.ToLower(args[0].String())]; ok && len(vals) > 0 {
+				return engine.Str(vals[0]), nil
 			}
 		}
 		return engine.Undefined(), nil
 	}))
 
-	// res.statusCode 设置器（setter 简化：直接写）
-	_ = res.Set("setStatusCode", engine.NewFunction("setStatusCode", func(args []engine.Value) (engine.Value, error) {
+	// res.getHeaders()：返回 {name: value|array}，键小写。
+	_ = res.Set("getHeaders", engine.NewFunction("getHeaders", func(args []engine.Value) (engine.Value, error) {
+		return state.headersObj(), nil
+	}))
+
+	// res.hasHeader(name)
+	_ = res.Set("hasHeader", engine.NewFunction("hasHeader", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 0 {
-			state.status = intArg(args, 0, 200)
-			_ = res.Set("statusCode", engine.IntValue(state.status))
+			_, ok := state.headers[strings.ToLower(args[0].String())]
+			return engine.Boolean(ok), nil
+		}
+		return engine.Boolean(false), nil
+	}))
+
+	// res.removeHeader(name)
+	_ = res.Set("removeHeader", engine.NewFunction("removeHeader", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			delete(state.headers, strings.ToLower(args[0].String()))
 		}
 		return res, nil
 	}))
 
-	return res
+	// res.addTrailers(headers)：chunked 响应的 trailer 头。
+	_ = res.Set("addTrailers", engine.NewFunction("addTrailers", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			if h, ok := args[0].AsObject(); ok {
+				for _, k := range h.Keys() {
+					if v, err := h.Get(k); err == nil {
+						state.trailers[strings.ToLower(k)] = headerValues(v)
+					}
+				}
+			}
+		}
+		return res, nil
+	}))
+
+	// res.flushHeaders()：立即提交 headers 与已缓冲 body（后续 write 直写）。
+	_ = res.Set("flushHeaders", engine.NewFunction("flushHeaders", func(args []engine.Value) (engine.Value, error) {
+		state.flushHeadersOnce()
+		state.writeBuffered()
+		return res, nil
+	}))
+
+	// res.writeContinue()：发送 100 Continue（简化 no-op）。
+	_ = res.Set("writeContinue", engine.NewFunction("writeContinue", func(args []engine.Value) (engine.Value, error) {
+		return res, nil
+	}))
+
+	// res.cork() / res.uncork()：流式缓冲 no-op。
+	_ = res.Set("cork", engine.NewFunction("cork", func(args []engine.Value) (engine.Value, error) {
+		return res, nil
+	}))
+	_ = res.Set("uncork", engine.NewFunction("uncork", func(args []engine.Value) (engine.Value, error) {
+		return res, nil
+	}))
+
+	// res.setTimeout([msecs][, callback])：no-op 兼容。
+	_ = res.Set("setTimeout", engine.NewFunction("setTimeout", func(args []engine.Value) (engine.Value, error) {
+		return res, nil
+	}))
+
+	return res, state
 }
 
 // respState 是 ServerResponse 的内部状态。
 type respState struct {
+	ctx            engine.Context
 	w              http.ResponseWriter
 	status         int
-	headers        map[string]string
+	headers        map[string][]string
+	trailers       map[string][]string
 	finished       bool
 	headersWritten bool
+	flushed        bool
+	body           bytes.Buffer // 缓冲 body（end 时统一提交，保证 Trailer 声明时序）
+	done           chan struct{}
+	doneOnce       sync.Once
+}
+
+// signalDone 通知 handleRequest 的等待循环响应已结束。
+func (rs *respState) signalDone() {
+	rs.doneOnce.Do(func() { close(rs.done) })
+}
+
+// maxResponseBuffer 超过该阈值后 write 直写（避免大响应无限缓冲）。
+const maxResponseBuffer = 1 << 20 // 1 MiB
+
+// writeChunk 写入一个响应 chunk（未提交前缓冲）。
+func (rs *respState) writeChunk(chunk []byte) {
+	if rs.flushed || rs.body.Len()+len(chunk) > maxResponseBuffer {
+		rs.flushHeadersOnce()
+		rs.flushed = true
+		_, _ = rs.w.Write(chunk)
+		return
+	}
+	rs.body.Write(chunk)
+}
+
+// writeBuffered 把缓冲的 body 写到底层 ResponseWriter。
+func (rs *respState) writeBuffered() {
+	if rs.flushed {
+		return
+	}
+	rs.flushed = true
+	if rs.body.Len() > 0 {
+		_, _ = rs.w.Write(rs.body.Bytes())
+	}
+}
+
+// headerValues 把 JS header 值（string 或 string[]）转为 []string。
+func headerValues(v engine.Value) []string {
+	if av, ok := v.(*engine.ArrayValue); ok {
+		vals := make([]string, 0, len(av.Elems()))
+		for _, e := range av.Elems() {
+			if !e.IsUndefined() && !e.IsNull() {
+				vals = append(vals, e.String())
+			}
+		}
+		return vals
+	}
+	return []string{v.String()}
+}
+
+// headersObj 返回 getHeaders() 的结果对象（键小写，数组值保留数组）。
+func (rs *respState) headersObj() engine.Value {
+	obj := engine.NewObject()
+	for k, vals := range rs.headers {
+		lk := strings.ToLower(k)
+		if len(vals) == 1 {
+			_ = obj.Set(lk, engine.Str(vals[0]))
+		} else {
+			arr := make([]engine.Value, len(vals))
+			for i, v := range vals {
+				arr[i] = engine.Str(v)
+			}
+			_ = obj.Set(lk, engine.NewArray(arr))
+		}
+	}
+	return obj
 }
 
 // flushHeadersOnce 只写入一次 headers/状态码（避免 Go 重复 WriteHeader 警告）。
@@ -504,12 +768,27 @@ func (rs *respState) flushHeadersOnce() {
 		return
 	}
 	rs.headersWritten = true
-	hasHeaders := len(rs.headers) > 0
-	for k, v := range rs.headers {
-		rs.w.Header().Set(k, v)
+	for k, vals := range rs.headers {
+		for _, v := range vals {
+			rs.w.Header().Add(k, v)
+		}
 	}
+	// 声明 trailer 名称（Go 在 handler 返回时发送 trailer 值）。
+	for name := range rs.trailers {
+		rs.w.Header().Add("Trailer", name)
+	}
+	hasHeaders := len(rs.headers) > 0
 	if hasHeaders || rs.status != 200 {
 		rs.w.WriteHeader(rs.status)
+	}
+}
+
+// sendTrailers 在 body 写完（res.end）后提交 trailer 值。
+func (rs *respState) sendTrailers() {
+	for name, vals := range rs.trailers {
+		for _, v := range vals {
+			rs.w.Header().Add(http.TrailerPrefix+name, v)
+		}
 	}
 }
 
@@ -517,7 +796,7 @@ func (rs *respState) flushHeadersOnce() {
 func (rs *respState) applyHeaders(h engine.Object) {
 	for _, k := range h.Keys() {
 		if v, err := h.Get(k); err == nil {
-			rs.headers[k] = v.String()
+			rs.headers[strings.ToLower(k)] = headerValues(v)
 		}
 	}
 }
@@ -571,15 +850,18 @@ func httpMethods() engine.Value {
 // clientReqState 是 ClientRequest 的内部状态。
 type clientReqState struct {
 	ctx         engine.Context
+	req         engine.Value // ClientRequest 对象
 	method      string
 	url         string
 	headers     map[string]string
 	body        strings.Builder
 	callback    engine.Value // 响应回调
 	ended       bool
-	insecureTLS bool           // rejectUnauthorized: false（跳过自签名证书校验）
-	agent       *http.Transport // options.agent 的连接池（nil 时按 noAgent/全局）
-	noAgent     bool            // agent: false → 每次请求新建连接
+	aborted     bool
+	cancel      context.CancelFunc // 中止请求（req.abort）
+	insecureTLS bool              // rejectUnauthorized: false（跳过自签名证书校验）
+	agent       *http.Transport   // options.agent 的连接池（nil 时按 noAgent/全局）
+	noAgent     bool              // agent: false → 每次请求新建连接
 }
 
 // newClientRequest 创建 ClientRequest 对象（HTTP）。
@@ -598,6 +880,7 @@ func newClientRequestProto(ctx engine.Context, args []engine.Value, proto string
 		method:  "GET",
 		headers: make(map[string]string),
 	}
+	state.req = req
 
 	// 解析 options。
 	var callback engine.Value
@@ -673,6 +956,108 @@ func newClientRequestProto(ctx engine.Context, args []engine.Value, proto string
 		return req, nil
 	}))
 
+	// req.getHeader(name)
+	_ = req.Set("getHeader", engine.NewFunction("getHeader", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			if v, ok := state.headers[args[0].String()]; ok {
+				return engine.Str(v), nil
+			}
+		}
+		return engine.Undefined(), nil
+	}))
+
+	// req.getHeaders()：返回当前请求头对象。
+	_ = req.Set("getHeaders", engine.NewFunction("getHeaders", func(args []engine.Value) (engine.Value, error) {
+		obj := engine.NewObject()
+		for k, v := range state.headers {
+			_ = obj.Set(k, engine.Str(v))
+		}
+		return obj, nil
+	}))
+
+	// req.hasHeader(name)
+	_ = req.Set("hasHeader", engine.NewFunction("hasHeader", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			_, ok := state.headers[args[0].String()]
+			return engine.Boolean(ok), nil
+		}
+		return engine.Boolean(false), nil
+	}))
+
+	// req.removeHeader(name)
+	_ = req.Set("removeHeader", engine.NewFunction("removeHeader", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			delete(state.headers, args[0].String())
+		}
+		return req, nil
+	}))
+
+	// req.flushHeaders()：no-op（发送在 end 时统一进行）。
+	_ = req.Set("flushHeaders", engine.NewFunction("flushHeaders", func(args []engine.Value) (engine.Value, error) {
+		return req, nil
+	}))
+
+	// req.setTimeout(timeout[, callback])：定时触发 'timeout' 事件。
+	_ = req.Set("setTimeout", engine.NewFunction("setTimeout", func(args []engine.Value) (engine.Value, error) {
+		timeout := intArg(args, 0, 0)
+		var cb engine.Value
+		if len(args) > 1 && args[1].IsFunction() {
+			cb = args[1]
+		}
+		if timeout > 0 {
+			if st, err := ctx.Global().Get("setTimeout"); err == nil && st.IsFunction() {
+				if sf, ok := st.AsFunction(); ok {
+					timerCb := engine.NewFunction("timeout", func(callArgs []engine.Value) (engine.Value, error) {
+						// Node 语义：setTimeout 的 callback 是第一个 'timeout' 监听器，
+						// 先触发 callback，再触发后续 on('timeout') 监听器。
+						if cb.IsFunction() {
+							if f, ok := cb.AsFunction(); ok {
+								_, _ = f.Call(nil)
+							}
+						}
+						emitEvent(req, "timeout")
+						return engine.Undefined(), nil
+					})
+					_, _ = sf.Call([]engine.Value{timerCb, engine.Number(float64(timeout))})
+				}
+			}
+		}
+		return req, nil
+	}))
+
+	// req.setNoDelay([noDelay]) / req.setSocketKeepAlive([enable][, initialDelay])：no-op。
+	_ = req.Set("setNoDelay", engine.NewFunction("setNoDelay", func(args []engine.Value) (engine.Value, error) {
+		return req, nil
+	}))
+	_ = req.Set("setSocketKeepAlive", engine.NewFunction("setSocketKeepAlive", func(args []engine.Value) (engine.Value, error) {
+		return req, nil
+	}))
+
+	// req.abort()：中止请求，触发 'abort'；底层取消后 'error'(ECONNRESET)+'close'。
+	_ = req.Set("abort", engine.NewFunction("abort", func(args []engine.Value) (engine.Value, error) {
+		if !state.aborted {
+			state.aborted = true
+			if state.cancel != nil {
+				state.cancel()
+			}
+			emitEvent(req, "abort")
+		}
+		return req, nil
+	}))
+
+	// req.destroy([error])：销毁请求（等同 abort + 'close'）。
+	_ = req.Set("destroy", engine.NewFunction("destroy", func(args []engine.Value) (engine.Value, error) {
+		if !state.aborted {
+			state.aborted = true
+			if state.cancel != nil {
+				state.cancel()
+			}
+		}
+		emitEvent(req, "abort")
+		emitEvent(req, "close")
+		return req, nil
+	}))
+
 	return req
 }
 
@@ -683,13 +1068,19 @@ func (s *clientReqState) send() {
 	}
 	s.ended = true
 
+	// 可取消的请求上下文（req.abort/destroy 时触发）。
+	ctxCancel, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+
 	// 在 Go goroutine 发请求（不阻塞 JS），完成后 PostTask 回调。
 	go func() {
 		var bodyReader io.Reader
 		if s.body.Len() > 0 {
-			bodyReader = strings.NewReader(s.body.String())
+			// Node 语义：不显式设置 Content-Length 时用 chunked 编码。
+			// io.NopCloser 包装使 Go 无法推断长度 → Transfer-Encoding: chunked。
+			bodyReader = io.NopCloser(strings.NewReader(s.body.String()))
 		}
-		req, err := http.NewRequest(s.method, s.url, bodyReader)
+		req, err := http.NewRequestWithContext(ctxCancel, s.method, s.url, bodyReader)
 		if err != nil {
 			s.ctx.PostTask(func() {
 				if f, ok := s.callback.AsFunction(); ok {
@@ -717,6 +1108,17 @@ func (s *clientReqState) send() {
 		resp, err := client.Do(req)
 		if err != nil {
 			s.ctx.PostTask(func() {
+				// abort 取消：Node 语义依次触发 'error'(ECONNRESET) 与 'close'。
+				if s.aborted {
+					errObj := makeErrorValue(s.ctx, err)
+					if eo, ok := errObj.AsObject(); ok {
+						_ = eo.Set("code", engine.Str("ECONNRESET"))
+						_ = eo.Set("message", engine.Str("socket hang up"))
+					}
+					emitEvent(s.req, "error", errObj)
+					emitEvent(s.req, "close")
+					return
+				}
 				if f, ok := s.callback.AsFunction(); ok {
 					_, _ = f.Call([]engine.Value{engine.Undefined(), engine.Str(err.Error())})
 				}
@@ -735,6 +1137,8 @@ func (s *clientReqState) send() {
 			_ = resMsg.Set("statusCode", engine.IntValue(resp.StatusCode))
 			_ = resMsg.Set("statusMessage", engine.Str(resp.Status))
 			_ = resMsg.Set("headers", headersToObj(resp.Header))
+			// trailer 头（Go 在 body 读完时填充 resp.Trailer）。
+			_ = resMsg.Set("trailers", headersToObj(resp.Trailer))
 			if f, ok := s.callback.AsFunction(); ok {
 				_, _ = f.Call([]engine.Value{resMsg})
 			}

@@ -116,7 +116,103 @@ func NewBufferModule(ctx engine.Context) (engine.Value, error) {
 		}
 		return engine.Boolean(true), nil
 	}))
+
+	// transcode(source, fromEnc, toEnc)：在字符编码之间重编码字节序列。
+	// 支持 utf8/utf16le/ucs2/latin1/binary/ascii/base64/hex。
+	_ = m.Set("transcode", engine.NewFunction("transcode", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 3 {
+			return engine.Undefined(), fmt.Errorf("transcode: source, fromEnc, toEnc required")
+		}
+		data, ok := bufferBytes(args[0])
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("%w: transcode: source must be a Buffer or Uint8Array", engine.ErrTypeError)
+		}
+		fromEnc, ok1 := transcodeEncoding(args[1].String())
+		toEnc, ok2 := transcodeEncoding(args[2].String())
+		if !ok1 || !ok2 {
+			return engine.Undefined(), fmt.Errorf("%w: transcode: unsupported encoding", engine.ErrTypeError)
+		}
+		units := transcodeUnits(data, fromEnc)
+		return newBufferInstance(transcodeBytes(units, toEnc)), nil
+	}))
 	return m, nil
+}
+
+// transcodeEncoding 归一化 transcode 支持的编码名。
+// Node 实测仅支持 utf8/utf16le/ucs2/latin1/binary/ascii（hex/base64 抛错）。
+func transcodeEncoding(enc string) (string, bool) {
+	switch strings.ToLower(enc) {
+	case "utf8", "utf-8":
+		return "utf8", true
+	case "utf16le", "utf-16le", "ucs2", "ucs-2":
+		return "utf16le", true
+	case "latin1", "binary", "iso-8859-1":
+		return "latin1", true
+	case "ascii":
+		return "ascii", true
+	}
+	return "", false
+}
+
+// transcodeUnits 把源字节按 fromEnc 解码为 UTF-16 码元序列。
+func transcodeUnits(data []byte, fromEnc string) []uint16 {
+	switch fromEnc {
+	case "utf16le":
+		units := make([]uint16, 0, len(data)/2)
+		for i := 0; i+1 < len(data); i += 2 {
+			units = append(units, binary.LittleEndian.Uint16(data[i:]))
+		}
+		return units
+	case "latin1", "ascii":
+		units := make([]uint16, len(data))
+		for i, by := range data {
+			units[i] = uint16(by)
+		}
+		return units
+	default: // utf8
+		s := string(data)
+		var units []uint16
+		for _, r := range s {
+			if r <= 0xFFFF {
+				units = append(units, uint16(r))
+			} else {
+				r -= 0x10000
+				units = append(units, uint16(0xD800+(r>>10)), uint16(0xDC00+(r&0x3FF)))
+			}
+		}
+		return units
+	}
+}
+
+// transcodeBytes 把 UTF-16 码元序列按 toEnc 编码为字节。
+func transcodeBytes(units []uint16, toEnc string) []byte {
+	switch toEnc {
+	case "utf16le":
+		out := make([]byte, len(units)*2)
+		for i, u := range units {
+			binary.LittleEndian.PutUint16(out[i*2:], u)
+		}
+		return out
+	case "latin1", "ascii":
+		out := make([]byte, len(units))
+		for i, u := range units {
+			out[i] = byte(u)
+		}
+		return out
+	default: // utf8
+		var sb strings.Builder
+		for i := 0; i < len(units); i++ {
+			u := units[i]
+			if u >= 0xD800 && u <= 0xDBFF && i+1 < len(units) && units[i+1] >= 0xDC00 && units[i+1] <= 0xDFFF {
+				r := 0x10000 + (int(u-0xD800)<<10) + int(units[i+1]-0xDC00)
+				sb.WriteRune(rune(r))
+				i++
+			} else {
+				sb.WriteRune(rune(u))
+			}
+		}
+		return []byte(sb.String())
+	}
 }
 
 // bufferBytes 提取 Buffer/TypedArray/ArrayBuffer 的字节。
@@ -691,14 +787,15 @@ func installBufferReaders(buf engine.Object, d []byte) {
 		if err != nil {
 			return engine.Undefined(), err
 		}
-		return engine.BigInt(new(big.Int).SetUint64(binary.LittleEndian.Uint64(d[off:]))), nil
+		// 有符号：按 int64 位型解释（高位置位时为负）。
+		return engine.BigInt(big.NewInt(int64(binary.LittleEndian.Uint64(d[off:])))), nil
 	}))
 	_ = buf.Set("readBigInt64BE", engine.NewFunction("readBigInt64BE", func(args []engine.Value) (engine.Value, error) {
 		off, err := readOffset(d, args, 8)
 		if err != nil {
 			return engine.Undefined(), err
 		}
-		return engine.BigInt(new(big.Int).SetUint64(binary.BigEndian.Uint64(d[off:]))), nil
+		return engine.BigInt(big.NewInt(int64(binary.BigEndian.Uint64(d[off:])))), nil
 	}))
 	// swap16/swap32/swap64：原地字节序交换，返回 Buffer 自身（链式）。
 	_ = buf.Set("swap16", engine.NewFunction("swap16", func(args []engine.Value) (engine.Value, error) {

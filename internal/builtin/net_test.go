@@ -52,7 +52,8 @@ func TestNetMultipleMessages(t *testing.T) {
 var net = require('node:net');
 var server = net.createServer(function(sock) {
   sock.on('data', function(d) {
-    sock.write(d.toUpperCase());
+    // Node 语义：data 是 Buffer，需 toString() 再处理。
+    sock.write(d.toString().toUpperCase());
   });
 });
 server.listen(0, function() {
@@ -63,7 +64,7 @@ server.listen(0, function() {
   var out = '';
   var count = 0;
   client.on('data', function(d) {
-    out += d;
+    out += d.toString();
     count++;
     if (count >= 2) {
       globalThis.__out = out;

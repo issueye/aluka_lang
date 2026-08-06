@@ -53,6 +53,48 @@ func NewTLS(ctx engine.Context) (engine.Value, error) {
 		return socket, nil
 	}))
 
+	// tls.createSecureContext([options]) → SecureContext（简化：解析 key/cert）。
+	_ = m.Set("createSecureContext", engine.NewFunction("createSecureContext", func(args []engine.Value) (engine.Value, error) {
+		sc := engine.NewObject()
+		keyPEM, certPEM := "", ""
+		if len(args) > 0 {
+			if o, ok := args[0].AsObject(); ok {
+				if v, err := o.Get("key"); err == nil && !v.IsUndefined() {
+					keyPEM = v.String()
+				}
+				if v, err := o.Get("cert"); err == nil && !v.IsUndefined() {
+					certPEM = v.String()
+				}
+			}
+		}
+		if keyPEM != "" && certPEM != "" {
+			if _, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM)); err == nil {
+				_ = sc.Set("key", engine.Str(keyPEM))
+				_ = sc.Set("cert", engine.Str(certPEM))
+			}
+		}
+		_ = sc.Set("context", engine.NewObject())
+		return sc, nil
+	}))
+
+	// tls.checkServerIdentity(hostname, cert)：校验证书（简化返回 undefined）。
+	_ = m.Set("checkServerIdentity", engine.NewFunction("checkServerIdentity", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+
+	// tls.getCiphers()：支持的密码套件名数组。
+	_ = m.Set("getCiphers", engine.NewFunction("getCiphers", func(args []engine.Value) (engine.Value, error) {
+		names := []string{}
+		for _, cs := range tls.CipherSuites() {
+			names = append(names, cs.Name)
+		}
+		vals := make([]engine.Value, 0, len(names))
+		for _, n := range names {
+			vals = append(vals, engine.Str(n))
+		}
+		return engine.NewArray(vals), nil
+	}))
+
 	return m, nil
 }
 
@@ -141,7 +183,6 @@ func newTLSServer(ctx engine.Context, listener engine.Value, tlsCfg *tls.Config)
 						_, _ = f.Call(nil)
 					}
 				}
-				emitEvent(server, "secureConnection")
 				emitEvent(server, "listening")
 			})
 			for {
@@ -149,7 +190,22 @@ func newTLSServer(ctx engine.Context, listener engine.Value, tlsCfg *tls.Config)
 				if err != nil {
 					break
 				}
-				go handleNetConn(ctx, conn, server, listener)
+				// TLS 连接握手完成后触发 'secureConnection'（Node 语义），
+				// 并调用 secureConnectionListener。
+				go func(c net.Conn) {
+					if tc, ok := c.(*tls.Conn); ok {
+						_ = tc.Handshake()
+					}
+					socket, _ := newNetSocket(ctx, c)
+					ctx.PostTask(func() {
+						emitEvent(server, "secureConnection", socket)
+						if listener != nil && listener.IsFunction() {
+							if f, ok := listener.AsFunction(); ok {
+								_, _ = f.Call([]engine.Value{socket})
+							}
+						}
+					})
+				}(conn)
 			}
 			state.release()
 		}()
@@ -295,7 +351,21 @@ func tlsConnect(ctx engine.Context, args []engine.Value) engine.Value {
 		state.conn = tconn
 		state.mu.Unlock()
 		ctx.PostTask(func() {
-			setAddrProps(socket.(engine.Object), tconn)
+			socketObj := socket.(engine.Object)
+			setAddrProps(socketObj, tconn)
+			// TLS 专属表面。
+			_ = socketObj.Set("getProtocol", engine.NewFunction("getProtocol", func(args []engine.Value) (engine.Value, error) {
+				if v := tconn.ConnectionState().Version; v != 0 {
+					return engine.Str(tlsVersionName(v)), nil
+				}
+				return engine.Str("TLSv1.3"), nil
+			}))
+			_ = socketObj.Set("getCipher", engine.NewFunction("getCipher", func(args []engine.Value) (engine.Value, error) {
+				return engine.Undefined(), nil
+			}))
+			_ = socketObj.Set("getSession", engine.NewFunction("getSession", func(args []engine.Value) (engine.Value, error) {
+				return engine.Undefined(), nil
+			}))
 			if connectListener != nil && connectListener.IsFunction() {
 				if f, ok := connectListener.AsFunction(); ok {
 					_, _ = f.Call([]engine.Value{socket})
@@ -307,4 +377,20 @@ func tlsConnect(ctx engine.Context, args []engine.Value) engine.Value {
 		go startNetReader(ctx, socket, state, tconn)
 	}()
 	return socket
+}
+
+// tlsVersionName 把 TLS 版本号转为 Node 风格协议名。
+func tlsVersionName(v uint16) string {
+	switch v {
+	case tls.VersionTLS13:
+		return "TLSv1.3"
+	case tls.VersionTLS12:
+		return "TLSv1.2"
+	case tls.VersionTLS11:
+		return "TLSv1.1"
+	case tls.VersionTLS10:
+		return "TLSv1"
+	default:
+		return "TLSv1.3"
+	}
 }

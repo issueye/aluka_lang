@@ -39,6 +39,7 @@ func NewChildProcess(ctx engine.Context) (engine.Value, error) {
 }
 
 // spawnChild 实现 child_process.spawn。
+// options 支持 silent（fork 用）：silent:false 时继承 stdio（Node fork 默认）。
 func spawnChild(ctx engine.Context, args []engine.Value) engine.Value {
 	cp := newEmitterInstance().(engine.Object)
 
@@ -55,30 +56,102 @@ func spawnChild(ctx engine.Context, args []engine.Value) engine.Value {
 		}
 	}
 
-	// stdout/stderr 流。
-	stdout := newEmitterInstance().(engine.Object)
-	stderr := newEmitterInstance().(engine.Object)
-	_ = cp.Set("stdout", stdout)
-	_ = cp.Set("stderr", stderr)
-	stdin := engine.NewObject()
-	_ = stdin.Set("write", engine.NewFunction("write", func(a []engine.Value) (engine.Value, error) {
-		return engine.Boolean(false), nil // 简化：不支持写 stdin
-	}))
-	_ = stdin.Set("end", engine.NewFunction("end", func(a []engine.Value) (engine.Value, error) {
-		return engine.Undefined(), nil
-	}))
-	_ = cp.Set("stdin", stdin)
+	// fork 的 silent/env 选项（缺省 = 管道；fork 显式传 {silent:false} 继承
+	// stdio，并携带 env）。
+	var envList []string
+	inheritStdio := false
+	if len(args) > 2 && args[2].IsObject() {
+		if o, ok := args[2].AsObject(); ok {
+			if v, err := o.Get("silent"); err == nil && !v.IsUndefined() {
+				if b, ok2 := v.Bool(); ok2 {
+					inheritStdio = !b
+				}
+			}
+			if v, err := o.Get("env"); err == nil && !v.IsUndefined() {
+				if eo, ok2 := v.AsObject(); ok2 {
+					for _, k := range eo.Keys() {
+						if ev, err3 := eo.Get(k); err3 == nil {
+							envList = append(envList, k+"="+ev.String())
+						}
+					}
+				}
+			}
+		}
+	}
 
 	cmd := exec.Command(command, cmdArgs...)
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		emitEvent(cp, "error", engine.Str(err.Error()))
-		return cp
+	if envList != nil {
+		cmd.Env = envList
 	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		emitEvent(cp, "error", engine.Str(err.Error()))
-		return cp
+
+	// stdout/stderr 流（管道模式）。
+	var stdout, stderr engine.Object
+	if inheritStdio {
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		_ = cp.Set("stdout", engine.Null())
+		_ = cp.Set("stderr", engine.Null())
+		_ = cp.Set("stdin", engine.Null())
+	} else {
+		stdout = newEmitterInstance().(engine.Object)
+		stderr = newEmitterInstance().(engine.Object)
+		_ = cp.Set("stdout", stdout)
+		_ = cp.Set("stderr", stderr)
+		stdin := engine.NewObject()
+		_ = stdin.Set("write", engine.NewFunction("write", func(a []engine.Value) (engine.Value, error) {
+			return engine.Boolean(false), nil // 简化：不支持写 stdin
+		}))
+		_ = stdin.Set("end", engine.NewFunction("end", func(a []engine.Value) (engine.Value, error) {
+			return engine.Undefined(), nil
+		}))
+		_ = cp.Set("stdin", stdin)
+	}
+
+	if !inheritStdio {
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			emitEvent(cp, "error", engine.Str(err.Error()))
+			return cp
+		}
+		stderrPipe, err := cmd.StderrPipe()
+		if err != nil {
+			emitEvent(cp, "error", engine.Str(err.Error()))
+			return cp
+		}
+
+		// 读 stdout。
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, rerr := stdoutPipe.Read(buf)
+				if n > 0 {
+					data := string(buf[:n])
+					ctx.PostTask(func() {
+						emitEvent(stdout, "data", engine.Str(data))
+					})
+				}
+				if rerr != nil {
+					break
+				}
+			}
+		}()
+		// 读 stderr。
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, rerr := stderrPipe.Read(buf)
+				if n > 0 {
+					data := string(buf[:n])
+					ctx.PostTask(func() {
+						emitEvent(stderr, "data", engine.Str(data))
+					})
+				}
+				if rerr != nil {
+					break
+				}
+			}
+		}()
 	}
 
 	// 子进程计入事件循环活跃度（运行期间保持进程存活）。
@@ -98,39 +171,6 @@ func spawnChild(ctx engine.Context, args []engine.Value) engine.Value {
 	ctx.PostTask(func() {
 		emitEvent(cp, "spawn")
 	})
-
-	// 读 stdout。
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, rerr := stdoutPipe.Read(buf)
-			if n > 0 {
-				data := string(buf[:n])
-				ctx.PostTask(func() {
-					emitEvent(stdout, "data", engine.Str(data))
-				})
-			}
-			if rerr != nil {
-				break
-			}
-		}
-	}()
-	// 读 stderr。
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, rerr := stderrPipe.Read(buf)
-			if n > 0 {
-				data := string(buf[:n])
-				ctx.PostTask(func() {
-					emitEvent(stderr, "data", engine.Str(data))
-				})
-			}
-			if rerr != nil {
-				break
-			}
-		}
-	}()
 
 	// 等待退出。
 	go func() {
@@ -248,6 +288,7 @@ func execFileChild(ctx engine.Context, args []engine.Value) {
 }
 
 // forkChild 实现 child_process.fork（spawn 当前可执行文件跑模块）。
+// fork 默认 silent:false（子进程 stdout/stderr 继承，Node 语义）。
 func forkChild(ctx engine.Context, args []engine.Value) engine.Value {
 	modulePath := ""
 	if len(args) > 0 {
@@ -261,11 +302,32 @@ func forkChild(ctx engine.Context, args []engine.Value) engine.Value {
 			}
 		}
 	}
+	// silent 选项（fork 支持 {silent:true} 管道输出）。
+	silent := false
+	var envObj engine.Value = engine.Undefined()
+	if len(args) > 2 && args[2].IsObject() {
+		if o, ok := args[2].AsObject(); ok {
+			if v, err := o.Get("silent"); err == nil && !v.IsUndefined() {
+				if b, ok2 := v.Bool(); ok2 {
+					silent = b
+				}
+			}
+			if v, err := o.Get("env"); err == nil && !v.IsUndefined() {
+				envObj = v
+			}
+		}
+	}
 	exe, _ := os.Executable()
 	spawnArgs := append([]string{modulePath}, forkArgs...)
+	opts := engine.NewObject()
+	_ = opts.Set("silent", engine.Boolean(silent))
+	if !envObj.IsUndefined() {
+		_ = opts.Set("env", envObj)
+	}
 	return spawnChild(ctx, []engine.Value{
 		engine.Str(exe),
 		engine.NewArray(stringsToValues(spawnArgs)),
+		opts,
 	})
 }
 

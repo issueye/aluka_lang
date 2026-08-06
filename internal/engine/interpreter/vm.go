@@ -1558,6 +1558,23 @@ func (v *VM) constructNative(f engine.Function, callee engine.Value, args []engi
 // The callee and args must already be popped from the stack.
 func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Value, asNew bool) (engine.Value, error) {
 	tmpl := cl.tmpl
+	// 异步上下文恢复：仅当事件循环外（无 JS 帧）调用 JS 闭包时，恢复该闭包
+	// 创建时捕获的异步上下文（定时器/微任务/IO 回调等）。同步 JS 调用
+	// （帧存在）不恢复——保持当前执行上下文，对应 Node 的 run()/enterWith
+	// 语义。恢复逻辑需在 generator/async 提前返回之前执行（async 函数体在
+	// start() 内立即运行到首个 await）。
+	var savedAsyncCtx interface{}
+	if len(v.frames) == 0 && AsyncContextRestore != nil {
+		savedAsyncCtx = AsyncContextCapture()
+		if cl.asyncCtx != nil {
+			AsyncContextRestore(cl.asyncCtx)
+		}
+		defer func() {
+			if AsyncContextRestore != nil {
+				AsyncContextRestore(savedAsyncCtx)
+			}
+		}()
+	}
 	// Generator function: calling it returns a generator object rather than
 	// executing the body. The body runs lazily on each .next() call.
 	if tmpl.IsGenerator {
@@ -2189,6 +2206,18 @@ func (v *VM) goErrorToValue(err error) engine.Value {
 
 // === vmClosure: bytecode function value ===================================
 
+// AsyncContextCapture / AsyncContextRestore 是 node:async_hooks 安装的异步
+// 上下文钩子（AsyncLocalStorage 等）。两者必须成对设置（nil = 不启用）。
+//
+// 语义（对齐 Node async_hooks）：JS 闭包在**创建时**捕获当前异步上下文，
+// 在**事件循环外首次调用时**（len(v.frames)==0，即定时器/微任务/IO 回调）
+// 恢复该上下文，保证 AsyncLocalStorage 的 store 能跨异步资源传播。同步
+// 调用（JS 帧存在时）不恢复，保持 Node 的 run()/enterWith 语义。
+var (
+	AsyncContextCapture func() interface{}
+	AsyncContextRestore func(ctx interface{})
+)
+
 // vmClosure is a function value backed by a bytecode template + captured upvalues.
 type vmClosure struct {
 	obj      engine.Object // function object (name, length, prototype, ...)
@@ -2196,17 +2225,22 @@ type vmClosure struct {
 	tmpl     *bytecode.FuncTemplate
 	upvalues []*upvalue
 	module   *bytecode.Module // 定义时的 module（OpMakeClosure 内部创建子闭包时用）
+	asyncCtx interface{}      // 创建时捕获的异步上下文（AsyncLocalStorage 传播用）
 }
 
 // newVMClosure creates a vmClosure with a fresh function object.
 func newVMClosure(vm *VM, tmpl *bytecode.FuncTemplate, upvalues []*upvalue) *vmClosure {
-	return &vmClosure{
+	c := &vmClosure{
 		obj:      engine.NewObject(),
 		vm:       vm,
 		tmpl:     tmpl,
 		upvalues: upvalues,
 		module:   vm.module,
 	}
+	if AsyncContextCapture != nil {
+		c.asyncCtx = AsyncContextCapture()
+	}
+	return c
 }
 
 func (c *vmClosure) Type() engine.ValueType { return engine.TypeFunction }

@@ -44,14 +44,15 @@ func NewDgram(ctx engine.Context) (engine.Value, error) {
 
 // dgramSocketState UDP 套接字内部状态。
 type dgramSocketState struct {
-	ctx       engine.Context
-	netType   string
-	conn      *net.UDPConn
-	boundAddr *net.UDPAddr
-	mu        sync.Mutex
-	bound     bool
-	closed    bool
-	release   func()
+	ctx           engine.Context
+	netType       string
+	conn          *net.UDPConn
+	boundAddr     *net.UDPAddr
+	connectedAddr *net.UDPAddr // socket.connect() 设置的默认目标
+	mu            sync.Mutex
+	bound         bool
+	closed        bool
+	release       func()
 }
 
 // newDgramSocket 构造 UDP Socket 对象（EventEmitter 风格）。
@@ -149,7 +150,35 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 		state.mu.Lock()
 		conn := state.conn
 		boundAddr := state.boundAddr
+		connectedAddr := state.connectedAddr
 		state.mu.Unlock()
+
+		// 隐式 bind：Node 语义允许未 bind 的 socket 直接 send（自动绑定
+		// 临时端口）。
+		if conn == nil {
+			bindIP := "0.0.0.0"
+			if state.netType == "udp6" {
+				bindIP = "::"
+			}
+			implicitAddr, rerr := net.ResolveUDPAddr(state.netType, fmt.Sprintf("%s:0", bindIP))
+			if rerr != nil {
+				implicitAddr = nil
+			}
+			implicit, lerr := net.ListenUDP(state.netType, implicitAddr)
+			if lerr != nil {
+				return sock, lerr
+			}
+			state.mu.Lock()
+			state.conn = implicit
+			state.boundAddr = implicitAddr
+			state.bound = true
+			if state.release == nil {
+				state.release = ctx.AddRef()
+			}
+			state.mu.Unlock()
+			go dgramRecvLoop(ctx, sock, state)
+			conn = implicit
+		}
 
 		var dest *net.UDPAddr
 		var err error
@@ -162,6 +191,9 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 				ip = boundAddr.IP.String()
 			}
 			dest, err = net.ResolveUDPAddr(state.netType, fmt.Sprintf("%s:%d", ip, port))
+		} else if connectedAddr != nil {
+			// connected socket：send(msg) 发往 connect 设置的目标。
+			dest = connectedAddr
 		} else if conn == nil {
 			err = fmt.Errorf("socket not bound")
 		}
@@ -179,7 +211,7 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 				if err != nil {
 					_, _ = f.Call([]engine.Value{engine.Str(err.Error())})
 				} else {
-					_, _ = f.Call(nil)
+					_, _ = f.Call([]engine.Value{engine.Null()})
 				}
 			}
 		}
@@ -240,6 +272,9 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 	_ = sock.Set("addMembership", engine.NewFunction("addMembership", func(args []engine.Value) (engine.Value, error) {
 		return sock, nil
 	}))
+	_ = sock.Set("dropMembership", engine.NewFunction("dropMembership", func(args []engine.Value) (engine.Value, error) {
+		return sock, nil
+	}))
 	_ = sock.Set("setTTL", engine.NewFunction("setTTL", func(args []engine.Value) (engine.Value, error) {
 		return sock, nil
 	}))
@@ -247,6 +282,57 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 		return sock, nil
 	}))
 	_ = sock.Set("unref", engine.NewFunction("unref", func(args []engine.Value) (engine.Value, error) {
+		return sock, nil
+	}))
+	// setMulticastLoopback/setMulticastTTL：no-op。
+	_ = sock.Set("setMulticastLoopback", engine.NewFunction("setMulticastLoopback", func(args []engine.Value) (engine.Value, error) {
+		return sock, nil
+	}))
+	_ = sock.Set("setMulticastTTL", engine.NewFunction("setMulticastTTL", func(args []engine.Value) (engine.Value, error) {
+		return sock, nil
+	}))
+
+	// socket.connect(port[, address][, cb])：设置默认发送目标（connected socket）。
+	_ = sock.Set("connect", engine.NewFunction("connect", func(args []engine.Value) (engine.Value, error) {
+		var port int
+		var address string
+		var cb engine.Value
+		for _, a := range args {
+			if a.IsFunction() {
+				cb = a
+			} else if a.Type() == engine.TypeNumber {
+				if n, ok := a.Int(); ok {
+					port = n
+				}
+			} else if a.Type() == engine.TypeString {
+				address = a.String()
+			}
+		}
+		dest, err := net.ResolveUDPAddr(state.netType, fmt.Sprintf("%s:%d", address, port))
+		if err != nil {
+			if cb.IsFunction() {
+				if f, ok := cb.AsFunction(); ok {
+					_, _ = f.Call([]engine.Value{makeErrorValue(ctx, err)})
+				}
+			}
+			return sock, nil
+		}
+		state.mu.Lock()
+		state.connectedAddr = dest
+		state.mu.Unlock()
+		if cb.IsFunction() {
+			if f, ok := cb.AsFunction(); ok {
+				_, _ = f.Call([]engine.Value{engine.Null()})
+			}
+		}
+		return sock, nil
+	}))
+
+	// socket.disconnect()：清除默认发送目标。
+	_ = sock.Set("disconnect", engine.NewFunction("disconnect", func(args []engine.Value) (engine.Value, error) {
+		state.mu.Lock()
+		state.connectedAddr = nil
+		state.mu.Unlock()
 		return sock, nil
 	}))
 

@@ -11,8 +11,17 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+)
+
+// pathPosixCache / pathWin32Cache 按上下文缓存 posix/win32 模块对象，
+// 保证 require('node:path').posix === require('node:path/posix') 身份一致
+// （Node 语义）。
+var (
+	pathPosixCache sync.Map // engine.Context → engine.Value
+	pathWin32Cache sync.Map // engine.Context → engine.Value
 )
 
 // NewPath 构造 node:path 模块的导出对象。
@@ -25,11 +34,13 @@ func NewPath(ctx engine.Context) (engine.Value, error) {
 	// posix 子对象（固定用 `/` 分隔符）。
 	posix := engine.NewObject()
 	registerPathMethods(posix, "posix")
+	pathPosixCache.Store(ctx, posix)
 	_ = m.Set("posix", posix)
 
 	// win32 子对象（固定用 `\` 分隔符）。
 	win32 := engine.NewObject()
 	registerPathMethods(win32, "win32")
+	pathWin32Cache.Store(ctx, win32)
 	_ = m.Set("win32", win32)
 
 	return m, nil
@@ -44,34 +55,42 @@ func currentPlatform() string {
 }
 
 // NewPathPosix 构造 node:path/posix 模块导出对象（固定 POSIX 语义，独立入口）。
-// 与 node:path.posix 子对象同一套实现，但作为独立模块导出。
+// 与 node:path.posix 子对象同一对象身份（Node 语义）。
 func NewPathPosix(ctx engine.Context) (engine.Value, error) {
+	if v, ok := pathPosixCache.Load(ctx); ok {
+		return v.(engine.Value), nil
+	}
 	m := engine.NewObject()
 	registerPathMethods(m, "posix")
+	pathPosixCache.Store(ctx, m)
 	return m, nil
 }
 
 // NewPathWin32 构造 node:path/win32 模块导出对象（固定 Win32 语义，独立入口）。
 func NewPathWin32(ctx engine.Context) (engine.Value, error) {
+	if v, ok := pathWin32Cache.Load(ctx); ok {
+		return v.(engine.Value), nil
+	}
 	m := engine.NewObject()
 	registerPathMethods(m, "win32")
+	pathWin32Cache.Store(ctx, m)
 	return m, nil
 }
 
 // pathImpl 封装特定平台的路径操作（避免直接在闭包里重复平台判断）。
 type pathImpl struct {
-	sep        string
-	delimiter  string
-	join       func(elem ...string) string
-	resolve    func(elem ...string) string
-	normalize  func(p string) string
-	dirname    func(p string) string
-	basename   func(p, ext string) string
-	extname    func(p string) string
-	rel        func(base, target string) string
-	isAbs      func(p string) bool
-	toSlash    func(p string) string
-	fromSlash  func(p string) string
+	sep       string
+	delimiter string
+	join      func(elem ...string) string
+	resolve   func(elem ...string) string
+	normalize func(p string) string
+	dirname   func(p string) string
+	basename  func(p, ext string) string
+	extname   func(p string) string
+	rel       func(base, target string) string
+	isAbs     func(p string) bool
+	toSlash   func(p string) string
+	fromSlash func(p string) string
 }
 
 func newPathImpl(platform string) pathImpl {
@@ -95,7 +114,10 @@ func newPathImpl(platform string) pathImpl {
 			},
 			extname: filepath.Ext,
 			rel: func(base, target string) string {
-				r, _ := filepath.Rel(base, target)
+				r, err := filepath.Rel(base, target)
+				if err != nil {
+					return ""
+				}
 				return r
 			},
 			isAbs:     filepath.IsAbs,
@@ -128,8 +150,12 @@ func newPathImpl(platform string) pathImpl {
 		},
 		extname: path.Ext,
 		rel: func(base, target string) string {
-			r, _ := filepath.Rel(base, target)
-			return r
+			r, err := filepath.Rel(base, target)
+			if err != nil {
+				return ""
+			}
+			// posix 语义：分隔符恒为 /（filepath.Rel 在 Windows 返回 \）。
+			return strings.ReplaceAll(r, `\`, `/`)
 		},
 		isAbs:     path.IsAbs,
 		toSlash:   func(p string) string { return p },
@@ -270,8 +296,9 @@ func pathParse(p string, impl pathImpl) (engine.Value, error) {
 	_ = result.Set("root", engine.Str(root))
 	_ = result.Set("dir", engine.Str(dir))
 	_ = result.Set("base", engine.Str(base))
-	_ = result.Set("name", engine.Str(name))
+	// 键序与 Node 一致（root/dir/base/ext/name，JSON.stringify 保序）。
 	_ = result.Set("ext", engine.Str(ext))
+	_ = result.Set("name", engine.Str(name))
 	return result, nil
 }
 
@@ -282,21 +309,18 @@ func pathFormat(v engine.Value, impl pathImpl) engine.Value {
 		return engine.Str("")
 	}
 	var dir, base, name, ext, root string
-	if d, err := obj.Get("dir"); err == nil {
-		dir = d.String()
+	getStr := func(key string) string {
+		sv, err := obj.Get(key)
+		if err != nil || sv.IsUndefined() || sv.IsNull() {
+			return ""
+		}
+		return sv.String()
 	}
-	if b, err := obj.Get("base"); err == nil {
-		base = b.String()
-	}
-	if n, err := obj.Get("name"); err == nil {
-		name = n.String()
-	}
-	if e, err := obj.Get("ext"); err == nil {
-		ext = e.String()
-	}
-	if r, err := obj.Get("root"); err == nil {
-		root = r.String()
-	}
+	dir = getStr("dir")
+	base = getStr("base")
+	name = getStr("name")
+	ext = getStr("ext")
+	root = getStr("root")
 
 	if base == "" {
 		base = name + ext

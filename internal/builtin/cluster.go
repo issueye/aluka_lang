@@ -6,13 +6,15 @@ package builtin
 
 import (
 	"os"
+	"strconv"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 )
 
 // NewCluster 构造 node:cluster 模块导出对象。
 func NewCluster(ctx engine.Context) (engine.Value, error) {
-	m := engine.NewObject()
+	// cluster 模块本身是 EventEmitter（on/once/emit：'fork'/'exit'/'message'）。
+	m := newEmitterInstance().(engine.Object)
 
 	// cluster.isPrimary / isMaster：当前进程是否为 master。
 	// aluka 模型：环境变量 ALUKA_WORKER_ID 标记 worker 进程。
@@ -21,16 +23,26 @@ func NewCluster(ctx engine.Context) (engine.Value, error) {
 	_ = m.Set("isMaster", engine.Boolean(isPrimary)) // 兼容旧名
 	_ = m.Set("isWorker", engine.Boolean(!isPrimary))
 
+	// cluster.worker：worker 进程内为 {id, process...}；主进程 undefined。
+	if !isPrimary {
+		workerObj := engine.NewObject()
+		if id := os.Getenv("ALUKA_WORKER_ID"); id != "" {
+			if n, err := strconv.Atoi(id); err == nil {
+				_ = workerObj.Set("id", engine.IntValue(n))
+			}
+		} else {
+			_ = workerObj.Set("id", engine.IntValue(1))
+		}
+		_ = m.Set("worker", workerObj)
+	}
+
 	// cluster.workers：worker id → Worker 实例（主进程）。
 	workersObj := engine.NewObject()
 	_ = m.Set("workers", workersObj)
 
-	// cluster.settings：fork 时的配置（exec/execArgs/silent/stdio）。
+	// cluster.settings：fork 时的配置。初始为空对象（Node 语义：
+	// 键在 setupPrimary/setupMaster 后成为可枚举自有属性）。
 	settings := engine.NewObject()
-	_ = settings.Set("execArgv", engine.NewArray(nil))
-	_ = settings.Set("args", engine.NewArray(nil))
-	_ = settings.Set("silent", engine.Boolean(false))
-	_ = settings.Set("stdio", engine.NewArray(nil))
 	_ = m.Set("settings", settings)
 
 	// cluster.schedulingPolicy：'rr' 或 'none'（Node 导出为 number：SCHED_*）。
@@ -38,15 +50,24 @@ func NewCluster(ctx engine.Context) (engine.Value, error) {
 	_ = m.Set("SCHED_NONE", engine.IntValue(1))
 	_ = m.Set("SCHED_RR", engine.IntValue(2))
 
-	// cluster.setupMaster([settings])：更新配置（简化）。
+	// cluster.setupMaster([settings])：更新配置（Node 22 别名 setupPrimary）。
 	_ = m.Set("setupMaster", engine.NewFunction("setupMaster", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 0 {
 			if o, ok := args[0].AsObject(); ok {
-				for _, k := range []string{"exec", "execArgv", "args", "silent", "cwd", "serialization"} {
+				for _, k := range []string{"exec", "execArgv", "args", "silent", "cwd", "serialization", "stdio"} {
 					if v, err := o.Get(k); err == nil && !v.IsUndefined() {
 						_ = settings.Set(k, v)
 					}
 				}
+			}
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = m.Set("setupPrimary", engine.NewFunction("setupPrimary", func(args []engine.Value) (engine.Value, error) {
+		// setupPrimary 内部就是 setupMaster（Node 22 别名）。
+		if onFn, err := m.Get("setupMaster"); err == nil && onFn.IsFunction() {
+			if f, ok := onFn.AsFunction(); ok {
+				_, _ = f.Call(args)
 			}
 		}
 		return engine.Undefined(), nil
@@ -64,6 +85,8 @@ func NewCluster(ctx engine.Context) (engine.Value, error) {
 		}
 		var workerArgs []engine.Value
 		workerArgs = append(workerArgs, engine.Str(script))
+		// forkChild 的 args[1] 为 forkArgs 数组（此处空）；args[2] 为 options。
+		workerArgs = append(workerArgs, engine.NewArray(nil))
 		// forkOpts：env 合并 ALUKA_WORKER_ID。
 		optsObj := engine.NewObject()
 		envObj := engine.NewObject()
@@ -92,18 +115,20 @@ func NewCluster(ctx engine.Context) (engine.Value, error) {
 
 		child := forkChild(ctx, workerArgs).(engine.Object)
 
-		// 构造 Worker 对象。
-		worker := engine.NewObject()
+		// 构造 Worker 对象（EventEmitter 子类语义：on/once/emit）。
+		worker := newEmitterInstance().(engine.Object)
 		_ = worker.Set("id", engine.IntValue(workerID))
 		_ = worker.Set("process", child)
 		// 复用 child 的 'exit'/'message' 事件到 worker。
 		if onFn, err := child.Get("on"); err == nil && onFn.IsFunction() {
 			if f, ok := onFn.AsFunction(); ok {
-				// 'exit' → 触发 worker 'exit' + 从 workers 移除。
+				// 'exit' → 先清理 workers 表 + 触发 cluster 'exit'，最后触发
+				// worker 'exit'（Node 语义：用户监听器看到 workers 已清理；
+				// 用户监听器可能同步 process.exit 中断后续执行）。
 				exitWrapper := engine.NewFunction("__workerExit", func(ca []engine.Value) (engine.Value, error) {
-					emitEvent(worker, "exit", engine.IntValue(0), engine.Null())
 					_ = workersObj.Delete(engine.Number(float64(workerID)).String())
 					emitEvent(m, "exit", worker, engine.IntValue(0), engine.Null())
+					emitEvent(worker, "exit", engine.IntValue(0), engine.Null())
 					return engine.Undefined(), nil
 				})
 				_, _ = f.Call([]engine.Value{engine.Str("exit"), exitWrapper})

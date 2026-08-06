@@ -34,7 +34,7 @@ func getHttpGlobalTransport() *http.Transport {
 }
 
 // registerHttpAgent 注册 http.Agent 构造器与 globalAgent。
-func registerHttpAgent(m engine.Object) {
+func registerHttpAgent(ctx engine.Context, m engine.Object) {
 	_ = m.Set("Agent", engine.NewFunction("Agent", func(args []engine.Value) (engine.Value, error) {
 		keepAlive := false
 		keepAliveMsecs := 1000.0
@@ -82,6 +82,12 @@ func registerHttpAgent(m engine.Object) {
 		_ = agent.Set("requests", engine.NewObject())
 		_ = agent.Set("getName", engine.NewFunction("getName", func(args []engine.Value) (engine.Value, error) {
 			return engine.Str("http"), nil
+		}))
+		_ = agent.Set("createConnection", engine.NewFunction("createConnection", func(args []engine.Value) (engine.Value, error) {
+			// 简化：返回一个未连接的 net.Socket（Node 的 createConnection 由
+			// Agent 连接池专用；aluka 的请求走 Go Transport，此处仅为 API 面）。
+			socket, _ := newNetSocket(ctx, nil)
+			return socket, nil
 		}))
 		_ = agent.Set("destroy", engine.NewFunction("destroy", func(args []engine.Value) (engine.Value, error) {
 			tr.CloseIdleConnections()

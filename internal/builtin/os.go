@@ -1,13 +1,12 @@
 package builtin
 
 // node:os 内置模块——提供操作系统信息与工具。
-// 基于 Go os/runtime 标准库。
+// 基于 Go os/runtime 标准库；平台相关数值经 os_platform_*.go 提取。
 
 import (
 	"net"
 	"os"
 	"runtime"
-	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 )
@@ -29,6 +28,12 @@ func NewOS(ctx engine.Context) (engine.Value, error) {
 	_ = m.Set("release", engine.NewFunction("release", func(args []engine.Value) (engine.Value, error) {
 		return engine.Str(releaseInfo()), nil
 	}))
+	_ = m.Set("version", engine.NewFunction("version", func(args []engine.Value) (engine.Value, error) {
+		return engine.Str(osVersionInfo()), nil
+	}))
+	_ = m.Set("machine", engine.NewFunction("machine", func(args []engine.Value) (engine.Value, error) {
+		return engine.Str(osMachine()), nil
+	}))
 	_ = m.Set("hostname", engine.NewFunction("hostname", func(args []engine.Value) (engine.Value, error) {
 		hn, err := os.Hostname()
 		if err != nil {
@@ -36,13 +41,17 @@ func NewOS(ctx engine.Context) (engine.Value, error) {
 		}
 		return engine.Str(hn), nil
 	}))
+	_ = m.Set("availableParallelism", engine.NewFunction("availableParallelism", func(args []engine.Value) (engine.Value, error) {
+		return engine.IntValue(runtime.NumCPU()), nil
+	}))
 
-	// EOL：平台换行符（字符串属性，非函数）。
+	// EOL / devNull：平台属性（字符串）。
 	eol := "\n"
 	if runtime.GOOS == "windows" {
 		eol = "\r\n"
 	}
 	_ = m.Set("EOL", engine.Str(eol))
+	_ = m.Set("devNull", engine.Str(osDevNull()))
 
 	// --- 方法 ---
 
@@ -71,33 +80,65 @@ func NewOS(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	_ = m.Set("totalmem", engine.NewFunction("totalmem", func(args []engine.Value) (engine.Value, error) {
-		// 简化：Go 标准库无直接 API，返回 0（后续可调用 syscall 扩展）。
-		return engine.Number(0), nil
+		return engine.Number(float64(osTotalMem())), nil
 	}))
 
 	_ = m.Set("freemem", engine.NewFunction("freemem", func(args []engine.Value) (engine.Value, error) {
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		return engine.Number(float64(m.Sys - m.Alloc)), nil
+		return engine.Number(float64(osFreeMem())), nil
 	}))
 
 	_ = m.Set("uptime", engine.NewFunction("uptime", func(args []engine.Value) (engine.Value, error) {
-		// 简化：返回进程运行时间近似值。
-		return engine.Number(0), nil
+		return engine.Number(osUptime()), nil
+	}))
+
+	_ = m.Set("loadavg", engine.NewFunction("loadavg", func(args []engine.Value) (engine.Value, error) {
+		la := osLoadavg()
+		return engine.NewArray([]engine.Value{
+			engine.Number(la[0]), engine.Number(la[1]), engine.Number(la[2]),
+		}), nil
+	}))
+
+	_ = m.Set("getPriority", engine.NewFunction("getPriority", func(args []engine.Value) (engine.Value, error) {
+		pid := 0
+		if len(args) > 0 {
+			if n, ok := args[0].Int(); ok {
+				pid = n
+			}
+		}
+		p, err := osGetPriority(pid)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.IntValue(p), nil
+	}))
+
+	_ = m.Set("setPriority", engine.NewFunction("setPriority", func(args []engine.Value) (engine.Value, error) {
+		pid := 0
+		priority := 0
+		if len(args) == 1 {
+			if n, ok := args[0].Int(); ok {
+				priority = n
+			}
+		} else if len(args) >= 2 {
+			if n, ok := args[0].Int(); ok {
+				pid = n
+			}
+			if n, ok := args[1].Int(); ok {
+				priority = n
+			}
+		}
+		if err := osSetPriority(pid, priority); err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.Undefined(), nil
 	}))
 
 	_ = m.Set("endianness", engine.NewFunction("endianness", func(args []engine.Value) (engine.Value, error) {
-		// x86/ARM 均为小端
 		return engine.Str("LE"), nil
 	}))
 
-	// constants（信号常量，简化版）
-	constants := engine.NewObject()
-	_ = constants.Set("SIGHUP", engine.IntValue(1))
-	_ = constants.Set("SIGINT", engine.IntValue(2))
-	_ = constants.Set("SIGTERM", engine.IntValue(15))
-	_ = constants.Set("SIGKILL", engine.IntValue(9))
-	_ = m.Set("constants", constants)
+	// constants（signals/priority/errno/dlopen/UV）。
+	_ = m.Set("constants", osConstantsObject())
 
 	return m, nil
 }
@@ -141,11 +182,6 @@ func osTypeName() string {
 	}
 }
 
-func releaseInfo() string {
-	// 简化：返回空（完整实现需调用 uname 等系统调用）。
-	return ""
-}
-
 func osUserInfo() engine.Value {
 	info := engine.NewObject()
 	if dir, err := os.UserHomeDir(); err == nil {
@@ -154,9 +190,14 @@ func osUserInfo() engine.Value {
 		_ = info.Set("homedir", engine.Str(""))
 	}
 	_ = info.Set("username", engine.Str(currentUser()))
-	_ = info.Set("shell", engine.Str(""))
-	_ = info.Set("uid", engine.Number(-1))
-	_ = info.Set("gid", engine.Number(-1))
+	if s := osShell(); s != "" {
+		_ = info.Set("shell", engine.Str(s))
+	} else {
+		_ = info.Set("shell", engine.Null())
+	}
+	uid, gid := osUserIDs()
+	_ = info.Set("uid", engine.Number(float64(uid)))
+	_ = info.Set("gid", engine.Number(float64(gid)))
 	return info
 }
 
@@ -177,7 +218,11 @@ func osCPUs() engine.Value {
 		cpu := engine.NewObject()
 		_ = cpu.Set("model", engine.Str("unknown"))
 		_ = cpu.Set("speed", engine.Number(0))
-		_ = cpu.Set("times", engine.NewObject())
+		times := engine.NewObject()
+		for _, k := range []string{"user", "nice", "sys", "idle", "irq"} {
+			_ = times.Set(k, engine.Number(0))
+		}
+		_ = cpu.Set("times", times)
 		cpus[i] = cpu
 	}
 	return engine.NewArray(cpus)
@@ -190,22 +235,55 @@ func osNetworkInterfaces() engine.Value {
 		return result
 	}
 	for _, iface := range ifaces {
+		// 过滤未启用的适配器（Node/libuv 只暴露 IFF_UP|IFF_RUNNING）。
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagRunning == 0 {
+			continue
+		}
 		addrs, _ := iface.Addrs()
 		var addrVals []engine.Value
 		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip := ipnet.IP
 			addrObj := engine.NewObject()
-			ipStr := addr.String()
+			ipStr := ip.String()
 			family := "IPv4"
-			if strings.Contains(ipStr, ":") {
+			if ip.To4() == nil {
 				family = "IPv6"
 			}
-			_ = addrObj.Set("address", engine.Str(strings.Split(ipStr, "/")[0]))
-			_ = addrObj.Set("netmask", engine.Str("255.255.255.0"))
+			_ = addrObj.Set("address", engine.Str(ipStr))
+			_ = addrObj.Set("netmask", engine.Str(ipMaskString(ipnet.Mask, family)))
 			_ = addrObj.Set("family", engine.Str(family))
+			_ = addrObj.Set("mac", engine.Str(iface.HardwareAddr.String()))
 			_ = addrObj.Set("internal", engine.Boolean(iface.Flags&net.FlagLoopback != 0))
+			_ = addrObj.Set("cidr", engine.Str(ipnet.String()))
+			if family == "IPv6" && ip.IsLinkLocalUnicast() {
+				_ = addrObj.Set("scopeid", engine.IntValue(iface.Index))
+			} else if family == "IPv6" {
+				_ = addrObj.Set("scopeid", engine.IntValue(0))
+			}
 			addrVals = append(addrVals, addrObj)
 		}
-		_ = result.Set(iface.Name, engine.NewArray(addrVals))
+		if len(addrVals) > 0 {
+			_ = result.Set(iface.Name, engine.NewArray(addrVals))
+		}
 	}
 	return result
+}
+
+// ipMaskString 把 net.IPMask 格式化为 Node 风格 netmask：
+// IPv4 点分十进制；IPv6 压缩十六进制（如 ffff:ffff:ffff:ffff::）。
+func ipMaskString(m net.IPMask, family string) string {
+	if family == "IPv4" && len(m) == 4 {
+		return net.IPv4(m[0], m[1], m[2], m[3]).String()
+	}
+	// IPv6：补齐 16 字节后经 net.IP.String 压缩。
+	if len(m) < 16 {
+		v6 := make(net.IPMask, 16)
+		copy(v6, m)
+		m = v6
+	}
+	return net.IP(m).String()
 }

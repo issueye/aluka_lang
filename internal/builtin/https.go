@@ -22,7 +22,7 @@ func NewHTTPS(ctx engine.Context) (engine.Value, error) {
 	m := engine.NewObject()
 
 	// https.Agent + globalAgent（复用 http 的 Agent 实现）。
-	registerHttpAgent(m)
+	registerHttpAgent(ctx, m)
 
 	// https.createServer([options][, handler])：options 需含 {key, cert}。
 	_ = m.Set("createServer", engine.NewFunction("createServer", func(args []engine.Value) (engine.Value, error) {
@@ -71,7 +71,11 @@ func NewHTTPS(ctx engine.Context) (engine.Value, error) {
 		return req, nil
 	}))
 
-	_ = m.Set("STATUS_CODES", httpStatusCodes())
+	// https.Server：createServer 返回对象的构造器（表面）。
+	_ = m.Set("Server", engine.NewFunction("Server", func(args []engine.Value) (engine.Value, error) {
+		return engine.NewObject(), nil
+	}))
+
 	return m, nil
 }
 

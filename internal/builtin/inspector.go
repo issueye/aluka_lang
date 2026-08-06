@@ -38,6 +38,23 @@ func NewInspector(ctx engine.Context) (engine.Value, error) {
 	}
 	_ = m.Set("console", inspConsole)
 
+	// inspector.Network：CDP Network 域事件广播函数（Node 语义：均为函数）。
+	network := engine.NewObject()
+	for _, evt := range []string{"dataReceived", "dataSent", "requestWillBeSent", "responseReceived", "loadingFinished", "loadingFailed"} {
+		evtCopy := evt
+		_ = network.Set(evtCopy, engine.NewFunction(evtCopy, func(args []engine.Value) (engine.Value, error) {
+			return engine.Undefined(), nil
+		}))
+	}
+	_ = m.Set("Network", network)
+
+	// inspector.NetworkResources：资源追踪句柄（put 方法面）。
+	networkResources := engine.NewObject()
+	_ = networkResources.Set("put", engine.NewFunction("put", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+	_ = m.Set("NetworkResources", networkResources)
+
 	// inspector.Session：CDP 会话类（纯 API 面，无真正通信）。
 	sessionProto := engine.NewObject()
 	_ = sessionProto.Set("connect", engine.NewFunction("connect", func(args []engine.Value) (engine.Value, error) {
@@ -46,20 +63,10 @@ func NewInspector(ctx engine.Context) (engine.Value, error) {
 	_ = sessionProto.Set("disconnect", engine.NewFunction("disconnect", func(args []engine.Value) (engine.Value, error) {
 		return engine.Undefined(), nil
 	}))
-	// post(method[, params], callback)：CDDP 命令——无 V8 回 "not connected" 错误。
+	// post(method[, params], callback)：CDP 命令——未连接时同步抛
+	// ERR_INSPECTOR_NOT_CONNECTED（Node 语义）。
 	_ = sessionProto.Set("post", engine.NewFunction("post", func(args []engine.Value) (engine.Value, error) {
-		if len(args) > 0 {
-			var cb engine.Value = engine.Undefined()
-			for _, a := range args[1:] {
-				if a.IsFunction() {
-					cb = a
-				}
-			}
-			if f, ok := cb.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.Str(" inspector: not connected (pure-Go runtime, no V8)")})
-			}
-		}
-		return engine.Undefined(), nil
+		return engine.Undefined(), inspectorNotConnected()
 	}))
 	// connectToMainThread：worker 场景，主线程直接 connect。
 	_ = sessionProto.Set("connectToMainThread", engine.NewFunction("connectToMainThread", func(args []engine.Value) (engine.Value, error) {
@@ -83,3 +90,17 @@ func NewInspector(ctx engine.Context) (engine.Value, error) {
 
 	return m, nil
 }
+
+// inspectorNotConnected 返回 ERR_INSPECTOR_NOT_CONNECTED 错误（Session.post
+// 未连接时 Node 同步抛出的错误）。
+func inspectorNotConnected() error {
+	return &inspectorErr{code: "ERR_INSPECTOR_NOT_CONNECTED", msg: "Session is not connected"}
+}
+
+type inspectorErr struct {
+	code string
+	msg  string
+}
+
+func (e *inspectorErr) Error() string { return e.msg }
+func (e *inspectorErr) Code() string  { return e.code }

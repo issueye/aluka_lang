@@ -129,3 +129,122 @@ globalThis.__r = dk.toString('hex');
 		t.Errorf("scrypt = %q, want RFC 7914 vector", got)
 	}
 }
+
+// TestCryptoRandomIntHkdfTimingSafe 验证 M5 新增的 randomInt/hkdf/timingSafeEqual。
+func TestCryptoRandomIntHkdfTimingSafe(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var crypto = require('node:crypto');
+// randomInt：范围 [min, max)，多次取值均在界内。
+var okRange = true;
+for (var i = 0; i < 20; i++) {
+  var v = crypto.randomInt(5, 10);
+  if (v < 5 || v >= 10) okRange = false;
+}
+// hkdfSync（RFC 5869 test case 1）。
+var ikm = Buffer.from('0b'.repeat(22), 'hex');
+var salt = Buffer.from('000102030405060708090a0b0c', 'hex');
+var info = Buffer.from('f0f1f2f3f4f5f6f7f8f9', 'hex');
+var hkdf = Buffer.from(crypto.hkdfSync('sha256', ikm, salt, info, 42)).toString('hex');
+// timingSafeEqual。
+var eq = Buffer.from('secret-data');
+var tse = crypto.timingSafeEqual(eq, Buffer.from('secret-data')) + ':' +
+  crypto.timingSafeEqual(eq, Buffer.from('SECRET-DATA'));
+// randomUUID v4 结构。
+var u = crypto.randomUUID();
+var uuid = u.length === 36 && u[14] === '4';
+globalThis.__r = okRange + ':' + hkdf + ':' + tse + ':' + uuid;
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	want := "true:3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865:true:false:true"
+	if got := env.globalGet("__r"); got != want {
+		t.Errorf("randomInt/hkdf/tse/uuid = %q", got)
+	}
+}
+
+// TestCryptoSecretKeySignVerify 验证 createSecretKey 与 RSA 签名/验签往返。
+func TestCryptoSecretKeySignVerify(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var crypto = require('node:crypto');
+var sk = crypto.createSecretKey(Buffer.from('0123456789abcdef'));
+var skInfo = sk.type + ':' + sk.symmetricKeySize + ':' + sk.export().toString('hex');
+var pair = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+var sign = crypto.createSign('sha256');
+sign.update('data to be signed');
+var signature = sign.sign(pair.privateKey);
+var verify = crypto.createVerify('sha256');
+verify.update('data to be signed');
+var ok = verify.verify(pair.publicKey, signature);
+var bad = false;
+try {
+  var v2 = crypto.createVerify('sha256');
+  v2.update('tampered');
+  bad = v2.verify(pair.publicKey, signature);
+} catch (e) { bad = 'err'; }
+globalThis.__r = skInfo + ':' + (Buffer.isBuffer(signature) && signature.length > 0) + ':' + ok + ':' + bad;
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "secret:16:30313233343536373839616263646566:true:true:false" {
+		t.Errorf("secretKey/sign/verify = %q", got)
+	}
+}
+
+// TestCryptoGcmCipher 验证 createCipheriv AES-GCM 加解密往返与 authTag。
+func TestCryptoGcmCipher(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var crypto = require('node:crypto');
+var key = Buffer.from('2b7e151628aed2a6abf7158809cf4f3c', 'hex');
+var iv = Buffer.from('000000000000000000000002', 'hex');
+var c = crypto.createCipheriv('aes-128-gcm', key, iv);
+var ct = Buffer.concat([c.update('hello gcm world'), c.final()]);
+var tag = c.getAuthTag();
+var d = crypto.createDecipheriv('aes-128-gcm', key, iv);
+d.setAuthTag(tag);
+var dec = Buffer.concat([d.update(ct), d.final()]).toString();
+globalThis.__r = dec + ':' + ct.length + ':' + tag.length;
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "hello gcm world:15:16" {
+		t.Errorf("gcm cipher = %q", got)
+	}
+}
+
+// TestWebCryptoSubtleAesGcmHmac 验证 crypto.subtle 增强（AES-GCM/HMAC/PBKDF2）。
+// global subtle 的补充方法由 node:crypto 加载触发。
+func TestWebCryptoSubtleAesGcmHmac(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+require('node:crypto'); // 触发 global crypto.subtle 的增强方法注册
+crypto.subtle.importKey('raw', Buffer.from('2b7e151628aed2a6abf7158809cf4f3c', 'hex'),
+  'AES-GCM', true, ['encrypt', 'decrypt']).then(function(key) {
+  var iv = Buffer.from('000000000000000000000002', 'hex');
+  return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, Buffer.from('hello webcrypto'));
+}).then(function(ct) {
+  globalThis.__ct = Buffer.from(ct).toString('hex');
+  return crypto.subtle.importKey('raw', Buffer.from('secret-hmac-key'),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}).then(function(hmacKey) {
+  return crypto.subtle.sign('HMAC', hmacKey, Buffer.from('message'));
+}).then(function(mac) {
+  globalThis.__mac = Buffer.from(mac).toString('hex');
+});
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// AES-GCM（固定 key+iv）密文与 HMAC-SHA256 均为确定性已知答案。
+	if got := env.globalGet("__ct"); got != "96dbc2e0ec0abbcf7a1439033de4570240fe161c58b5be6642c935cb26452e" {
+		t.Errorf("subtle aes-gcm ct = %q", got)
+	}
+	if got := env.globalGet("__mac"); got != "c04bcb18d17592d2fb41b666f7e137776842759533b68f94443c5f7745433f95" {
+		t.Errorf("subtle hmac = %q", got)
+	}
+}

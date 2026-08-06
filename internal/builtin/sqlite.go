@@ -126,7 +126,11 @@ func newStatementSyncInstance(state *sqliteStmtState) engine.Value {
 							if err != nil {
 								return nil, err
 							}
-							named = append(named, sql.Named(k, sqliteParamToDriver(v)))
+							driverV, derr := sqliteParamToDriver(v)
+							if derr != nil {
+								return nil, derr
+							}
+							named = append(named, sql.Named(k, driverV))
 						}
 						return named, nil
 					}
@@ -135,7 +139,11 @@ func newStatementSyncInstance(state *sqliteStmtState) engine.Value {
 		}
 		out := make([]any, len(args))
 		for i, a := range args {
-			out[i] = sqliteParamToDriver(a)
+			driverV, err := sqliteParamToDriver(a)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = driverV
 		}
 		return out, nil
 	}
@@ -305,30 +313,34 @@ func newStatementSyncInstance(state *sqliteStmtState) engine.Value {
 }
 
 // sqliteParamToDriver 将 JS 参数值转换为 database/sql 绑定值。
-func sqliteParamToDriver(v engine.Value) any {
+func sqliteParamToDriver(v engine.Value) (any, error) {
 	if v.IsNull() || v.IsUndefined() {
-		return nil
+		return nil, nil
+	}
+	if v.Type() == engine.TypeBoolean {
+		// Node 22 实测：布尔参数无法绑定（抛 TypeError）。
+		return nil, fmt.Errorf("%w: node:sqlite: provided value cannot be bound to SQLite parameter", engine.ErrTypeError)
 	}
 	if v.Type() == engine.TypeBigInt {
 		if bi, ok := engine.BigIntValue(v); ok {
 			if bi.IsInt64() {
-				return bi.Int64()
+				return bi.Int64(), nil
 			}
-			return bi.String() // 超出 int64：按文本存储（近似）
+			return bi.String(), nil // 超出 int64：按文本存储（近似）
 		}
 	}
 	// 数字：整数（且未溢出 int64）按 int64 绑定（SQLite INTEGER），
 	// 否则按 REAL 绑定。注意 engine.Int() 对 1.5 会截断为 1，不能直接使用。
 	if f, ok := v.Float(); ok {
 		if f == math.Trunc(f) && f >= -9.2e18 && f <= 9.2e18 {
-			return int64(f)
+			return int64(f), nil
 		}
-		return f
+		return f, nil
 	}
 	if b, ok := engine.AsBuffer(v); ok {
-		return b
+		return b, nil
 	}
-	return v.String()
+	return v.String(), nil
 }
 
 // sqliteRowToObject 将一行扫描结果转换为 JS 行对象。

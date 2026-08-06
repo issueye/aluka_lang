@@ -88,18 +88,36 @@ func TestDiagnosticsChannelPublishAndUnsubscribe(t *testing.T) {
 }
 
 func TestVMModuleSurface(t *testing.T) {
-	mod, err := NewVMModule(newCtx(t))
+	ctx := newCtx(t)
+	mod, err := NewVMModule(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"runInThisContext", "runInNewContext", "compileFunction", "Script"} {
+	for _, name := range []string{"runInThisContext", "runInNewContext", "runInContext", "compileFunction", "Script", "createContext", "isContext"} {
 		if got := getProp(t, mod, name); !got.IsFunction() {
 			t.Fatalf("%s type = %s, want function", name, got.Type())
 		}
 	}
+	// M6-1：runInThisContext 已实现动态求值（不再是不可用的占位）。
 	fn, _ := getProp(t, mod, "runInThisContext").AsFunction()
-	if _, err := fn.Call([]engine.Value{engine.Str("1 + 1")}); err == nil {
-		t.Fatal("runInThisContext should report unavailable dynamic evaluation")
+	res, err := fn.Call([]engine.Value{engine.Str("1 + 1")})
+	if err != nil {
+		t.Fatalf("runInThisContext('1 + 1') error: %v", err)
+	}
+	if res.String() != "2" {
+		t.Fatalf("runInThisContext('1 + 1') = %q, want 2", res.String())
+	}
+	// M6-1：context 隔离——runInNewContext 的全局不泄漏到宿主。
+	runNew, _ := getProp(t, mod, "runInNewContext").AsFunction()
+	secretVal, err := runNew.Call([]engine.Value{engine.Str("globalThis.__vm_secret = 's1'")})
+	if err != nil {
+		t.Fatalf("runInNewContext error: %v", err)
+	}
+	if secretVal.String() != "s1" {
+		t.Fatalf("runInNewContext returned %q, want s1", secretVal.String())
+	}
+	if got := getProp(t, ctx.Global(), "__vm_secret"); got.Type().String() != "undefined" {
+		t.Fatalf("vm context global leaked to host: %s", got.String())
 	}
 }
 

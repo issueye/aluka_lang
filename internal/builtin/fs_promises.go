@@ -10,13 +10,36 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
+// fspromisesCache 按上下文缓存 fs/promises 模块对象，保证
+// require('node:fs').promises === require('node:fs/promises') 身份一致
+// （Node 语义）。
+var fspromisesCache sync.Map // engine.Context → engine.Value
+
+// getFSPromises 返回当前上下文的 fs/promises 模块对象（惰性创建并缓存）。
+func getFSPromises(ctx engine.Context) engine.Value {
+	if v, ok := fspromisesCache.Load(ctx); ok {
+		return v.(engine.Value)
+	}
+	m, err := NewFSPromises(ctx)
+	if err != nil {
+		return engine.Undefined()
+	}
+	fspromisesCache.Store(ctx, m)
+	return m
+}
+
 // NewFSPromises 构造 node:fs/promises 模块导出对象。
 func NewFSPromises(ctx engine.Context) (engine.Value, error) {
+	if v, ok := fspromisesCache.Load(ctx); ok {
+		return v.(engine.Value), nil
+	}
 	m := engine.NewObject()
 
 	// readFile(path[, encoding]) → Promise<Buffer|string>
@@ -118,7 +141,7 @@ func NewFSPromises(ctx engine.Context) (engine.Value, error) {
 			if err != nil {
 				return engine.Undefined(), err
 			}
-			return statToObj(info), nil
+			return statToObj(ctx, info), nil
 		})
 	}))
 
@@ -193,6 +216,8 @@ func NewFSPromises(ctx engine.Context) (engine.Value, error) {
 
 	addFSPromisesExtras(ctx, m)
 
+	fspromisesCache.Store(ctx, m)
+
 	return m, nil
 }
 
@@ -209,7 +234,7 @@ func fsPromise(ctx engine.Context, args []engine.Value, op func() (engine.Value,
 			ctx.PostTask(func() {
 				defer release()
 				if err != nil {
-					callBuiltinResolve(reject, builtinErrorValue(ctx, err.Error()))
+					callBuiltinResolve(reject, fsErrorToJS(ctx, err))
 				} else {
 					callBuiltinResolve(resolve, val)
 				}
@@ -273,8 +298,9 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-// addFSPromisesExtras 补全 fs/promises 常用方法（Pi 的 nodejs.ts 全量 API）。
-// mkdtemp / lstat / realpath / opendir。
+// addFSPromisesExtras 补全 fs/promises 常用方法。
+// mkdtemp / lstat / realpath / opendir / open / chmod / chown / link /
+// symlink / readlink / utimes / statfs / truncate / watch。
 func addFSPromisesExtras(ctx engine.Context, m engine.Object) {
 	_ = m.Set("mkdtemp", engine.NewFunction("mkdtemp", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
@@ -282,7 +308,7 @@ func addFSPromisesExtras(ctx engine.Context, m engine.Object) {
 		}
 		prefix := args[0].String()
 		return fsPromise(ctx, args, func() (engine.Value, error) {
-			dir, err := os.MkdirTemp("", prefix)
+			dir, err := fsMakeTempDir(prefix)
 			if err != nil {
 				return engine.Undefined(), err
 			}
@@ -300,7 +326,7 @@ func addFSPromisesExtras(ctx engine.Context, m engine.Object) {
 			if err != nil {
 				return engine.Undefined(), err
 			}
-			return fsStatToObject(info), nil
+			return statToObj(ctx, info), nil
 		})
 	}))
 
@@ -328,41 +354,147 @@ func addFSPromisesExtras(ctx engine.Context, m engine.Object) {
 		}
 		path := args[0].String()
 		return fsPromise(ctx, args, func() (engine.Value, error) {
-			entries, err := os.ReadDir(path)
+			return fsOpenDir(ctx, path)
+		})
+	}))
+
+	// open(path, flags[, mode]) → Promise<FileHandle>
+	_ = m.Set("open", engine.NewFunction("open", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("open: path required")
+		}
+		path := args[0].String()
+		flags := "r"
+		if len(args) > 1 && args[1].Type() == engine.TypeString {
+			flags = args[1].String()
+		}
+		mode := 0o666
+		if len(args) > 2 {
+			if n, ok := args[2].Int(); ok {
+				mode = n
+			}
+		}
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			goFlags, err := fsParseFlags(flags)
 			if err != nil {
 				return engine.Undefined(), err
 			}
-			out := make([]engine.Value, len(entries))
-			for i, e := range entries {
-				d := engine.NewObject()
-				_ = d.Set("name", engine.Str(e.Name()))
-				_ = d.Set("isDirectory", engine.NewFunction("isDirectory", func(args []engine.Value) (engine.Value, error) {
-					return engine.Boolean(e.IsDir()), nil
-				}))
-				_ = d.Set("isFile", engine.NewFunction("isFile", func(args []engine.Value) (engine.Value, error) {
-					return engine.Boolean(e.Type().IsRegular()), nil
-				}))
-				_ = d.Set("isSymbolicLink", engine.NewFunction("isSymbolicLink", func(args []engine.Value) (engine.Value, error) {
-					return engine.Boolean(e.Type()&os.ModeSymlink != 0), nil
-				}))
-				out[i] = d
+			f, err := os.OpenFile(path, goFlags, os.FileMode(mode))
+			if err != nil {
+				return engine.Undefined(), err
 			}
-			dir := engine.NewObject()
-			_ = dir.Set("read", engine.NewFunction("read", func(args []engine.Value) (engine.Value, error) {
-				return engine.Null(), nil // 简化：一次返回全部（Dirent 对象）
-			}))
-			_ = dir.Set("readSync", engine.NewFunction("readSync", func(args []engine.Value) (engine.Value, error) {
-				return engine.Null(), nil
-			}))
-			_ = dir.Set("close", engine.NewFunction("close", func(args []engine.Value) (engine.Value, error) {
-				return engine.Undefined(), nil
-			}))
-			_ = dir.Set("closeSync", engine.NewFunction("closeSync", func(args []engine.Value) (engine.Value, error) {
-				return engine.Undefined(), nil
-			}))
-			_ = dir.Set("path", engine.Str(path))
-			_ = dir.Set("dirents", engine.NewArray(out))
-			return dir, nil
+			return newFileHandle(ctx, f), nil
+		})
+	}))
+
+	// chmod / chown / link / symlink / readlink / utimes / truncate / statfs
+	_ = m.Set("chmod", engine.NewFunction("chmod", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("chmod: path required")
+		}
+		path := args[0].String()
+		mode := 0o644
+		if len(args) > 1 {
+			if n, ok := args[1].Int(); ok {
+				mode = n
+			}
+		}
+		if runtime.GOOS == "windows" {
+			return fsPromise(ctx, args, func() (engine.Value, error) { return engine.Undefined(), nil })
+		}
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			return engine.Undefined(), os.Chmod(path, os.FileMode(mode))
+		})
+	}))
+	_ = m.Set("chown", engine.NewFunction("chown", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("chown: path required")
+		}
+		if runtime.GOOS == "windows" {
+			return fsPromise(ctx, args, func() (engine.Value, error) { return engine.Undefined(), nil })
+		}
+		path := args[0].String()
+		uid, gid := -1, -1
+		if len(args) > 1 {
+			if n, ok := args[1].Int(); ok {
+				uid = n
+			}
+		}
+		if len(args) > 2 {
+			if n, ok := args[2].Int(); ok {
+				gid = n
+			}
+		}
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			return engine.Undefined(), os.Chown(path, uid, gid)
+		})
+	}))
+	_ = m.Set("link", engine.NewFunction("link", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("link: paths required")
+		}
+		oldPath, newPath := args[0].String(), args[1].String()
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			return engine.Undefined(), os.Link(oldPath, newPath)
+		})
+	}))
+	_ = m.Set("symlink", engine.NewFunction("symlink", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("symlink: paths required")
+		}
+		target, p := args[0].String(), args[1].String()
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			return engine.Undefined(), os.Symlink(target, p)
+		})
+	}))
+	_ = m.Set("readlink", engine.NewFunction("readlink", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("readlink: path required")
+		}
+		p := args[0].String()
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			target, err := os.Readlink(p)
+			if err != nil {
+				return engine.Undefined(), err
+			}
+			return engine.Str(target), nil
+		})
+	}))
+	_ = m.Set("utimes", engine.NewFunction("utimes", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("utimes: path required")
+		}
+		p := args[0].String()
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			atime, mtime, err := fsTimeArgs(args[1:])
+			if err != nil {
+				return engine.Undefined(), err
+			}
+			return engine.Undefined(), os.Chtimes(p, atime, mtime)
+		})
+	}))
+	_ = m.Set("truncate", engine.NewFunction("truncate", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("truncate: path required")
+		}
+		p := args[0].String()
+		size := int64(0)
+		if len(args) > 1 {
+			if n, ok := args[1].Float(); ok {
+				size = int64(n)
+			}
+		}
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			return engine.Undefined(), os.Truncate(p, size)
+		})
+	}))
+	_ = m.Set("statfs", engine.NewFunction("statfs", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("statfs: path required")
+		}
+		p := args[0].String()
+		return fsPromise(ctx, args, func() (engine.Value, error) {
+			return fsStatfsObj(p), nil
 		})
 	}))
 }

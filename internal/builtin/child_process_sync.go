@@ -230,12 +230,14 @@ func runSyncCommand(cmd *exec.Cmd, optsVal engine.Value) (engine.Value, error) {
 	_ = result.Set("stderr", globals.NewBufferInstance(stderrBuf.Bytes()))
 	if runErr != nil {
 		if atomic.LoadInt32(&timedOut) == 1 {
-			// 超时：error 属性（code ETIMEDOUT，Node 语义）。
+			// 超时：error 属性（code ETIMEDOUT，Node 语义），signal 为
+			// SIGTERM（Node 在 Windows 上 timeout 的 signal 值为 'SIGTERM'）。
 			errObj := engine.NewObject()
 			_ = errObj.Set("code", engine.Str("ETIMEDOUT"))
 			_ = errObj.Set("message", engine.Str(runErr.Error()))
 			_ = result.Set("error", errObj)
 			_ = result.Set("status", engine.Null())
+			_ = result.Set("signal", engine.Str("SIGTERM"))
 			return result, nil
 		}
 		if _, ok := runErr.(*exec.ExitError); ok {

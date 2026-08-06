@@ -2,12 +2,12 @@
 
 > 自动生成：`tests/compat/node22/gen-all.sh`（gen-manifest → run-probe → gen-coverage），禁止手工修改。
 > 数据源：官方 API JSON v22.23.1（sha256 `ba180cb8908e1ff4247f4b71fe55042caddab8b2f4fcc2d80f28945d8d701bf1`）、本机 Node v22.23.1、Aluka 探针实测。
-> 平台：windows/amd64 ｜ 生成时间：2026-08-06T14:02:17.201Z
+> 平台：windows/amd64 ｜ 生成时间：2026-08-06T16:05:25.942Z
 
 ## 1. 总体结论
 
-- 入口：57/57 有 manifest；名称面覆盖 388/2044（19%）。
-- 等级分布：L0=3，L1=3，L2=46，L3=5，L4=0。
+- 入口：57/57 有 manifest；名称面覆盖 629/2044（31%）。
+- 等级分布：L0=3，L1=2，L2=46，L3=6，L4=0。
 - **L0-L4 判定口径**：本报告为探针初始分级（名称面近似）。L3 表示 manifest 名称面 100% 存在；L4 只在对应模块差分/语义测试通过后授予（M10 全量认证）。
 - 已知差异与缺口见 [gaps.md](./node22/../tests/compat/node22/gaps.md) 与下文章节。
 
@@ -17,37 +17,37 @@
 |------|------|--------|--------|------|----------|
 | `assert` | L2 | assert | 27 | 59% | assert、notDeepEqual、notDeepStrictEqual、assert.AssertionError、assert.Assert |
 | `assert/strict` | L2 | assert | 27 | 59% | assert、notDeepEqual、notDeepStrictEqual、assert.AssertionError、assert.Assert |
-| `async_hooks` | L2 | async_hooks | 10 | 10% | createHook、AsyncHook、AsyncHook#enable、AsyncHook#disable、AsyncHook#executionAsyncResource |
-| `buffer` | L2 | buffer | 83 | 5% | atob、btoa、resolveObjectURL、transcode、Blob |
+| `async_hooks` | L2 | async_hooks | 10 | 30% | AsyncHook、AsyncHook#enable、AsyncHook#disable、AsyncHook#executionAsyncResource、AsyncHook#executionAsyncId |
+| `buffer` | L2 | buffer | 83 | 6% | atob、btoa、resolveObjectURL、Blob、Blob#arrayBuffer |
 | `child_process` | L2 | child_process | 21 | 33% | ChildProcess、ChildProcess#disconnect、ChildProcess#kill、ChildProcess#[Symbol.dispose]、ChildProcess#ref |
-| `cluster` | L2 | cluster | 22 | 18% | setupPrimary、exit、listening、message、online |
+| `cluster` | L2 | cluster | 22 | 23% | exit、listening、message、online、setup |
 | `console` | L1 | console | 23 | 0% | profile、profileEnd、timeStamp、Console、Console#assert |
 | `constants` | L1 | os | 0 | - | - |
-| `crypto` | L2 | crypto | 110 | 12% | checkPrime、checkPrimeSync、createDiffieHellman、createDiffieHellmanGroup、createECDH |
+| `crypto` | L2 | crypto | 110 | 26% | createDiffieHellman、createDiffieHellmanGroup、createECDH、diffieHellman、generateKey |
 | `dgram` | L2 | dgram | 32 | 6% | dgram.Socket#addMembership、dgram.Socket#addSourceSpecificMembership、dgram.Socket#address、dgram.Socket#bind、dgram.Socket#close |
-| `diagnostics_channel` | L2 | diagnostics_channel | 25 | 20% | start、end、asyncStart、asyncEnd、error |
-| `dns` | L2 | dns | 27 | 19% | getServers、lookupService、resolveAny、resolveCname、resolveCaa |
+| `diagnostics_channel` | L2 | diagnostics_channel | 25 | 48% | start、end、asyncStart、asyncEnd、error |
+| `dns` | L2 | dns | 27 | 89% | cancel、dns.Resolver#Resolver、dns.Resolver#setLocalAddress |
 | `dns/promises` | L2 | dns | 23 | 96% | cancel |
 | `domain` | L0 | domain | 10 | 0% | create、Domain、Domain#add、Domain#bind、Domain#enter |
 | `events` | L2 | Events | 53 | 49% | EventEmitter#event:newListener、events.EventEmitterAsyncResource#Type、Event、Event#composedPath、Event#initEvent |
-| `fs` | L2 | fs | 169 | 12% | access、appendFile、chmod、chown、copyFile |
-| `fs/promises` | L2 | fs | 54 | 28% | chmod、chown、cp、glob、lchmod |
-| `http` | L2 | http | 111 | 5% | validateHeaderName、validateHeaderValue、setMaxIdleHTTPParsers、http.Agent#createConnection、http.Agent#keepSocketAlive |
-| `http2` | L2 | http/2 | 114 | 8% | createSecureServer、performServerHandshake、Http2Session#close、Http2Session#destroy、Http2Session#goaway |
-| `https` | L2 | https | 12 | 33% | https.Server、https.Server#close、https.Server#[Symbol.asyncDispose]、https.Server#closeAllConnections、https.Server#closeIdleConnections |
+| `fs` | L2 | fs | 169 | 60% | native、FileHandle#appendFile、FileHandle#chmod、FileHandle#chown、FileHandle#close |
+| `fs/promises` | L2 | fs | 54 | 44% | cp、glob、lchmod、lchown、lutimes |
+| `http` | L2 | http | 111 | 7% | setMaxIdleHTTPParsers、http.Agent#createConnection、http.Agent#keepSocketAlive、http.Agent#reuseSocket、http.Agent#destroy |
+| `http2` | L2 | http/2 | 114 | 5% | performServerHandshake、Http2Session、Http2Session#close、Http2Session#destroy、Http2Session#goaway |
+| `https` | L2 | https | 12 | 42% | https.Server#close、https.Server#[Symbol.asyncDispose]、https.Server#closeAllConnections、https.Server#closeIdleConnections、https.Server#listen |
 | `inspector` | L2 | inspector | 18 | 50% | dataReceived、dataSent、requestWillBeSent、responseReceived、loadingFinished |
 | `inspector/promises` | L2 | inspector | 7 | 71% | inspector.Session#event:inspectorNotification、inspector.Session#event:<inspector-protocol-method>` |
-| `module` | L2 | modules:_`node:module`_api | 17 | 6% | enableCompileCache、getCompileCacheDir、findPackageJSON、isBuiltin、register |
-| `net` | L2 | net | 65 | 5% | getDefaultAutoSelectFamily、setDefaultAutoSelectFamily、getDefaultAutoSelectFamilyAttemptTimeout、setDefaultAutoSelectFamilyAttemptTimeout、isIP |
-| `os` | L2 | os | 20 | 70% | availableParallelism、getPriority、loadavg、machine、setPriority |
+| `module` | L2 | modules:_`node:module`_api | 17 | 82% | module.SourceMap#findEntry、module.SourceMap#findOrigin、module.SourceMap#return |
+| `net` | L2 | net | 65 | 12% | getDefaultAutoSelectFamily、setDefaultAutoSelectFamily、getDefaultAutoSelectFamilyAttemptTimeout、setDefaultAutoSelectFamilyAttemptTimeout、net.BlockList#addAddress |
+| `os` | L3 | os | 20 | 100% | - |
 | `path` | L3 | path | 12 | 100% | - |
 | `path/posix` | L3 | path | 12 | 100% | - |
 | `path/win32` | L3 | path | 12 | 100% | - |
-| `perf_hooks` | L1 | performance_measurement_apis | 37 | 0% | createHistogram、monitorEventLoopDelay、PerformanceEntry、PerformanceEntry#Type、PerformanceMark |
-| `process` | L2 | global-objects | 102 | 12% | abort、availableMemory、constrainedMemory、disconnect、dlopen |
+| `perf_hooks` | L2 | performance_measurement_apis | 37 | 30% | PerformanceEntry#Type、PerformanceMark#Type、PerformanceMeasure#Type、PerformanceNodeEntry、PerformanceNodeEntry#Type |
+| `process` | L2 | global-objects | 102 | 13% | availableMemory、constrainedMemory、disconnect、dlopen、execve |
 | `punycode` | L0 | punycode | 4 | 0% | decode、encode、toASCII、toUnicode |
 | `querystring` | L2 | querystring | 6 | 67% | decode、encode |
-| `readline` | L2 | readline | 38 | 3% | emitKeypressEvents、clearLine、clearScreenDown、cursorTo、moveCursor |
+| `readline` | L2 | readline | 38 | 16% | InterfaceConstructor、InterfaceConstructor#close、InterfaceConstructor#[Symbol.dispose]、InterfaceConstructor#pause、InterfaceConstructor#prompt |
 | `readline/promises` | L2 | readline | 10 | 90% | readlinePromises.Interface#question |
 | `repl` | L2 | repl | 8 | 13% | REPLServer、REPLServer#defineCommand、REPLServer#displayPrompt、REPLServer#clearBufferedCommand、REPLServer#setupHistory |
 | `sqlite` | L2 | sqlite | 29 | 3% | backup、DatabaseSync#aggregate、DatabaseSync#close、DatabaseSync#loadExtension、DatabaseSync#enableLoadExtension |
@@ -61,17 +61,17 @@
 | `test/reporters` | L3 | test_runner | 5 | 100% | - |
 | `timers` | L2 | timers | 21 | 29% | wait、yield、Immediate、Immediate#hasRef、Immediate#ref |
 | `timers/promises` | L2 | timers | 5 | 60% | wait、yield |
-| `tls` | L2 | tls_(ssl) | 54 | 6% | checkServerIdentity、createSecureContext、createSecurePair、setDefaultCACertificates、getCACertificates |
+| `tls` | L2 | tls_(ssl) | 54 | 11% | createSecurePair、setDefaultCACertificates、getCACertificates、tls.SecurePair、tls.SecurePair#event:secure |
 | `trace_events` | L2 | trace_events | 4 | 50% | disable、enable |
-| `tty` | L2 | tty | 17 | 18% | tty.ReadStream#setRawMode、tty.ReadStream#isRaw、tty.ReadStream#isTTY、tty.WriteStream#clearLine、tty.WriteStream#clearScreenDown |
+| `tty` | L2 | tty | 17 | 71% | tty.ReadStream#isRaw、tty.ReadStream#isTTY、tty.WriteStream#columns、tty.WriteStream#rows、tty.WriteStream#event:resize |
 | `url` | L2 | url | 32 | 22% | fileURLToPathBuffer、urlToHttpOptions、URL、URL#toString、URL#toJSON |
 | `util` | L2 | util | 61 | 18% | debug、diff、getCallSites、getSystemErrorName、getSystemErrorMap |
 | `util/types` | L2 | util | 61 | 21% | callbackify、debuglog、debug、deprecate、diff |
-| `v8` | L2 | v8 | 56 | 7% | cachedDataVersionTag、getHeapCodeStatistics、getHeapSpaceStatistics、getCppHeapStatistics、queryObjects |
-| `vm` | L2 | vm | 25 | 36% | measureMemory、vm.Script#createCachedData、vm.Script#runInContext、vm.Script#runInNewContext、vm.Script#runInThisContext |
+| `v8` | L2 | v8 | 56 | 68% | onInit、onSettled、onBefore、onAfter、createHook |
+| `vm` | L2 | vm | 25 | 48% | vm.Script#Type、vm.Module、vm.Module#evaluate、vm.Module#link、vm.Module#Type |
 | `wasi` | L0 | webassembly_system_interface_(wasi) | 5 | 0% | WASI、WASI#getImportObject、WASI#start、WASI#initialize、WASI#Type |
-| `worker_threads` | L2 | worker_threads | 43 | 7% | getEnvironmentData、isMarkedAsUntransferable、moveMessagePortToContext、postMessageToThread、receiveMessageOnPort |
-| `zlib` | L2 | zlib | 52 | 31% | crc32、createBrotliCompress、createBrotliDecompress、createDeflate、createDeflateRaw |
+| `worker_threads` | L2 | worker_threads | 43 | 28% | BroadcastChannel#close、BroadcastChannel#postMessage、BroadcastChannel#ref、BroadcastChannel#unref、BroadcastChannel#Type |
+| `zlib` | L2 | zlib | 52 | 44% | createBrotliCompress、createBrotliDecompress、createDeflate、createDeflateRaw、createGunzip |
 
 ## 3. 全局与 Web API
 

@@ -73,6 +73,11 @@ func newWebSocketInstance(ctx engine.Context, url string) engine.Value {
 	_ = ws.Set("onmessage", engine.Undefined())
 	_ = ws.Set("onclose", engine.Undefined())
 	_ = ws.Set("onerror", engine.Undefined())
+	// 表面属性（Node 语义默认值）。
+	_ = ws.Set("binaryType", engine.Str("blob"))
+	_ = ws.Set("bufferedAmount", engine.IntValue(0))
+	_ = ws.Set("extensions", engine.Str(""))
+	_ = ws.Set("protocol", engine.Str(""))
 
 	// 常量。
 	_ = ws.Set("CONNECTING", engine.IntValue(0))

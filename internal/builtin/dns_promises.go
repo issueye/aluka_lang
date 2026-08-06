@@ -246,10 +246,13 @@ func newDNSPromises(ctx engine.Context) engine.Value {
 		return engine.Undefined(), nil
 	}))
 	_ = p.Set("setDefaultResultOrder", engine.NewFunction("setDefaultResultOrder", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			defaultResultOrder = args[0].String()
+		}
 		return engine.Undefined(), nil
 	}))
 	_ = p.Set("getDefaultResultOrder", engine.NewFunction("getDefaultResultOrder", func(args []engine.Value) (engine.Value, error) {
-		return engine.Str("ipv4first"), nil
+		return engine.Str(defaultResultOrder), nil
 	}))
 
 	// Resolver 类：实例方法与 promises 模块共享实现。
@@ -293,6 +296,50 @@ func newDNSPromises(ctx engine.Context) engine.Value {
 	_ = p.Set("Resolver", resolverCtor)
 
 	return p
+}
+
+// promiseLookup 返回真正的 Promise（用全局 Promise 构造器 + executor），
+// 异步解析后 resolve/reject。
+func promiseLookup(ctx engine.Context, hostname string, convert func([]string) (engine.Value, error)) (engine.Value, error) {
+	promiseCtor, err := ctx.Global().Get("Promise")
+	if err != nil || !promiseCtor.IsFunction() {
+		return engine.Undefined(), fmt.Errorf("dns: global Promise not available")
+	}
+	executor := engine.NewFunction("executor", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), nil
+		}
+		resolve, reject := args[0], args[1]
+		release := ctx.AddRef()
+		go func() {
+			addrs, err := net.LookupHost(hostname)
+			ctx.PostTask(func() {
+				defer release()
+				if err != nil || len(addrs) == 0 {
+					if f, ok := reject.AsFunction(); ok {
+						_, _ = f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", hostname)})
+					}
+					return
+				}
+				result, cerr := convert(addrs)
+				if cerr != nil {
+					if f, ok := reject.AsFunction(); ok {
+						_, _ = f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", hostname)})
+					}
+					return
+				}
+				if f, ok := resolve.AsFunction(); ok {
+					_, _ = f.Call([]engine.Value{result})
+				}
+			})
+		}()
+		return engine.Undefined(), nil
+	})
+	pf, ok := promiseCtor.AsFunction()
+	if !ok {
+		return engine.Undefined(), fmt.Errorf("dns: Promise not callable")
+	}
+	return pf.Call([]engine.Value{executor})
 }
 
 // promiseResolve 把同步解析函数包成 Promise（异步 resolve，保持时序一致）。
@@ -480,18 +527,38 @@ func portServiceName(port string) string {
 }
 
 // dnsErrorCodes 是 node:dns / node:dns/promises 的错误码常量（Node 22 全集）。
-var dnsErrorCodes = []string{
-	"ADDRGETNETWORKPARAMS", "BADFAMILY", "BADFLAGS", "BADHINTS", "BADNAME",
-	"BADQUERY", "BADRESP", "BADSTR", "CANCELLED", "CONNREFUSED", "DESTRUCTION",
-	"EOF", "FILE", "FORMERR", "LOADIPHLPAPI", "NODATA", "NOMEM", "NONAME",
-	"NOTFOUND", "NOTIMP", "NOTINITIALIZED", "REFUSED", "SERVFAIL", "TIMEOUT",
+// Node 语义：每个常量是 errno 字符串（如 NODATA → 'ENODATA'）。
+var dnsErrorCodes = map[string]string{
+	"ADDRGETNETWORKPARAMS": "EADDRGETNETWORKPARAMS",
+	"BADFAMILY":           "EBADFAMILY",
+	"BADFLAGS":            "EBADFLAGS",
+	"BADHINTS":            "EBADHINTS",
+	"BADNAME":             "EBADNAME",
+	"BADQUERY":            "EBADQUERY",
+	"BADRESP":             "EBADRESP",
+	"BADSTR":              "EBADSTR",
+	"CANCELLED":           "ECANCELLED",
+	"CONNREFUSED":         "ECONNREFUSED",
+	"DESTRUCTION":         "EDESTRUCTION",
+	"EOF":                 "EOF",
+	"FILE":                "EFILE",
+	"FORMERR":             "EFORMERR",
+	"LOADIPHLPAPI":        "ELOADIPHLPAPI",
+	"NODATA":              "ENODATA",
+	"NOMEM":               "ENOMEM",
+	"NONAME":              "ENONAME",
+	"NOTFOUND":            "ENOTFOUND",
+	"NOTIMP":              "ENOTIMP",
+	"NOTINITIALIZED":      "ENOTINITIALIZED",
+	"REFUSED":             "EREFUSED",
+	"SERVFAIL":            "ESERVFAIL",
+	"TIMEOUT":             "ETIMEOUT",
 }
 
-// registerDNSConstants 注册 DNS 错误码常量（每个值对应稳定整数，Node 语义为
-// 负的 errno 值；这里取可复现的编号，语义值在 M4 对齐）。
+// registerDNSConstants 注册 DNS 错误码常量（Node 语义：字符串 errno）。
 func registerDNSConstants(m engine.Object) {
-	for i, code := range dnsErrorCodes {
-		_ = m.Set(code, engine.IntValue(-(i + 1)))
+	for code, val := range dnsErrorCodes {
+		_ = m.Set(code, engine.Str(val))
 	}
 }
 

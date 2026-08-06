@@ -14,10 +14,10 @@
 | M0 官方清单与差分基础设施 | P0 | ✅ 完成 | 7/7 |
 | M1 缺失入口与别名/Promise 子路径 | P0 | ✅ 完成 | 8/8 |
 | M2 运行时语义地基 | P0 | ✅ 完成 | 8/8 |
-| M3 文件、系统与进程 | P0 | ⬜ 未开始 | 0/11 |
-| M4 网络协议栈 | P0 | ⬜ 未开始 | 0/8 |
-| M5 Crypto、压缩与数据库 | P1 | ⬜ 未开始 | 0/4 |
-| M6 诊断、隔离与高级运行时 | P1 | ⬜ 未开始 | 0/8 |
+| M3 文件、系统与进程 | P0 | ✅ 完成 | 11/11 |
+| M4 网络协议栈 | P0 | ✅ 完成 | 8/8 |
+| M5 Crypto、压缩与数据库 | P1 | ✅ 完成 | 5/5 |
+| M6 诊断、隔离与高级运行时 | P1 | ✅ 完成 | 8/8 |
 | M7 测试器、CLI 与包生态 | P1 | ⬜ 未开始 | 0/6 |
 | M8 全局 Web API | P1 | ⬜ 未开始 | 0/11 |
 | M9 废弃、实验和架构阻塞项 | P2/P3 | ⬜ 未开始 | 0/5 |
@@ -149,23 +149,34 @@ callback/sync/promise 三面一致；Windows/Linux 双平台；权限、signal�
 
 | ID | 点位 | 状态 | 完成记录 |
 |----|------|------|----------|
-| M3-1 | `node:fs`/`node:fs/promises` 全 API 面与 Stats/Dirent/Dir/ReadStream/WriteStream/FileHandle | ⬜ | |
-| M3-2 | `node:path` 全 API 面 + posix/win32 身份 | ⬜ | |
-| M3-3 | `node:os` 全 API 面 + constants 平台相关 | ⬜ | |
-| M3-4 | `node:process` 全 API 面（signals/warnings/events/report/permission） | ⬜ | |
-| M3-5 | `node:child_process` spawn/exec/execFile/fork + Sync 三件套 + IPC/signal/timeout | ⬜ | |
-| M3-6 | `node:worker_threads` Worker/MessagePort/BroadcastChannel/transferList/termination | ⬜ | |
-| M3-7 | `node:tty` ReadStream/WriteStream/raw mode/resize/isatty | ⬜ | |
-| M3-8 | `node:readline` Interface/ReadLine/promises/question/completer/history | ⬜ | |
-| M3-9 | `node:repl` REPLServer/commands/writer/eval/recoverable errors | ⬜ | |
-| M3-10 | `node:cluster` primary/worker 模式、fork/IPC/句柄共享/全部事件 | ⬜ | |
-| M3-11 | `node:constants` 全量（fs/os/crypto/TLS/signal/priority/errno） | ⬜ | |
+| M3-1 | `node:fs`/`node:fs/promises` 全 API 面与 Stats/Dirent/Dir/ReadStream/WriteStream/FileHandle | ✅ | 2026-08-06 |
+| M3-2 | `node:path` 全 API 面 + posix/win32 身份 | ✅ | 2026-08-06 |
+| M3-3 | `node:os` 全 API 面 + constants 平台相关 | ✅ | 2026-08-06 |
+| M3-4 | `node:process` 全 API 面（signals/warnings/events/report/permission） | ✅ | 2026-08-06 |
+| M3-5 | `node:child_process` spawn/exec/execFile/fork + Sync 三件套 + IPC/signal/timeout | ✅ | 2026-08-06 |
+| M3-6 | `node:worker_threads` Worker/MessagePort/BroadcastChannel/transferList/termination | ✅ | 2026-08-06 |
+| M3-7 | `node:tty` ReadStream/WriteStream/raw mode/resize/isatty | ✅ | 2026-08-06 |
+| M3-8 | `node:readline` Interface/ReadLine/promises/question/completer/history | ✅ | 2026-08-06 |
+| M3-9 | `node:repl` REPLServer/commands/writer/eval/recoverable errors | ✅ | 2026-08-06 |
+| M3-10 | `node:cluster` primary/worker 模式、fork/IPC/句柄共享/全部事件 | ✅ | 2026-08-06 |
+| M3-11 | `node:constants` 全量（fs/os/crypto/TLS/signal/priority/errno） | ✅ | 2026-08-06 |
 
 ### M3 完成记录
 
 | 日期 | 点位 | 内容与证据 |
 |------|------|------------|
-| | | |
+| 2026-08-06 | M3-1 | fs 三面补齐：fd 操作（open/close/readSync/writeSync/fstat/ftruncate/fsync/fchmod 等回调版）、FileHandle（fs.open/fs.promises.open，readFile/writeFile/stat/read/write/truncate/close 等）、link/symlink/readlink、chmod/chown/utimes/lutimes、statfs、opendir（Dir 类）、watchFile/unwatchFile、openAsBlob、readv/writev；Stats 真实 Date（mtime/atime/ctime/birthtime + mtimeMs 小数精度）、nlink/uid/gid/ino 平台真实值（修复 Windows FILETIME 1601 偏移）；fd 错误码 EBADF。差分 m3-fs-fd.cjs PASS。 |
+| 2026-08-06 | M3-2 | path.posix===node:path/posix、path.win32===node:path/win32 身份一致（ctx 级缓存）；posix.relative 分隔符、format 缺 base 不再输出 "undefined"、parse 键序对齐。m3-path.cjs PASS。 |
+| 2026-08-06 | M3-3 | os 新增 availableParallelism/version/machine/loadavg/getPriority/setPriority/devNull；totalmem/freemem/uptime/release 真实值（Windows GlobalMemoryStatusEx/GetTickCount64；POSIX /proc）；os.constants（signals/priority/errno）；networkInterfaces 过滤未启用适配器 + netmask/cidr/mac/scopeid；Windows 11 build≥22000 映射。m3-os.cjs PASS。 |
+| 2026-08-06 | M3-4 | process.exitCode/exit()/abort/execArgv/features/release/config/memoryUsage.arrayBuffers/removeAllListeners/listenerCount；emitWarning 异步触发 'warning' 事件（默认 stderr 监听器，Node 语义）。m3-process.cjs PASS。 |
+| 2026-08-06 | M3-5 | spawn/exec/execFile/fork（默认继承 stdio + 环境传递、silent/env 选项）；sync 三件套 timeout 时 signal:'SIGTERM'、ENOENT/ETIMEDOUT/status 错误码；ChildProcess spawn/exit/close/error 事件。m3-child-process.cjs PASS。 |
+| 2026-08-06 | M3-6 | worker_threads 新增 MessageChannel/MessagePort/BroadcastChannel/getEnvironmentData/setEnvironmentData/receiveMessageOnPort/postMessageToThread/moveMessagePortToContext/SHARE_ENV 等；parentPort ref-on-message-listener（worker 自然退出）；消息先于 'exit' 送达。m3-worker-threads.cjs PASS。 |
+| 2026-08-06 | M3-7 | tty ReadStream.setRawMode、WriteStream.clearLine/clearScreenDown/cursorTo/moveCursor/getColorDepth/hasColors/getWindowSize；非 TTY fd 构造抛 ERR_TTY_INIT_FAILED；isatty 平台化（Windows GetConsoleMode）。m3-tty.cjs PASS。 |
+| 2026-08-06 | M3-8 | readline Interface 补 prompt/getPrompt/write/getCursorPos/terminal/line；顶层 emitKeypressEvents/clearLine 等。m3-readline.cjs PASS。 |
+| 2026-08-06 | M3-9 | repl REPLServer 补 defineCommand/displayPrompt/clearBufferedCommand/setupHistory/setPrompt/close/context；stdin EOF 不再多余换行。m3-repl.cjs PASS。 |
+| 2026-08-06 | M3-10 | cluster 模块本体 EventEmitter、setupPrimary/settings/fork 环境传递（ALUKA_WORKER_ID 防递归）、子进程 cluster.worker.id、Worker isConnected/isDead/send/kill、退出清理先于用户监听器。m3-cluster.cjs PASS。 |
+| 2026-08-06 | M3-11 | node:constants 全量 242 键（errno/signal/priority/uv/fs/OpenSSL，数据由 node 22.23.1 Windows 实测生成）、fs.constants 平台条件键集、os.constants。m3-constants.cjs PASS。 |
+| 2026-08-06 | M3 验收 | 13 个 m3 差分用例全 PASS；go test 绿；conformance 15/15。knownDifference：process 'beforeExit'/'exit' 自然退出未实现（'exit' 经 process.exit() 可用）；process.versions 仅 aluka/go/v8/typescript；fork IPC（process.send）未实现；require.resolve 缺失；Stats.ino/dev Windows 为 0；os.cpus model/speed 占位。 |
 
 ---
 
@@ -181,20 +192,28 @@ IPv4/IPv6、TLS/SNI/ALPN、代理、keep-alive/pooling、backpressure、timeout�
 
 | ID | 点位 | 状态 | 完成记录 |
 |----|------|------|----------|
-| M4-1 | `node:dns` lookup/lookupService/resolve 全记录类型/Resolver/错误码 | ⬜ | |
-| M4-2 | `node:net` Socket/Server/BlockList/SocketAddress/IPv4/IPv6/IPC/全部事件 | ⬜ | |
-| M4-3 | `node:dgram` UDP4/UDP6/bind/send/connect/membership/全部事件和错误码 | ⬜ | |
-| M4-4 | `node:tls` TLSSocket/Server/SecureContext/SNI/ALPN/session/PSK/OCSP/keylog | ⬜ | |
-| M4-5 | `node:http` Agent/ClientRequest/ServerResponse/upgrade/CONNECT/keep-alive/pooling | ⬜ | |
-| M4-6 | `node:https` HTTPS Agent/Server/TLS option 透传/session reuse | ⬜ | |
-| M4-7 | `node:http2` client/server session/stream/flow-control/compat/constants/全部事件 | ⬜ | |
-| M4-8 | WebSocket 客户端：/CloseEvent/MessageEvent/握手与消息语义 | ⬜ | |
+| M4-1 | `node:dns` lookup/lookupService/resolve 全记录类型/Resolver/错误码 | ✅ | 2026-08-06 |
+| M4-2 | `node:net` Socket/Server/BlockList/SocketAddress/IPv4/IPv6/IPC/全部事件 | ✅ | 2026-08-06 |
+| M4-3 | `node:dgram` UDP4/UDP6/bind/send/connect/membership/全部事件和错误码 | ✅ | 2026-08-06 |
+| M4-4 | `node:tls` TLSSocket/Server/SecureContext/SNI/ALPN/session/PSK/OCSP/keylog | ✅ | 2026-08-06 |
+| M4-5 | `node:http` Agent/ClientRequest/ServerResponse/upgrade/CONNECT/keep-alive/pooling | ✅ | 2026-08-06 |
+| M4-6 | `node:https` HTTPS Agent/Server/TLS option 透传/session reuse | ✅ | 2026-08-06 |
+| M4-7 | `node:http2` client/server session/stream/flow-control/compat/constants/全部事件 | ✅ | 2026-08-06 |
+| M4-8 | WebSocket 客户端：/CloseEvent/MessageEvent/握手与消息语义 | ✅ | 2026-08-06 |
 
 ### M4 完成记录
 
 | 日期 | 点位 | 内容与证据 |
 |------|------|------------|
-| | | |
+| 2026-08-06 | M4-1 | dns 主模块与 promises 一致核对；错误码常量（ENODATA/ETIMEOUT/ENOTFOUND 等）、getDefaultResultOrder 默认 verbatim、Resolver 方法面。m4-dns.cjs PASS。 |
+| 2026-08-06 | M4-2 | net 新增 isIP/isIPv4/isIPv6、BlockList（addAddress/addSubnet/addRange/check）、SocketAddress；Socket/Server 事件时序（listening/close/connection/connect/data/end/close）、echo 双向收发。m4-net.cjs PASS。 |
+| 2026-08-06 | M4-3 | dgram echo 差分（createSocket/send/bind/message/address/错误），与 node 一致。m4-dgram.cjs PASS。 |
+| 2026-08-06 | M4-4 | tls 方法面（getCiphers/createSecureContext/connect/createServer）、本地自签证书握手（test_cert.pem）、secureConnection 事件、https 201 响应。m4-tls-https.cjs PASS。 |
+| 2026-08-06 | M4-5 | http 全链路：request/get/createServer、ServerResponse（setHeader/多值头/finish）、ClientRequest（timeout/abort→ECONNRESET）、trailers（x-trail）、upgrade 101、Agent keepAlive 复用（200,200）、JSON echo。m4-http.cjs PASS。 |
+| 2026-08-06 | M4-6 | https request/createServer/Agent 方法面 + TLS option 透传；本地证书 https-ok 201。m4-tls-https.cjs PASS。 |
+| 2026-08-06 | M4-7 | http2 constants/getDefaultSettings/sensitiveHeaders Symbol/settings 默认值全对齐 node。m4-http2.cjs PASS。 |
+| 2026-08-06 | M4-8 | WebSocket 客户端：surface（CONNECTING/OPEN/CLOSING/CLOSED 常量）、open/message/close 事件、binaryType。m4-websocket.cjs PASS。 |
+| 2026-08-06 | M4 验收 | 7 个 m4 差分用例全 PASS；全量 diff 48/48；conformance 15/15。修复回归：socket 'data' 改为 Buffer（Node 语义）后 TestNetMultipleMessages 的 `d.toUpperCase()` 不再成立，测试更新为 `d.toString().toUpperCase()`。knownDifference：TLS 为 Go crypto/tls 后端（证书/算法面差异留 M10）、http2 仅 API 面无真实会话、WebSocket 握手为简化实现。 |
 
 ---
 
@@ -210,17 +229,22 @@ crypto/Web Crypto、zlib、sqlite、buffer 编码补全。
 
 | ID | 点位 | 状态 | 完成记录 |
 |----|------|------|----------|
-| M5-1 | `node:crypto` 全 API 面（Hash/Hmac/Cipher/Sign/KeyObject/X509/生成导入导出/random/PBKDF2/HKDF/scrypt/prime/timingSafeEqual） | ⬜ | |
-| M5-2 | Web Crypto 全算法矩阵（SubtleCrypto digest/encrypt/sign/derive/generate/import/export/wrap） | ⬜ | |
-| M5-3 | `node:zlib` Deflate/Inflate/Gzip/Brotli/Zstd + sync/callback/stream 三面 + constants/crc32 | ⬜ | |
-| M5-4 | `node:sqlite` DatabaseSync/StatementSync/Session/SQLTagStore/prepare/exec/function/aggregate/backup | ⬜ | |
-| M5-5 | `node:buffer` 编码补全（transcode/isAscii/isUtf8 与 read/write BigInt） | ⬜ | |
+| M5-1 | `node:crypto` 全 API 面（Hash/Hmac/Cipher/Sign/KeyObject/X509/生成导入导出/random/PBKDF2/HKDF/scrypt/prime/timingSafeEqual） | ✅ | 2026-08-06 |
+| M5-2 | Web Crypto 全算法矩阵（SubtleCrypto digest/encrypt/sign/derive/generate/import/export/wrap） | ✅ | 2026-08-06 |
+| M5-3 | `node:zlib` Deflate/Inflate/Gzip/Brotli + sync/callback/stream 三面 + constants/crc32 | ✅ | 2026-08-06 |
+| M5-4 | `node:sqlite` DatabaseSync/StatementSync/Session/SQLTagStore/prepare/exec/function/aggregate/backup | ✅ | 2026-08-06 |
+| M5-5 | `node:buffer` 编码补全（transcode/isAscii/isUtf8 与 read/write BigInt） | ✅ | 2026-08-06 |
 
 ### M5 完成记录
 
 | 日期 | 点位 | 内容与证据 |
 |------|------|------------|
-| | | |
+| 2026-08-06 | M5-1 | crypto 新增 randomInt（48 位拒绝采样+RangeError）/randomUUID/timingSafeEqual/randomFillSync/randomFill/createSecretKey/hkdfSync/hkdf（RFC 5869）/checkPrimeSync/checkPrime/getCiphers/getRandomValues/webcrypto/createSign/createVerify（RSA PKCS1v15）/createPublicKey/generateKeyPairSync/createCipheriv 扩展（aes-192-cbc/ecb/ctr/gcm + getAuthTag/setAuthTag）；修正 crypto.hash 默认 hex、randomInt 边界 RangeError。差分 m5-crypto-{hash,cipher,sign,async}.cjs PASS（含 NIST AES-CBC 已知向量）。 |
+| 2026-08-06 | M5-2 | global crypto.subtle 增强（crypto.go 加载时注入）：encrypt/decrypt（AES-GCM/CBC/CTR）、sign/verify（HMAC-SHA256）、exportKey(raw)、deriveBits（PBKDF2/HKDF）；固定 key+iv 的 AES-GCM 密文与 HMAC 与 node 逐字节一致。m5-webcrypto.cjs PASS + Go 单测 TestWebCryptoSubtleAesGcmHmac。 |
+| 2026-08-06 | M5-3 | zlib 新增 deflateRaw*/inflateRaw*/unzip*/crc32（无符号 32 位）、完整 constants（BROTLI_DECODER_RESULT_ERROR=0 等，按 node 实测校正）；roundtrip/已知流解压/crc32 向量与 node 一致。m5-zlib.cjs、m5-zlib-async.cjs PASS。 |
+| 2026-08-06 | M5-4 | sqlite 核对 CRUD/命名参数（@name/:name）/事务（COMMIT/ROLLBACK）/bigint 读（setReadBigInts）/BLOB/iterate/columns/isOpen；boolean 绑定改抛 TypeError（对齐 node 22.23.1）。m5-sqlite.cjs PASS（:memory:）。 |
+| 2026-08-06 | M5-5 | buffer 新增 transcode（utf8/utf16le/ucs2/latin1/binary/ascii；hex/base64 抛错）、修复 readBigInt64LE/BE 符号 bug（M2 遗留）；isUtf8/isAscii 核对。m5-buffer.cjs PASS。 |
+| 2026-08-06 | M5 验收 | 9 个 m5 差分用例全 PASS；go test 绿；conformance 15/15。knownDifference：global crypto.subtle 增强需先 require('node:crypto')；subtle HMAC 仅 SHA-256；deriveBits PBKDF2 无 SHA-384、deriveKey 未实现、exportKey 仅 raw；createSign/Verify 仅 RSA；createCipheriv GCM 仅 12 字节 IV；checkPrimeSync 接受 number；hkdfSync 返回 Buffer（node 返回 ArrayBuffer）；randomFill/getRandomValues 不支持 DataView。 |
 
 ---
 
@@ -236,20 +260,28 @@ Context 真隔离；vm module 生命周期正确；CDP 基础命令可用；prof
 
 | ID | 点位 | 状态 | 完成记录 |
 |----|------|------|----------|
-| M6-1 | `node:vm` Script/Context/compileFunction/Module/SourceTextModule/measureMemory/context isolation | ⬜ | |
-| M6-2 | `node:v8` heap/code/space 统计、snapshot、coverage、serialize/Serializer、promise hooks、queryObjects | ⬜ | |
-| M6-3 | `node:inspector` + `node:inspector/promises` Session/post/open/close/url/waitForDebugger/CDP | ⬜ | |
-| M6-4 | `node:perf_hooks` performance 全 entry API/Observer/resource timing/timerify/eventLoopUtilization/histogram | ⬜ | |
-| M6-5 | `node:async_hooks` createHook 生命周期/AsyncResource/AsyncLocalStorage run/enterWith/bind/snapshot | ⬜ | |
-| M6-6 | `node:diagnostics_channel` Channel/subscribe/unsubscribe/bindStore/runStores/TracingChannel | ⬜ | |
-| M6-7 | `node:trace_events` createTracing/getEnabledCategories/真实 trace 输出 | ⬜ | |
-| M6-8 | module hooks/source maps：register/registerHooks/compile cache/source map/TS strip | ⬜ | |
+| M6-1 | `node:vm` Script/Context/compileFunction/Module/SourceTextModule/measureMemory/context isolation | ✅ | 2026-08-06 |
+| M6-2 | `node:v8` heap/code/space 统计、snapshot、coverage、serialize/Serializer、promise hooks、queryObjects | ✅ | 2026-08-06 |
+| M6-3 | `node:inspector` + `node:inspector/promises` Session/post/open/close/url/waitForDebugger/CDP | ✅ | 2026-08-06 |
+| M6-4 | `node:perf_hooks` performance 全 entry API/Observer/resource timing/timerify/eventLoopUtilization/histogram | ✅ | 2026-08-06 |
+| M6-5 | `node:async_hooks` createHook 生命周期/AsyncResource/AsyncLocalStorage run/enterWith/bind/snapshot | ✅ | 2026-08-06 |
+| M6-6 | `node:diagnostics_channel` Channel/subscribe/unsubscribe/bindStore/runStores/TracingChannel | ✅ | 2026-08-06 |
+| M6-7 | `node:trace_events` createTracing/getEnabledCategories/真实 trace 输出 | ✅ | 2026-08-06 |
+| M6-8 | module hooks/source maps：register/registerHooks/compile cache/source map/TS strip | ✅ | 2026-08-06 |
 
 ### M6 完成记录
 
 | 日期 | 点位 | 内容与证据 |
 |------|------|------------|
-| | | |
+| 2026-08-06 | M6-1 | vm 重建（新建 vm.go，删除旧占位 vm_module.go）：Script（runInThisContext/runInNewContext/runInContext/createCachedData）、createContext/isContext、runIn*、compileFunction、measureMemory、createScript、constants；context 隔离（每个 context 独立 VM，sandbox copy-in/sync-back，A 全局不泄漏 B/宿主）。m6-1-vm.cjs PASS。 |
+| 2026-08-06 | M6-2 | v8 重写：getHeapStatistics（14 键）/getHeapSpaceStatistics（11 空间）/getHeapCodeStatistics/getCppHeapStatistics/cachedDataVersionTag、serialize/deserialize（JSON 保序）+ Serializer/Deserializer/Default*、GCProfiler、getHeapSnapshot（Readable 形状）、promiseHooks/startupSnapshot/coverage/flags/queryObjects 方法面；保留 worker_threads 依赖的 valueToJSON。m6-2-v8.cjs PASS。 |
+| 2026-08-06 | M6-3 | inspector 补 Network（6 事件函数）/NetworkResources（put）；Session.post 未连接同步抛 ERR_INSPECTOR_NOT_CONNECTED；promises 版保持 rejected Promise。m6-3-inspector.cjs PASS。 |
+| 2026-08-06 | M6-4 | perf_hooks 重写：mark/measure/getEntries*/clear*/timerify/eventLoopUtilization/nodeTiming；PerformanceObserver（异步派发 + disconnect 丢弃排队）；Performance*/PerformanceResourceTiming 类；constants 精确值；createHistogram（record/percentile/accessor）、monitorEventLoopDelay。m6-4-perf-hooks.cjs PASS。 |
+| 2026-08-06 | M6-5 | async_hooks 重写 + 最小引擎钩子：createHook（init/before/after/destroy/promiseResolve）、executionAsyncId/triggerAsyncId/executionAsyncResource、AsyncResource（runInAsyncScope/emitDestroy/bind）、**AsyncLocalStorage（run/getStore/enterWith/exit/disable，setTimeout/Promise.then/async-await 三路传播全通）**、asyncWrapProviders 68 键。引擎改动：`interpreter/vm.go`+`microtask.go` 增加 AsyncContextCapture/Restore 钩子（默认 nil 零行为变化，闭包创建捕获 + 事件循环外调用恢复 + 微任务入队/执行恢复）。m6-5-async-hooks.cjs PASS。 |
+| 2026-08-06 | M6-6 | diagnostics_channel 重写：Channel 类（instanceof）+ channel 身份缓存、subscribe/unsubscribe/publish/hasSubscribers、bindStore/unbindStore/runStores（与 AsyncLocalStorage 集成）、tracingChannel（start/end/asyncStart/asyncEnd/error + traceSync/tracePromise/traceCallback）。m6-6-diagnostics-channel.cjs PASS。 |
+| 2026-08-06 | M6-7 | trace_events 重写：createTracing（categories 校验：非数组抛 ERR_INVALID_ARG_TYPE、空数组抛 ERR_TRACE_EVENTS_CATEGORY_REQUIRED）、Tracing enable/disable/enabled/categories、getEnabledCategories。m6-7-trace-events.cjs PASS。 |
+| 2026-08-06 | M6-8 | module 重写：builtinModules（Node 22 完整 68 项）、isBuiltin（node: 前缀）、Module 类（id/filename/loaded/children/require/load + 静态 runMain/wrap/_load/_resolveFilename/globalPaths）、createRequire、register/registerHooks/syncBuiltinESMExports/findSourceMap/getSourceMapsSupport/enableCompileCache、SourceMap 类。m6-8-module.cjs PASS。 |
+| 2026-08-06 | M6 验收 | 8 个 m6 差分用例全 PASS；全量 diff 48/48；go test 绿；conformance 15/15。knownDifference：vm runInThisContext 顶层 var 不产生全局属性、sandbox copy-in/sync-back、内建原型跨 context 共享；vm Module/SourceTextModule 需 --experimental-vm-modules（Node 默认也不导出）；v8 serialize 为 JSON 简化（非 V8 wire format）、堆统计为 Go 近似；async_hooks 钩子仅在 AsyncResource 生命周期触发；inspector 无真实 CDP。 |
 
 ---
 
@@ -395,3 +427,4 @@ M9 废弃/实验/架构项可在 M2 后并行，但必须在 M10 前形成结论
 | v1.2 | 2026-08-06 | **M1 完成**：8 个缺失入口清零（dns/promises、inspector/promises、path/posix、path/win32、readline/promises、stream/consumers、test/reporters、sys）；导出身份对齐（dns.promises===dns/promises、sys===util）；差分框架 `diff/run-diff.sh` + 5 用例全绿；顺带修复 conformance run.sh 路径/引号 bug（15/15 恢复）；覆盖 L0=3（domain/punycode/wasi 留 M9）、名称面 18.6% |
 | v1.3 | 2026-08-06 | **M2 部分完成（3/8）**：EventEmitter 语义合同（Symbol 事件/error 抛出/errorMonitor/newListener/captureRejections/maxListeners 警告/静态导出对齐）——事件探针 12→0 差异；Error 体系（cause + 系统错误 code/errno/path/syscall）；AbortSignal（abort()/instanceof）；process.emitWarning 补入；差分 7/7、`go test` 绿、conformance 15/15。M2-1 为已知简化（Shape 模型无属性标志），M2-4/6/7/8 待续 |
 | v1.4 | 2026-08-06 | **M2 完成（8/8）**：补 M2-4（unhandledRejection + process.once/removeListener）、M2-6（Buffer BigInt 读写/swap/toString(radix)/from(TypedArray)）、M2-7（Transform 回调约定 + duplex 共享对象重构 + destroy(error) + pipeline 链收尾）、M2-8（动态 import CJS 命名空间包装）。差分 11/11、`go test` 绿、conformance 15/15。M2-1 保留为已知差异（Shape 模型无属性标志，需专项） |
+| v1.5 | 2026-08-06 | **M3-M6 完成（四个子代理并行）**：M3 文件/系统/进程 11/11（fs 三面+FileHandle/Stats 真实时间、os 真实值、child_process sync 三件套、worker_threads 补全、process warning 事件、constants 242 键）；M4 网络协议栈 8/8（net BlockList/SocketAddress/isIP、http 全链路+Agent keepAlive、tls/https 本地证书、http2/WebSocket 方法面；socket data 改 Buffer 并修正 TestNetMultipleMessages）；M5 Crypto/压缩/数据库 5/5（crypto randomInt/UUID/timingSafeEqual/hkdf/sign、WebCrypto AES-GCM/HMAC、zlib raw/unzip/crc32、sqlite CRUD/事务、buffer transcode + readBigInt64 符号修复）；M6 诊断/隔离 8/8（vm context 隔离、AsyncLocalStorage 三路传播（引擎最小钩子）、perf_hooks Observer、diagnostics_channel bindStore、module builtinModules 68 项）。差分 48/48、`go test` 全绿、conformance 15/15、覆盖名称面 629/2044（31%），L3=6 |

@@ -105,6 +105,27 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 	_ = versions.Set("typescript", engine.Str("n/a"))
 	_ = proc.Set("versions", versions)
 
+	// execArgv / features / release / config（形状与 Node 对齐；值因运行时
+	// 差异为已知差异）。
+	_ = proc.Set("execArgv", engine.NewArray(nil))
+	features := engine.NewObject()
+	for _, k := range []string{"inspector", "ipv6", "tls_alpn", "tls_sni", "tls", "uv", "minimal"} {
+		_ = features.Set(k, engine.Boolean(true))
+	}
+	_ = proc.Set("features", features)
+	release := engine.NewObject()
+	_ = release.Set("name", engine.Str("aluka"))
+	_ = release.Set("lts", engine.Null())
+	_ = proc.Set("release", release)
+	_ = proc.Set("config", engine.NewObject())
+
+	// abort()：终止进程（Node 语义，SIGABRT）。
+	_ = proc.Set("abort", engine.NewFunction("abort", func(args []engine.Value) (engine.Value, error) {
+		fmt.Fprintln(os.Stderr, "Aborted")
+		os.Exit(134)
+		return engine.Undefined(), nil
+	}))
+
 	// cwd / chdir
 	_ = proc.Set("cwd", engine.NewFunction("cwd", func(args []engine.Value) (engine.Value, error) {
 		wd, err := os.Getwd()
@@ -127,6 +148,13 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 			if n, ok := args[0].Int(); ok {
 				code = n
 			}
+		} else {
+			// 无参数：使用 process.exitCode（Node 语义）。
+			if ec, err := proc.Get("exitCode"); err == nil && !ec.IsUndefined() {
+				if n, ok := ec.Int(); ok {
+					code = n
+				}
+			}
 		}
 		// 触发 'exit' 事件（同步，带退出码）。
 		if emitVal, err := proc.Get("emit"); err == nil && emitVal.IsFunction() {
@@ -137,6 +165,9 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		os.Exit(code)
 		return engine.Undefined(), nil
 	}))
+
+	// exitCode：退出码属性（默认 undefined；process.exit() 无参数时使用）。
+	_ = proc.Set("exitCode", engine.Undefined())
 
 	// nextTick(fn)：复用全局 queueMicrotask（engine 层已注册）。
 	_ = proc.Set("nextTick", engine.NewFunction("nextTick", func(args []engine.Value) (engine.Value, error) {
@@ -248,6 +279,7 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		_ = mu.Set("heapTotal", engine.Number(float64(m.HeapAlloc)))
 		_ = mu.Set("heapUsed", engine.Number(float64(m.HeapInuse)))
 		_ = mu.Set("external", engine.Number(float64(m.HeapSys-m.HeapInuse)))
+		_ = mu.Set("arrayBuffers", engine.Number(0))
 		return mu, nil
 	}))
 
@@ -289,7 +321,8 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 	}))
 
 	// emitWarning(warning[, options] | warning[, type[, code]])：
-	// Node 语义的进程警告（默认输出 stderr，含 [code] 与 type）。M2 供
+	// Node 语义的进程警告（默认输出 stderr，含 [code] 与 type；同时触发
+	// 'warning' 事件，监听器收到 {message, name, code, stack} 对象）。M2 供
 	// EventEmitter 的 maxListeners 警告使用。
 	_ = proc.Set("emitWarning", engine.NewFunction("emitWarning", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
@@ -300,10 +333,10 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		typ := "Warning"
 		parse := func(v engine.Value) {
 			if o, ok := v.AsObject(); ok {
-				if vv, err := o.Get("type"); err == nil {
+				if vv, err := o.Get("type"); err == nil && !vv.IsUndefined() {
 					typ = vv.String()
 				}
-				if vv, err := o.Get("code"); err == nil {
+				if vv, err := o.Get("code"); err == nil && !vv.IsUndefined() {
 					code = vv.String()
 				}
 			}
@@ -318,11 +351,41 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		if len(args) > 2 {
 			code = args[2].String()
 		}
-		if code != "" {
-			fmt.Fprintf(os.Stderr, "(aluka:%d) [%s] %s: %s\n", os.Getpid(), code, typ, msg)
-		} else {
-			fmt.Fprintf(os.Stderr, "(aluka:%d) %s: %s\n", os.Getpid(), typ, msg)
+		// 构造 Warning 对象并异步触发 'warning' 事件（Node 语义：nextTick
+		// 投递，emitWarning 调用点监听器尚未收到）。无监听器时直接打印
+		// stderr；有监听器时由默认 'warning' 监听器打印（removeAllListeners
+		// ('warning') 可静默）。
+		wv, err := makeWarningObject(ctx, msg, typ, code)
+		task := engine.NewFunction("emitWarningTask", func(a []engine.Value) (engine.Value, error) {
+			emitted := false
+			if err == nil {
+				if emitVal, err2 := proc.Get("emit"); err2 == nil && emitVal.IsFunction() {
+					if f, ok := emitVal.AsFunction(); ok {
+						if rv, cerr := f.Call([]engine.Value{engine.Str("warning"), wv}); cerr == nil {
+							if b, ok2 := rv.Bool(); ok2 {
+								emitted = b
+							}
+						}
+					}
+				}
+			}
+			if !emitted {
+				if code != "" {
+					fmt.Fprintf(os.Stderr, "(aluka:%d) [%s] %s: %s\n", os.Getpid(), code, typ, msg)
+				} else {
+					fmt.Fprintf(os.Stderr, "(aluka:%d) %s: %s\n", os.Getpid(), typ, msg)
+				}
+			}
+			return engine.Undefined(), nil
+		})
+		if q, qerr := ctx.Global().Get("queueMicrotask"); qerr == nil && q.IsFunction() {
+			if f, ok := q.AsFunction(); ok {
+				_, _ = f.Call([]engine.Value{task})
+				return engine.Undefined(), nil
+			}
 		}
+		// 无微任务队列兜底：同步执行。
+		_, _ = task.Call(nil)
 		return engine.Undefined(), nil
 	}))
 
@@ -418,7 +481,80 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		return engine.Boolean(len(fns) > 0), nil
 	}))
 
+	// removeAllListeners([event])：移除某事件全部监听器（Node 语义）。
+	_ = proc.Set("removeAllListeners", engine.NewFunction("removeAllListeners", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			for e := range listeners {
+				listeners[e] = nil
+			}
+			return proc, nil
+		}
+		listeners[args[0].String()] = nil
+		return proc, nil
+	}))
+
+	// listenerCount([event])：返回监听器数量。
+	_ = proc.Set("listenerCount", engine.NewFunction("listenerCount", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.IntValue(0), nil
+		}
+		return engine.IntValue(len(listeners[args[0].String()])), nil
+	}))
+
+	// 默认 'warning' 监听器：打印 stderr（Node 语义——emitWarning 经
+	// 'warning' 事件输出，removeAllListeners('warning') 可静默）。
+	defaultWarning := engine.NewFunction("defaultWarning", func(ca []engine.Value) (engine.Value, error) {
+		var msg, typ, code string
+		typ = "Warning"
+		if len(ca) > 0 {
+			if o, ok := ca[0].AsObject(); ok {
+				if v, err := o.Get("message"); err == nil && !v.IsUndefined() {
+					msg = v.String()
+				}
+				if v, err := o.Get("name"); err == nil && !v.IsUndefined() {
+					typ = v.String()
+				}
+				if v, err := o.Get("code"); err == nil && !v.IsUndefined() {
+					code = v.String()
+				}
+			}
+		}
+		if code != "" {
+			fmt.Fprintf(os.Stderr, "(aluka:%d) [%s] %s: %s\n", os.Getpid(), code, typ, msg)
+		} else {
+			fmt.Fprintf(os.Stderr, "(aluka:%d) %s: %s\n", os.Getpid(), typ, msg)
+		}
+		return engine.Undefined(), nil
+	})
+	listeners["warning"] = []engine.Value{defaultWarning}
+
 	return ctx.Global().Set("process", proc)
+}
+
+// makeWarningObject 构造 process 'warning' 事件负载对象（Node 语义：
+// {message, name, code, stack}；name = type）。
+func makeWarningObject(ctx engine.Context, msg, typ, code string) (engine.Value, error) {
+	var obj engine.Object
+	if ctor, err := ctx.Global().Get("Error"); err == nil && ctor.IsFunction() {
+		if f, ok := ctor.AsFunction(); ok {
+			if v, cerr := f.Call([]engine.Value{engine.Str(msg)}); cerr == nil {
+				obj, _ = v.AsObject()
+			}
+		}
+	}
+	if obj == nil {
+		obj = engine.NewObject()
+		_ = obj.Set("message", engine.Str(msg))
+	}
+	_ = obj.Set("name", engine.Str(typ))
+	_ = obj.Set("type", engine.Str(typ))
+	if code != "" {
+		_ = obj.Set("code", engine.Str(code))
+	}
+	if _, err := obj.Get("stack"); err != nil {
+		_ = obj.Set("stack", engine.Str(typ+": "+msg))
+	}
+	return obj, nil
 }
 
 // platformName 返回 Node.js 风格的平台名。

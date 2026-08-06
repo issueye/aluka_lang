@@ -31,18 +31,27 @@ func NewHTTP2(ctx engine.Context) (engine.Value, error) {
 	_ = constants.Set("HTTP2_HEADER_SCHEME", engine.Str(":scheme"))
 	_ = constants.Set("HTTP2_HEADER_AUTHORITY", engine.Str(":authority"))
 	_ = constants.Set("HTTP2_HEADER_STATUS", engine.Str(":status"))
-	// 帧类型。
+	_ = constants.Set("HTTP2_HEADER_PROTOCOL", engine.Str(":protocol"))
+	// nghttp2 错误码（Node 命名：NGHTTP2_*）。
+	_ = constants.Set("NGHTTP2_NO_ERROR", engine.IntValue(0x0))
+	_ = constants.Set("NGHTTP2_PROTOCOL_ERROR", engine.IntValue(0x1))
+	_ = constants.Set("NGHTTP2_INTERNAL_ERROR", engine.IntValue(0x2))
+	_ = constants.Set("NGHTTP2_FLOW_CONTROL_ERROR", engine.IntValue(0x3))
+	_ = constants.Set("NGHTTP2_SETTINGS_TIMEOUT", engine.IntValue(0x4))
+	_ = constants.Set("NGHTTP2_STREAM_CLOSED", engine.IntValue(0x5))
+	_ = constants.Set("NGHTTP2_FRAME_SIZE_ERROR", engine.IntValue(0x6))
+	_ = constants.Set("NGHTTP2_REFUSED_STREAM", engine.IntValue(0x7))
+	_ = constants.Set("NGHTTP2_CANCEL", engine.IntValue(0x8))
+	_ = constants.Set("NGHTTP2_COMPRESSION_ERROR", engine.IntValue(0x9))
+	_ = constants.Set("NGHTTP2_CONNECT_ERROR", engine.IntValue(0xa))
+	_ = constants.Set("NGHTTP2_ENHANCE_YOUR_CALM", engine.IntValue(0xb))
+	_ = constants.Set("NGHTTP2_INADEQUATE_SECURITY", engine.IntValue(0xc))
+	_ = constants.Set("NGHTTP2_HTTP_1_1_REQUIRED", engine.IntValue(0xd))
+	// 帧类型（Node 也导出，值对齐 RFC 7540）。
 	_ = constants.Set("HTTP2_FRAME_HEADERS", engine.IntValue(0x1))
 	_ = constants.Set("HTTP2_FRAME_SETTINGS", engine.IntValue(0x4))
 	_ = constants.Set("HTTP2_FRAME_PING", engine.IntValue(0x6))
 	_ = constants.Set("HTTP2_FRAME_GOAWAY", engine.IntValue(0x7))
-	// 错误码。
-	_ = constants.Set("HTTP2_ERROR_NO_ERROR", engine.IntValue(0x0))
-	_ = constants.Set("HTTP2_ERROR_PROTOCOL_ERROR", engine.IntValue(0x1))
-	_ = constants.Set("HTTP2_ERROR_INTERNAL_ERROR", engine.IntValue(0x2))
-	_ = constants.Set("HTTP2_ERROR_FLOW_CONTROL_ERROR", engine.IntValue(0x3))
-	_ = constants.Set("HTTP2_ERROR_REFUSED_STREAM", engine.IntValue(0x7))
-	_ = constants.Set("HTTP2_ERROR_CANCEL", engine.IntValue(0x8))
 	// 设置项名。
 	_ = constants.Set("HTTP2_SETTINGS_HEADER_TABLE_SIZE", engine.IntValue(0x1))
 	_ = constants.Set("HTTP2_SETTINGS_ENABLE_PUSH", engine.IntValue(0x2))
@@ -54,16 +63,16 @@ func NewHTTP2(ctx engine.Context) (engine.Value, error) {
 	_ = constants.Set("NGHTTP2_ERR_NOMEM", engine.IntValue(-1))
 	_ = m.Set("constants", constants)
 
-	// http2.getDefaultSettings()：默认设置对象（Node 字段名）。
+	// http2.getDefaultSettings()：默认设置对象（Node 字段名与键序）。
 	_ = m.Set("getDefaultSettings", engine.NewFunction("getDefaultSettings", func(args []engine.Value) (engine.Value, error) {
 		s := engine.NewObject()
 		_ = s.Set("headerTableSize", engine.IntValue(4096))
 		_ = s.Set("enablePush", engine.Boolean(true))
-		_ = s.Set("maxConcurrentStreams", engine.Number(4294967295))
 		_ = s.Set("initialWindowSize", engine.IntValue(65535))
 		_ = s.Set("maxFrameSize", engine.IntValue(16384))
-		_ = s.Set("maxHeaderListSize", engine.IntValue(65535))
+		_ = s.Set("maxConcurrentStreams", engine.Number(4294967295))
 		_ = s.Set("maxHeaderSize", engine.IntValue(65535))
+		_ = s.Set("maxHeaderListSize", engine.IntValue(65535))
 		_ = s.Set("enableConnectProtocol", engine.Boolean(false))
 		return s, nil
 	}))
@@ -107,19 +116,27 @@ func NewHTTP2(ctx engine.Context) (engine.Value, error) {
 		return newHTTP2Server(ctx, handler), nil
 	}))
 
-	// Http2Server / Http2Session 类（构造器，供 instanceof）。
-	_ = m.Set("Http2Server", engine.NewFunction("Http2Server", func(args []engine.Value) (engine.Value, error) {
-		return engine.NewObject(), nil
+	// http2.createSecureServer([options][, onRequestHandler])：TLS 版本。
+	_ = m.Set("createSecureServer", engine.NewFunction("createSecureServer", func(args []engine.Value) (engine.Value, error) {
+		var handler engine.Value
+		var options engine.Value
+		for _, a := range args {
+			if a.IsFunction() {
+				handler = a
+			} else if a.IsObject() {
+				options = a
+			}
+		}
+		tlsCfg, err := tlsConfigFromOptions(options)
+		if err != nil {
+			// Node 允许无 key/cert（自签名缺省）——此处沿用 https 语义。
+			return engine.Undefined(), err
+		}
+		return newHTTPServerWithTLS(ctx, handler, tlsCfg), nil
 	}))
-	_ = m.Set("Http2Session", engine.NewFunction("Http2Session", func(args []engine.Value) (engine.Value, error) {
-		return engine.NewObject(), nil
-	}))
-	_ = m.Set("ClientHttp2Session", engine.NewFunction("ClientHttp2Session", func(args []engine.Value) (engine.Value, error) {
-		return engine.NewObject(), nil
-	}))
-	_ = m.Set("Http2Stream", engine.NewFunction("Http2Stream", func(args []engine.Value) (engine.Value, error) {
-		return engine.NewObject(), nil
-	}))
+
+	// Node 不导出 Http2Server/Http2Session 等类（仅通过 createServer/connect
+	// 实例获得），这里不注册多余表面。
 
 	return m, nil
 }

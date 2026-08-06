@@ -13,9 +13,11 @@ package builtin
 import (
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
 // NewNet 构造 node:net 模块的导出对象。
@@ -40,7 +42,221 @@ func NewNet(ctx engine.Context) (engine.Value, error) {
 	_ = m.Set("connect", connectFn)
 	_ = m.Set("createConnection", connectFn)
 
+	// net.isIP(input)：IPv4 → 4，IPv6 → 6，否则 0。
+	_ = m.Set("isIP", engine.NewFunction("isIP", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.IntValue(0), nil
+		}
+		ip := net.ParseIP(args[0].String())
+		if ip == nil {
+			return engine.IntValue(0), nil
+		}
+		if ip.To4() != nil {
+			return engine.IntValue(4), nil
+		}
+		return engine.IntValue(6), nil
+	}))
+
+	// net.isIPv4 / net.isIPv6。
+	_ = m.Set("isIPv4", engine.NewFunction("isIPv4", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Boolean(false), nil
+		}
+		ip := net.ParseIP(args[0].String())
+		return engine.Boolean(ip != nil && ip.To4() != nil), nil
+	}))
+	_ = m.Set("isIPv6", engine.NewFunction("isIPv6", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Boolean(false), nil
+		}
+		ip := net.ParseIP(args[0].String())
+		return engine.Boolean(ip != nil && ip.To4() == nil), nil
+	}))
+
+	// net.BlockList：IP 黑名单（addAddress/addSubnet/check）。
+	registerBlockList(m)
+
+	// net.SocketAddress：地址描述对象。
+	registerSocketAddress(m)
+
 	return m, nil
+}
+
+// --- BlockList -------------------------------------------------------------
+
+// blockListState 保存 BlockList 的规则。
+type blockListState struct {
+	mu     sync.Mutex
+	ipSet  map[string]bool          // 精确 IP
+	subnet []blockSubnet            // 子网（cidr）
+	ranges []blockRange             // 地址区间
+}
+
+type blockSubnet struct {
+	ipNet *net.IPNet
+}
+
+type blockRange struct {
+	from net.IP
+	to   net.IP
+}
+
+func newBlockListInstance() engine.Value {
+	bl := engine.NewObject()
+	state := &blockListState{ipSet: make(map[string]bool)}
+
+	_ = bl.Set("addAddress", engine.NewFunction("addAddress", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			state.mu.Lock()
+			state.ipSet[args[0].String()] = true
+			state.mu.Unlock()
+		}
+		return bl, nil
+	}))
+	_ = bl.Set("addSubnet", engine.NewFunction("addSubnet", func(args []engine.Value) (engine.Value, error) {
+		if len(args) >= 2 {
+			prefix, ok := args[1].Int()
+			if ok {
+				_, ipNet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", args[0].String(), prefix))
+				if err == nil {
+					state.mu.Lock()
+					state.subnet = append(state.subnet, blockSubnet{ipNet: ipNet})
+					state.mu.Unlock()
+				}
+			}
+		}
+		return bl, nil
+	}))
+	_ = bl.Set("addRange", engine.NewFunction("addRange", func(args []engine.Value) (engine.Value, error) {
+		if len(args) >= 2 {
+			from := net.ParseIP(args[0].String())
+			to := net.ParseIP(args[1].String())
+			if from != nil && to != nil {
+				state.mu.Lock()
+				state.ranges = append(state.ranges, blockRange{from: from, to: to})
+				state.mu.Unlock()
+			}
+		}
+		return bl, nil
+	}))
+	_ = bl.Set("check", engine.NewFunction("check", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Boolean(false), nil
+		}
+		ip := net.ParseIP(args[0].String())
+		if ip == nil {
+			return engine.Boolean(false), nil
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if state.ipSet[ip.String()] {
+			return engine.Boolean(true), nil
+		}
+		for _, s := range state.subnet {
+			if s.ipNet.Contains(ip) {
+				return engine.Boolean(true), nil
+			}
+		}
+		for _, r := range state.ranges {
+			if ipRangeContains(r.from, r.to, ip) {
+				return engine.Boolean(true), nil
+			}
+		}
+		return engine.Boolean(false), nil
+	}))
+
+	// rules getter：Node 格式字符串数组（逆序：Range/Subnet/Address）。
+	rulesGet := engine.NewFunction("rulesGet", func(args []engine.Value) (engine.Value, error) {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		var rules []string
+		for _, r := range state.ranges {
+			rules = append(rules, fmt.Sprintf("Range: IPv4 %s-%s", r.from.String(), r.to.String()))
+		}
+		for _, s := range state.subnet {
+			rules = append(rules, fmt.Sprintf("Subnet: IPv4 %s", s.ipNet.String()))
+		}
+		for addr := range state.ipSet {
+			rules = append(rules, fmt.Sprintf("Address: IPv4 %s", addr))
+		}
+		// Node 返回顺序：Range, Subnet, Address。
+		vals := make([]engine.Value, 0, len(rules))
+		for _, r := range rules {
+			vals = append(vals, engine.Str(r))
+		}
+		return engine.NewArray(vals), nil
+	})
+	engine.SetAccessor(bl, "rules", rulesGet, nil)
+	return bl
+}
+
+func registerBlockList(m engine.Object) {
+	ctor := engine.NewFunction("BlockList", func(args []engine.Value) (engine.Value, error) {
+		return newBlockListInstance(), nil
+	})
+	_ = m.Set("BlockList", ctor)
+}
+
+func cidrEqual(a, b *net.IPNet) bool {
+	return a != nil && b != nil && a.String() == b.String()
+}
+
+func ipRangeContains(from, to, ip net.IP) bool {
+	// 仅比较 IPv4（简化）。
+	af, bf, cf := from.To4(), to.To4(), ip.To4()
+	if af == nil || bf == nil || cf == nil {
+		return false
+	}
+	fa, fb, fc := ipToUint32(af), ipToUint32(bf), ipToUint32(cf)
+	return fc >= fa && fc <= fb
+}
+
+func ipToUint32(ip net.IP) uint32 {
+	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+}
+
+// --- SocketAddress ---------------------------------------------------------
+
+// newSocketAddress 构造 SocketAddress 实例。
+func newSocketAddress(args []engine.Value) engine.Value {
+	sa := engine.NewObject()
+	address := ""
+	port := 0
+	family := "ipv4"
+	flowlabel := 0
+	if len(args) > 0 {
+		if o, ok := args[0].AsObject(); ok {
+			if v, err := o.Get("address"); err == nil && !v.IsUndefined() {
+				address = v.String()
+			}
+			if v, err := o.Get("port"); err == nil {
+				if n, ok := v.Int(); ok {
+					port = n
+				}
+			}
+			if v, err := o.Get("family"); err == nil && !v.IsUndefined() {
+				// Node 规范化为小写（'ipv4'/'ipv6'）。
+				family = strings.ToLower(v.String())
+			}
+			if v, err := o.Get("flowlabel"); err == nil {
+				if n, ok := v.Int(); ok {
+					flowlabel = n
+				}
+			}
+		}
+	}
+	_ = sa.Set("address", engine.Str(address))
+	_ = sa.Set("port", engine.IntValue(port))
+	_ = sa.Set("family", engine.Str(family))
+	_ = sa.Set("flowlabel", engine.IntValue(flowlabel))
+	return sa
+}
+
+func registerSocketAddress(m engine.Object) {
+	ctor := engine.NewFunction("SocketAddress", func(args []engine.Value) (engine.Value, error) {
+		return newSocketAddress(args), nil
+	})
+	_ = m.Set("SocketAddress", ctor)
 }
 
 // --- 服务器 --------------------------------------------------------------
@@ -96,6 +312,7 @@ func newNetServer(ctx engine.Context, listener engine.Value) engine.Value {
 			state.listener = ln
 			state.mu.Unlock()
 			ctx.PostTask(func() {
+				_ = server.Set("listening", engine.Boolean(true))
 				if callback != nil {
 					if f, ok := callback.AsFunction(); ok {
 						_, _ = f.Call(nil)
@@ -136,8 +353,10 @@ func newNetServer(ctx engine.Context, listener engine.Value) engine.Value {
 			// （否则事件循环可能在回调投递前退出）。
 			go func() {
 				_ = ln.Close()
+				_ = server.Set("listening", engine.Boolean(false))
 				if callback != nil {
 					ctx.PostTask(func() {
+						emitEvent(server, "close")
 						if f, ok := callback.AsFunction(); ok {
 							_, _ = f.Call(nil)
 						}
@@ -145,8 +364,13 @@ func newNetServer(ctx engine.Context, listener engine.Value) engine.Value {
 							release()
 						}
 					})
-				} else if release != nil {
-					release()
+				} else {
+					ctx.PostTask(func() {
+						emitEvent(server, "close")
+					})
+					if release != nil {
+						release()
+					}
 				}
 			}()
 		} else {
@@ -177,6 +401,26 @@ func newNetServer(ctx engine.Context, listener engine.Value) engine.Value {
 		}
 		return addr, nil
 	}))
+
+	// server.getConnections(cb)：当前连接数（简化恒 0）。
+	_ = server.Set("getConnections", engine.NewFunction("getConnections", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 && args[0].IsFunction() {
+			if f, ok := args[0].AsFunction(); ok {
+				_, _ = f.Call([]engine.Value{engine.Null(), engine.IntValue(0)})
+			}
+		}
+		return server, nil
+	}))
+	_ = server.Set("ref", engine.NewFunction("ref", func(args []engine.Value) (engine.Value, error) {
+		return server, nil
+	}))
+	_ = server.Set("unref", engine.NewFunction("unref", func(args []engine.Value) (engine.Value, error) {
+		return server, nil
+	}))
+
+	// server 表面属性。
+	_ = server.Set("listening", engine.Boolean(false))
+	_ = server.Set("maxConnections", engine.Number(0))
 
 	return server
 }
@@ -235,6 +479,12 @@ func newNetSocket(ctx engine.Context, conn net.Conn) (engine.Value, *netSocketSt
 		if len(args) == 0 {
 			return engine.Boolean(false), nil
 		}
+		var writeCb engine.Value
+		for _, a := range args[1:] {
+			if a.IsFunction() {
+				writeCb = a
+			}
+		}
 		state.mu.Lock()
 		conn := state.conn
 		closed := state.closed
@@ -243,9 +493,10 @@ func newNetSocket(ctx engine.Context, conn net.Conn) (engine.Value, *netSocketSt
 			return engine.Boolean(false), nil
 		}
 		_, err := conn.Write([]byte(args[0].String()))
-		if len(args) > 2 && args[2].IsFunction() {
-			if f, ok := args[2].AsFunction(); ok {
-				_, _ = f.Call(nil)
+		if writeCb != nil && writeCb.IsFunction() {
+			if f, ok := writeCb.AsFunction(); ok {
+				// Node 语义：write 回调在数据提交到 OS 后异步触发。
+				ctx.PostTask(func() { _, _ = f.Call(nil) })
 			}
 		}
 		return engine.Boolean(err == nil), err
@@ -281,12 +532,66 @@ func newNetSocket(ctx engine.Context, conn net.Conn) (engine.Value, *netSocketSt
 		return socket, nil
 	}))
 
+	// socket.setTimeout(timeout[, cb])：no-op 兼容（读循环天然无超时）。
+	_ = socket.Set("setTimeout", engine.NewFunction("setTimeout", func(args []engine.Value) (engine.Value, error) {
+		return socket, nil
+	}))
+	_ = socket.Set("setKeepAlive", engine.NewFunction("setKeepAlive", func(args []engine.Value) (engine.Value, error) {
+		return socket, nil
+	}))
+	// ref/unref：活跃度已由 socket 自身持有，no-op 返回自身。
+	_ = socket.Set("ref", engine.NewFunction("ref", func(args []engine.Value) (engine.Value, error) {
+		return socket, nil
+	}))
+	_ = socket.Set("unref", engine.NewFunction("unref", func(args []engine.Value) (engine.Value, error) {
+		return socket, nil
+	}))
+	// pause/resume：读循环持续运行（简化），no-op。
+	_ = socket.Set("pause", engine.NewFunction("pause", func(args []engine.Value) (engine.Value, error) {
+		return socket, nil
+	}))
+	_ = socket.Set("resume", engine.NewFunction("resume", func(args []engine.Value) (engine.Value, error) {
+		return socket, nil
+	}))
+
+	// socket.pipe(dest)：把 'data' 转发到可写目标（简化：write 透传）。
+	_ = socket.Set("pipe", engine.NewFunction("pipe", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			dest, ok := args[0].AsObject()
+			if ok {
+				onFn, _ := socket.Get("on")
+				if f, ok := onFn.AsFunction(); ok {
+					pipeFn := engine.NewFunction("pipeData", func(callArgs []engine.Value) (engine.Value, error) {
+						if len(callArgs) > 0 {
+							if wf, err := dest.Get("write"); err == nil && wf.IsFunction() {
+								if w, ok := wf.AsFunction(); ok {
+									_, _ = w.Call([]engine.Value{callArgs[0]})
+								}
+							}
+						}
+						return engine.Undefined(), nil
+					})
+					_, _ = f.Call([]engine.Value{engine.Str("data"), pipeFn})
+				}
+			}
+		}
+		return socket, nil
+	}))
+
+	// socket.bytesRead / bytesWritten（统计，简化恒 0/已写量）。
+	_ = socket.Set("bytesRead", engine.IntValue(0))
+
 	// socket.address()
 	_ = socket.Set("address", engine.NewFunction("address", func(args []engine.Value) (engine.Value, error) {
+		state.mu.Lock()
+		conn := state.conn
+		state.mu.Unlock()
 		addr := engine.NewObject()
-		if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
-			_ = addr.Set("address", engine.Str(tcpAddr.IP.String()))
-			_ = addr.Set("port", engine.IntValue(tcpAddr.Port))
+		if conn != nil {
+			if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
+				_ = addr.Set("address", engine.Str(tcpAddr.IP.String()))
+				_ = addr.Set("port", engine.IntValue(tcpAddr.Port))
+			}
 		}
 		return addr, nil
 	}))
@@ -315,15 +620,16 @@ func setAddrProps(socket engine.Object, conn net.Conn) {
 }
 
 // startNetReader 启动读循环：conn.Read → PostTask 触发 'data'；EOF 时
-// 'end'/'close' 并释放活跃度。
+// 'end'/'close' 并释放活跃度。data 以 Buffer 传递（Node 语义）。
 func startNetReader(ctx engine.Context, socket engine.Value, state *netSocketState, conn net.Conn) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
-			data := string(buf[:n])
+			chunk := make([]byte, n)
+			copy(chunk, buf[:n])
 			ctx.PostTask(func() {
-				emitEvent(socket, "data", engine.Str(data))
+				emitEvent(socket, "data", globals.NewBufferInstance(chunk))
 			})
 		}
 		if err != nil {
@@ -360,11 +666,17 @@ func (s *netSocketState) close() {
 // --- 客户端 --------------------------------------------------------------
 
 // newNetSocketClient 创建客户端 Socket 并异步连接。
+// 支持两种签名：
+//   - net.connect(options[, connectListener])：options = {host, port, ...}
+//   - net.connect(port[, host][, connectListener])
 func newNetSocketClient(ctx engine.Context, args []engine.Value) engine.Value {
 	host := "127.0.0.1"
 	port := 0
-	if len(args) > 0 {
-		if o, ok := args[0].AsObject(); ok {
+	var connectListener engine.Value
+	for _, a := range args {
+		if a.IsFunction() {
+			connectListener = a
+		} else if o, ok := a.AsObject(); ok {
 			if v, err := o.Get("host"); err == nil && !v.IsUndefined() && !v.IsNull() && v.String() != "" {
 				host = v.String()
 			}
@@ -373,11 +685,13 @@ func newNetSocketClient(ctx engine.Context, args []engine.Value) engine.Value {
 					port = n
 				}
 			}
+		} else if a.Type() == engine.TypeNumber {
+			if n, ok := a.Int(); ok {
+				port = n
+			}
+		} else if a.Type() == engine.TypeString {
+			host = a.String()
 		}
-	}
-	var connectListener engine.Value
-	if len(args) > 1 && args[1].IsFunction() {
-		connectListener = args[1]
 	}
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 

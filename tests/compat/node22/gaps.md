@@ -1,6 +1,6 @@
 # Node 22 兼容缺口清单（M0 探针实测）
 
-> 自动生成于 2026-08-06T14:02:17.202Z，对应冻结快照 v1.0。
+> 自动生成于 2026-08-06T16:05:25.943Z，对应冻结快照 v1.0。
 > 缺口 = aluka 探针相对官方 manifest 缺失的条目；L 级判定见覆盖报告。
 
 ## 1. 缺失模块（加载失败 → L0，对应 M1）
@@ -13,33 +13,32 @@
 |------|-------------|----------|
 | `assert` | 11/27 | assert、notDeepEqual、notDeepStrictEqual、assert.AssertionError、assert.Assert、assert.CallTracker、assert.CallTracker#calls、assert.CallTracker#getCalls |
 | `assert/strict` | 11/27 | assert、notDeepEqual、notDeepStrictEqual、assert.AssertionError、assert.Assert、assert.CallTracker、assert.CallTracker#calls、assert.CallTracker#getCalls |
-| `async_hooks` | 9/10 | createHook、AsyncHook、AsyncHook#enable、AsyncHook#disable、AsyncHook#executionAsyncResource、AsyncHook#executionAsyncId、AsyncHook#triggerAsyncId、AsyncHook#return |
-| `buffer` | 79/83 | atob、btoa、resolveObjectURL、transcode、Blob、Blob#arrayBuffer、Blob#bytes、Blob#slice |
+| `async_hooks` | 7/10 | AsyncHook、AsyncHook#enable、AsyncHook#disable、AsyncHook#executionAsyncResource、AsyncHook#executionAsyncId、AsyncHook#triggerAsyncId、AsyncHook#return |
+| `buffer` | 78/83 | atob、btoa、resolveObjectURL、Blob、Blob#arrayBuffer、Blob#bytes、Blob#slice、Blob#stream |
 | `child_process` | 14/21 | ChildProcess、ChildProcess#disconnect、ChildProcess#kill、ChildProcess#[Symbol.dispose]、ChildProcess#ref、ChildProcess#send、ChildProcess#unref、ChildProcess#Type |
-| `cluster` | 18/22 | setupPrimary、exit、listening、message、online、setup、Worker#disconnect、Worker#isConnected |
+| `cluster` | 17/22 | exit、listening、message、online、setup、Worker#disconnect、Worker#isConnected、Worker#isDead |
 | `console` | 23/23 | profile、profileEnd、timeStamp、Console、Console#assert、Console#clear、Console#count、Console#countReset |
-| `crypto` | 97/110 | checkPrime、checkPrimeSync、createDiffieHellman、createDiffieHellmanGroup、createECDH、createPublicKey、createSecretKey、createSign |
+| `crypto` | 81/110 | createDiffieHellman、createDiffieHellmanGroup、createECDH、diffieHellman、generateKey、generateKeyPair、generateKeySync、generatePrime |
 | `dgram` | 30/32 | dgram.Socket#addMembership、dgram.Socket#addSourceSpecificMembership、dgram.Socket#address、dgram.Socket#bind、dgram.Socket#close、dgram.Socket#[Symbol.asyncDispose]、dgram.Socket#connect、dgram.Socket#disconnect |
-| `diagnostics_channel` | 20/25 | start、end、asyncStart、asyncEnd、error、Channel、Channel#publish、Channel#subscribe |
-| `dns` | 22/27 | getServers、lookupService、resolveAny、resolveCname、resolveCaa、resolveMx、resolveNaptr、resolveNs |
+| `diagnostics_channel` | 13/25 | start、end、asyncStart、asyncEnd、error、Channel#return、TracingChannel、TracingChannel#subscribe |
+| `dns` | 3/27 | cancel、dns.Resolver#Resolver、dns.Resolver#setLocalAddress |
 | `dns/promises` | 1/23 | cancel |
 | `domain` | 10/10 | create、Domain、Domain#add、Domain#bind、Domain#enter、Domain#exit、Domain#intercept、Domain#remove |
 | `events` | 27/53 | EventEmitter#event:newListener、events.EventEmitterAsyncResource#Type、Event、Event#composedPath、Event#initEvent、Event#preventDefault、Event#stopImmediatePropagation、Event#stopPropagation |
-| `fs` | 148/169 | access、appendFile、chmod、chown、copyFile、lchmod、lchown、lutimes |
-| `fs/promises` | 39/54 | chmod、chown、cp、glob、lchmod、lchown、lutimes、link |
-| `http` | 105/111 | validateHeaderName、validateHeaderValue、setMaxIdleHTTPParsers、http.Agent#createConnection、http.Agent#keepSocketAlive、http.Agent#reuseSocket、http.Agent#destroy、http.Agent#getName |
-| `http2` | 105/114 | createSecureServer、performServerHandshake、Http2Session#close、Http2Session#destroy、Http2Session#goaway、Http2Session#ping、Http2Session#ref、Http2Session#setLocalWindowSize |
-| `https` | 8/12 | https.Server、https.Server#close、https.Server#[Symbol.asyncDispose]、https.Server#closeAllConnections、https.Server#closeIdleConnections、https.Server#listen、https.Server#setTimeout、https.Server#Type |
+| `fs` | 68/169 | native、FileHandle#appendFile、FileHandle#chmod、FileHandle#chown、FileHandle#close、FileHandle#createReadStream、FileHandle#createWriteStream、FileHandle#datasync |
+| `fs/promises` | 30/54 | cp、glob、lchmod、lchown、lutimes、rmdir、watch、FileHandle |
+| `http` | 103/111 | setMaxIdleHTTPParsers、http.Agent#createConnection、http.Agent#keepSocketAlive、http.Agent#reuseSocket、http.Agent#destroy、http.Agent#getName、http.Agent#Type、http.ClientRequest |
+| `http2` | 108/114 | performServerHandshake、Http2Session、Http2Session#close、Http2Session#destroy、Http2Session#goaway、Http2Session#ping、Http2Session#ref、Http2Session#setLocalWindowSize |
+| `https` | 7/12 | https.Server#close、https.Server#[Symbol.asyncDispose]、https.Server#closeAllConnections、https.Server#closeIdleConnections、https.Server#listen、https.Server#setTimeout、https.Server#Type |
 | `inspector` | 9/18 | dataReceived、dataSent、requestWillBeSent、responseReceived、loadingFinished、loadingFailed、inspector.Session#event:inspectorNotification、inspector.Session#event:<inspector-protocol-method>` |
 | `inspector/promises` | 2/7 | inspector.Session#event:inspectorNotification、inspector.Session#event:<inspector-protocol-method>` |
-| `module` | 16/17 | enableCompileCache、getCompileCacheDir、findPackageJSON、isBuiltin、register、registerHooks、stripTypeScriptTypes、syncBuiltinESMExports |
-| `net` | 62/65 | getDefaultAutoSelectFamily、setDefaultAutoSelectFamily、getDefaultAutoSelectFamilyAttemptTimeout、setDefaultAutoSelectFamilyAttemptTimeout、isIP、isIPv4、isIPv6、net.BlockList |
-| `os` | 6/20 | availableParallelism、getPriority、loadavg、machine、setPriority、version |
-| `perf_hooks` | 37/37 | createHistogram、monitorEventLoopDelay、PerformanceEntry、PerformanceEntry#Type、PerformanceMark、PerformanceMark#Type、PerformanceMeasure、PerformanceMeasure#Type |
-| `process` | 90/102 | abort、availableMemory、constrainedMemory、disconnect、dlopen、execve、register、registerBeforeExit |
+| `module` | 3/17 | module.SourceMap#findEntry、module.SourceMap#findOrigin、module.SourceMap#return |
+| `net` | 57/65 | getDefaultAutoSelectFamily、setDefaultAutoSelectFamily、getDefaultAutoSelectFamilyAttemptTimeout、setDefaultAutoSelectFamilyAttemptTimeout、net.BlockList#addAddress、net.BlockList#addRange、net.BlockList#addSubnet、net.BlockList#check |
+| `perf_hooks` | 26/37 | PerformanceEntry#Type、PerformanceMark#Type、PerformanceMeasure#Type、PerformanceNodeEntry、PerformanceNodeEntry#Type、PerformanceNodeTiming、PerformanceNodeTiming#Type、PerformanceNodeTiming#return |
+| `process` | 89/102 | availableMemory、constrainedMemory、disconnect、dlopen、execve、register、registerBeforeExit、unregister |
 | `punycode` | 4/4 | decode、encode、toASCII、toUnicode |
 | `querystring` | 2/6 | decode、encode |
-| `readline` | 37/38 | emitKeypressEvents、clearLine、clearScreenDown、cursorTo、moveCursor、InterfaceConstructor、InterfaceConstructor#close、InterfaceConstructor#[Symbol.dispose] |
+| `readline` | 32/38 | InterfaceConstructor、InterfaceConstructor#close、InterfaceConstructor#[Symbol.dispose]、InterfaceConstructor#pause、InterfaceConstructor#prompt、InterfaceConstructor#resume、InterfaceConstructor#setPrompt、InterfaceConstructor#getPrompt |
 | `readline/promises` | 1/10 | readlinePromises.Interface#question |
 | `repl` | 7/8 | REPLServer、REPLServer#defineCommand、REPLServer#displayPrompt、REPLServer#clearBufferedCommand、REPLServer#setupHistory、REPLServer#event:exit、REPLServer#event:reset |
 | `sqlite` | 28/29 | backup、DatabaseSync#aggregate、DatabaseSync#close、DatabaseSync#loadExtension、DatabaseSync#enableLoadExtension、DatabaseSync#location、DatabaseSync#exec、DatabaseSync#function |
@@ -51,17 +50,17 @@
 | `test` | 76/83 | run、suite、skip、todo、only、register、setDefaultSnapshotSerializers、setResolveSnapshotPath |
 | `timers` | 15/21 | wait、yield、Immediate、Immediate#hasRef、Immediate#ref、Immediate#unref、Immediate#[Symbol.dispose]、Timeout |
 | `timers/promises` | 2/5 | wait、yield |
-| `tls` | 51/54 | checkServerIdentity、createSecureContext、createSecurePair、setDefaultCACertificates、getCACertificates、getCiphers、tls.SecurePair、tls.SecurePair#event:secure |
+| `tls` | 48/54 | createSecurePair、setDefaultCACertificates、getCACertificates、tls.SecurePair、tls.SecurePair#event:secure、tls.Server、tls.Server#addContext、tls.Server#address |
 | `trace_events` | 2/4 | disable、enable |
-| `tty` | 14/17 | tty.ReadStream#setRawMode、tty.ReadStream#isRaw、tty.ReadStream#isTTY、tty.WriteStream#clearLine、tty.WriteStream#clearScreenDown、tty.WriteStream#cursorTo、tty.WriteStream#getColorDepth、tty.WriteStream#getWindowSize |
+| `tty` | 5/17 | tty.ReadStream#isRaw、tty.ReadStream#isTTY、tty.WriteStream#columns、tty.WriteStream#rows、tty.WriteStream#event:resize |
 | `url` | 25/32 | fileURLToPathBuffer、urlToHttpOptions、URL、URL#toString、URL#toJSON、URL#createObjectURL、URL#revokeObjectURL、URL#canParse |
 | `util` | 50/61 | debug、diff、getCallSites、getSystemErrorName、getSystemErrorMap、getSystemErrorMessage、setTraceSigInt、parseEnv |
 | `util/types` | 48/61 | callbackify、debuglog、debug、deprecate、diff、format、formatWithOptions、getCallSites |
-| `v8` | 52/56 | cachedDataVersionTag、getHeapCodeStatistics、getHeapSpaceStatistics、getCppHeapStatistics、queryObjects、setFlagsFromString、stopCoverage、takeCoverage |
-| `vm` | 16/25 | measureMemory、vm.Script#createCachedData、vm.Script#runInContext、vm.Script#runInNewContext、vm.Script#runInThisContext、vm.Script#Type、vm.Module、vm.Module#evaluate |
+| `v8` | 18/56 | onInit、onSettled、onBefore、onAfter、createHook、init、before、after |
+| `vm` | 13/25 | vm.Script#Type、vm.Module、vm.Module#evaluate、vm.Module#link、vm.Module#Type、vm.SourceTextModule、vm.SourceTextModule#createCachedData、vm.SourceTextModule#instantiate |
 | `wasi` | 5/5 | WASI、WASI#getImportObject、WASI#start、WASI#initialize、WASI#Type |
-| `worker_threads` | 40/43 | getEnvironmentData、isMarkedAsUntransferable、moveMessagePortToContext、postMessageToThread、receiveMessageOnPort、setEnvironmentData、BroadcastChannel、BroadcastChannel#close |
-| `zlib` | 36/52 | crc32、createBrotliCompress、createBrotliDecompress、createDeflate、createDeflateRaw、createGunzip、createGzip、createInflate |
+| `worker_threads` | 31/43 | BroadcastChannel#close、BroadcastChannel#postMessage、BroadcastChannel#ref、BroadcastChannel#unref、BroadcastChannel#Type、MessagePort#close、MessagePort#postMessage、MessagePort#hasRef |
+| `zlib` | 29/52 | createBrotliCompress、createBrotliDecompress、createDeflate、createDeflateRaw、createGunzip、createGzip、createInflate、createInflateRaw |
 
 ## 3. 全局对象缺口
 

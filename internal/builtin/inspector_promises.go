@@ -38,15 +38,21 @@ func NewInspectorPromises(ctx engine.Context) (engine.Value, error) {
 		}))
 	}
 	_ = m.Set("console", inspConsole)
-	// Network/NetworkResources：CDP 资源通知对象（API 面）。
-	_ = m.Set("Network", engine.NewObject())
-	networkResCtor := engine.NewFunction("NetworkResources", func(args []engine.Value) (engine.Value, error) {
-		return engine.NewObject(), nil
-	})
-	if co, ok := networkResCtor.AsObject(); ok {
-		_ = co.Set("prototype", engine.NewObject())
+	// Network/NetworkResources：CDP 资源通知对象（Node 语义：均为对象，
+	// Network 含 6 个事件函数，NetworkResources 含 put 方法）。
+	network := engine.NewObject()
+	for _, evt := range []string{"dataReceived", "dataSent", "requestWillBeSent", "responseReceived", "loadingFinished", "loadingFailed"} {
+		evtCopy := evt
+		_ = network.Set(evtCopy, engine.NewFunction(evtCopy, func(args []engine.Value) (engine.Value, error) {
+			return engine.Undefined(), nil
+		}))
 	}
-	_ = m.Set("NetworkResources", networkResCtor)
+	_ = m.Set("Network", network)
+	networkResources := engine.NewObject()
+	_ = networkResources.Set("put", engine.NewFunction("put", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), nil
+	}))
+	_ = m.Set("NetworkResources", networkResources)
 	sessionProto := engine.NewObject()
 	_ = sessionProto.Set("connect", engine.NewFunction("connect", func(args []engine.Value) (engine.Value, error) {
 		return engine.Undefined(), nil
