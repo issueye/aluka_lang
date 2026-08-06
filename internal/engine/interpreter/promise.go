@@ -2,6 +2,7 @@ package interpreter
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -65,6 +66,7 @@ type PromiseValue struct {
 	state     promiseState
 	result    engine.Value
 	reactions []promiseReaction
+	hadHandler bool // M2-4：是否已挂接处理（Then/Catch），用于 unhandledRejection 判定
 }
 
 // NewPromiseValue creates a new pending Promise.
@@ -106,6 +108,47 @@ func (p *PromiseValue) Reject(reason engine.Value) {
 	p.state = promiseRejected
 	p.result = reason
 	p.triggerReactions()
+	// M2-4：无处理者时，在当前微任务检查点结束时判定 unhandledRejection
+	// （若同拍挂上处理者，hadHandler 已置位，不会误报）。
+	if !p.hadHandler {
+		p.maybeUnhandledRejection()
+	}
+}
+
+// maybeUnhandledRejection 在微任务检查点末尾检查是否仍无处理者；若是则
+// 向全局 process 派发 'unhandledRejection'（Node 语义）。
+func (p *PromiseValue) maybeUnhandledRejection() {
+	p.interp.enqueueMicrotask(func() {
+		if p.hadHandler {
+			return
+		}
+		p.dispatchUnhandledRejection()
+	})
+}
+
+// dispatchUnhandledRejection 调用 process.emit('unhandledRejection', reason, promise)；
+// 无监听者时输出 stderr 警告（对齐 Node 的 UnhandledPromiseRejection）。
+func (p *PromiseValue) dispatchUnhandledRejection() {
+	g := p.interp.Global()
+	if g == nil {
+		return
+	}
+	procV, err := g.Get("process")
+	if err != nil || procV == nil {
+		return
+	}
+	if po, ok := procV.AsObject(); ok {
+		if emitFn, err := po.Get("emit"); err == nil && emitFn.IsFunction() {
+			if f, ok := emitFn.AsFunction(); ok {
+				handled, _ := f.Call([]engine.Value{engine.Str("unhandledRejection"), p.result, p})
+				if b, ok := handled.Bool(); ok && b {
+					return // 有监听者消费
+				}
+			}
+		}
+	}
+	// stderr 兜底（Node 风格，仅首行）。
+	fmt.Fprintf(os.Stderr, "UnhandledPromiseRejection: %s\n", p.result.String())
 }
 
 // resolve resolves the promise with the given value. If the value is a Promise,
@@ -155,6 +198,7 @@ func (p *PromiseValue) triggerReactions() {
 
 // then adds onFulfilled/onRejected handlers and returns a new derived Promise.
 func (p *PromiseValue) Then(onFulfilled, onRejected engine.Value) *PromiseValue {
+	p.hadHandler = true
 	derived := NewPromiseValue(p.interp)
 	reaction := promiseReaction{
 		onFulfilled: onFulfilled,

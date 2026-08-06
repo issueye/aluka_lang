@@ -1,0 +1,2918 @@
+{
+  "meta": {
+    "kind": "cli",
+    "generator": "tests/compat/node22/tools/gen-manifest.mjs",
+    "nodeRuntimeVersion": "v22.23.1",
+    "nodeDocVersion": "v22.23.1",
+    "allJsonSha256": "ba180cb8908e1ff4247f4b71fe55042caddab8b2f4fcc2d80f28945d8d701bf1",
+    "platform": "windows",
+    "arch": "amd64",
+    "freezeVersion": "v1.0",
+    "generatedAt": "2026-08-06T14:02:15.338Z"
+  },
+  "flags": [
+    {
+      "name": "-",
+      "kind": "flag",
+      "added": "v8.0.0",
+      "stability": null,
+      "desc": "Alias for stdin. Analogous to the use of - in other command-line utilities, meaning that the script is read from stdin, and the rest of the options are passed t"
+    },
+    {
+      "name": "--",
+      "kind": "flag",
+      "added": "v6.11.0",
+      "stability": null,
+      "desc": "Indicate the end of node options. Pass the rest of the arguments to the script. If no script filename or eval/print script is supplied prior to this, then the n"
+    },
+    {
+      "name": "--abort-on-uncaught-exception",
+      "kind": "flag",
+      "added": "v0.10.8",
+      "stability": null,
+      "desc": "Aborting instead of exiting causes a core file to be generated for post-mortem analysis using a debugger (such as lldb , gdb , and mdb ). If this flag is passed"
+    },
+    {
+      "name": "--allow-addons",
+      "kind": "flag",
+      "added": "v21.6.0",
+      "stability": 1,
+      "desc": "When using the Permission Model , the process will not be able to use native addons by default. Attempts to do so will throw an ERR_DLOPEN_DISABLED unless the u"
+    },
+    {
+      "name": "--allow-child-process",
+      "kind": "flag",
+      "added": "v20.0.0",
+      "stability": 1,
+      "desc": "When using the Permission Model , the process will not be able to spawn any child process by default. Attempts to do so will throw an ERR_ACCESS_DENIED unless t"
+    },
+    {
+      "name": "--allow-fs-read",
+      "kind": "flag",
+      "added": "v20.0.0",
+      "stability": null,
+      "desc": "This flag configures file system read permissions using the Permission Model . The valid arguments for the --allow-fs-read flag are: * - To allow all FileSystem"
+    },
+    {
+      "name": "--allow-fs-write",
+      "kind": "flag",
+      "added": "v20.0.0",
+      "stability": null,
+      "desc": "This flag configures file system write permissions using the Permission Model . The valid arguments for the --allow-fs-write flag are: * - To allow all FileSyst"
+    },
+    {
+      "name": "--allow-wasi",
+      "kind": "flag",
+      "added": "v22.3.0",
+      "stability": 1,
+      "desc": "When using the Permission Model , the process will not be capable of creating any WASI instances by default. For security reasons, the call will throw an ERR_AC"
+    },
+    {
+      "name": "--allow-worker",
+      "kind": "flag",
+      "added": "v20.0.0",
+      "stability": 1,
+      "desc": "When using the Permission Model , the process will not be able to create any worker threads by default. For security reasons, the call will throw an ERR_ACCESS_"
+    },
+    {
+      "name": "--build-snapshot",
+      "kind": "flag",
+      "added": "v18.8.0",
+      "stability": 1,
+      "desc": "Generates a snapshot blob when the process exits and writes it to disk, which can be loaded later with --snapshot-blob . When building the snapshot, if --snapsh"
+    },
+    {
+      "name": "--build-snapshot-config",
+      "kind": "flag",
+      "added": "v21.6.0",
+      "stability": 1,
+      "desc": "Specifies the path to a JSON configuration file which configures snapshot creation behavior. The following options are currently supported: builder <string> Req"
+    },
+    {
+      "name": "-c`,_`--check",
+      "kind": "flag",
+      "added": "v5.0.0",
+      "stability": null,
+      "desc": "Syntax check the script without executing."
+    },
+    {
+      "name": "--completion-bash",
+      "kind": "flag",
+      "added": "v10.12.0",
+      "stability": null,
+      "desc": "Print source-able bash completion script for Node.js. node --completion-bash > node_bash_completion source node_bash_completion"
+    },
+    {
+      "name": "-c_condition`,_`--conditions=condition",
+      "kind": "flag",
+      "added": "v14.9.0",
+      "stability": null,
+      "desc": "Provide custom conditional exports resolution conditions. Any number of custom string condition names are permitted. The default Node.js conditions of \"node\" , "
+    },
+    {
+      "name": "--cpu-prof",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": null,
+      "desc": "Starts the V8 CPU profiler on start up, and writes the CPU profile to disk before exit. If --cpu-prof-dir is not specified, the generated profile is placed in t"
+    },
+    {
+      "name": "--cpu-prof-dir",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": null,
+      "desc": "Specify the directory where the CPU profiles generated by --cpu-prof will be placed. The default value is controlled by the --diagnostic-dir command-line option"
+    },
+    {
+      "name": "--cpu-prof-interval",
+      "kind": "flag",
+      "added": "v12.2.0",
+      "stability": null,
+      "desc": "Specify the sampling interval in microseconds for the CPU profiles generated by --cpu-prof . The default is 1000 microseconds."
+    },
+    {
+      "name": "--cpu-prof-name",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": null,
+      "desc": "Specify the file name of the CPU profile generated by --cpu-prof ."
+    },
+    {
+      "name": "--diagnostic-dir=directory",
+      "kind": "flag",
+      "added": "",
+      "stability": null,
+      "desc": "Set the directory to which all diagnostic output files are written. Defaults to current working directory. Affects the default output directory of: --cpu-prof-d"
+    },
+    {
+      "name": "--disable-proto=mode",
+      "kind": "flag",
+      "added": "v13.12.0",
+      "stability": null,
+      "desc": "Disable the Object.prototype.__proto__ property. If mode is delete , the property is removed entirely. If mode is throw , accesses to the property throw an exce"
+    },
+    {
+      "name": "--disable-sigusr1",
+      "kind": "flag",
+      "added": "v22.14.0",
+      "stability": null,
+      "desc": "Disable the ability of starting a debugging session by sending a SIGUSR1 signal to the process."
+    },
+    {
+      "name": "--disable-warning=code-or-type",
+      "kind": "flag",
+      "added": "v21.3.0",
+      "stability": 1,
+      "desc": "Disable specific process warnings by code or type . Warnings emitted from process.emitWarning() may contain a code and a type . This option will not-emit warnin"
+    },
+    {
+      "name": "--disable-wasm-trap-handler",
+      "kind": "flag",
+      "added": "v22.2.0",
+      "stability": null,
+      "desc": "By default, Node.js enables trap-handler-based WebAssembly bound checks. As a result, V8 does not need to insert inline bound checks int the code compiled from "
+    },
+    {
+      "name": "--disallow-code-generation-from-strings",
+      "kind": "flag",
+      "added": "v9.8.0",
+      "stability": null,
+      "desc": "Make built-in language features like eval and new Function that generate code from strings throw an exception instead. This does not affect the Node.js node:vm "
+    },
+    {
+      "name": "--dns-result-order=order",
+      "kind": "flag",
+      "added": "v16.4.0",
+      "stability": null,
+      "desc": "Set the default value of order in dns.lookup() and dnsPromises.lookup() . The value could be: ipv4first : sets default order to ipv4first . ipv6first : sets def"
+    },
+    {
+      "name": "--enable-fips",
+      "kind": "flag",
+      "added": "v6.0.0",
+      "stability": null,
+      "desc": "Enable FIPS-compliant crypto at startup. (Requires Node.js to be built against FIPS-compatible OpenSSL.)"
+    },
+    {
+      "name": "--enable-network-family-autoselection",
+      "kind": "flag",
+      "added": "v18.18.0",
+      "stability": null,
+      "desc": "Enables the family autoselection algorithm unless connection options explicitly disables it."
+    },
+    {
+      "name": "--enable-source-maps",
+      "kind": "flag",
+      "added": "v12.12.0",
+      "stability": null,
+      "desc": "Enable Source Map support for stack traces. When using a transpiler, such as TypeScript, stack traces thrown by an application reference the transpiled code, no"
+    },
+    {
+      "name": "--entry-url",
+      "kind": "flag",
+      "added": "v22.10.0",
+      "stability": 1,
+      "desc": "When present, Node.js will interpret the entry point as a URL, rather than a path. Follows ECMAScript module resolution rules. Any query parameter or hash in th"
+    },
+    {
+      "name": "--env-file-if-exists=file",
+      "kind": "flag",
+      "added": "v22.9.0",
+      "stability": null,
+      "desc": "Behavior is the same as --env-file , but an error is not thrown if the file does not exist."
+    },
+    {
+      "name": "--env-file=file",
+      "kind": "flag",
+      "added": "v20.6.0",
+      "stability": null,
+      "desc": "Loads environment variables from a file relative to the current directory, making them available to applications on process.env . The environment variables whic"
+    },
+    {
+      "name": "-e`,_`--eval_\"script\"",
+      "kind": "flag",
+      "added": "v0.5.2",
+      "stability": null,
+      "desc": "Evaluate the following argument as JavaScript. The modules which are predefined in the REPL can also be used in script . On Windows, using cmd.exe a single quot"
+    },
+    {
+      "name": "--experimental-addon-modules",
+      "kind": "flag",
+      "added": "v22.20.0",
+      "stability": 1,
+      "desc": "Enable experimental import support for .node addons."
+    },
+    {
+      "name": "--experimental-async-context-frame",
+      "kind": "flag",
+      "added": "v22.7.0",
+      "stability": 1,
+      "desc": "Enables the use of AsyncLocalStorage backed by AsyncContextFrame rather than the default implementation which relies on async_hooks. This new model is implement"
+    },
+    {
+      "name": "--experimental-config-file=config",
+      "kind": "flag",
+      "added": "v22.16.0",
+      "stability": 1,
+      "desc": "If present, Node.js will look for a configuration file at the specified path. Node.js will read the configuration file and apply the settings. The configuration"
+    },
+    {
+      "name": "--experimental-default-config-file",
+      "kind": "flag",
+      "added": "v22.16.0",
+      "stability": 1,
+      "desc": "If the --experimental-default-config-file flag is present, Node.js will look for a node.config.json file in the current working directory and load it as a as co"
+    },
+    {
+      "name": "--experimental-default-type=type",
+      "kind": "flag",
+      "added": "v21.0.0",
+      "stability": 1,
+      "desc": "Define which module system, module or commonjs , to use for the following: String input provided via --eval or STDIN, if --input-type is unspecified. Files endi"
+    },
+    {
+      "name": "--experimental-eventsource",
+      "kind": "flag",
+      "added": "v22.3.0",
+      "stability": null,
+      "desc": "Enable exposition of EventSource Web API on the global scope."
+    },
+    {
+      "name": "--experimental-import-meta-resolve",
+      "kind": "flag",
+      "added": "v13.9.0",
+      "stability": null,
+      "desc": "Enable experimental import.meta.resolve() parent URL support, which allows passing a second parentURL argument for contextual resolution. Previously gated the e"
+    },
+    {
+      "name": "--experimental-inspector-network-resource",
+      "kind": "flag",
+      "added": "v22.19.0",
+      "stability": 1,
+      "desc": "Enable experimental support for inspector network resources."
+    },
+    {
+      "name": "--experimental-loader=module",
+      "kind": "flag",
+      "added": "v8.8.0",
+      "stability": null,
+      "desc": "This flag is discouraged and may be removed in a future version of Node.js. Please use --import with register() instead. Specify the module containing exported "
+    },
+    {
+      "name": "--experimental-network-inspection",
+      "kind": "flag",
+      "added": "v22.6.0",
+      "stability": 1,
+      "desc": "Enable experimental support for the network inspection with Chrome DevTools."
+    },
+    {
+      "name": "--experimental-print-required-tla",
+      "kind": "flag",
+      "added": "v22.0.0",
+      "stability": null,
+      "desc": "If the ES module being require() 'd contains top-level await , this flag allows Node.js to evaluate the module, try to locate the top-level awaits, and print th"
+    },
+    {
+      "name": "--experimental-require-module",
+      "kind": "flag",
+      "added": "v22.0.0",
+      "stability": 1,
+      "desc": "Supports loading a synchronous ES module graph in require() . See Loading ECMAScript modules using require() ."
+    },
+    {
+      "name": "--experimental-sea-config",
+      "kind": "flag",
+      "added": "v20.0.0",
+      "stability": 1,
+      "desc": "Use this flag to generate a blob that can be injected into the Node.js binary to produce a single executable application . See the documentation about this conf"
+    },
+    {
+      "name": "--experimental-shadow-realm",
+      "kind": "flag",
+      "added": "v19.0.0",
+      "stability": null,
+      "desc": "Use this flag to enable ShadowRealm support."
+    },
+    {
+      "name": "--experimental-test-coverage",
+      "kind": "flag",
+      "added": "v19.7.0",
+      "stability": null,
+      "desc": "When used in conjunction with the node:test module, a code coverage report is generated as part of the test runner output. If no tests are run, a coverage repor"
+    },
+    {
+      "name": "--experimental-test-isolation=mode",
+      "kind": "flag",
+      "added": "v22.8.0",
+      "stability": 1,
+      "desc": "Configures the type of test isolation used in the test runner. When mode is 'process' , each test file is run in a separate child process. When mode is 'none' ,"
+    },
+    {
+      "name": "--experimental-test-module-mocks",
+      "kind": "flag",
+      "added": "v22.3.0",
+      "stability": 1,
+      "desc": "Enable module mocking in the test runner. This feature requires --allow-worker if used with the Permission Model ."
+    },
+    {
+      "name": "--experimental-transform-types",
+      "kind": "flag",
+      "added": "v22.7.0",
+      "stability": 1,
+      "desc": "Enables the transformation of TypeScript-only syntax into JavaScript code. Implies --enable-source-maps ."
+    },
+    {
+      "name": "--experimental-vm-modules",
+      "kind": "flag",
+      "added": "v9.6.0",
+      "stability": null,
+      "desc": "Enable experimental ES Module support in the node:vm module."
+    },
+    {
+      "name": "--experimental-wasi-unstable-preview1",
+      "kind": "flag",
+      "added": "v13.3.0",
+      "stability": null,
+      "desc": "Enable experimental WebAssembly System Interface (WASI) support."
+    },
+    {
+      "name": "--experimental-webstorage",
+      "kind": "flag",
+      "added": "v22.4.0",
+      "stability": 1,
+      "desc": "Enable Web Storage support."
+    },
+    {
+      "name": "--experimental-worker-inspection",
+      "kind": "flag",
+      "added": "v22.17.0",
+      "stability": 1,
+      "desc": "Enable experimental support for the worker inspection with Chrome DevTools."
+    },
+    {
+      "name": "--expose-gc",
+      "kind": "flag",
+      "added": "v22.3.0",
+      "stability": 1,
+      "desc": "This flag will expose the gc extension from V8. if (globalThis.gc) { globalThis.gc(); }"
+    },
+    {
+      "name": "--force-context-aware",
+      "kind": "flag",
+      "added": "v12.12.0",
+      "stability": null,
+      "desc": "Disable loading native addons that are not context-aware ."
+    },
+    {
+      "name": "--force-fips",
+      "kind": "flag",
+      "added": "v6.0.0",
+      "stability": null,
+      "desc": "Force FIPS-compliant crypto on startup. (Cannot be disabled from script code.) (Same requirements as --enable-fips .)"
+    },
+    {
+      "name": "--force-node-api-uncaught-exceptions-policy",
+      "kind": "flag",
+      "added": "v18.3.0",
+      "stability": null,
+      "desc": "Enforces uncaughtException event on Node-API asynchronous callbacks. To prevent from an existing add-on from crashing the process, this flag is not enabled by d"
+    },
+    {
+      "name": "--frozen-intrinsics",
+      "kind": "flag",
+      "added": "v11.12.0",
+      "stability": 1,
+      "desc": "Enable experimental frozen intrinsics like Array and Object . Only the root context is supported. There is no guarantee that globalThis.Array is indeed the defa"
+    },
+    {
+      "name": "--heap-prof",
+      "kind": "flag",
+      "added": "v12.4.0",
+      "stability": null,
+      "desc": "Starts the V8 heap profiler on start up, and writes the heap profile to disk before exit. If --heap-prof-dir is not specified, the generated profile is placed i"
+    },
+    {
+      "name": "--heap-prof-dir",
+      "kind": "flag",
+      "added": "v12.4.0",
+      "stability": null,
+      "desc": "Specify the directory where the heap profiles generated by --heap-prof will be placed. The default value is controlled by the --diagnostic-dir command-line opti"
+    },
+    {
+      "name": "--heap-prof-interval",
+      "kind": "flag",
+      "added": "v12.4.0",
+      "stability": null,
+      "desc": "Specify the average sampling interval in bytes for the heap profiles generated by --heap-prof . The default is 512 * 1024 bytes."
+    },
+    {
+      "name": "--heap-prof-name",
+      "kind": "flag",
+      "added": "v12.4.0",
+      "stability": null,
+      "desc": "Specify the file name of the heap profile generated by --heap-prof ."
+    },
+    {
+      "name": "--heapsnapshot-near-heap-limit=max_count",
+      "kind": "flag",
+      "added": "v15.1.0",
+      "stability": null,
+      "desc": "Writes a V8 heap snapshot to disk when the V8 heap usage is approaching the heap limit. count should be a non-negative integer (in which case Node.js will write"
+    },
+    {
+      "name": "--heapsnapshot-signal=signal",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": null,
+      "desc": "Enables a signal handler that causes the Node.js process to write a heap dump when the specified signal is received. signal must be a valid signal name. Disable"
+    },
+    {
+      "name": "-h`,_`--help",
+      "kind": "flag",
+      "added": "v0.1.3",
+      "stability": null,
+      "desc": "Print node command-line options. The output of this option is less detailed than this document."
+    },
+    {
+      "name": "--icu-data-dir=file",
+      "kind": "flag",
+      "added": "v0.11.15",
+      "stability": null,
+      "desc": "Specify ICU data load path. (Overrides NODE_ICU_DATA .)"
+    },
+    {
+      "name": "--import=module",
+      "kind": "flag",
+      "added": "v19.0.0",
+      "stability": 1,
+      "desc": "Preload the specified module at startup. If the flag is provided several times, each module will be executed sequentially in the order they appear, starting wit"
+    },
+    {
+      "name": "--input-type=type",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": null,
+      "desc": "This configures Node.js to interpret --eval or STDIN input as CommonJS or as an ES module. Valid values are \"commonjs\" , \"module\" , \"module-typescript\" and \"com"
+    },
+    {
+      "name": "--insecure-http-parser",
+      "kind": "flag",
+      "added": "v13.4.0",
+      "stability": null,
+      "desc": "Enable leniency flags on the HTTP parser. This may allow interoperability with non-conformant HTTP implementations. When enabled, the parser will accept the fol"
+    },
+    {
+      "name": "--inspect-brk[=[host:]port]",
+      "kind": "flag",
+      "added": "v7.6.0",
+      "stability": null,
+      "desc": "Activate inspector on host:port and break at start of user script. Default host:port is 127.0.0.1:9229 . If port 0 is specified, a random available port will be"
+    },
+    {
+      "name": "--inspect-port=[host:]port",
+      "kind": "flag",
+      "added": "v7.6.0",
+      "stability": null,
+      "desc": "Set the host:port to be used when the inspector is activated. Useful when activating the inspector by sending the SIGUSR1 signal. Except when --disable-sigusr1 "
+    },
+    {
+      "name": "--inspect-publish-uid=stderr,http",
+      "kind": "flag",
+      "added": "",
+      "stability": null,
+      "desc": "Specify ways of the inspector web socket url exposure. By default inspector websocket url is available in stderr and under /json/list endpoint on http://host:po"
+    },
+    {
+      "name": "--inspect-wait[=[host:]port]",
+      "kind": "flag",
+      "added": "v22.2.0",
+      "stability": null,
+      "desc": "Activate inspector on host:port and wait for debugger to be attached. Default host:port is 127.0.0.1:9229 . If port 0 is specified, a random available port will"
+    },
+    {
+      "name": "--inspect[=[host:]port]",
+      "kind": "flag",
+      "added": "v6.3.0",
+      "stability": null,
+      "desc": "Activate inspector on host:port . Default is 127.0.0.1:9229 . If port 0 is specified, a random available port will be used. V8 inspector integration allows tool"
+    },
+    {
+      "name": "-i`,_`--interactive",
+      "kind": "flag",
+      "added": "v0.7.7",
+      "stability": null,
+      "desc": "Opens the REPL even if stdin does not appear to be a terminal."
+    },
+    {
+      "name": "--jitless",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": 1,
+      "desc": "Disable runtime allocation of executable memory . This may be required on some platforms for security reasons. It can also reduce attack surface on other platfo"
+    },
+    {
+      "name": "--localstorage-file=file",
+      "kind": "flag",
+      "added": "v22.4.0",
+      "stability": 1,
+      "desc": "The file used to store localStorage data. If the file does not exist, it is created the first time localStorage is accessed. The same file may be shared between"
+    },
+    {
+      "name": "--max-http-header-size=size",
+      "kind": "flag",
+      "added": "v11.6.0",
+      "stability": null,
+      "desc": "Specify the maximum size, in bytes, of HTTP headers. Defaults to 16 KiB."
+    },
+    {
+      "name": "--max-old-space-size-percentage=percentage",
+      "kind": "flag",
+      "added": "",
+      "stability": null,
+      "desc": "Sets the maximum memory size of V8's old memory section as a percentage of available system memory. This flag takes precedence over --max-old-space-size when bo"
+    },
+    {
+      "name": "--napi-modules",
+      "kind": "flag",
+      "added": "v7.10.0",
+      "stability": null,
+      "desc": "This option is a no-op. It is kept for compatibility."
+    },
+    {
+      "name": "--network-family-autoselection-attempt-timeout",
+      "kind": "flag",
+      "added": "v22.1.0",
+      "stability": null,
+      "desc": "Sets the default value for the network family autoselection attempt timeout. For more information, see net.getDefaultAutoSelectFamilyAttemptTimeout() ."
+    },
+    {
+      "name": "--no-addons",
+      "kind": "flag",
+      "added": "v16.10.0",
+      "stability": null,
+      "desc": "Disable the node-addons exports condition as well as disable loading native addons. When --no-addons is specified, calling process.dlopen or requiring a native "
+    },
+    {
+      "name": "--no-deprecation",
+      "kind": "flag",
+      "added": "v0.8.0",
+      "stability": null,
+      "desc": "Silence deprecation warnings."
+    },
+    {
+      "name": "--no-experimental-detect-module",
+      "kind": "flag",
+      "added": "v21.1.0",
+      "stability": null,
+      "desc": "Disable using syntax detection to determine module type."
+    },
+    {
+      "name": "--no-experimental-fetch",
+      "kind": "flag",
+      "added": "v18.0.0",
+      "stability": null,
+      "desc": "Disable exposition of Fetch API on the global scope."
+    },
+    {
+      "name": "--no-experimental-global-customevent",
+      "kind": "flag",
+      "added": "v19.0.0",
+      "stability": null,
+      "desc": "Disable exposition of CustomEvent Web API on the global scope."
+    },
+    {
+      "name": "--no-experimental-global-navigator",
+      "kind": "flag",
+      "added": "v21.2.0",
+      "stability": 1,
+      "desc": "Disable exposition of Navigator API on the global scope."
+    },
+    {
+      "name": "--no-experimental-global-webcrypto",
+      "kind": "flag",
+      "added": "v19.0.0",
+      "stability": null,
+      "desc": "Disable exposition of Web Crypto API on the global scope."
+    },
+    {
+      "name": "--no-experimental-repl-await",
+      "kind": "flag",
+      "added": "v16.6.0",
+      "stability": null,
+      "desc": "Use this flag to disable top-level await in REPL."
+    },
+    {
+      "name": "--no-experimental-require-module",
+      "kind": "flag",
+      "added": "v22.0.0",
+      "stability": 1,
+      "desc": "Disable support for loading a synchronous ES module graph in require() . See Loading ECMAScript modules using require() ."
+    },
+    {
+      "name": "--no-experimental-sqlite",
+      "kind": "flag",
+      "added": "v22.5.0",
+      "stability": null,
+      "desc": "Disable the experimental node:sqlite module."
+    },
+    {
+      "name": "--no-experimental-strip-types",
+      "kind": "flag",
+      "added": "v22.6.0",
+      "stability": 1,
+      "desc": "Disable experimental type-stripping for TypeScript files. For more information, see the TypeScript type-stripping documentation."
+    },
+    {
+      "name": "--no-experimental-websocket",
+      "kind": "flag",
+      "added": "v22.0.0",
+      "stability": null,
+      "desc": "Disable exposition of <WebSocket> on the global scope."
+    },
+    {
+      "name": "--no-extra-info-on-fatal-exception",
+      "kind": "flag",
+      "added": "v17.0.0",
+      "stability": null,
+      "desc": "Hide extra information on fatal exception that causes exit."
+    },
+    {
+      "name": "--no-force-async-hooks-checks",
+      "kind": "flag",
+      "added": "v9.0.0",
+      "stability": null,
+      "desc": "Disables runtime checks for async_hooks . These will still be enabled dynamically when async_hooks is enabled."
+    },
+    {
+      "name": "--no-global-search-paths",
+      "kind": "flag",
+      "added": "v16.10.0",
+      "stability": null,
+      "desc": "Do not search modules from global paths like $HOME/.node_modules and $NODE_PATH ."
+    },
+    {
+      "name": "--no-network-family-autoselection",
+      "kind": "flag",
+      "added": "v19.4.0",
+      "stability": null,
+      "desc": "Disables the family autoselection algorithm unless connection options explicitly enables it."
+    },
+    {
+      "name": "--no-warnings",
+      "kind": "flag",
+      "added": "v6.0.0",
+      "stability": null,
+      "desc": "Silence all process warnings (including deprecations)."
+    },
+    {
+      "name": "--node-memory-debug",
+      "kind": "flag",
+      "added": "v15.0.0",
+      "stability": null,
+      "desc": "Enable extra debug checks for memory leaks in Node.js internals. This is usually only useful for developers debugging Node.js itself."
+    },
+    {
+      "name": "--openssl-config=file",
+      "kind": "flag",
+      "added": "v6.9.0",
+      "stability": null,
+      "desc": "Load an OpenSSL configuration file on startup. Among other uses, this can be used to enable FIPS-compliant crypto if Node.js is built against FIPS-enabled OpenS"
+    },
+    {
+      "name": "--openssl-legacy-provider",
+      "kind": "flag",
+      "added": "v17.0.0",
+      "stability": null,
+      "desc": "Enable OpenSSL 3.0 legacy provider. For more information please see OSSL_PROVIDER-legacy ."
+    },
+    {
+      "name": "--openssl-shared-config",
+      "kind": "flag",
+      "added": "v18.5.0",
+      "stability": null,
+      "desc": "Enable OpenSSL default configuration section, openssl_conf to be read from the OpenSSL configuration file. The default configuration file is named openssl.cnf b"
+    },
+    {
+      "name": "--pending-deprecation",
+      "kind": "flag",
+      "added": "v8.0.0",
+      "stability": null,
+      "desc": "Emit pending deprecation warnings. Pending deprecations are generally identical to a runtime deprecation with the notable exception that they are turned off by "
+    },
+    {
+      "name": "--permission",
+      "kind": "flag",
+      "added": "v20.0.0",
+      "stability": null,
+      "desc": "Enable the Permission Model for current process. When enabled, the following permissions are restricted: File System - manageable through --allow-fs-read , --al"
+    },
+    {
+      "name": "--preserve-symlinks",
+      "kind": "flag",
+      "added": "v6.3.0",
+      "stability": null,
+      "desc": "Instructs the module loader to preserve symbolic links when resolving and caching modules. By default, when Node.js loads a module from a path that is symbolica"
+    },
+    {
+      "name": "--preserve-symlinks-main",
+      "kind": "flag",
+      "added": "v10.2.0",
+      "stability": null,
+      "desc": "Instructs the module loader to preserve symbolic links when resolving and caching the main module ( require.main ). This flag exists so that the main module can"
+    },
+    {
+      "name": "-p`,_`--print_\"script\"",
+      "kind": "flag",
+      "added": "v0.6.4",
+      "stability": null,
+      "desc": "Identical to -e but prints the result."
+    },
+    {
+      "name": "--prof",
+      "kind": "flag",
+      "added": "v2.0.0",
+      "stability": null,
+      "desc": "Generate V8 profiler output."
+    },
+    {
+      "name": "--prof-process",
+      "kind": "flag",
+      "added": "v5.2.0",
+      "stability": null,
+      "desc": "Process V8 profiler output generated using the V8 option --prof ."
+    },
+    {
+      "name": "--redirect-warnings=file",
+      "kind": "flag",
+      "added": "v8.0.0",
+      "stability": null,
+      "desc": "Write process warnings to the given file instead of printing to stderr. The file will be created if it does not exist, and will be appended to if it does. If an"
+    },
+    {
+      "name": "--report-compact",
+      "kind": "flag",
+      "added": "v13.12.0",
+      "stability": null,
+      "desc": "Write reports in a compact format, single-line JSON, more easily consumable by log processing systems than the default multi-line format designed for human cons"
+    },
+    {
+      "name": "--report-dir=directory`,_`report-directory=directory",
+      "kind": "flag",
+      "added": "v11.8.0",
+      "stability": null,
+      "desc": "Location at which the report will be generated."
+    },
+    {
+      "name": "--report-exclude-env",
+      "kind": "flag",
+      "added": "v22.13.0",
+      "stability": null,
+      "desc": "When --report-exclude-env is passed the diagnostic report generated will not contain the environmentVariables data."
+    },
+    {
+      "name": "--report-exclude-network",
+      "kind": "flag",
+      "added": "v22.0.0",
+      "stability": null,
+      "desc": "Exclude header.networkInterfaces from the diagnostic report. By default this is not set and the network interfaces are included."
+    },
+    {
+      "name": "--report-filename=filename",
+      "kind": "flag",
+      "added": "v11.8.0",
+      "stability": null,
+      "desc": "Name of the file to which the report will be written. If the filename is set to 'stdout' or 'stderr' , the report is written to the stdout or stderr of the proc"
+    },
+    {
+      "name": "--report-on-fatalerror",
+      "kind": "flag",
+      "added": "v11.8.0",
+      "stability": null,
+      "desc": "Enables the report to be triggered on fatal errors (internal errors within the Node.js runtime such as out of memory) that lead to termination of the applicatio"
+    },
+    {
+      "name": "--report-on-signal",
+      "kind": "flag",
+      "added": "v11.8.0",
+      "stability": null,
+      "desc": "Enables report to be generated upon receiving the specified (or predefined) signal to the running Node.js process. The signal to trigger the report is specified"
+    },
+    {
+      "name": "--report-signal=signal",
+      "kind": "flag",
+      "added": "v11.8.0",
+      "stability": null,
+      "desc": "Sets or resets the signal for report generation (not supported on Windows). Default signal is SIGUSR2 ."
+    },
+    {
+      "name": "--report-uncaught-exception",
+      "kind": "flag",
+      "added": "v11.8.0",
+      "stability": null,
+      "desc": "Enables report to be generated when the process exits due to an uncaught exception. Useful when inspecting the JavaScript stack in conjunction with native stack"
+    },
+    {
+      "name": "-r`,_`--require_module",
+      "kind": "flag",
+      "added": "v1.6.0",
+      "stability": null,
+      "desc": "Preload the specified module at startup. Follows require() 's module resolution rules. module may be either a path to a file, or a node module name. Modules pre"
+    },
+    {
+      "name": "--run",
+      "kind": "flag",
+      "added": "v22.0.0",
+      "stability": null,
+      "desc": "This runs a specified command from a package.json's \"scripts\" object. If a missing \"command\" is provided, it will list the available scripts. --run will travers"
+    },
+    {
+      "name": "--secure-heap-min=n",
+      "kind": "flag",
+      "added": "v15.6.0",
+      "stability": null,
+      "desc": "When using --secure-heap , the --secure-heap-min flag specifies the minimum allocation from the secure heap. The minimum value is 2 . The maximum value is the l"
+    },
+    {
+      "name": "--secure-heap=n",
+      "kind": "flag",
+      "added": "v15.6.0",
+      "stability": null,
+      "desc": "Initializes an OpenSSL secure heap of n bytes. When initialized, the secure heap is used for selected types of allocations within OpenSSL during key generation "
+    },
+    {
+      "name": "--snapshot-blob=path",
+      "kind": "flag",
+      "added": "v18.8.0",
+      "stability": 1,
+      "desc": "When used with --build-snapshot , --snapshot-blob specifies the path where the generated snapshot blob is written to. If not specified, the generated blob is wr"
+    },
+    {
+      "name": "--test",
+      "kind": "flag",
+      "added": "v18.1.0",
+      "stability": null,
+      "desc": "Starts the Node.js command line test runner. This flag cannot be combined with --watch-path , --check , --eval , --interactive , or the inspector. See the docum"
+    },
+    {
+      "name": "--test-concurrency",
+      "kind": "flag",
+      "added": "v21.0.0",
+      "stability": null,
+      "desc": "The maximum number of test files that the test runner CLI will execute concurrently. If --experimental-test-isolation is set to 'none' , this flag is ignored an"
+    },
+    {
+      "name": "--test-coverage-branches=threshold",
+      "kind": "flag",
+      "added": "v22.8.0",
+      "stability": 1,
+      "desc": "Require a minimum percent of covered branches. If code coverage does not reach the threshold specified, the process will exit with code 1 ."
+    },
+    {
+      "name": "--test-coverage-exclude",
+      "kind": "flag",
+      "added": "v22.5.0",
+      "stability": 1,
+      "desc": "Excludes specific files from code coverage using a glob pattern, which can match both absolute and relative file paths. This option may be specified multiple ti"
+    },
+    {
+      "name": "--test-coverage-functions=threshold",
+      "kind": "flag",
+      "added": "v22.8.0",
+      "stability": 1,
+      "desc": "Require a minimum percent of covered functions. If code coverage does not reach the threshold specified, the process will exit with code 1 ."
+    },
+    {
+      "name": "--test-coverage-include",
+      "kind": "flag",
+      "added": "v22.5.0",
+      "stability": 1,
+      "desc": "Includes specific files in code coverage using a glob pattern, which can match both absolute and relative file paths. This option may be specified multiple time"
+    },
+    {
+      "name": "--test-coverage-lines=threshold",
+      "kind": "flag",
+      "added": "v22.8.0",
+      "stability": 1,
+      "desc": "Require a minimum percent of covered lines. If code coverage does not reach the threshold specified, the process will exit with code 1 ."
+    },
+    {
+      "name": "--test-force-exit",
+      "kind": "flag",
+      "added": "v22.0.0",
+      "stability": null,
+      "desc": "Configures the test runner to exit the process once all known tests have finished executing even if the event loop would otherwise remain active."
+    },
+    {
+      "name": "--test-name-pattern",
+      "kind": "flag",
+      "added": "v18.11.0",
+      "stability": null,
+      "desc": "A regular expression that configures the test runner to only execute tests whose name matches the provided pattern. See the documentation on filtering tests by "
+    },
+    {
+      "name": "--test-only",
+      "kind": "flag",
+      "added": "v18.0.0",
+      "stability": null,
+      "desc": "Configures the test runner to only execute top level tests that have the only option set. This flag is not necessary when test isolation is disabled."
+    },
+    {
+      "name": "--test-reporter",
+      "kind": "flag",
+      "added": "v19.6.0",
+      "stability": null,
+      "desc": "A test reporter to use when running tests. See the documentation on test reporters for more details."
+    },
+    {
+      "name": "--test-reporter-destination",
+      "kind": "flag",
+      "added": "v19.6.0",
+      "stability": null,
+      "desc": "The destination for the corresponding test reporter. See the documentation on test reporters for more details."
+    },
+    {
+      "name": "--test-shard",
+      "kind": "flag",
+      "added": "v20.5.0",
+      "stability": null,
+      "desc": "Test suite shard to execute in a format of &#x3C;index>/&#x3C;total> , where index is a positive integer, index of divided parts. total is a positive integer, t"
+    },
+    {
+      "name": "--test-skip-pattern",
+      "kind": "flag",
+      "added": "v22.1.0",
+      "stability": null,
+      "desc": "A regular expression that configures the test runner to skip tests whose name matches the provided pattern. See the documentation on filtering tests by name for"
+    },
+    {
+      "name": "--test-timeout",
+      "kind": "flag",
+      "added": "v21.2.0",
+      "stability": null,
+      "desc": "A number of milliseconds the test execution will fail after. If unspecified, subtests inherit this value from their parent. The default value is Infinity ."
+    },
+    {
+      "name": "--test-update-snapshots",
+      "kind": "flag",
+      "added": "v22.3.0",
+      "stability": null,
+      "desc": "Regenerates the snapshot files used by the test runner for snapshot testing ."
+    },
+    {
+      "name": "--throw-deprecation",
+      "kind": "flag",
+      "added": "v0.11.14",
+      "stability": null,
+      "desc": "Throw errors for deprecations."
+    },
+    {
+      "name": "--title=title",
+      "kind": "flag",
+      "added": "v10.7.0",
+      "stability": null,
+      "desc": "Set process.title on startup."
+    },
+    {
+      "name": "--tls-cipher-list=list",
+      "kind": "flag",
+      "added": "v4.0.0",
+      "stability": null,
+      "desc": "Specify an alternative default TLS cipher list. Requires Node.js to be built with crypto support (default)."
+    },
+    {
+      "name": "--tls-keylog=file",
+      "kind": "flag",
+      "added": "v13.2.0",
+      "stability": null,
+      "desc": "Log TLS key material to a file. The key material is in NSS SSLKEYLOGFILE format and can be used by software (such as Wireshark) to decrypt the TLS traffic."
+    },
+    {
+      "name": "--tls-max-v1.2",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": null,
+      "desc": "Set tls.DEFAULT_MAX_VERSION to 'TLSv1.2'. Use to disable support for TLSv1.3."
+    },
+    {
+      "name": "--tls-max-v1.3",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": null,
+      "desc": "Set default tls.DEFAULT_MAX_VERSION to 'TLSv1.3'. Use to enable support for TLSv1.3."
+    },
+    {
+      "name": "--tls-min-v1.0",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": null,
+      "desc": "Set default tls.DEFAULT_MIN_VERSION to 'TLSv1'. Use for compatibility with old TLS clients or servers."
+    },
+    {
+      "name": "--tls-min-v1.1",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": null,
+      "desc": "Set default tls.DEFAULT_MIN_VERSION to 'TLSv1.1'. Use for compatibility with old TLS clients or servers."
+    },
+    {
+      "name": "--tls-min-v1.2",
+      "kind": "flag",
+      "added": "v12.2.0",
+      "stability": null,
+      "desc": "Set default tls.DEFAULT_MIN_VERSION to 'TLSv1.2'. This is the default for 12.x and later, but the option is supported for compatibility with older Node.js versi"
+    },
+    {
+      "name": "--tls-min-v1.3",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": null,
+      "desc": "Set default tls.DEFAULT_MIN_VERSION to 'TLSv1.3'. Use to disable support for TLSv1.2, which is not as secure as TLSv1.3."
+    },
+    {
+      "name": "--trace-atomics-wait",
+      "kind": "flag",
+      "added": "v14.3.0",
+      "stability": 0,
+      "desc": "Print short summaries of calls to Atomics.wait() to stderr. The output could look like this: (node:15701) [Thread 0] Atomics.wait(&#x26;lt;address> + 0, 1, inf)"
+    },
+    {
+      "name": "--trace-deprecation",
+      "kind": "flag",
+      "added": "v0.8.0",
+      "stability": null,
+      "desc": "Print stack traces for deprecations."
+    },
+    {
+      "name": "--trace-env",
+      "kind": "flag",
+      "added": "v22.13.0",
+      "stability": null,
+      "desc": "Print information about any access to environment variables done in the current Node.js instance to stderr, including: The environment variable reads that Node."
+    },
+    {
+      "name": "--trace-env-js-stack",
+      "kind": "flag",
+      "added": "v22.13.0",
+      "stability": null,
+      "desc": "In addition to what --trace-env does, this prints the JavaScript stack trace of the access."
+    },
+    {
+      "name": "--trace-env-native-stack",
+      "kind": "flag",
+      "added": "v22.13.0",
+      "stability": null,
+      "desc": "In addition to what --trace-env does, this prints the native stack trace of the access."
+    },
+    {
+      "name": "--trace-event-categories",
+      "kind": "flag",
+      "added": "v7.7.0",
+      "stability": null,
+      "desc": "A comma separated list of categories that should be traced when trace event tracing is enabled using --trace-events-enabled ."
+    },
+    {
+      "name": "--trace-event-file-pattern",
+      "kind": "flag",
+      "added": "v9.8.0",
+      "stability": null,
+      "desc": "Template string specifying the filepath for the trace event data, it supports ${rotation} and ${pid} ."
+    },
+    {
+      "name": "--trace-events-enabled",
+      "kind": "flag",
+      "added": "v7.7.0",
+      "stability": null,
+      "desc": "Enables the collection of trace event tracing information."
+    },
+    {
+      "name": "--trace-exit",
+      "kind": "flag",
+      "added": "v13.5.0",
+      "stability": null,
+      "desc": "Prints a stack trace whenever an environment is exited proactively, i.e. invoking process.exit() ."
+    },
+    {
+      "name": "--trace-require-module=mode",
+      "kind": "flag",
+      "added": "v22.13.0",
+      "stability": null,
+      "desc": "Prints information about usage of Loading ECMAScript modules using require() . When mode is all , all usage is printed. When mode is no-node-modules , usage fro"
+    },
+    {
+      "name": "--trace-sigint",
+      "kind": "flag",
+      "added": "v13.9.0",
+      "stability": null,
+      "desc": "Prints a stack trace on SIGINT."
+    },
+    {
+      "name": "--trace-sync-io",
+      "kind": "flag",
+      "added": "v2.1.0",
+      "stability": null,
+      "desc": "Prints a stack trace whenever synchronous I/O is detected after the first turn of the event loop."
+    },
+    {
+      "name": "--trace-tls",
+      "kind": "flag",
+      "added": "v12.2.0",
+      "stability": null,
+      "desc": "Prints TLS packet trace information to stderr . This can be used to debug TLS connection problems."
+    },
+    {
+      "name": "--trace-uncaught",
+      "kind": "flag",
+      "added": "v13.1.0",
+      "stability": null,
+      "desc": "Print stack traces for uncaught exceptions; usually, the stack trace associated with the creation of an Error is printed, whereas this makes Node.js also print "
+    },
+    {
+      "name": "--trace-warnings",
+      "kind": "flag",
+      "added": "v6.0.0",
+      "stability": null,
+      "desc": "Print stack traces for process warnings (including deprecations)."
+    },
+    {
+      "name": "--track-heap-objects",
+      "kind": "flag",
+      "added": "v2.4.0",
+      "stability": null,
+      "desc": "Track heap object allocations for heap snapshots."
+    },
+    {
+      "name": "--unhandled-rejections=mode",
+      "kind": "flag",
+      "added": "v12.0.0",
+      "stability": null,
+      "desc": "Using this flag allows to change what should happen when an unhandled rejection occurs. One of the following modes can be chosen: throw : Emit unhandledRejectio"
+    },
+    {
+      "name": "--use-bundled-ca`,_`--use-openssl-ca",
+      "kind": "flag",
+      "added": "v6.11.0",
+      "stability": null,
+      "desc": "Use bundled Mozilla CA store as supplied by current Node.js version or use OpenSSL's default CA store. The default store is selectable at build-time. The bundle"
+    },
+    {
+      "name": "--use-env-proxy",
+      "kind": "flag",
+      "added": "v22.21.0",
+      "stability": 1,
+      "desc": "When enabled, Node.js parses the HTTP_PROXY , HTTPS_PROXY and NO_PROXY environment variables during startup, and tunnels requests over the specified proxy. This"
+    },
+    {
+      "name": "--use-largepages=mode",
+      "kind": "flag",
+      "added": "v13.6.0",
+      "stability": null,
+      "desc": "Re-map the Node.js static code to large memory pages at startup. If supported on the target system, this will cause the Node.js static code to be moved onto 2 M"
+    },
+    {
+      "name": "--use-system-ca",
+      "kind": "flag",
+      "added": "v23.8.0",
+      "stability": null,
+      "desc": "Node.js uses the trusted CA certificates present in the system store along with the --use-bundled-ca option and the NODE_EXTRA_CA_CERTS environment variable. On"
+    },
+    {
+      "name": "--v8-options",
+      "kind": "flag",
+      "added": "v0.1.3",
+      "stability": null,
+      "desc": "Print V8 command-line options."
+    },
+    {
+      "name": "--v8-pool-size=num",
+      "kind": "flag",
+      "added": "v5.10.0",
+      "stability": null,
+      "desc": "Set V8's thread pool size which will be used to allocate background jobs. If set to 0 then Node.js will choose an appropriate size of the thread pool based on a"
+    },
+    {
+      "name": "-v`,_`--version",
+      "kind": "flag",
+      "added": "v0.1.3",
+      "stability": null,
+      "desc": "Print node's version."
+    },
+    {
+      "name": "--watch",
+      "kind": "flag",
+      "added": "v18.11.0",
+      "stability": null,
+      "desc": "Starts Node.js in watch mode. When in watch mode, changes in the watched files cause the Node.js process to restart. By default, watch mode will watch the entry"
+    },
+    {
+      "name": "--watch-kill-signal",
+      "kind": "flag",
+      "added": "v22.18.0",
+      "stability": 1,
+      "desc": "Customizes the signal sent to the process on watch mode restarts. node --watch --watch-kill-signal SIGINT test.js"
+    },
+    {
+      "name": "--watch-path",
+      "kind": "flag",
+      "added": "v18.11.0",
+      "stability": null,
+      "desc": "Starts Node.js in watch mode and specifies what paths to watch. When in watch mode, changes in the watched paths cause the Node.js process to restart. This will"
+    },
+    {
+      "name": "--watch-preserve-output",
+      "kind": "flag",
+      "added": "v19.3.0",
+      "stability": null,
+      "desc": "Disable the clearing of the console when watch mode restarts the process. node --watch --watch-preserve-output test.js"
+    },
+    {
+      "name": "--zero-fill-buffers",
+      "kind": "flag",
+      "added": "v6.0.0",
+      "stability": null,
+      "desc": "Automatically zero-fills all newly allocated Buffer and SlowBuffer instances."
+    }
+  ],
+  "environmentVariables": [
+    {
+      "name": "force_color",
+      "kind": "environmentVariable",
+      "desc": "The FORCE_COLOR environment variable is used to enable ANSI colorized output. The value may be: 1 , true , or the empty string '' indicate 16-color support, 2 t"
+    },
+    {
+      "name": "node_compile_cache",
+      "kind": "environmentVariable",
+      "desc": "Enable the module compile cache for the Node.js instance. See the documentation of module compile cache for details."
+    },
+    {
+      "name": "node_debug",
+      "kind": "environmentVariable",
+      "desc": "',' -separated list of core modules that should print debug information."
+    },
+    {
+      "name": "node_debug_native",
+      "kind": "environmentVariable",
+      "desc": "',' -separated list of core C++ modules that should print debug information."
+    },
+    {
+      "name": "node_disable_colors",
+      "kind": "environmentVariable",
+      "desc": "When set, colors will not be used in the REPL."
+    },
+    {
+      "name": "node_disable_compile_cache",
+      "kind": "environmentVariable",
+      "desc": "Disable the module compile cache for the Node.js instance. See the documentation of module compile cache for details."
+    },
+    {
+      "name": "node_extra_ca_certs",
+      "kind": "environmentVariable",
+      "desc": "When set, the well known \"root\" CAs (like VeriSign) will be extended with the extra certificates in file . The file should consist of one or more trusted certif"
+    },
+    {
+      "name": "node_icu_data",
+      "kind": "environmentVariable",
+      "desc": "Data path for ICU ( Intl object) data. Will extend linked-in data when compiled with small-icu support."
+    },
+    {
+      "name": "node_no_warnings",
+      "kind": "environmentVariable",
+      "desc": "When set to 1 , process warnings are silenced."
+    },
+    {
+      "name": "node_options",
+      "kind": "environmentVariable",
+      "desc": "A space-separated list of command-line options. options... are interpreted before command-line options, so command-line options will override or compound after "
+    },
+    {
+      "name": "node_path",
+      "kind": "environmentVariable",
+      "desc": "':' -separated list of directories prefixed to the module search path. On Windows, this is a ';' -separated list instead."
+    },
+    {
+      "name": "node_pending_deprecation",
+      "kind": "environmentVariable",
+      "desc": "When set to 1 , emit pending deprecation warnings. Pending deprecations are generally identical to a runtime deprecation with the notable exception that they ar"
+    },
+    {
+      "name": "node_pending_pipe_instances",
+      "kind": "environmentVariable",
+      "desc": "Set the number of pending pipe instance handles when the pipe server is waiting for connections. This setting applies to Windows only."
+    },
+    {
+      "name": "node_preserve_symlinks",
+      "kind": "environmentVariable",
+      "desc": "When set to 1 , instructs the module loader to preserve symbolic links when resolving and caching modules."
+    },
+    {
+      "name": "node_redirect_warnings",
+      "kind": "environmentVariable",
+      "desc": "When set, process warnings will be emitted to the given file instead of printing to stderr. The file will be created if it does not exist, and will be appended "
+    },
+    {
+      "name": "node_repl_external_module",
+      "kind": "environmentVariable",
+      "desc": "Path to a Node.js module which will be loaded in place of the built-in REPL. Overriding this value to an empty string ( '' ) will use the built-in REPL."
+    },
+    {
+      "name": "node_repl_history",
+      "kind": "environmentVariable",
+      "desc": "Path to the file used to store the persistent REPL history. The default path is ~/.node_repl_history , which is overridden by this variable. Setting the value t"
+    },
+    {
+      "name": "node_skip_platform_check",
+      "kind": "environmentVariable",
+      "desc": "If value equals '1' , the check for a supported platform is skipped during Node.js startup. Node.js might not execute correctly. Any issues encountered on unsup"
+    },
+    {
+      "name": "node_test_context",
+      "kind": "environmentVariable",
+      "desc": "If value equals 'child' , test reporter options will be overridden and test output will be sent to stdout in the TAP format. If any other value is provided, Nod"
+    },
+    {
+      "name": "node_tls_reject_unauthorized",
+      "kind": "environmentVariable",
+      "desc": "If value equals '0' , certificate validation is disabled for TLS connections. This makes TLS, and HTTPS by extension, insecure. The use of this environment vari"
+    },
+    {
+      "name": "node_use_env_proxy",
+      "kind": "environmentVariable",
+      "desc": "When enabled, Node.js parses the HTTP_PROXY , HTTPS_PROXY and NO_PROXY environment variables during startup, and tunnels requests over the specified proxy. This"
+    },
+    {
+      "name": "node_use_system_ca",
+      "kind": "environmentVariable",
+      "desc": "Node.js uses the trusted CA certificates present in the system store along with the --use-bundled-ca option and the NODE_EXTRA_CA_CERTS environment variable. Th"
+    },
+    {
+      "name": "node_v8_coverage",
+      "kind": "environmentVariable",
+      "desc": "When set, Node.js will begin outputting V8 JavaScript code coverage and Source Map data to the directory provided as an argument (coverage information is writte"
+    },
+    {
+      "name": "no_color",
+      "kind": "environmentVariable",
+      "desc": "NO_COLOR is an alias for NODE_DISABLE_COLORS . The value of the environment variable is arbitrary."
+    },
+    {
+      "name": "openssl_conf",
+      "kind": "environmentVariable",
+      "desc": "Load an OpenSSL configuration file on startup. Among other uses, this can be used to enable FIPS-compliant crypto if Node.js is built with ./configure --openssl"
+    },
+    {
+      "name": "ssl_cert_dir",
+      "kind": "environmentVariable",
+      "desc": "If --use-openssl-ca is enabled, or if --use-system-ca is enabled on platforms other than macOS and Windows, this overrides and sets OpenSSL's directory containi"
+    },
+    {
+      "name": "ssl_cert_file",
+      "kind": "environmentVariable",
+      "desc": "If --use-openssl-ca is enabled, or if --use-system-ca is enabled on platforms other than macOS and Windows, this overrides and sets OpenSSL's file containing tr"
+    },
+    {
+      "name": "tz",
+      "kind": "environmentVariable",
+      "desc": "The TZ environment variable is used to specify the timezone configuration. While Node.js does not support all of the various ways that TZ is handled in other en"
+    },
+    {
+      "name": "uv_threadpool_size",
+      "kind": "environmentVariable",
+      "desc": "Set the number of threads used in libuv's threadpool to size threads. Asynchronous system APIs are used by Node.js whenever possible, but where they do not exis"
+    }
+  ],
+  "exitCodes": [
+    {
+      "name": "exitCode 0",
+      "kind": "exitCode",
+      "value": "0",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 1",
+      "kind": "exitCode",
+      "value": "1",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 2",
+      "kind": "exitCode",
+      "value": "2",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 3",
+      "kind": "exitCode",
+      "value": "3",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 4",
+      "kind": "exitCode",
+      "value": "4",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 5",
+      "kind": "exitCode",
+      "value": "5",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 7",
+      "kind": "exitCode",
+      "value": "7",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 8",
+      "kind": "exitCode",
+      "value": "8",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 9",
+      "kind": "exitCode",
+      "value": "9",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 12",
+      "kind": "exitCode",
+      "value": "12",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 13",
+      "kind": "exitCode",
+      "value": "13",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 14",
+      "kind": "exitCode",
+      "value": "14",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 15",
+      "kind": "exitCode",
+      "value": "15",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 16",
+      "kind": "exitCode",
+      "value": "16",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 17",
+      "kind": "exitCode",
+      "value": "17",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 18",
+      "kind": "exitCode",
+      "value": "18",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 20",
+      "kind": "exitCode",
+      "value": "20",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 21",
+      "kind": "exitCode",
+      "value": "21",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 22",
+      "kind": "exitCode",
+      "value": "22",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 23",
+      "kind": "exitCode",
+      "value": "23",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 24",
+      "kind": "exitCode",
+      "value": "24",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 25",
+      "kind": "exitCode",
+      "value": "25",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 26",
+      "kind": "exitCode",
+      "value": "26",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 28",
+      "kind": "exitCode",
+      "value": "28",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 30",
+      "kind": "exitCode",
+      "value": "30",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 31",
+      "kind": "exitCode",
+      "value": "31",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 32",
+      "kind": "exitCode",
+      "value": "32",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 33",
+      "kind": "exitCode",
+      "value": "33",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 34",
+      "kind": "exitCode",
+      "value": "34",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 35",
+      "kind": "exitCode",
+      "value": "35",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 36",
+      "kind": "exitCode",
+      "value": "36",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 37",
+      "kind": "exitCode",
+      "value": "37",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 38",
+      "kind": "exitCode",
+      "value": "38",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 39",
+      "kind": "exitCode",
+      "value": "39",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 40",
+      "kind": "exitCode",
+      "value": "40",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 42",
+      "kind": "exitCode",
+      "value": "42",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 43",
+      "kind": "exitCode",
+      "value": "43",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 44",
+      "kind": "exitCode",
+      "value": "44",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 45",
+      "kind": "exitCode",
+      "value": "45",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 46",
+      "kind": "exitCode",
+      "value": "46",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 47",
+      "kind": "exitCode",
+      "value": "47",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 48",
+      "kind": "exitCode",
+      "value": "48",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 49",
+      "kind": "exitCode",
+      "value": "49",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 50",
+      "kind": "exitCode",
+      "value": "50",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 51",
+      "kind": "exitCode",
+      "value": "51",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 52",
+      "kind": "exitCode",
+      "value": "52",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 53",
+      "kind": "exitCode",
+      "value": "53",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 54",
+      "kind": "exitCode",
+      "value": "54",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 55",
+      "kind": "exitCode",
+      "value": "55",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 56",
+      "kind": "exitCode",
+      "value": "56",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 57",
+      "kind": "exitCode",
+      "value": "57",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 58",
+      "kind": "exitCode",
+      "value": "58",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 59",
+      "kind": "exitCode",
+      "value": "59",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 60",
+      "kind": "exitCode",
+      "value": "60",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 61",
+      "kind": "exitCode",
+      "value": "61",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 62",
+      "kind": "exitCode",
+      "value": "62",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 63",
+      "kind": "exitCode",
+      "value": "63",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 64",
+      "kind": "exitCode",
+      "value": "64",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 65",
+      "kind": "exitCode",
+      "value": "65",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 66",
+      "kind": "exitCode",
+      "value": "66",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 67",
+      "kind": "exitCode",
+      "value": "67",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 68",
+      "kind": "exitCode",
+      "value": "68",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 69",
+      "kind": "exitCode",
+      "value": "69",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 70",
+      "kind": "exitCode",
+      "value": "70",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 71",
+      "kind": "exitCode",
+      "value": "71",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 72",
+      "kind": "exitCode",
+      "value": "72",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 73",
+      "kind": "exitCode",
+      "value": "73",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 74",
+      "kind": "exitCode",
+      "value": "74",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 75",
+      "kind": "exitCode",
+      "value": "75",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 76",
+      "kind": "exitCode",
+      "value": "76",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 77",
+      "kind": "exitCode",
+      "value": "77",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 78",
+      "kind": "exitCode",
+      "value": "78",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 79",
+      "kind": "exitCode",
+      "value": "79",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 80",
+      "kind": "exitCode",
+      "value": "80",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 81",
+      "kind": "exitCode",
+      "value": "81",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 82",
+      "kind": "exitCode",
+      "value": "82",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 83",
+      "kind": "exitCode",
+      "value": "83",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 84",
+      "kind": "exitCode",
+      "value": "84",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 85",
+      "kind": "exitCode",
+      "value": "85",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 86",
+      "kind": "exitCode",
+      "value": "86",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 87",
+      "kind": "exitCode",
+      "value": "87",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 88",
+      "kind": "exitCode",
+      "value": "88",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 89",
+      "kind": "exitCode",
+      "value": "89",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 90",
+      "kind": "exitCode",
+      "value": "90",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 91",
+      "kind": "exitCode",
+      "value": "91",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 92",
+      "kind": "exitCode",
+      "value": "92",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 93",
+      "kind": "exitCode",
+      "value": "93",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 94",
+      "kind": "exitCode",
+      "value": "94",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 95",
+      "kind": "exitCode",
+      "value": "95",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 96",
+      "kind": "exitCode",
+      "value": "96",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 97",
+      "kind": "exitCode",
+      "value": "97",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 98",
+      "kind": "exitCode",
+      "value": "98",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 99",
+      "kind": "exitCode",
+      "value": "99",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 100",
+      "kind": "exitCode",
+      "value": "100",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 101",
+      "kind": "exitCode",
+      "value": "101",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 102",
+      "kind": "exitCode",
+      "value": "102",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 103",
+      "kind": "exitCode",
+      "value": "103",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 104",
+      "kind": "exitCode",
+      "value": "104",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 105",
+      "kind": "exitCode",
+      "value": "105",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 106",
+      "kind": "exitCode",
+      "value": "106",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 107",
+      "kind": "exitCode",
+      "value": "107",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 108",
+      "kind": "exitCode",
+      "value": "108",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 109",
+      "kind": "exitCode",
+      "value": "109",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 110",
+      "kind": "exitCode",
+      "value": "110",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 111",
+      "kind": "exitCode",
+      "value": "111",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 112",
+      "kind": "exitCode",
+      "value": "112",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 113",
+      "kind": "exitCode",
+      "value": "113",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 114",
+      "kind": "exitCode",
+      "value": "114",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 115",
+      "kind": "exitCode",
+      "value": "115",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 116",
+      "kind": "exitCode",
+      "value": "116",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 117",
+      "kind": "exitCode",
+      "value": "117",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 118",
+      "kind": "exitCode",
+      "value": "118",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 119",
+      "kind": "exitCode",
+      "value": "119",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 120",
+      "kind": "exitCode",
+      "value": "120",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 121",
+      "kind": "exitCode",
+      "value": "121",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 122",
+      "kind": "exitCode",
+      "value": "122",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 123",
+      "kind": "exitCode",
+      "value": "123",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 124",
+      "kind": "exitCode",
+      "value": "124",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 125",
+      "kind": "exitCode",
+      "value": "125",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 126",
+      "kind": "exitCode",
+      "value": "126",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 127",
+      "kind": "exitCode",
+      "value": "127",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 128",
+      "kind": "exitCode",
+      "value": "128",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 129",
+      "kind": "exitCode",
+      "value": "129",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 130",
+      "kind": "exitCode",
+      "value": "130",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 131",
+      "kind": "exitCode",
+      "value": "131",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 132",
+      "kind": "exitCode",
+      "value": "132",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 133",
+      "kind": "exitCode",
+      "value": "133",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 134",
+      "kind": "exitCode",
+      "value": "134",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 135",
+      "kind": "exitCode",
+      "value": "135",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 136",
+      "kind": "exitCode",
+      "value": "136",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 137",
+      "kind": "exitCode",
+      "value": "137",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 138",
+      "kind": "exitCode",
+      "value": "138",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 139",
+      "kind": "exitCode",
+      "value": "139",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 140",
+      "kind": "exitCode",
+      "value": "140",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 141",
+      "kind": "exitCode",
+      "value": "141",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 142",
+      "kind": "exitCode",
+      "value": "142",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 143",
+      "kind": "exitCode",
+      "value": "143",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 144",
+      "kind": "exitCode",
+      "value": "144",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 145",
+      "kind": "exitCode",
+      "value": "145",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 146",
+      "kind": "exitCode",
+      "value": "146",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 147",
+      "kind": "exitCode",
+      "value": "147",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 148",
+      "kind": "exitCode",
+      "value": "148",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 149",
+      "kind": "exitCode",
+      "value": "149",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 150",
+      "kind": "exitCode",
+      "value": "150",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 151",
+      "kind": "exitCode",
+      "value": "151",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 152",
+      "kind": "exitCode",
+      "value": "152",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 153",
+      "kind": "exitCode",
+      "value": "153",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 154",
+      "kind": "exitCode",
+      "value": "154",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 155",
+      "kind": "exitCode",
+      "value": "155",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 156",
+      "kind": "exitCode",
+      "value": "156",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 157",
+      "kind": "exitCode",
+      "value": "157",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 158",
+      "kind": "exitCode",
+      "value": "158",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 159",
+      "kind": "exitCode",
+      "value": "159",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 160",
+      "kind": "exitCode",
+      "value": "160",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 161",
+      "kind": "exitCode",
+      "value": "161",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 162",
+      "kind": "exitCode",
+      "value": "162",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 163",
+      "kind": "exitCode",
+      "value": "163",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 164",
+      "kind": "exitCode",
+      "value": "164",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 165",
+      "kind": "exitCode",
+      "value": "165",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 166",
+      "kind": "exitCode",
+      "value": "166",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 167",
+      "kind": "exitCode",
+      "value": "167",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 168",
+      "kind": "exitCode",
+      "value": "168",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 169",
+      "kind": "exitCode",
+      "value": "169",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 170",
+      "kind": "exitCode",
+      "value": "170",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 171",
+      "kind": "exitCode",
+      "value": "171",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 172",
+      "kind": "exitCode",
+      "value": "172",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 173",
+      "kind": "exitCode",
+      "value": "173",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 174",
+      "kind": "exitCode",
+      "value": "174",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 175",
+      "kind": "exitCode",
+      "value": "175",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 176",
+      "kind": "exitCode",
+      "value": "176",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 177",
+      "kind": "exitCode",
+      "value": "177",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 178",
+      "kind": "exitCode",
+      "value": "178",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 179",
+      "kind": "exitCode",
+      "value": "179",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 180",
+      "kind": "exitCode",
+      "value": "180",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 181",
+      "kind": "exitCode",
+      "value": "181",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 182",
+      "kind": "exitCode",
+      "value": "182",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 183",
+      "kind": "exitCode",
+      "value": "183",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 184",
+      "kind": "exitCode",
+      "value": "184",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 185",
+      "kind": "exitCode",
+      "value": "185",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 186",
+      "kind": "exitCode",
+      "value": "186",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 187",
+      "kind": "exitCode",
+      "value": "187",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 188",
+      "kind": "exitCode",
+      "value": "188",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 189",
+      "kind": "exitCode",
+      "value": "189",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 190",
+      "kind": "exitCode",
+      "value": "190",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 191",
+      "kind": "exitCode",
+      "value": "191",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 192",
+      "kind": "exitCode",
+      "value": "192",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 193",
+      "kind": "exitCode",
+      "value": "193",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 194",
+      "kind": "exitCode",
+      "value": "194",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 195",
+      "kind": "exitCode",
+      "value": "195",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 196",
+      "kind": "exitCode",
+      "value": "196",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 197",
+      "kind": "exitCode",
+      "value": "197",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 198",
+      "kind": "exitCode",
+      "value": "198",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 199",
+      "kind": "exitCode",
+      "value": "199",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 200",
+      "kind": "exitCode",
+      "value": "200",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 201",
+      "kind": "exitCode",
+      "value": "201",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 202",
+      "kind": "exitCode",
+      "value": "202",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 203",
+      "kind": "exitCode",
+      "value": "203",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 204",
+      "kind": "exitCode",
+      "value": "204",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 205",
+      "kind": "exitCode",
+      "value": "205",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 206",
+      "kind": "exitCode",
+      "value": "206",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 207",
+      "kind": "exitCode",
+      "value": "207",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 208",
+      "kind": "exitCode",
+      "value": "208",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 209",
+      "kind": "exitCode",
+      "value": "209",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 210",
+      "kind": "exitCode",
+      "value": "210",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 211",
+      "kind": "exitCode",
+      "value": "211",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 212",
+      "kind": "exitCode",
+      "value": "212",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 213",
+      "kind": "exitCode",
+      "value": "213",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 214",
+      "kind": "exitCode",
+      "value": "214",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 215",
+      "kind": "exitCode",
+      "value": "215",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 216",
+      "kind": "exitCode",
+      "value": "216",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 217",
+      "kind": "exitCode",
+      "value": "217",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 218",
+      "kind": "exitCode",
+      "value": "218",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 219",
+      "kind": "exitCode",
+      "value": "219",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 220",
+      "kind": "exitCode",
+      "value": "220",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 221",
+      "kind": "exitCode",
+      "value": "221",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 222",
+      "kind": "exitCode",
+      "value": "222",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 223",
+      "kind": "exitCode",
+      "value": "223",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 224",
+      "kind": "exitCode",
+      "value": "224",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 225",
+      "kind": "exitCode",
+      "value": "225",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 226",
+      "kind": "exitCode",
+      "value": "226",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 227",
+      "kind": "exitCode",
+      "value": "227",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 228",
+      "kind": "exitCode",
+      "value": "228",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 229",
+      "kind": "exitCode",
+      "value": "229",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 230",
+      "kind": "exitCode",
+      "value": "230",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 231",
+      "kind": "exitCode",
+      "value": "231",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 232",
+      "kind": "exitCode",
+      "value": "232",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 233",
+      "kind": "exitCode",
+      "value": "233",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 234",
+      "kind": "exitCode",
+      "value": "234",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 235",
+      "kind": "exitCode",
+      "value": "235",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 236",
+      "kind": "exitCode",
+      "value": "236",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 237",
+      "kind": "exitCode",
+      "value": "237",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 238",
+      "kind": "exitCode",
+      "value": "238",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 239",
+      "kind": "exitCode",
+      "value": "239",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 240",
+      "kind": "exitCode",
+      "value": "240",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 241",
+      "kind": "exitCode",
+      "value": "241",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 242",
+      "kind": "exitCode",
+      "value": "242",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 243",
+      "kind": "exitCode",
+      "value": "243",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 244",
+      "kind": "exitCode",
+      "value": "244",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 245",
+      "kind": "exitCode",
+      "value": "245",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 246",
+      "kind": "exitCode",
+      "value": "246",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 247",
+      "kind": "exitCode",
+      "value": "247",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 248",
+      "kind": "exitCode",
+      "value": "248",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 249",
+      "kind": "exitCode",
+      "value": "249",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 250",
+      "kind": "exitCode",
+      "value": "250",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 251",
+      "kind": "exitCode",
+      "value": "251",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 252",
+      "kind": "exitCode",
+      "value": "252",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 253",
+      "kind": "exitCode",
+      "value": "253",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 254",
+      "kind": "exitCode",
+      "value": "254",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    },
+    {
+      "name": "exitCode 255",
+      "kind": "exitCode",
+      "value": "255",
+      "desc": "约定退出码（官方文档未结构化列出，待 M3/M7 差分验证）"
+    }
+  ]
+}

@@ -326,17 +326,19 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		return engine.Undefined(), nil
 	}))
 
-	// on / emit：SIGINT/SIGTERM/SIGHUP/SIGBREAK 等信号事件实际触发
-	// （os/signal → PostTask → JS 监听器）；其余事件为普通注册。
-	listeners := make(map[string][]engine.Func)
+	// on / emit / removeListener / once：SIGINT/SIGTERM/SIGHUP/SIGBREAK 等信号
+	// 事件实际触发（os/signal → PostTask → JS 监听器）；其余事件为普通注册。
+	// 监听器存 JS 函数值（支持 removeListener/once 的身份比较）。
+	listeners := make(map[string][]engine.Value)
 	sigCh := make(chan os.Signal, 8)
 	go func() {
 		for sig := range sigCh {
 			name := sigName(sig)
 			ctx.PostTask(func() {
-				fns := listeners[name]
-				for _, fn := range fns {
-					_, _ = fn(nil)
+				for _, fn := range listeners[name] {
+					if f, ok := fn.AsFunction(); ok {
+						_, _ = f.Call(nil)
+					}
 				}
 			})
 		}
@@ -346,15 +348,59 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 			return engine.Undefined(), nil
 		}
 		event := args[0].String()
-		fn, ok := args[1].AsFunction()
-		if !ok {
+		if !args[1].IsFunction() {
 			return engine.Undefined(), nil
 		}
-		listeners[event] = append(listeners[event], fn.Call)
+		listeners[event] = append(listeners[event], args[1])
 		// 注册可监听信号：启动 os/signal 通知（SIGTSTP/SIGCONT 等
 		// Windows 不支持，注册不生效——与 Node 行为一致）。
 		if sig, ok := goSignalByName(event); ok {
 			osSignalNotify(sigCh, sig)
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = proc.Set("once", engine.NewFunction("once", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), nil
+		}
+		event := args[0].String()
+		original := args[1]
+		if !original.IsFunction() {
+			return engine.Undefined(), nil
+		}
+		// wrapper：首次触发调用原监听器并自删。
+		var wrapper engine.Value
+		wrapper = engine.NewFunction("onceWrapper", func(ca []engine.Value) (engine.Value, error) {
+			if f, ok := original.AsFunction(); ok {
+				_, _ = f.Call(ca)
+			}
+			l := listeners[event]
+			for i, x := range l {
+				if x == wrapper {
+					listeners[event] = append(append([]engine.Value{}, l[:i]...), l[i+1:]...)
+					break
+				}
+			}
+			return engine.Undefined(), nil
+		})
+		listeners[event] = append(listeners[event], wrapper)
+		if sig, ok := goSignalByName(event); ok {
+			osSignalNotify(sigCh, sig)
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = proc.Set("removeListener", engine.NewFunction("removeListener", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), nil
+		}
+		event := args[0].String()
+		target := args[1]
+		l := listeners[event]
+		for i, x := range l {
+			if x == target {
+				listeners[event] = append(append([]engine.Value{}, l[:i]...), l[i+1:]...)
+				return engine.Undefined(), nil
+			}
 		}
 		return engine.Undefined(), nil
 	}))
@@ -365,7 +411,9 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		event := args[0].String()
 		fns := listeners[event]
 		for _, fn := range fns {
-			_, _ = fn(args[1:])
+			if f, ok := fn.AsFunction(); ok {
+				_, _ = f.Call(args[1:])
+			}
 		}
 		return engine.Boolean(len(fns) > 0), nil
 	}))

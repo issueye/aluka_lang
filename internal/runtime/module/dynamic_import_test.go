@@ -30,16 +30,16 @@ func TestDynamicImportCJS(t *testing.T) {
 }
 
 // TestDynamicImportCJSDefault: CJS 模块整体赋值 module.exports = func 时，
-// 动态 import 返回的 namespace 即该函数本身（当前 CJS interop 简化：
-// 不额外包装 .default，与 require() 返回值一致）。
+// 动态 import 返回命名空间 { default: func }（Node 语义：m.default(10) 可调用，
+// m 本身不可调用）。
 func TestDynamicImportCJSDefault(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
-		"main.cjs": `import('./mod.cjs').then(function(m) { globalThis.__r = m(10); });`,
+		"main.cjs": `import('./mod.cjs').then(function(m) { globalThis.__r = m.default(10) + ':' + (typeof m); });`,
 		"mod.cjs":  `module.exports = function(x) { return x * 2; };`,
 	})
 	env.run(t, "main.cjs")
-	if got := env.globalGet("__r"); got != "20" {
-		t.Errorf("dynamic import default: got %q, want 20", got)
+	if got := env.globalGet("__r"); got != "20:object" {
+		t.Errorf("dynamic import default: got %q, want 20:object", got)
 	}
 }
 

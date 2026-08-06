@@ -2,7 +2,7 @@
 
 > 自动生成：`tests/compat/node22/gen-all.sh`（gen-manifest → run-probe → gen-coverage），禁止手工修改。
 > 数据源：官方 API JSON v22.23.1（sha256 `ba180cb8908e1ff4247f4b71fe55042caddab8b2f4fcc2d80f28945d8d701bf1`）、本机 Node v22.23.1、Aluka 探针实测。
-> 平台：windows/amd64 ｜ 生成时间：2026-08-06T13:30:56.260Z
+> 平台：windows/amd64 ｜ 生成时间：2026-08-06T14:02:17.201Z
 
 ## 1. 总体结论
 

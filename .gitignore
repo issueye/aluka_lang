@@ -33,4 +33,4 @@ node_modules/
 .zcode/
 demo/express-demo/probe.js
 # node22 compat：只忽略可再生成的探针结果；manifest/probe/diff/tools 与冻结快照需入库
-tests/compat/node22/*
+tests/compat/node22/results/

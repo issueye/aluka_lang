@@ -1234,8 +1234,13 @@ func (interp *Interpreter) setupNumberProto() {
 	_ = p.Set("toString", interp.nativeMethod("toString", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		if len(args) > 0 {
 			radix, ok := args[0].Int()
-			if ok && radix != 10 && radix >= 2 && radix <= 36 {
+			if ok && radix >= 2 && radix <= 36 {
 				n, _ := this.Float()
+				// 整数：按 radix 进制输出（Node 语义，如 4660..toString(16) → "1234"）。
+				if !math.IsNaN(n) && !math.IsInf(n, 0) && n == math.Trunc(n) {
+					return engine.Str(strconv.FormatInt(int64(n), radix)), nil
+				}
+				// 非整数：Node 输出近似小数，M2 简化为十进制。
 				return engine.Str(strconv.FormatFloat(n, 'f', -1, 64)), nil
 			}
 		}

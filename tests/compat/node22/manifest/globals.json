@@ -1,0 +1,1798 @@
+{
+  "meta": {
+    "kind": "globals",
+    "generator": "tests/compat/node22/tools/gen-manifest.mjs",
+    "nodeRuntimeVersion": "v22.23.1",
+    "nodeDocVersion": "v22.23.1",
+    "allJsonSha256": "ba180cb8908e1ff4247f4b71fe55042caddab8b2f4fcc2d80f28945d8d701bf1",
+    "platform": "windows",
+    "arch": "amd64",
+    "freezeVersion": "v1.0",
+    "generatedAt": "2026-08-06T14:02:15.331Z"
+  },
+  "classes": [
+    {
+      "name": "AbortController",
+      "kind": "class",
+      "added": "v15.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "AbortController",
+        "kind": "constructor",
+        "added": "v15.0.0",
+        "stability": null,
+        "desc": "A utility class used to signal cancelation in selected Promise -based APIs. The API is based on the Web API <AbortController> . const ac = new AbortController()"
+      },
+      "protoMethods": [
+        {
+          "name": "abort",
+          "kind": "method",
+          "added": "v15.0.0",
+          "stability": null,
+          "desc": "Triggers the abort signal, causing the abortController.signal to emit the 'abort' event."
+        }
+      ],
+      "protoProperties": [
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v15.0.0",
+          "stability": null,
+          "desc": ""
+        }
+      ],
+      "events": [],
+      "constants": [],
+      "desc": "A utility class used to signal cancelation in selected Promise -based APIs. The API is based on the Web API <AbortController> . const ac = new AbortController()"
+    },
+    {
+      "name": "Blob",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "Blob",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "See <Blob> ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "See <Blob> ."
+    },
+    {
+      "name": "Buffer",
+      "kind": "class",
+      "added": "v0.1.103",
+      "stability": null,
+      "constructor": {
+        "name": "Buffer",
+        "kind": "constructor",
+        "added": "v0.1.103",
+        "stability": null,
+        "desc": "Type: <Function> Used to handle binary data. See the buffer section ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "Type: <Function> Used to handle binary data. See the buffer section ."
+    },
+    {
+      "name": "ByteLengthQueuingStrategy",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "ByteLengthQueuingStrategy",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of ByteLengthQueuingStrategy ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of ByteLengthQueuingStrategy ."
+    },
+    {
+      "name": "BroadcastChannel",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "BroadcastChannel",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "See <BroadcastChannel> ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "See <BroadcastChannel> ."
+    },
+    {
+      "name": "CompressionStream",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "CompressionStream",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of CompressionStream ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of CompressionStream ."
+    },
+    {
+      "name": "CountQueuingStrategy",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "CountQueuingStrategy",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of CountQueuingStrategy ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of CountQueuingStrategy ."
+    },
+    {
+      "name": "Crypto",
+      "kind": "class",
+      "added": "v17.6.0",
+      "stability": 1,
+      "constructor": {
+        "name": "Crypto",
+        "kind": "constructor",
+        "added": "v17.6.0",
+        "stability": 1,
+        "desc": "A browser-compatible implementation of <Crypto> . This global is available only if the Node.js binary was compiled with including support for the node:crypto mo"
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <Crypto> . This global is available only if the Node.js binary was compiled with including support for the node:crypto mo"
+    },
+    {
+      "name": "CryptoKey",
+      "kind": "class",
+      "added": "v17.6.0",
+      "stability": 1,
+      "constructor": {
+        "name": "CryptoKey",
+        "kind": "constructor",
+        "added": "v17.6.0",
+        "stability": 1,
+        "desc": "A browser-compatible implementation of <CryptoKey> . This global is available only if the Node.js binary was compiled with including support for the node:crypto"
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <CryptoKey> . This global is available only if the Node.js binary was compiled with including support for the node:crypto"
+    },
+    {
+      "name": "CustomEvent",
+      "kind": "class",
+      "added": "v18.7.0",
+      "stability": null,
+      "constructor": {
+        "name": "CustomEvent",
+        "kind": "constructor",
+        "added": "v18.7.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of <CustomEvent> ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <CustomEvent> ."
+    },
+    {
+      "name": "DecompressionStream",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "DecompressionStream",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of DecompressionStream ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of DecompressionStream ."
+    },
+    {
+      "name": "Event",
+      "kind": "class",
+      "added": "v15.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "Event",
+        "kind": "constructor",
+        "added": "v15.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of the Event class. See EventTarget and Event API for more details."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of the Event class. See EventTarget and Event API for more details."
+    },
+    {
+      "name": "EventSource",
+      "kind": "class",
+      "added": "v22.3.0",
+      "stability": 1,
+      "constructor": {
+        "name": "EventSource",
+        "kind": "constructor",
+        "added": "v22.3.0",
+        "stability": 1,
+        "desc": "A browser-compatible implementation of <EventSource> ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <EventSource> ."
+    },
+    {
+      "name": "EventTarget",
+      "kind": "class",
+      "added": "v15.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "EventTarget",
+        "kind": "constructor",
+        "added": "v15.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of the EventTarget class. See EventTarget and Event API for more details."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of the EventTarget class. See EventTarget and Event API for more details."
+    },
+    {
+      "name": "File",
+      "kind": "class",
+      "added": "v20.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "File",
+        "kind": "constructor",
+        "added": "v20.0.0",
+        "stability": null,
+        "desc": "See <File> ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "See <File> ."
+    },
+    {
+      "name": "FormData",
+      "kind": "class",
+      "added": "v17.6.0",
+      "stability": null,
+      "constructor": {
+        "name": "FormData",
+        "kind": "constructor",
+        "added": "v17.6.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of <FormData> ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <FormData> ."
+    },
+    {
+      "name": "Headers",
+      "kind": "class",
+      "added": "v17.5.0",
+      "stability": null,
+      "constructor": {
+        "name": "Headers",
+        "kind": "constructor",
+        "added": "v17.5.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of <Headers> ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <Headers> ."
+    },
+    {
+      "name": "MessageChannel",
+      "kind": "class",
+      "added": "v15.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "MessageChannel",
+        "kind": "constructor",
+        "added": "v15.0.0",
+        "stability": null,
+        "desc": "The MessageChannel class. See MessageChannel for more details."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The MessageChannel class. See MessageChannel for more details."
+    },
+    {
+      "name": "MessageEvent",
+      "kind": "class",
+      "added": "v15.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "MessageEvent",
+        "kind": "constructor",
+        "added": "v15.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of <MessageEvent> ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <MessageEvent> ."
+    },
+    {
+      "name": "MessagePort",
+      "kind": "class",
+      "added": "v15.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "MessagePort",
+        "kind": "constructor",
+        "added": "v15.0.0",
+        "stability": null,
+        "desc": "The MessagePort class. See MessagePort for more details."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The MessagePort class. See MessagePort for more details."
+    },
+    {
+      "name": "Navigator",
+      "kind": "class",
+      "added": "v21.0.0",
+      "stability": 1,
+      "constructor": {
+        "name": "Navigator",
+        "kind": "constructor",
+        "added": "v21.0.0",
+        "stability": 1,
+        "desc": "A partial implementation of the Navigator API ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A partial implementation of the Navigator API ."
+    },
+    {
+      "name": "PerformanceEntry",
+      "kind": "class",
+      "added": "v19.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "PerformanceEntry",
+        "kind": "constructor",
+        "added": "v19.0.0",
+        "stability": null,
+        "desc": "The PerformanceEntry class. See PerformanceEntry for more details."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The PerformanceEntry class. See PerformanceEntry for more details."
+    },
+    {
+      "name": "PerformanceMark",
+      "kind": "class",
+      "added": "v19.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "PerformanceMark",
+        "kind": "constructor",
+        "added": "v19.0.0",
+        "stability": null,
+        "desc": "The PerformanceMark class. See PerformanceMark for more details."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The PerformanceMark class. See PerformanceMark for more details."
+    },
+    {
+      "name": "PerformanceMeasure",
+      "kind": "class",
+      "added": "v19.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "PerformanceMeasure",
+        "kind": "constructor",
+        "added": "v19.0.0",
+        "stability": null,
+        "desc": "The PerformanceMeasure class. See PerformanceMeasure for more details."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The PerformanceMeasure class. See PerformanceMeasure for more details."
+    },
+    {
+      "name": "PerformanceObserver",
+      "kind": "class",
+      "added": "v19.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "PerformanceObserver",
+        "kind": "constructor",
+        "added": "v19.0.0",
+        "stability": null,
+        "desc": "The PerformanceObserver class. See PerformanceObserver for more details."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The PerformanceObserver class. See PerformanceObserver for more details."
+    },
+    {
+      "name": "PerformanceObserverEntryList",
+      "kind": "class",
+      "added": "v19.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "PerformanceObserverEntryList",
+        "kind": "constructor",
+        "added": "v19.0.0",
+        "stability": null,
+        "desc": "The PerformanceObserverEntryList class. See PerformanceObserverEntryList for more details."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The PerformanceObserverEntryList class. See PerformanceObserverEntryList for more details."
+    },
+    {
+      "name": "PerformanceResourceTiming",
+      "kind": "class",
+      "added": "v19.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "PerformanceResourceTiming",
+        "kind": "constructor",
+        "added": "v19.0.0",
+        "stability": null,
+        "desc": "The PerformanceResourceTiming class. See PerformanceResourceTiming for more details."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The PerformanceResourceTiming class. See PerformanceResourceTiming for more details."
+    },
+    {
+      "name": "ReadableByteStreamController",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "ReadableByteStreamController",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of ReadableByteStreamController ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of ReadableByteStreamController ."
+    },
+    {
+      "name": "ReadableStream",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "ReadableStream",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of ReadableStream ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of ReadableStream ."
+    },
+    {
+      "name": "ReadableStreamBYOBReader",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "ReadableStreamBYOBReader",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of ReadableStreamBYOBReader ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of ReadableStreamBYOBReader ."
+    },
+    {
+      "name": "ReadableStreamBYOBRequest",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "ReadableStreamBYOBRequest",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of ReadableStreamBYOBRequest ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of ReadableStreamBYOBRequest ."
+    },
+    {
+      "name": "ReadableStreamDefaultController",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "ReadableStreamDefaultController",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of ReadableStreamDefaultController ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of ReadableStreamDefaultController ."
+    },
+    {
+      "name": "ReadableStreamDefaultReader",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "ReadableStreamDefaultReader",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of ReadableStreamDefaultReader ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of ReadableStreamDefaultReader ."
+    },
+    {
+      "name": "Response",
+      "kind": "class",
+      "added": "v17.5.0",
+      "stability": null,
+      "constructor": {
+        "name": "Response",
+        "kind": "constructor",
+        "added": "v17.5.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of <Response> ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <Response> ."
+    },
+    {
+      "name": "Request",
+      "kind": "class",
+      "added": "v17.5.0",
+      "stability": null,
+      "constructor": {
+        "name": "Request",
+        "kind": "constructor",
+        "added": "v17.5.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of <Request> ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <Request> ."
+    },
+    {
+      "name": "Storage",
+      "kind": "class",
+      "added": "v22.4.0",
+      "stability": 1,
+      "constructor": {
+        "name": "Storage",
+        "kind": "constructor",
+        "added": "v22.4.0",
+        "stability": 1,
+        "desc": "A browser-compatible implementation of <Storage> ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <Storage> ."
+    },
+    {
+      "name": "SubtleCrypto",
+      "kind": "class",
+      "added": "v17.6.0",
+      "stability": 1,
+      "constructor": {
+        "name": "SubtleCrypto",
+        "kind": "constructor",
+        "added": "v17.6.0",
+        "stability": 1,
+        "desc": "A browser-compatible implementation of <SubtleCrypto> . This global is available only if the Node.js binary was compiled with including support for the node:cry"
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <SubtleCrypto> . This global is available only if the Node.js binary was compiled with including support for the node:cry"
+    },
+    {
+      "name": "DOMException",
+      "kind": "class",
+      "added": "v17.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "DOMException",
+        "kind": "constructor",
+        "added": "v17.0.0",
+        "stability": null,
+        "desc": "The WHATWG <DOMException> class."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The WHATWG <DOMException> class."
+    },
+    {
+      "name": "TextDecoder",
+      "kind": "class",
+      "added": "v11.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "TextDecoder",
+        "kind": "constructor",
+        "added": "v11.0.0",
+        "stability": null,
+        "desc": "The WHATWG TextDecoder class. See the TextDecoder section."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The WHATWG TextDecoder class. See the TextDecoder section."
+    },
+    {
+      "name": "TextDecoderStream",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "TextDecoderStream",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of TextDecoderStream ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of TextDecoderStream ."
+    },
+    {
+      "name": "TextEncoder",
+      "kind": "class",
+      "added": "v11.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "TextEncoder",
+        "kind": "constructor",
+        "added": "v11.0.0",
+        "stability": null,
+        "desc": "The WHATWG TextEncoder class. See the TextEncoder section."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The WHATWG TextEncoder class. See the TextEncoder section."
+    },
+    {
+      "name": "TextEncoderStream",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "TextEncoderStream",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of TextEncoderStream ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of TextEncoderStream ."
+    },
+    {
+      "name": "TransformStream",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "TransformStream",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of TransformStream ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of TransformStream ."
+    },
+    {
+      "name": "TransformStreamDefaultController",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "TransformStreamDefaultController",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of TransformStreamDefaultController ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of TransformStreamDefaultController ."
+    },
+    {
+      "name": "URL",
+      "kind": "class",
+      "added": "v10.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "URL",
+        "kind": "constructor",
+        "added": "v10.0.0",
+        "stability": null,
+        "desc": "The WHATWG URL class. See the URL section."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The WHATWG URL class. See the URL section."
+    },
+    {
+      "name": "URLSearchParams",
+      "kind": "class",
+      "added": "v10.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "URLSearchParams",
+        "kind": "constructor",
+        "added": "v10.0.0",
+        "stability": null,
+        "desc": "The WHATWG URLSearchParams class. See the URLSearchParams section."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "The WHATWG URLSearchParams class. See the URLSearchParams section."
+    },
+    {
+      "name": "WebAssembly",
+      "kind": "class",
+      "added": "v8.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "WebAssembly",
+        "kind": "constructor",
+        "added": "v8.0.0",
+        "stability": null,
+        "desc": "Type: <Object> The object that acts as the namespace for all W3C WebAssembly related functionality. See the Mozilla Developer Network for usage and compatibilit"
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "Type: <Object> The object that acts as the namespace for all W3C WebAssembly related functionality. See the Mozilla Developer Network for usage and compatibilit"
+    },
+    {
+      "name": "WebSocket",
+      "kind": "class",
+      "added": "v21.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "WebSocket",
+        "kind": "constructor",
+        "added": "v21.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of <WebSocket> . Disable this API with the --no-experimental-websocket CLI flag."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of <WebSocket> . Disable this API with the --no-experimental-websocket CLI flag."
+    },
+    {
+      "name": "WritableStream",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "WritableStream",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of WritableStream ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of WritableStream ."
+    },
+    {
+      "name": "WritableStreamDefaultController",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "WritableStreamDefaultController",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of WritableStreamDefaultController ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of WritableStreamDefaultController ."
+    },
+    {
+      "name": "WritableStreamDefaultWriter",
+      "kind": "class",
+      "added": "v18.0.0",
+      "stability": null,
+      "constructor": {
+        "name": "WritableStreamDefaultWriter",
+        "kind": "constructor",
+        "added": "v18.0.0",
+        "stability": null,
+        "desc": "A browser-compatible implementation of WritableStreamDefaultWriter ."
+      },
+      "protoMethods": [],
+      "protoProperties": [],
+      "events": [],
+      "constants": [],
+      "desc": "A browser-compatible implementation of WritableStreamDefaultWriter ."
+    },
+    {
+      "name": "Process",
+      "kind": "class",
+      "added": "v0.10.0",
+      "stability": null,
+      "constructor": {
+        "name": "Process",
+        "kind": "constructor",
+        "added": "v0.10.0",
+        "stability": null,
+        "desc": "Source Code: lib/process.js The process object provides information about, and control over, the current Node.js process. import process from 'node:process'; co"
+      },
+      "protoMethods": [
+        {
+          "name": "abort",
+          "kind": "method",
+          "added": "v0.7.0",
+          "stability": null,
+          "desc": "The process.abort() method causes the Node.js process to exit immediately and generate a core file. This feature is not available in Worker threads."
+        },
+        {
+          "name": "availableMemory",
+          "kind": "method",
+          "added": "v22.0.0",
+          "stability": null,
+          "desc": "Gets the amount of free memory that is still available to the process (in bytes). See uv_get_available_memory for more information."
+        },
+        {
+          "name": "chdir",
+          "kind": "method",
+          "added": "v0.1.17",
+          "stability": null,
+          "desc": "The process.chdir() method changes the current working directory of the Node.js process or throws an exception if doing so fails (for instance, if the specified"
+        },
+        {
+          "name": "constrainedMemory",
+          "kind": "method",
+          "added": "v19.6.0",
+          "stability": null,
+          "desc": "Gets the amount of memory available to the process (in bytes) based on limits imposed by the OS. If there is no such constraint, or the constraint is unknown, 0"
+        },
+        {
+          "name": "cpuUsage",
+          "kind": "method",
+          "added": "v6.1.0",
+          "stability": null,
+          "desc": "The process.cpuUsage() method returns the user and system CPU time usage of the current process, in an object with properties user and system , whose values are"
+        },
+        {
+          "name": "cwd",
+          "kind": "method",
+          "added": "v0.1.8",
+          "stability": null,
+          "desc": "The process.cwd() method returns the current working directory of the Node.js process. import { cwd } from 'node:process'; console.log(`Current directory: ${cwd"
+        },
+        {
+          "name": "disconnect",
+          "kind": "method",
+          "added": "v0.7.2",
+          "stability": null,
+          "desc": "If the Node.js process is spawned with an IPC channel (see the Child Process and Cluster documentation), the process.disconnect() method will close the IPC chan"
+        },
+        {
+          "name": "dlopen",
+          "kind": "method",
+          "added": "v0.1.16",
+          "stability": null,
+          "desc": "The process.dlopen() method allows dynamically loading shared objects. It is primarily used by require() to load C++ Addons, and should not be used directly, ex"
+        },
+        {
+          "name": "emitWarning",
+          "kind": "method",
+          "added": "v8.0.0",
+          "stability": null,
+          "desc": "The process.emitWarning() method can be used to emit custom or application specific process warnings. These can be listened for by adding a handler to the 'warn"
+        },
+        {
+          "name": "emitWarning",
+          "kind": "method",
+          "added": "v6.0.0",
+          "stability": null,
+          "desc": "The process.emitWarning() method can be used to emit custom or application specific process warnings. These can be listened for by adding a handler to the 'warn"
+        },
+        {
+          "name": "execve",
+          "kind": "method",
+          "added": "v22.15.0",
+          "stability": 1,
+          "desc": "Replaces the current process with a new process. This is achieved by using the execve POSIX function and therefore no memory or other resources from the current"
+        },
+        {
+          "name": "exit",
+          "kind": "method",
+          "added": "v0.1.13",
+          "stability": null,
+          "desc": "The process.exit() method instructs Node.js to terminate the process synchronously with an exit status of code . If code is omitted, exit uses either the 'succe"
+        },
+        {
+          "name": "register",
+          "kind": "method",
+          "added": "v22.5.0",
+          "stability": 1,
+          "desc": "This function registers a callback to be called when the process emits the exit event if the ref object was not garbage collected. If the object ref was garbage"
+        },
+        {
+          "name": "registerBeforeExit",
+          "kind": "method",
+          "added": "v22.5.0",
+          "stability": 1,
+          "desc": "This function behaves exactly like the register , except that the callback will be called when the process emits the beforeExit event if ref object was not garb"
+        },
+        {
+          "name": "unregister",
+          "kind": "method",
+          "added": "v22.5.0",
+          "stability": 1,
+          "desc": "This function remove the register of the object from the finalization registry, so the callback will not be called anymore. const { finalization } = require('no"
+        },
+        {
+          "name": "getActiveResourcesInfo",
+          "kind": "method",
+          "added": "v17.3.0",
+          "stability": null,
+          "desc": "The process.getActiveResourcesInfo() method returns an array of strings containing the types of the active resources that are currently keeping the event loop a"
+        },
+        {
+          "name": "getBuiltinModule",
+          "kind": "method",
+          "added": "v22.3.0",
+          "stability": null,
+          "desc": "process.getBuiltinModule(id) provides a way to load built-in modules in a globally available function. ES Modules that need to support other environments can us"
+        },
+        {
+          "name": "getegid",
+          "kind": "method",
+          "added": "v2.0.0",
+          "stability": null,
+          "desc": "The process.getegid() method returns the numerical effective group identity of the Node.js process. (See getegid(2) .) import process from 'node:process'; if (p"
+        },
+        {
+          "name": "geteuid",
+          "kind": "method",
+          "added": "v2.0.0",
+          "stability": null,
+          "desc": "The process.geteuid() method returns the numerical effective user identity of the process. (See geteuid(2) .) import process from 'node:process'; if (process.ge"
+        },
+        {
+          "name": "getgid",
+          "kind": "method",
+          "added": "v0.1.31",
+          "stability": null,
+          "desc": "The process.getgid() method returns the numerical group identity of the process. (See getgid(2) .) import process from 'node:process'; if (process.getgid) { con"
+        },
+        {
+          "name": "getgroups",
+          "kind": "method",
+          "added": "v0.9.4",
+          "stability": null,
+          "desc": "The process.getgroups() method returns an array with the supplementary group IDs. POSIX leaves it unspecified if the effective group ID is included but Node.js "
+        },
+        {
+          "name": "getuid",
+          "kind": "method",
+          "added": "v0.1.28",
+          "stability": null,
+          "desc": "The process.getuid() method returns the numeric user identity of the process. (See getuid(2) .) import process from 'node:process'; if (process.getuid) { consol"
+        },
+        {
+          "name": "hasUncaughtExceptionCaptureCallback",
+          "kind": "method",
+          "added": "v9.3.0",
+          "stability": null,
+          "desc": "Indicates whether a callback has been set using process.setUncaughtExceptionCaptureCallback() ."
+        },
+        {
+          "name": "hrtime",
+          "kind": "method",
+          "added": "v0.7.6",
+          "stability": 3,
+          "desc": "This is the legacy version of process.hrtime.bigint() before bigint was introduced in JavaScript. The process.hrtime() method returns the current high-resolutio"
+        },
+        {
+          "name": "bigint",
+          "kind": "method",
+          "added": "v10.7.0",
+          "stability": null,
+          "desc": "The bigint version of the process.hrtime() method returning the current high-resolution real time in nanoseconds as a bigint . Unlike process.hrtime() , it does"
+        },
+        {
+          "name": "initgroups",
+          "kind": "method",
+          "added": "v0.9.4",
+          "stability": null,
+          "desc": "The process.initgroups() method reads the /etc/group file and initializes the group access list, using all groups of which the user is a member. This is a privi"
+        },
+        {
+          "name": "kill",
+          "kind": "method",
+          "added": "v0.0.6",
+          "stability": null,
+          "desc": "The process.kill() method sends the signal to the process identified by pid . Signal names are strings such as 'SIGINT' or 'SIGHUP' . See Signal Events and kill"
+        },
+        {
+          "name": "loadEnvFile",
+          "kind": "method",
+          "added": "v21.7.0",
+          "stability": null,
+          "desc": "Loads the .env file into process.env . Usage of NODE_OPTIONS in the .env file will not have any effect on Node.js. const { loadEnvFile } = require('node:process"
+        },
+        {
+          "name": "memoryUsage",
+          "kind": "method",
+          "added": "v0.1.16",
+          "stability": null,
+          "desc": "Returns an object describing the memory usage of the Node.js process measured in bytes. import { memoryUsage } from 'node:process'; console.log(memoryUsage()); "
+        },
+        {
+          "name": "rss",
+          "kind": "method",
+          "added": "v15.6.0",
+          "stability": null,
+          "desc": "The process.memoryUsage.rss() method returns an integer representing the Resident Set Size (RSS) in bytes. The Resident Set Size, is the amount of space occupie"
+        },
+        {
+          "name": "nextTick",
+          "kind": "method",
+          "added": "v0.1.26",
+          "stability": 3,
+          "desc": "process.nextTick() adds callback to the \"next tick queue\". This queue is fully drained after the current operation on the JavaScript stack runs to completion an"
+        },
+        {
+          "name": "ref",
+          "kind": "method",
+          "added": "v22.14.0",
+          "stability": 1,
+          "desc": "An object is \"refable\" if it implements the Node.js \"Refable protocol\". Specifically, this means that the object implements the Symbol.for('nodejs.ref') and Sym"
+        },
+        {
+          "name": "resourceUsage",
+          "kind": "method",
+          "added": "v12.6.0",
+          "stability": null,
+          "desc": "import { resourceUsage } from 'node:process'; console.log(resourceUsage()); /* Will output: { userCPUTime: 82872, systemCPUTime: 4143, maxRSS: 33164, sharedMemo"
+        },
+        {
+          "name": "send",
+          "kind": "method",
+          "added": "v0.5.9",
+          "stability": null,
+          "desc": "If Node.js is spawned with an IPC channel, the process.send() method can be used to send messages to the parent process. Messages will be received as a 'message"
+        },
+        {
+          "name": "setegid",
+          "kind": "method",
+          "added": "v2.0.0",
+          "stability": null,
+          "desc": "The process.setegid() method sets the effective group identity of the process. (See setegid(2) .) The id can be passed as either a numeric ID or a group name st"
+        },
+        {
+          "name": "seteuid",
+          "kind": "method",
+          "added": "v2.0.0",
+          "stability": null,
+          "desc": "The process.seteuid() method sets the effective user identity of the process. (See seteuid(2) .) The id can be passed as either a numeric ID or a username strin"
+        },
+        {
+          "name": "setgid",
+          "kind": "method",
+          "added": "v0.1.31",
+          "stability": null,
+          "desc": "The process.setgid() method sets the group identity of the process. (See setgid(2) .) The id can be passed as either a numeric ID or a group name string. If a g"
+        },
+        {
+          "name": "setgroups",
+          "kind": "method",
+          "added": "v0.9.4",
+          "stability": null,
+          "desc": "The process.setgroups() method sets the supplementary group IDs for the Node.js process. This is a privileged operation that requires the Node.js process to hav"
+        },
+        {
+          "name": "setuid",
+          "kind": "method",
+          "added": "v0.1.28",
+          "stability": null,
+          "desc": "The process.setuid(id) method sets the user identity of the process. (See setuid(2) .) The id can be passed as either a numeric ID or a username string. If a us"
+        },
+        {
+          "name": "setSourceMapsEnabled",
+          "kind": "method",
+          "added": "v16.6.0",
+          "stability": 1,
+          "desc": "This function enables or disables the Source Map support for stack traces. It provides same features as launching Node.js process with commandline options --ena"
+        },
+        {
+          "name": "setUncaughtExceptionCaptureCallback",
+          "kind": "method",
+          "added": "v9.3.0",
+          "stability": null,
+          "desc": "The process.setUncaughtExceptionCaptureCallback() function sets a function that will be invoked when an uncaught exception occurs, which will receive the except"
+        },
+        {
+          "name": "threadCpuUsage",
+          "kind": "method",
+          "added": "v22.19.0",
+          "stability": null,
+          "desc": "The process.threadCpuUsage() method returns the user and system CPU time usage of the current worker thread, in an object with properties user and system , whos"
+        },
+        {
+          "name": "umask",
+          "kind": "method",
+          "added": "v0.1.19",
+          "stability": 0,
+          "desc": "process.umask() returns the Node.js process's file mode creation mask. Child processes inherit the mask from the parent process."
+        },
+        {
+          "name": "umask",
+          "kind": "method",
+          "added": "v0.1.19",
+          "stability": null,
+          "desc": "process.umask(mask) sets the Node.js process's file mode creation mask. Child processes inherit the mask from the parent process. Returns the previous mask. imp"
+        },
+        {
+          "name": "unref",
+          "kind": "method",
+          "added": "v22.14.0",
+          "stability": 1,
+          "desc": "An object is \"unrefable\" if it implements the Node.js \"Refable protocol\". Specifically, this means that the object implements the Symbol.for('nodejs.ref') and S"
+        },
+        {
+          "name": "uptime",
+          "kind": "method",
+          "added": "v0.5.0",
+          "stability": null,
+          "desc": "The process.uptime() method returns the number of seconds the current Node.js process has been running. The return value includes fractions of a second. Use Mat"
+        }
+      ],
+      "protoProperties": [
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v10.10.0",
+          "stability": null,
+          "desc": "The process.allowedNodeEnvironmentFlags property is a special, read-only Set of flags allowable within the NODE_OPTIONS environment variable. process.allowedNod"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.5.0",
+          "stability": null,
+          "desc": "The operating system CPU architecture for which the Node.js binary was compiled. Possible values are: 'arm' , 'arm64' , 'ia32' , 'loong64' , 'mips' , 'mipsel' ,"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.1.27",
+          "stability": null,
+          "desc": "The process.argv property returns an array containing the command-line arguments passed when the Node.js process was launched. The first element will be process"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v6.4.0",
+          "stability": null,
+          "desc": "The process.argv0 property stores a read-only copy of the original value of argv[0] passed when Node.js starts. $ bash -c 'exec -a customArgv0 ./node' > process"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v7.1.0",
+          "stability": null,
+          "desc": "If the Node.js process was spawned with an IPC channel (see the Child Process documentation), the process.channel property is a reference to the IPC channel. If"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.7.7",
+          "stability": null,
+          "desc": "The process.config property returns a frozen Object containing the JavaScript representation of the configure options used to compile the current Node.js execut"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.7.2",
+          "stability": null,
+          "desc": "If the Node.js process is spawned with an IPC channel (see the Child Process and Cluster documentation), the process.connected property will return true so long"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.7.2",
+          "stability": null,
+          "desc": "The port used by the Node.js debugger when enabled. import process from 'node:process'; process.debugPort = 5858; const process = require('node:process'); proce"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.1.27",
+          "stability": null,
+          "desc": "The process.env property returns an object containing the user environment. See environ(7) . An example of this object looks like: { TERM: 'xterm-256color', SHE"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.7.7",
+          "stability": null,
+          "desc": "The process.execArgv property returns the set of Node.js-specific command-line options passed when the Node.js process was launched. These options do not appear"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.1.100",
+          "stability": null,
+          "desc": "The process.execPath property returns the absolute pathname of the executable that started the Node.js process. Symbolic links, if any, are resolved. '/usr/loca"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.11.8",
+          "stability": null,
+          "desc": "A number which will be the process exit code, when the process either exits gracefully, or is exited via process.exit() without specifying a code. The value of "
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v12.0.0",
+          "stability": null,
+          "desc": "A boolean value that is true if the current Node.js build is caching builtin modules."
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.5.5",
+          "stability": null,
+          "desc": "A boolean value that is true if the current Node.js build is a debug build."
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v11.10.0",
+          "stability": null,
+          "desc": "A boolean value that is true if the current Node.js build includes the inspector."
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.5.3",
+          "stability": 0,
+          "desc": "A boolean value that is true if the current Node.js build includes support for IPv6. Since all Node.js builds have IPv6 support, this value is always true ."
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v22.10.0",
+          "stability": null,
+          "desc": "A boolean value that is true if the current Node.js build supports loading ECMAScript modules using require() ."
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.5.3",
+          "stability": null,
+          "desc": "A boolean value that is true if the current Node.js build includes support for TLS."
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v4.8.0",
+          "stability": 0,
+          "desc": "A boolean value that is true if the current Node.js build includes support for ALPN in TLS. In Node.js 11.0.0 and later versions, the OpenSSL dependencies featu"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.11.13",
+          "stability": 0,
+          "desc": "A boolean value that is true if the current Node.js build includes support for OCSP in TLS. In Node.js 11.0.0 and later versions, the OpenSSL dependencies featu"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.5.3",
+          "stability": 0,
+          "desc": "A boolean value that is true if the current Node.js build includes support for SNI in TLS. In Node.js 11.0.0 and later versions, the OpenSSL dependencies featur"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v22.10.0",
+          "stability": 1,
+          "desc": "A value that is \"strip\" by default, \"transform\" if Node.js is run with --experimental-transform-types , and false if Node.js is run with --no-experimental-strip"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.5.3",
+          "stability": 0,
+          "desc": "A boolean value that is true if the current Node.js build includes support for libuv. Since it's not possible to build Node.js without libuv, this value is alwa"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.1.17",
+          "stability": 0,
+          "desc": "The process.mainModule property provides an alternative way of retrieving require.main . The difference is that if the main module changes at runtime, require.m"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.8.0",
+          "stability": null,
+          "desc": "The process.noDeprecation property indicates whether the --no-deprecation flag is set on the current Node.js process. See the documentation for the 'warning' ev"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v20.0.0",
+          "stability": null,
+          "desc": "This API is available through the --permission flag. process.permission is an object whose methods are used to manage permissions for the current process. Addit"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.1.15",
+          "stability": null,
+          "desc": "The process.pid property returns the PID of the process. import { pid } from 'node:process'; console.log(`This process is pid ${pid}`); const { pid } = require("
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.1.16",
+          "stability": null,
+          "desc": "The process.platform property returns a string identifying the operating system platform for which the Node.js binary was compiled. Currently possible values ar"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v9.2.0",
+          "stability": null,
+          "desc": "The process.ppid property returns the PID of the parent of the current process. import { ppid } from 'node:process'; console.log(`The parent process is pid ${pp"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v3.0.0",
+          "stability": null,
+          "desc": "The process.release property returns an Object containing metadata related to the current release, including URLs for the source tarball and headers-only tarbal"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v11.8.0",
+          "stability": null,
+          "desc": "process.report is an object whose methods are used to generate diagnostic reports for the current process. Additional documentation is available in the report d"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v20.7.0",
+          "stability": 1,
+          "desc": "The process.sourceMapsEnabled property returns whether the Source Map support for stack traces is enabled."
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "",
+          "stability": null,
+          "desc": "The process.stderr property returns a stream connected to stderr (fd 2 ). It is a net.Socket (which is a Duplex stream) unless fd 2 refers to a file, in which c"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "",
+          "stability": null,
+          "desc": "The process.stdin property returns a stream connected to stdin (fd 0 ). It is a net.Socket (which is a Duplex stream) unless fd 0 refers to a file, in which cas"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "",
+          "stability": null,
+          "desc": "The process.stdout property returns a stream connected to stdout (fd 1 ). It is a net.Socket (which is a Duplex stream) unless fd 1 refers to a file, in which c"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.9.12",
+          "stability": null,
+          "desc": "The initial value of process.throwDeprecation indicates whether the --throw-deprecation flag is set on the current Node.js process. process.throwDeprecation is "
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.1.104",
+          "stability": null,
+          "desc": "The process.title property returns the current process title (i.e. returns the current value of ps ). Assigning a new value to process.title modifies the curren"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.8.0",
+          "stability": null,
+          "desc": "The process.traceDeprecation property indicates whether the --trace-deprecation flag is set on the current Node.js process. See the documentation for the 'warni"
+        },
+        {
+          "name": "traceProcessWarnings",
+          "kind": "property",
+          "added": "v6.10.0",
+          "stability": null,
+          "desc": "The process.traceProcessWarnings property indicates whether the --trace-warnings flag is set on the current Node.js process. This property allows programmatic c"
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.1.3",
+          "stability": null,
+          "desc": "The process.version property contains the Node.js version string. import { version } from 'node:process'; console.log(`Version: ${version}`); // Version: v14.8."
+        },
+        {
+          "name": "Type",
+          "kind": "property",
+          "added": "v0.2.0",
+          "stability": null,
+          "desc": "The process.versions property returns an object listing the version strings of Node.js and its dependencies. process.versions.modules indicates the current ABI "
+        }
+      ],
+      "events": [],
+      "constants": [],
+      "desc": "Source Code: lib/process.js The process object provides information about, and control over, the current Node.js process. import process from 'node:process'; co"
+    }
+  ],
+  "methods": [
+    {
+      "name": "atob",
+      "kind": "method",
+      "added": "v16.0.0",
+      "stability": 3,
+      "desc": "Global alias for buffer.atob() ."
+    },
+    {
+      "name": "btoa",
+      "kind": "method",
+      "added": "v16.0.0",
+      "stability": 3,
+      "desc": "Global alias for buffer.btoa() ."
+    },
+    {
+      "name": "clearImmediate",
+      "kind": "method",
+      "added": "v0.9.1",
+      "stability": null,
+      "desc": "clearImmediate is described in the timers section."
+    },
+    {
+      "name": "clearInterval",
+      "kind": "method",
+      "added": "v0.0.1",
+      "stability": null,
+      "desc": "clearInterval is described in the timers section."
+    },
+    {
+      "name": "clearTimeout",
+      "kind": "method",
+      "added": "v0.0.1",
+      "stability": null,
+      "desc": "clearTimeout is described in the timers section."
+    },
+    {
+      "name": "queueMicrotask",
+      "kind": "method",
+      "added": "v11.0.0",
+      "stability": null,
+      "desc": "The queueMicrotask() method queues a microtask to invoke callback . If callback throws an exception, the process object 'uncaughtException' event will be emitte"
+    },
+    {
+      "name": "require",
+      "kind": "method",
+      "added": "",
+      "stability": null,
+      "desc": "This variable may appear to be global but is not. See require() ."
+    },
+    {
+      "name": "setImmediate",
+      "kind": "method",
+      "added": "v0.9.1",
+      "stability": null,
+      "desc": "setImmediate is described in the timers section."
+    },
+    {
+      "name": "setInterval",
+      "kind": "method",
+      "added": "v0.0.1",
+      "stability": null,
+      "desc": "setInterval is described in the timers section."
+    },
+    {
+      "name": "setTimeout",
+      "kind": "method",
+      "added": "v0.0.1",
+      "stability": null,
+      "desc": "setTimeout is described in the timers section."
+    },
+    {
+      "name": "structuredClone",
+      "kind": "method",
+      "added": "v17.0.0",
+      "stability": null,
+      "desc": "The WHATWG structuredClone method."
+    }
+  ],
+  "globals": [
+    {
+      "name": "__dirname",
+      "kind": "global",
+      "added": "",
+      "stability": null,
+      "desc": "This variable may appear to be global but is not. See __dirname ."
+    },
+    {
+      "name": "__filename",
+      "kind": "global",
+      "added": "",
+      "stability": null,
+      "desc": "This variable may appear to be global but is not. See __filename ."
+    },
+    {
+      "name": "console",
+      "kind": "global",
+      "added": "v0.1.100",
+      "stability": null,
+      "desc": "Type: <Object> Used to print to stdout and stderr. See the console section."
+    },
+    {
+      "name": "crypto",
+      "kind": "global",
+      "added": "v17.6.0",
+      "stability": 1,
+      "desc": "A browser-compatible implementation of the Web Crypto API ."
+    },
+    {
+      "name": "exports",
+      "kind": "global",
+      "added": "",
+      "stability": null,
+      "desc": "This variable may appear to be global but is not. See exports ."
+    },
+    {
+      "name": "fetch",
+      "kind": "global",
+      "added": "v17.5.0",
+      "stability": null,
+      "desc": "A browser-compatible implementation of the fetch() function. const res = await fetch('https://nodejs.org/api/documentation.json'); if (res.ok) { const data = aw"
+    },
+    {
+      "name": "global",
+      "kind": "global",
+      "added": "v0.1.27",
+      "stability": 3,
+      "desc": "Type: <Object> The global namespace object. In browsers, the top-level scope has traditionally been the global scope. This means that var something will define "
+    },
+    {
+      "name": "localstorage",
+      "kind": "global",
+      "added": "v22.4.0",
+      "stability": 1,
+      "desc": "A browser-compatible implementation of localStorage . Data is stored unencrypted in the file specified by the --localstorage-file CLI flag. The maximum amount o"
+    },
+    {
+      "name": "module",
+      "kind": "global",
+      "added": "",
+      "stability": null,
+      "desc": "This variable may appear to be global but is not. See module ."
+    },
+    {
+      "name": "navigator",
+      "kind": "global",
+      "added": "v21.0.0",
+      "stability": 1,
+      "desc": "A partial implementation of window.navigator ."
+    },
+    {
+      "name": "performance",
+      "kind": "global",
+      "added": "v16.0.0",
+      "stability": null,
+      "desc": "The perf_hooks.performance object."
+    },
+    {
+      "name": "process",
+      "kind": "global",
+      "added": "v0.1.7",
+      "stability": null,
+      "desc": "Type: <Object> The process object. See the process object section."
+    },
+    {
+      "name": "sessionstorage",
+      "kind": "global",
+      "added": "v22.4.0",
+      "stability": 1,
+      "desc": "A browser-compatible implementation of sessionStorage . Data is stored in memory, with a storage quota of 10 MB. sessionStorage data persists only within the cu"
+    },
+    {
+      "name": "globalThis",
+      "kind": "global",
+      "added": "",
+      "stability": null,
+      "desc": "计划 §4.1 必需全局；官方 Global objects 页面未独立成节",
+      "docNote": "补充项"
+    },
+    {
+      "name": "URLPattern",
+      "kind": "global",
+      "added": "",
+      "stability": null,
+      "desc": "计划 §4.1 必需全局；官方 Global objects 页面未独立成节",
+      "docNote": "补充项"
+    },
+    {
+      "name": "AbortSignal",
+      "kind": "global",
+      "added": "",
+      "stability": null,
+      "desc": "计划 §4.1 必需全局；官方 Global objects 页面未独立成节",
+      "docNote": "补充项"
+    },
+    {
+      "name": "MessageEvent",
+      "kind": "global",
+      "added": "",
+      "stability": null,
+      "desc": "计划 §4.1 必需全局；官方 Global objects 页面未独立成节",
+      "docNote": "补充项"
+    },
+    {
+      "name": "CloseEvent",
+      "kind": "global",
+      "added": "",
+      "stability": null,
+      "desc": "计划 §4.1 必需全局；官方 Global objects 页面未独立成节",
+      "docNote": "补充项"
+    },
+    {
+      "name": "scheduler",
+      "kind": "global",
+      "added": "",
+      "stability": null,
+      "desc": "计划 §4.1 必需全局；官方 Global objects 页面未独立成节",
+      "docNote": "补充项"
+    }
+  ]
+}

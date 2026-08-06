@@ -403,7 +403,34 @@ func (l *Loader) makeImportFunc(modulePath string) engine.Function {
 			_ = ns.Set("default", exports)
 			return l.resolveImport(ns)
 		}
-		return l.resolveImport(exports)
+		// ESM 模块：exports 已是命名空间（含 __esModule/default/命名）。
+		if esmExports, ok := exports.AsObject(); ok {
+			if v, err := esmExports.Get("__esModule"); err == nil {
+				if b, ok := v.Bool(); ok && b {
+					return l.resolveImport(exports)
+				}
+			}
+		}
+		// CJS 模块：包装为命名空间 { default: exports } + 拷贝命名导出
+		// （Node 经 cjs-module-lexer 静态分析命名导出；这里仅对非函数对象拷贝自有键）。
+		ns := engine.NewObject()
+		if p, err := l.objectProtoValue(); err == nil {
+			engine.SetProto(ns, p)
+		}
+		_ = ns.Set("default", exports)
+		if !exports.IsFunction() {
+			if co, ok := exports.AsObject(); ok {
+				for _, k := range co.Keys() {
+					if k == "default" || k == "__esModule" {
+						continue
+					}
+					if v, err := co.Get(k); err == nil {
+						_ = ns.Set(k, v)
+					}
+				}
+			}
+		}
+		return l.resolveImport(ns)
 	})
 }
 

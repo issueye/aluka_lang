@@ -1,0 +1,26 @@
+const results = {};
+const posix = require('node:path/posix');
+const win32 = require('node:path/win32');
+results.posixJoin = posix.join('/a', 'b');
+results.posixSep = posix.sep;
+results.win32Join = win32.join('C:\\a', 'b');
+results.win32Sep = win32.sep;
+results.win32IsAbs = win32.isAbsolute('C:\\x');
+results.posixIsAbs = posix.isAbsolute('/x');
+const sys = require('node:sys');
+results.sysIsUtil = sys === require('node:util');
+const { Readable } = require('node:stream');
+const consumers = require('node:stream/consumers');
+(async () => {
+  const src = new Readable({ read() {} });
+  src.push('hello '); src.push('world'); src.push(null);
+  results.consumersText = await consumers.text(src);
+  const src2 = new Readable({ read() {} });
+  src2.push('{"a":1}'); src2.push(null);
+  results.consumersJson = JSON.stringify(await consumers.json(src2));
+  const src3 = new Readable({ read() {} });
+  src3.push('x'); src3.push(null);
+  const buf = await consumers.buffer(src3);
+  results.consumersBuffer = String(buf);
+  process.stdout.write(JSON.stringify(results));
+})();

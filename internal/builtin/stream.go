@@ -203,8 +203,9 @@ func newReadableStream(ctx engine.Context, args []engine.Value) engine.Value {
 		state.flowing = true
 		drainToDest(state, dest)
 		// 源流已结束（push(null) 早于 pipe）：结束目标流，触发其 finish
-		// （pipeline 依赖目标流的 finish 事件判定完成）。
+		// （pipeline 依赖目标流的 finish 事件判定完成）；并补发可读端 'end'。
 		if state.ended {
+			finishReadable(state)
 			endPipeDest(stream)
 		}
 		return dest, nil
@@ -217,6 +218,11 @@ func newReadableStream(ctx engine.Context, args []engine.Value) engine.Value {
 
 	// destroy([error])
 	_ = stream.Set("destroy", engine.NewFunction("destroy", func(args []engine.Value) (engine.Value, error) {
+		// Node 语义：destroy(error) 发 'error' 事件（无监听者时忽略，
+		// 不抛出——Node 会抛未捕获异常，此处为 knownDifference）。
+		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
+			emitEvent(stream, "error", args[0])
+		}
 		state.ended = true
 		state.buffer = nil
 		emitEvent(stream, "close")
@@ -373,14 +379,20 @@ func newReadableFrom(ctx engine.Context, args []engine.Value) engine.Value {
 // newWritableStream 创建一个可写流（基于 EventEmitter）。
 func newWritableStream(args []engine.Value) engine.Value {
 	stream := newEmitterInstance().(engine.Object)
-
 	state := &writableState{
 		buffer:   []engine.Value{},
 		ended:    false,
 		finished: false,
 		writeFn:  nil,
 	}
+	installWritableMethods(stream, state, args)
+	return stream
+}
 
+// installWritableMethods 在目标对象上安装 Writable 方法（write/end/cork 等）。
+// state 由调用方持有，duplex/transform 在共享对象上安装（避免 throwaway
+// 对象闭包捕获问题）。
+func installWritableMethods(stream engine.Object, state *writableState, args []engine.Value) {
 	// 解析 options.write
 	if len(args) > 0 {
 		if opts, ok := args[0].AsObject(); ok {
@@ -450,8 +462,6 @@ func newWritableStream(args []engine.Value) engine.Value {
 	_ = stream.Set("setDefaultEncoding", engine.NewFunction("setDefaultEncoding", func(args []engine.Value) (engine.Value, error) {
 		return stream, nil
 	}))
-
-	return stream
 }
 
 // --- Duplex & Transform --------------------------------------------------
@@ -460,21 +470,31 @@ func newWritableStream(args []engine.Value) engine.Value {
 func newDuplexStream(ctx engine.Context, args []engine.Value) engine.Value {
 	// Duplex = Readable + Writable 的合并。
 	stream := newReadableStream(ctx, args).(engine.Object)
-	writable := newWritableStream(args).(engine.Object)
+	// Writable 方法直接装在共享对象上（闭包捕获共享 stream 而非 throwaway 对象）。
+	wstate := &writableState{
+		buffer:   []engine.Value{},
+		ended:    false,
+		finished: false,
+		writeFn:  nil,
+	}
+	installWritableMethods(stream, wstate, args)
 
-	// 合并 writable 方法到 stream 对象。
-	for _, key := range writable.Keys() {
-		if v, err := writable.Get(key); err == nil {
-			// 只添加 writable 特有方法，不覆盖 readable 已有的（如 on/emit）。
-			if existing, _ := stream.Get(key); existing != nil && !existing.IsUndefined() {
-				// 已存在：仅当是 writable 特有方法时覆盖。
-				if key == "write" || key == "end" || key == "cork" || key == "uncork" || key == "setDefaultEncoding" {
-					_ = stream.Set(key, v)
+	// end() 时同时结束可读端（Transform 常见语义：写端结束 → 读端发 'end'），
+	// 使管道链 src.pipe(t).pipe(sink) 能完整收尾。
+	origEnd, _ := stream.Get("end")
+	if origEndFn, ok := origEnd.AsFunction(); ok {
+		_ = stream.Set("end", engine.NewFunction("end", func(ea []engine.Value) (engine.Value, error) {
+			result, err := origEndFn.Call(ea)
+			// 可读端结束：标记并发 'end'（若无监听者则无害）。
+			if ro, ok := stream.AsObject(); ok {
+				if pushFn, err := ro.Get("push"); err == nil && pushFn.IsFunction() {
+					if f, ok := pushFn.AsFunction(); ok {
+						_, _ = f.Call([]engine.Value{engine.Null()})
+					}
 				}
-			} else {
-				_ = stream.Set(key, v)
 			}
-		}
+			return result, err
+		}))
 	}
 	return stream
 }
@@ -494,6 +514,8 @@ func newTransformStream(ctx engine.Context, args []engine.Value) engine.Value {
 	}
 
 	// 覆盖 write：写入时调 transform，结果 push 到可读端。
+	// 支持 Node 回调约定 transform(chunk, enc, cb)，cb(err, data) 产出数据；
+	// 也兼容直接 return 数据的写法。同步回调可用；异步回调为 knownDifference。
 	if transformFn != nil {
 		_ = stream.Set("write", engine.NewFunction("write", func(args []engine.Value) (engine.Value, error) {
 			if len(args) == 0 {
@@ -501,13 +523,29 @@ func newTransformStream(ctx engine.Context, args []engine.Value) engine.Value {
 			}
 			chunk := args[0]
 			if f, ok := transformFn.AsFunction(); ok {
-				result, err := f.Call([]engine.Value{chunk, engine.Undefined(), engine.Undefined()})
+				var out engine.Value
+				var cbErr error
+				cb := engine.NewFunction("transformCb", func(ca []engine.Value) (engine.Value, error) {
+					// Node 约定 callback(err, data)。
+					if len(ca) > 1 && !ca[1].IsUndefined() && !ca[1].IsNull() {
+						out = ca[1]
+					} else if len(ca) > 0 && !ca[0].IsUndefined() && !ca[0].IsNull() {
+						out = ca[0]
+					}
+					return engine.Undefined(), nil
+				})
+				result, err := f.Call([]engine.Value{chunk, engine.Undefined(), cb})
 				if err != nil {
 					emitEvent(stream, "error")
 					return engine.Boolean(false), nil
 				}
-				if result != nil && !result.IsUndefined() && !result.IsNull() {
-					streamPush(stream, result)
+				// return 值（若 transform 用 return 而非回调）。
+				if out == nil && result != nil && !result.IsUndefined() && !result.IsNull() {
+					out = result
+				}
+				_ = cbErr
+				if out != nil && !out.IsUndefined() && !out.IsNull() {
+					streamPush(stream, out)
 				}
 			}
 			return engine.Boolean(true), nil

@@ -1,0 +1,11 @@
+{
+  "freezeVersion": "v1.0",
+  "date": "2026-08-06",
+  "nodeRuntimeVersion": "v22.23.1",
+  "nodeDocVersion": "v22.23.1",
+  "docSource": "https://nodejs.org/docs/v22.23.1/api/all.json",
+  "allJsonSha256": "ba180cb8908e1ff4247f4b71fe55042caddab8b2f4fcc2d80f28945d8d701bf1",
+  "platform": "windows",
+  "arch": "amd64",
+  "note": "冻结快照：正式验收一律使用本文件与 data/all.json；latest-v22.x 仅用于发现更新。"
+}

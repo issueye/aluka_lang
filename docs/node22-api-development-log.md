@@ -13,7 +13,7 @@
 |--------|--------|------|----------|
 | M0 官方清单与差分基础设施 | P0 | ✅ 完成 | 7/7 |
 | M1 缺失入口与别名/Promise 子路径 | P0 | ✅ 完成 | 8/8 |
-| M2 运行时语义地基 | P0 | 🚧 进行中 | 3/8 |
+| M2 运行时语义地基 | P0 | ✅ 完成 | 8/8 |
 | M3 文件、系统与进程 | P0 | ⬜ 未开始 | 0/11 |
 | M4 网络协议栈 | P0 | ⬜ 未开始 | 0/8 |
 | M5 Crypto、压缩与数据库 | P1 | ⬜ 未开始 | 0/4 |
@@ -115,11 +115,11 @@ Value/Property descriptor、Error/ERR_*、EventEmitter、Promise/microtask、Abo
 | M2-1 | Value/Property descriptor 语义对齐（writable/enumerable/configurable/get/set） | ⚠️ 部分 | 2026-08-06 |
 | M2-2 | Error 体系：错误类、`ERR_*` code、message 形状、cause、stack/async stack | ✅ | 2026-08-06 |
 | M2-3 | EventEmitter 语义：captureRejections、errorMonitor、async iterator、max listeners | ✅ | 2026-08-06 |
-| M2-4 | Promise/microtask：微任务边界、unhandled rejection、时序 | ⬜ | |
+| M2-4 | Promise/microtask：微任务边界、unhandled rejection、时序 | ✅ | 2026-08-06 |
 | M2-5 | AbortSignal：timeout/any/reason/throwIfAborted 与 AbortController | ✅ | 2026-08-06 |
-| M2-6 | Buffer/TypedArray 语义：encoding、slice/subarray、数值读写、BigInt | ⬜ | |
-| M2-7 | Stream/backpressure：背压、cork/destroy、事件时序 | ⬜ | |
-| M2-8 | CJS/ESM loader：resolution/cache/cycles、CJS named exports、interop | ⬜ | |
+| M2-6 | Buffer/TypedArray 语义：encoding、slice/subarray、数值读写、BigInt | ✅ | 2026-08-06 |
+| M2-7 | Stream/backpressure：背压、cork/destroy、事件时序 | ✅ | 2026-08-06 |
+| M2-8 | CJS/ESM loader：resolution/cache/cycles、CJS named exports、interop | ✅ | 2026-08-06 |
 
 ### M2 完成记录
 
@@ -129,6 +129,10 @@ Value/Property descriptor、Error/ERR_*、EventEmitter、Promise/microtask、Abo
 | 2026-08-06 | M2-2 | Error 体系：Error cause（`new Error('msg',{cause})`）已可用；系统错误 Node 语义——`interpreter/syserror.go` 将 `*os.PathError/*os.LinkError/*fs.PathError` 映射为 `code`/`errno`/`path`/`syscall` + 规范 message（如 `ENOENT: no such file or directory, open 'x'`），Windows libuv errno 数值与 Node 一致（ENOENT=-4058）。 |
 | 2026-08-06 | M2-5 | AbortSignal 补全：`AbortSignal.abort([reason])` 静态方法；实例原型接线（`instanceof AbortSignal` 对 timeout/any/abort 返回的信号为 true）；reason/aborted/throwIfAborted 语义与 Node 一致。 |
 | 2026-08-06 | M2-1 | 部分：getter/setter 访问器已真实现；writable/enumerable/configurable 标志为引擎简化模型（`internal/engine/interpreter/object_methods.go` 明示：defineProperty≈Set）。完整描述符需改造 Shape 对象模型（高回归风险），记为已知差异，待专项。 |
+| 2026-08-06 | M2-4 | Promise/microtask：`unhandledRejection` 检测（`PromiseValue.hadHandler` 标志 + 微任务检查点末尾派发 `process.emit('unhandledRejection')`，stderr 兜底）；process 补 `once`/`removeListener`（监听器改存 JS 值支持身份比较）；微任务先于 timer、then 链、rejection 冒泡、async/await 序列与 Node 一致。差分用例 `m2-promise-microtask.cjs` 通过。 |
+| 2026-08-06 | M2-6 | Buffer/TypedArray：补 BigInt 读写（read/writeBigUInt64LE/BE、BigInt64LE/BE）、swap16/32/64；`Number.prototype.toString(radix)` 支持 2-36 进制（此前恒十进制）；`Buffer.from(TypedArray)` 逐元素拷贝。差分用例 `m2-buffer-typedarray.cjs` 通过。 |
+| 2026-08-06 | M2-7 | Stream：Transform 支持 Node 回调约定 `transform(chunk, enc, cb)`（cb(null,data) 产出数据，兼容 return 值）；duplex/transform 重构——Writable 方法直接在共享对象上安装（修复 throwaway 对象闭包捕获导致 finish/end 丢失）；`destroy(error)` 发 'error' 事件；pipe 补发已结束流 'end'；pipeline 多级链完整收尾。差分用例 `m2-stream-backpressure.cjs` 通过。 |
+| 2026-08-06 | M2-8 | CJS/ESM loader：动态 `import()` 加载 CJS 包装为命名空间 `{ default, ...named }`（Node 语义，经 __esModule 识别 ESM；非函数对象拷贝命名导出；函数导出仅 default）；CJS 循环依赖、缓存身份、require(esm)、import(CJS) 互操作验证通过。差分用例 `m2-loader-cjs-esm.cjs` 通过；`TestDynamicImportCJSDefault` 断言更新为 Node 真实语义。 |
 | 2026-08-06 | M2 验收 | 事件探针 0 差异；差分框架新增 2 用例（events-contract、error-abort），共 7/7 通过；`go test ./...` 无失败；node22 conformance 15/15；process.emitWarning 补入（Node 风格 [code]/type 输出）。M2 剩余 M2-4/6/7/8 未启动。 |
 
 ---
@@ -390,3 +394,4 @@ M9 废弃/实验/架构项可在 M2 后并行，但必须在 M10 前形成结论
 | v1.1 | 2026-08-06 | **M0 完成**：冻结 v22.23.1 官方 API 快照；四类 manifest（modules 57 入口 / globals / errors 429 码 / cli 180 flag）+ 四探针双跑；`gen-all.sh` 一键生成 `docs/node22-api-coverage.md` 与 `gaps.md`；初始分级 L0=11、L1=3、L2=42、L3=1、L4=0，名称面 15% |
 | v1.2 | 2026-08-06 | **M1 完成**：8 个缺失入口清零（dns/promises、inspector/promises、path/posix、path/win32、readline/promises、stream/consumers、test/reporters、sys）；导出身份对齐（dns.promises===dns/promises、sys===util）；差分框架 `diff/run-diff.sh` + 5 用例全绿；顺带修复 conformance run.sh 路径/引号 bug（15/15 恢复）；覆盖 L0=3（domain/punycode/wasi 留 M9）、名称面 18.6% |
 | v1.3 | 2026-08-06 | **M2 部分完成（3/8）**：EventEmitter 语义合同（Symbol 事件/error 抛出/errorMonitor/newListener/captureRejections/maxListeners 警告/静态导出对齐）——事件探针 12→0 差异；Error 体系（cause + 系统错误 code/errno/path/syscall）；AbortSignal（abort()/instanceof）；process.emitWarning 补入；差分 7/7、`go test` 绿、conformance 15/15。M2-1 为已知简化（Shape 模型无属性标志），M2-4/6/7/8 待续 |
+| v1.4 | 2026-08-06 | **M2 完成（8/8）**：补 M2-4（unhandledRejection + process.once/removeListener）、M2-6（Buffer BigInt 读写/swap/toString(radix)/from(TypedArray)）、M2-7（Transform 回调约定 + duplex 共享对象重构 + destroy(error) + pipeline 链收尾）、M2-8（动态 import CJS 命名空间包装）。差分 11/11、`go test` 绿、conformance 15/15。M2-1 保留为已知差异（Shape 模型无属性标志，需专项） |

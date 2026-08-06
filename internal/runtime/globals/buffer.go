@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"math/big"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -489,6 +490,17 @@ func bufferFromArgs(args []engine.Value) (engine.Value, error) {
 			}
 			return newBufferInstance(d), nil
 		}
+		// TypedArray：逐元素拷贝（Node 语义：Buffer.from(typedArray) 拷贝元素值）。
+		if ta, ok := val.(*engine.TypedArrayValue); ok {
+			n := ta.Length()
+			d := make([]byte, n)
+			for i := 0; i < n; i++ {
+				if v, ok := ta.ElementAt(i).Int(); ok {
+					d[i] = byte(v)
+				}
+			}
+			return newBufferInstance(d), nil
+		}
 	}
 	return newBufferInstance(nil), nil
 }
@@ -659,6 +671,57 @@ func installBufferReaders(buf engine.Object, d []byte) {
 		}
 		return engine.Number(math.Float64frombits(binary.BigEndian.Uint64(d[off:]))), nil
 	}))
+	// BigInt 读（readBigUInt64LE/BE、readBigInt64LE/BE，Node 12+）。
+	_ = buf.Set("readBigUInt64LE", engine.NewFunction("readBigUInt64LE", func(args []engine.Value) (engine.Value, error) {
+		off, err := readOffset(d, args, 8)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.BigInt(new(big.Int).SetUint64(binary.LittleEndian.Uint64(d[off:]))), nil
+	}))
+	_ = buf.Set("readBigUInt64BE", engine.NewFunction("readBigUInt64BE", func(args []engine.Value) (engine.Value, error) {
+		off, err := readOffset(d, args, 8)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.BigInt(new(big.Int).SetUint64(binary.BigEndian.Uint64(d[off:]))), nil
+	}))
+	_ = buf.Set("readBigInt64LE", engine.NewFunction("readBigInt64LE", func(args []engine.Value) (engine.Value, error) {
+		off, err := readOffset(d, args, 8)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.BigInt(new(big.Int).SetUint64(binary.LittleEndian.Uint64(d[off:]))), nil
+	}))
+	_ = buf.Set("readBigInt64BE", engine.NewFunction("readBigInt64BE", func(args []engine.Value) (engine.Value, error) {
+		off, err := readOffset(d, args, 8)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.BigInt(new(big.Int).SetUint64(binary.BigEndian.Uint64(d[off:]))), nil
+	}))
+	// swap16/swap32/swap64：原地字节序交换，返回 Buffer 自身（链式）。
+	_ = buf.Set("swap16", engine.NewFunction("swap16", func(args []engine.Value) (engine.Value, error) {
+		for i := 0; i+1 < len(d); i += 2 {
+			d[i], d[i+1] = d[i+1], d[i]
+		}
+		return buf, nil
+	}))
+	_ = buf.Set("swap32", engine.NewFunction("swap32", func(args []engine.Value) (engine.Value, error) {
+		for i := 0; i+3 < len(d); i += 4 {
+			d[i], d[i+3] = d[i+3], d[i]
+			d[i+1], d[i+2] = d[i+2], d[i+1]
+		}
+		return buf, nil
+	}))
+	_ = buf.Set("swap64", engine.NewFunction("swap64", func(args []engine.Value) (engine.Value, error) {
+		for i := 0; i+7 < len(d); i += 8 {
+			for j := 0; j < 4; j++ {
+				d[i+j], d[i+7-j] = d[i+7-j], d[i+j]
+			}
+		}
+		return buf, nil
+	}))
 }
 
 // installBufferWriters 安装所有 write 方法（返回写入后 offset）。
@@ -743,6 +806,44 @@ func installBufferWriters(buf engine.Object, d []byte) {
 	_ = buf.Set("writeFloatBE", engine.NewFunction("writeFloatBE", writeFloat(4, true)))
 	_ = buf.Set("writeDoubleLE", engine.NewFunction("writeDoubleLE", writeFloat(8, false)))
 	_ = buf.Set("writeDoubleBE", engine.NewFunction("writeDoubleBE", writeFloat(8, true)))
+
+	// BigInt 写（writeBigUInt64LE/BE、writeBigInt64LE/BE，Node 12+）。
+	writeBig := func(be bool, signed bool) engine.Func {
+		return func(args []engine.Value) (engine.Value, error) {
+			if len(args) == 0 {
+				return engine.Undefined(), fmt.Errorf("%w: missing value", engine.ErrTypeError)
+			}
+			off := argInt(args, 1, 0)
+			if off < 0 || off+8 > len(d) {
+				return engine.Undefined(), fmt.Errorf("%w: write beyond buffer length", engine.ErrRangeError)
+			}
+			bi, ok := engine.BigIntValue(args[0])
+			if !ok {
+				// Node 对 Number 也接受（校验整数范围），简化：转 int64。
+				if n, ok2 := args[0].Int(); ok2 {
+					bi = big.NewInt(int64(n))
+					ok = true
+				}
+			}
+			if !ok {
+				return engine.Undefined(), fmt.Errorf("%w: expected BigInt", engine.ErrTypeError)
+			}
+			u := bi.Uint64()
+			if signed {
+				u = uint64(bi.Int64())
+			}
+			if be {
+				binary.BigEndian.PutUint64(d[off:], u)
+			} else {
+				binary.LittleEndian.PutUint64(d[off:], u)
+			}
+			return engine.IntValue(off + 8), nil
+		}
+	}
+	_ = buf.Set("writeBigUInt64LE", engine.NewFunction("writeBigUInt64LE", writeBig(false, false)))
+	_ = buf.Set("writeBigUInt64BE", engine.NewFunction("writeBigUInt64BE", writeBig(true, false)))
+	_ = buf.Set("writeBigInt64LE", engine.NewFunction("writeBigInt64LE", writeBig(false, true)))
+	_ = buf.Set("writeBigInt64BE", engine.NewFunction("writeBigInt64BE", writeBig(true, true)))
 }
 
 // readOffset 校验并返回读操作偏移（保证 off+size 在界内）。
