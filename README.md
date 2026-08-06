@@ -216,6 +216,9 @@ ALUKA=./aluka bash tests/conformance/express/run.sh
 
 # build --compile conformance（单入口/多文件/循环依赖/动态 import/JSON 资源/argv/import.meta/TLA，12/12）
 ALUKA=./aluka bash tests/conformance/build/run.sh
+
+# Node 22 差分 conformance（同一用例 aluka vs node22 双跑对比，4/4）
+ALUKA=./aluka bash tests/conformance/node22/run.sh
 ```
 
 ## 设计原则

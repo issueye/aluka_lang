@@ -212,3 +212,13 @@ func asCallable(v engine.Value) (callableValue, error) {
 	}
 	return nil, fmt.Errorf("%w: %s is not a function", engine.ErrTypeError, v.Type())
 }
+
+// argsThis 返回数组方法的 thisArg（第二参数，未提供为 undefined）。
+// N22-A2：Array.prototype 方法（map/filter/find 等）的 thisArg 对
+// 非箭头函数生效（回调的 this 绑定）。
+func argsThis(args []engine.Value) engine.Value {
+	if len(args) > 1 {
+		return args[1]
+	}
+	return engine.Undefined()
+}

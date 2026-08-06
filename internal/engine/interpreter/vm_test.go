@@ -2581,3 +2581,18 @@ obj?.a?.b?.c()`)
 		t.Errorf("chain with call = %q, want 1", got)
 	}
 }
+
+// TestArrayThisArg：Array.prototype 方法 thisArg 对非箭头函数生效（N22-A2）。
+func TestArrayThisArg(t *testing.T) {
+	got := vmEvalPromise(t, `
+var o = { m: 2 };
+globalThis.__r = [
+  [1, 2].map(function (x) { return x * this.m; }, o).join(','),
+  [1, 2, 3].find(function (x) { return x > this.m; }, o),
+  [1, 2, 3].reduce(function (a, x) { return a + x; }, 0).toString(),
+].join('|');
+`)
+	if got != "2,4|3|6" {
+		t.Errorf("array thisArg = %q, want 2,4|3|6", got)
+	}
+}

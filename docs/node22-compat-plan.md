@@ -149,15 +149,15 @@ M2（ES2024）独立低风险可穿插；M4（新模块）复杂度最高放最�
 | **M4 缺失模块** | dgram、cluster、http2、inspector | B（B1-B4） | ~800-1200 行 | M1 | 4 模块基础场景差分通过 |
 | **M5 测试与工具链** | node:test mock/coverage/snapshot/spawn、REPL 补全、trace_events（可选） | D | ~500-800 行 | M1-M3 | `aluka test --coverage` + mock 差分 |
 
-### 5.2 M1：运行时语义（P0，先行）
+### 5.2 M1：运行时语义（P0，先行）—— ✅ 完成（2026-08-06）
 
 | ID | 任务 | 说明 | 状态 |
 |----|------|------|------|
-| N22-A1 | Readable `Symbol.asyncIterator` | for await...of 流迭代；复用 fromWeb 桥接的 Promise 链模式（已证明可行） | [ ] |
-| N22-A2 | `Array.prototype` thisArg（非箭头函数） | find/map/filter/forEach/reduce 等第二参数；README 已知限制 | [ ] |
-| N22-A3 | `require(esm)` | CJS require 同步加载 ESM（复用 ESM→CJS 管线 + 缓存；无 TLA 可同步） | [ ] |
-| N22-A4 | 事件循环语义差分 | process.nextTick 优先级、微任务/宏任务边界 | [ ] |
-| N22-A5 | 差分框架 + 回归 | `tests/conformance/node22/run.sh`（同一脚本双跑对比） | [ ] |
+| N22-A1 | Readable `Symbol.asyncIterator` | ✅ | for await...of 流迭代；复用 fromWeb 桥接的 Promise 链模式（已证明可行） | ✅ |
+| N22-A2 | `Array.prototype` thisArg（非箭头函数） | ✅ | find/map/filter/forEach/reduce 等第二参数；README 已知限制 | ✅ |
+| N22-A3 | `require(esm)` | ✅ | CJS require 同步加载 ESM（复用 ESM→CJS 管线 + 缓存；无 TLA 可同步） | ✅ |
+| N22-A4 | 事件循环语义差分 | ✅ | process.nextTick 优先级、微任务/宏任务边界 | ✅ |
+| N22-A5 | 差分框架 + 回归 | ✅ | `tests/conformance/node22/run.sh`（同一脚本双跑对比） | ✅ |
 
 **M1 验收**：
 - `for await (const c of stream)` 与 node22 输出一致
@@ -258,6 +258,8 @@ tests/conformance/node22/
 | dgram 依赖系统 UDP | 标准库 net 包可直接实现 |
 | ES2023 数组方法（toSorted 等）缺失面需先核对 | C1 任务先做全量核对再补 |
 | 差分测试依赖 node22 环境 | CI 提供；本地无 node 时 SKIP |
+| require 含 TLA 的 ESM（Node 22 报 ERR_REQUIRE_ASYNC_MODULE） | aluka 同步等待成功——**超集**，记录为已知差异（不强制对齐） |
+| 非严格模式回调 `this=undefined` → globalThis（Node 语义） | aluka 回调 this 保持 undefined——已知差异（严格模式代码不受影响） |
 
 ## 9. 版本记录
 
@@ -265,3 +267,4 @@ tests/conformance/node22/
 |------|------|------|
 | v1.0 | 2026-08-06 | 初稿：四维基线矩阵（45 项实测探测）、P0-P3 分级、阶段 A-D WBS、差分测试策略 |
 | v1.1 | 2026-08-06 | **里程碑规划**：阶段 A-D 打包为 M1-M5（运行时语义 → ES2024 → API → 模块 → 工具链），含工作量估、依赖关系、执行顺序与并行策略 |
+| v1.2 | 2026-08-06 | **M1 完成**：for-await 流迭代（Symbol.asyncIterator）、Array thisArg、require(esm)（+__esModule）、nextTick 差分一致、node22 差分框架 4/4；已知差异 2 项记录（TLA require 超集、非严格模式 this） |

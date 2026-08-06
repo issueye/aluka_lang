@@ -573,9 +573,10 @@ func (interp *Interpreter) setupArrayProto() {
 		if err != nil {
 			return nil, err
 		}
+		thisArg := argsThis(args) // N22-A2：thisArg 对非箭头函数生效
 		elems := arr.Elems()
 		for i, e := range elems {
-			_, _ = fn.callWith(engine.Undefined(), []engine.Value{e, engine.IntValue(i), arr})
+			_, _ = fn.callWith(thisArg, []engine.Value{e, engine.IntValue(i), arr})
 		}
 		return engine.Undefined(), nil
 	}))
@@ -588,10 +589,11 @@ func (interp *Interpreter) setupArrayProto() {
 		if err != nil {
 			return nil, err
 		}
+		thisArg := argsThis(args) // N22-A2
 		elems := arr.Elems()
 		result := make([]engine.Value, len(elems))
 		for i, e := range elems {
-			v, err := fn.callWith(engine.Undefined(), []engine.Value{e, engine.IntValue(i), arr})
+			v, err := fn.callWith(thisArg, []engine.Value{e, engine.IntValue(i), arr})
 			if err != nil {
 				return nil, err
 			}
@@ -610,10 +612,11 @@ func (interp *Interpreter) setupArrayProto() {
 		if err != nil {
 			return nil, err
 		}
+		thisArg := argsThis(args) // N22-A2
 		elems := arr.Elems()
 		var result []engine.Value
 		for i, e := range elems {
-			v, err := fn.callWith(engine.Undefined(), []engine.Value{e, engine.IntValue(i), arr})
+			v, err := fn.callWith(thisArg, []engine.Value{e, engine.IntValue(i), arr})
 			if err != nil {
 				return nil, err
 			}
@@ -648,6 +651,7 @@ func (interp *Interpreter) setupArrayProto() {
 			startIdx = 1
 		}
 		for i := startIdx; i < len(elems); i++ {
+			// Node 语义：reduce 无 thisArg 参数（callback 的 this 为 undefined）。
 			v, err := fn.callWith(engine.Undefined(), []engine.Value{acc, elems[i], engine.IntValue(i), arr})
 			if err != nil {
 				return nil, err

@@ -565,3 +565,18 @@ func TestPackageExportsRequireCondition(t *testing.T) {
 		t.Errorf("require('is-promise') = %q, want 'fn' (require condition must win over import)", got)
 	}
 }
+
+// TestRequireESM：CJS require 同步加载 ESM（Node 22 require(esm) 语义）：
+// 命名/默认导出 + __esModule 互操作标记（N22-A3）。
+func TestRequireESM(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"entry.cjs": `var m = require('./esm.mjs');
+			globalThis.__r = m.named + '|' + (typeof m.default) + '|' + (m.__esModule === true) + '|' + Object.keys(m).sort().join(',');`,
+		"esm.mjs": `export const named = 42;
+			export default function greet() { return 'hi'; }`,
+	})
+	env.run(t, "entry.cjs")
+	if got := env.globalGet("__r"); got != "42|function|true|__esModule,default,named" {
+		t.Errorf("require(esm) = %q, want 42|function|true|__esModule,default,named", got)
+	}
+}

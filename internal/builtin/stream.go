@@ -20,18 +20,18 @@ func NewStream(ctx engine.Context) (engine.Value, error) {
 	// 同时挂载 Readable/Writable 等子类。send 等包执行 `Stream.call(this)`，
 	// 因此导出必须是可调用函数而非普通对象。
 	m := engine.NewFunction("Stream", func(args []engine.Value) (engine.Value, error) {
-		return newReadableStream(args), nil
+		return newReadableStream(ctx, args), nil
 	})
 	mObj, _ := m.AsObject()
 
 	// Readable 构造器：new Readable(options) 创建可读流。
 	readableCtor := engine.NewFunction("Readable", func(args []engine.Value) (engine.Value, error) {
-		return newReadableStream(args), nil
+		return newReadableStream(ctx, args), nil
 	})
 	rObj, _ := readableCtor.AsObject()
 	// Readable.from(iterable)：从数组/字符串创建可读流。
 	_ = rObj.Set("from", engine.NewFunction("from", func(args []engine.Value) (engine.Value, error) {
-		return newReadableFrom(args), nil
+		return newReadableFrom(ctx, args), nil
 	}))
 	// Readable.fromWeb(webStream)：把 Web ReadableStream 包装为 Node 可读流
 	// （Node ≥ 17）。经 getReader().read() Promise 链桥接数据到 push()。
@@ -41,7 +41,7 @@ func NewStream(ctx engine.Context) (engine.Value, error) {
 			return engine.Undefined(), fmt.Errorf("%w: Readable.fromWeb requires a ReadableStream", engine.ErrTypeError)
 		}
 		web := args[0]
-		nodeStream := newReadableStream(nil)
+		nodeStream := newReadableStream(ctx, nil)
 		vm, ok := ctx.(*interpreter.VM)
 		if !ok {
 			return nodeStream, nil
@@ -64,13 +64,13 @@ func NewStream(ctx engine.Context) (engine.Value, error) {
 
 	// Duplex 构造器：new Duplex(options) 创建双工流。
 	duplexCtor := engine.NewFunction("Duplex", func(args []engine.Value) (engine.Value, error) {
-		return newDuplexStream(args), nil
+		return newDuplexStream(ctx, args), nil
 	})
 	_ = mObj.Set("Duplex", duplexCtor)
 
 	// Transform 构造器：new Transform(options) 创建转换流。
 	transformCtor := engine.NewFunction("Transform", func(args []engine.Value) (engine.Value, error) {
-		return newTransformStream(args), nil
+		return newTransformStream(ctx, args), nil
 	})
 	_ = mObj.Set("Transform", transformCtor)
 
@@ -104,7 +104,7 @@ func NewStream(ctx engine.Context) (engine.Value, error) {
 // --- Readable ------------------------------------------------------------
 
 // newReadableStream 创建一个可读流（基于 EventEmitter）。
-func newReadableStream(args []engine.Value) engine.Value {
+func newReadableStream(ctx engine.Context, args []engine.Value) engine.Value {
 	// stream 基于 EventEmitter（获得 on/emit/off 等事件能力）。
 	stream := newEmitterInstance().(engine.Object)
 
@@ -242,12 +242,104 @@ func newReadableStream(args []engine.Value) engine.Value {
 		_ = stream.Set("on", wrappedOn)
 	}
 
+	// Symbol.asyncIterator：for await...of 流迭代（Node 语义）。
+	// 注册 'data'/'end' 监听消费数据（on('data') 自动触发 flowing）；
+	// next() 返回 Promise<{done, value}>：队列有数据立即 resolve，
+	// 流结束（end）后返回 {done:true}，否则挂起等待数据到达。
+	if ctx != nil {
+		iterState := &readableIterState{queue: []engine.Value{}}
+		onData := engine.NewFunction("__iterData", func(ca []engine.Value) (engine.Value, error) {
+			if len(ca) > 0 {
+				iterState.queue = append(iterState.queue, ca[0])
+				iterState.flush()
+			}
+			return engine.Undefined(), nil
+		})
+		onEnd := engine.NewFunction("__iterEnd", func(ca []engine.Value) (engine.Value, error) {
+			iterState.ended = true
+			iterState.flush()
+			return engine.Undefined(), nil
+		})
+		iterObj := engine.NewObject()
+		nextFn := engine.NewFunction("next", func(ca []engine.Value) (engine.Value, error) {
+			vm, ok := ctx.(*interpreter.VM)
+			if !ok {
+				return engine.Undefined(), fmt.Errorf("stream asyncIterator: requires the VM engine")
+			}
+			p := interpreter.NewPromiseValue(vm.Interp())
+			if len(iterState.queue) > 0 {
+				v := iterState.queue[0]
+				iterState.queue = iterState.queue[1:]
+				p.Fulfill(iterResult(engine.Boolean(false), v))
+			} else if iterState.ended {
+				p.Fulfill(iterResult(engine.Boolean(true), engine.Undefined()))
+			} else {
+				iterState.waiters = append(iterState.waiters, p)
+			}
+			return p, nil
+		})
+		_ = iterObj.Set("next", nextFn)
+		// 监听器延迟到迭代器实际创建时注册（[Symbol.asyncIterator]() 调用）
+		// ——构造时挂载会无条件截胡所有 'data' 事件（非迭代场景数据丢失）。
+		_ = stream.Set(engine.SymbolAsyncIterator.SymbolKey(),
+			engine.NewFunction("__asyncIterator", func(ca []engine.Value) (engine.Value, error) {
+				if !iterState.started {
+					iterState.started = true
+					if onFn, err := stream.Get("on"); err == nil && onFn.IsFunction() {
+						if f, ok := onFn.AsFunction(); ok {
+							_, _ = f.Call([]engine.Value{engine.Str("data"), onData})
+							_, _ = f.Call([]engine.Value{engine.Str("end"), onEnd})
+						}
+					}
+					// 同步已结束状态：push(null) 早于迭代器创建时
+					// 'end' 事件已发出（无监听者），补标记。
+					if state.ended {
+						iterState.ended = true
+					}
+				}
+				return iterObj, nil
+			}))
+	}
+
 	return stream
 }
 
+// readableIterState 是流异步迭代器的内部状态（队列 + 等待者）。
+type readableIterState struct {
+	queue   []engine.Value
+	waiters []*interpreter.PromiseValue
+	ended   bool
+	started bool // data/end 监听器已注册（迭代器首次创建时）
+}
+
+// flush 把队列数据分发给等待的 next()；流结束后剩余的等待者收到 done。
+func (s *readableIterState) flush() {
+	for len(s.queue) > 0 && len(s.waiters) > 0 {
+		v := s.queue[0]
+		s.queue = s.queue[1:]
+		w := s.waiters[0]
+		s.waiters = s.waiters[1:]
+		w.Fulfill(iterResult(engine.Boolean(false), v))
+	}
+	if s.ended {
+		for _, w := range s.waiters {
+			w.Fulfill(iterResult(engine.Boolean(true), engine.Undefined()))
+		}
+		s.waiters = nil
+	}
+}
+
+// iterResult 构造迭代器结果对象 { done, value }。
+func iterResult(done, value engine.Value) engine.Value {
+	o := engine.NewObject()
+	_ = o.Set("done", done)
+	_ = o.Set("value", value)
+	return o
+}
+
 // newReadableFrom 从数组/字符串创建可读流。
-func newReadableFrom(args []engine.Value) engine.Value {
-	stream := newReadableStream(nil)
+func newReadableFrom(ctx engine.Context, args []engine.Value) engine.Value {
+	stream := newReadableStream(ctx, nil)
 
 	if len(args) > 0 {
 		src := args[0]
@@ -365,9 +457,9 @@ func newWritableStream(args []engine.Value) engine.Value {
 // --- Duplex & Transform --------------------------------------------------
 
 // newDuplexStream 创建双工流（同时可读可写）。
-func newDuplexStream(args []engine.Value) engine.Value {
+func newDuplexStream(ctx engine.Context, args []engine.Value) engine.Value {
 	// Duplex = Readable + Writable 的合并。
-	stream := newReadableStream(args).(engine.Object)
+	stream := newReadableStream(ctx, args).(engine.Object)
 	writable := newWritableStream(args).(engine.Object)
 
 	// 合并 writable 方法到 stream 对象。
@@ -388,8 +480,8 @@ func newDuplexStream(args []engine.Value) engine.Value {
 }
 
 // newTransformStream 创建转换流（可读可写，写入数据经 transform 后推到可读端）。
-func newTransformStream(args []engine.Value) engine.Value {
-	stream := newDuplexStream(args).(engine.Object)
+func newTransformStream(ctx engine.Context, args []engine.Value) engine.Value {
+	stream := newDuplexStream(ctx, args).(engine.Object)
 
 	// 解析 transform 函数。
 	var transformFn engine.Value
@@ -563,9 +655,10 @@ func drainToDest(state *streamState, dest engine.Value) {
 	}
 }
 
-// pipeDest 返回流的 pipe 目标（未 pipe 时 nil）。
+// pipeDest 返回流的 pipe 目标（未 pipe 时 nil——Get 未设置键返回 Undefined，
+// 必须排除，否则 push 会误判有目标而走 drainToDest 丢数据）。
 func pipeDest(src engine.Object) engine.Value {
-	if d, err := src.Get("__pipeDest"); err == nil {
+	if d, err := src.Get("__pipeDest"); err == nil && d != nil && !d.IsUndefined() && !d.IsNull() {
 		return d
 	}
 	return nil

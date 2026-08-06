@@ -602,3 +602,49 @@ main();
 		t.Errorf("fromWeb pipeline = %q, want web1web2", got)
 	}
 }
+
+// TestReadableAsyncIterator：for await...of 流迭代（N22-A1）。
+func TestReadableAsyncIterator(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var { Readable } = require('node:stream');
+async function main() {
+  var src = new Readable();
+  src.push('a');
+  src.push('b');
+  src.push(null);
+  var out = '';
+  for await (var c of src) { out += c; }
+  globalThis.__r = out;
+}
+main();
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "ab" {
+		t.Errorf("for-await stream = %q, want ab", got)
+	}
+}
+
+// TestReadableAsyncIteratorAsyncData：异步数据到达 + 等待中的 next() 唤醒。
+func TestReadableAsyncIteratorAsyncData(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var { Readable } = require('node:stream');
+async function main() {
+  var src = new Readable();
+  setTimeout(function() { src.push('x'); src.push(null); }, 10);
+  var out = '';
+  for await (var c of src) { out += c; }
+  globalThis.__r = out;
+}
+main();
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "x" {
+		t.Errorf("async for-await = %q, want x", got)
+	}
+}

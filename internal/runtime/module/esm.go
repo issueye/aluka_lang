@@ -165,6 +165,14 @@ func (l *Loader) RunPrecompiled(path string, mod *bytecode.Module, isESM bool) (
 	// Mark as loaded
 	_ = moduleObj.Set("loaded", engine.Boolean(true))
 
+	// ESM 模块的 CJS 互操作标记（Node 22 require(esm) 语义）：
+	// 导出对象带 __esModule: true，CJS 侧可据此识别 ESM 导出。
+	if isESM {
+		if fo, ok := finalExports.AsObject(); ok {
+			_ = fo.Set("__esModule", engine.Boolean(true))
+		}
+	}
+
 	// Update cache with final exports
 	l.mu.Lock()
 	l.cache[path] = finalExports
