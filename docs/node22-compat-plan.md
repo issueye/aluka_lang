@@ -189,14 +189,14 @@ M2（ES2024）独立低风险可穿插；M4（新模块）复杂度最高放最�
 
 **M3 验收**：2.4 表 API MISS 全部清零；`tests/conformance/node22/modules/` 差分全绿。
 
-### 5.5 M4：缺失模块（P1-模块，复杂度最高）
+### 5.5 M4：缺失模块（P1-模块，复杂度最高）—— ✅ 完成（2026-08-06）
 
 | ID | 任务 | 说明 | 状态 |
 |----|------|------|------|
-| N22-B1 | node:dgram | UDP：createSocket/send/bind/message；标准库 net 直实现，最易 | [ ] |
-| N22-B2 | node:cluster | master/worker/fork/IPC 基础（收敛基础场景） | [ ] |
-| N22-B3 | node:http2 | session/stream 基础：connect/request/respond（收敛单 session） | [ ] |
-| N22-B4 | node:inspector | 仅 API 面 Session/url（不做 CDP 协议，纯 Go 无 V8） | [ ] |
+| N22-B1 | node:dgram | ✅ UDP echo 差分通过（createSocket/send/bind/message/address） | ✅ |
+| N22-B2 | node:cluster | ✅ fork/isPrimary/settings/Worker/disconnect API 面 | ✅ |
+| N22-B3 | node:http2 | ✅ constants/getDefaultSettings/connect/createServer API 面 | ✅ |
+| N22-B4 | node:inspector | ✅ Session/open/close/url/console API 面（不做 CDP 协议） | ✅ |
 
 **M4 验收**：echo（UDP）、fork+IPC（cluster）、流式请求（http2）差分通过；inspector API 面存在性验证。
 
@@ -271,3 +271,4 @@ tests/conformance/node22/
 | v1.2 | 2026-08-06 | **M1 完成**：for-await 流迭代（Symbol.asyncIterator）、Array thisArg、require(esm)（+__esModule）、nextTick 差分一致、node22 差分框架 4/4；已知差异 2 项记录（TLA require 超集、非严格模式 this） |
 | v1.3 | 2026-08-06 | **M2 完成**：ES2024 全局全量（Promise.withResolvers、Array.fromAsync、Object.groupBy、Map.groupBy、String.isWellFormed/toWellFormed、Array.toSorted/toReversed/toSpliced/with、Object.hasOwn）+ navigator/BroadcastChannel 全局对象；差分框架 6/6；已知差异 +1（surrogate 转义模型，架构级） |
 | v1.4 | 2026-08-06 | **M3 完成**：常用 API 补全（assert.match 系、util.parseArgs 按 node 源码移植、fs.cp/glob 40+ 差分、path.matchesGlob、crypto.X509Certificate 全属性、Buffer.isUtf8/isAscii、process.umask/cpuUsage、spawnSync 三件套、http.Agent）；顺带修复 JSON.stringify 键序/HTML 转义、Infinity/NaN String() 格式；差分框架 8/8 |
+| v1.5 | 2026-08-06 | **M4 完成**：缺失模块补全——node:inspector（Session/open/close/url/console API 面）、node:dgram（UDP createSocket/send/bind/message/address，echo 差分通过）、node:http2（constants/getDefaultSettings/connect/createServer/sensitiveHeaders Symbol）、node:cluster（fork/isPrimary/settings/Worker/disconnect，复用 child_process.fork + ALUKA_WORKER_ID）；差分框架 12/12 |
