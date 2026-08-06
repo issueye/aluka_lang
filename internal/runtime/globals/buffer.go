@@ -87,7 +87,49 @@ func NewBufferModule(ctx engine.Context) (engine.Value, error) {
 	_ = m.Set("SlowBuffer", buf) // 简化：同 Buffer（无慢速分配语义）
 	_ = m.Set("kMaxLength", engine.IntValue(1<<30))
 	_ = m.Set("constants", engine.NewObject())
+
+	// buffer.isUtf8/isAscii（Node 22：仅在 node:buffer 模块导出，
+	// Buffer 类上无此方法——实测）。
+	_ = m.Set("isUtf8", engine.NewFunction("isUtf8", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Boolean(false), nil
+		}
+		data, ok := bufferBytes(args[0])
+		if !ok {
+			return engine.Boolean(false), nil
+		}
+		return engine.Boolean(utf8.Valid(data)), nil
+	}))
+	_ = m.Set("isAscii", engine.NewFunction("isAscii", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Boolean(false), nil
+		}
+		data, ok := bufferBytes(args[0])
+		if !ok {
+			return engine.Boolean(false), nil
+		}
+		for _, b := range data {
+			if b >= 0x80 {
+				return engine.Boolean(false), nil
+			}
+		}
+		return engine.Boolean(true), nil
+	}))
 	return m, nil
+}
+
+// bufferBytes 提取 Buffer/TypedArray/ArrayBuffer 的字节。
+func bufferBytes(v engine.Value) ([]byte, bool) {
+	if bv, ok := v.(*engine.BufferValue); ok {
+		return bv.Bytes(), true
+	}
+	if data, ok := engine.AsArrayBuffer(v); ok {
+		return data, true
+	}
+	if ta, ok := engine.AsTypedArray(v); ok {
+		return ta.Bytes(), true
+	}
+	return nil, false
 }
 
 // newBufferExports 创建 Buffer 构造器（含静态方法与 prototype 占位）。

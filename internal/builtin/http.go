@@ -29,6 +29,9 @@ import (
 func NewHTTP(ctx engine.Context) (engine.Value, error) {
 	m := engine.NewObject()
 
+	// http.Agent + globalAgent（keepAlive 连接复用）。
+	registerHttpAgent(m)
+
 	// http.createServer([handler]) → Server 对象。
 	_ = m.Set("createServer", engine.NewFunction("createServer", func(args []engine.Value) (engine.Value, error) {
 		var handler engine.Value
@@ -150,6 +153,14 @@ func newHTTPServerWithTLS(ctx engine.Context, handler engine.Value, tlsConfig *t
 		srv := &http.Server{Addr: addr, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			state.handleRequest(w, r)
 		})}
+		// 连接建立 → 'connection' 事件（Node 语义：server.on('connection')）。
+		srv.ConnState = func(c net.Conn, cs http.ConnState) {
+			if cs == http.StateNew {
+				ctx.PostTask(func() {
+					emitEvent(server, "connection", engine.Undefined())
+				})
+			}
+		}
 		state.mu.Lock()
 		state.httpSrv = srv
 		state.listening = true
@@ -338,6 +349,16 @@ func newIncomingMessage(r *http.Request, body []byte) engine.Value {
 	_ = msg.Set("method", engine.Str(method))
 	_ = msg.Set("url", engine.Str(urlStr))
 	_ = msg.Set("httpVersion", engine.Str("1.1"))
+	// 流式方法（简化：aluka 响应一次性给出，resume/pause 为空操作）。
+	_ = msg.Set("resume", engine.NewFunction("resume", func(args []engine.Value) (engine.Value, error) {
+		return msg, nil
+	}))
+	_ = msg.Set("pause", engine.NewFunction("pause", func(args []engine.Value) (engine.Value, error) {
+		return msg, nil
+	}))
+	_ = msg.Set("destroy", engine.NewFunction("destroy", func(args []engine.Value) (engine.Value, error) {
+		return msg, nil
+	}))
 	if r != nil {
 		h := headersToObj(r.Header)
 		// Go 的 http.Request 把 content-length 存在 ContentLength 字段而非
@@ -556,7 +577,9 @@ type clientReqState struct {
 	body        strings.Builder
 	callback    engine.Value // 响应回调
 	ended       bool
-	insecureTLS bool // rejectUnauthorized: false（跳过自签名证书校验）
+	insecureTLS bool           // rejectUnauthorized: false（跳过自签名证书校验）
+	agent       *http.Transport // options.agent 的连接池（nil 时按 noAgent/全局）
+	noAgent     bool            // agent: false → 每次请求新建连接
 }
 
 // newClientRequest 创建 ClientRequest 对象（HTTP）。
@@ -610,6 +633,12 @@ func newClientRequestProto(ctx engine.Context, args []engine.Value, proto string
 					if b, ok := r.Bool(); ok && !b {
 						state.insecureTLS = true // 跳过自签名证书校验
 					}
+				}
+				// agent：Agent 实例 → 连接池；false → 不复用；缺省 → 全局。
+				if a, err := o.Get("agent"); err == nil {
+					tr, noReuse := resolveAgentTransport(a)
+					state.agent = tr
+					state.noAgent = noReuse
 				}
 			}
 		}
@@ -673,6 +702,13 @@ func (s *clientReqState) send() {
 			req.Header.Set(k, v)
 		}
 		client := &http.Client{}
+		if s.agent != nil {
+			// 显式 Agent（keepAlive 连接池）。
+			client.Transport = s.agent
+		} else if !s.noAgent {
+			// 缺省：全局共享 Transport（连接复用，Node globalAgent 语义）。
+			client.Transport = getHttpGlobalTransport()
+		}
 		if s.insecureTLS {
 			client.Transport = &http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // 自签名证书（本地开发）
@@ -687,8 +723,10 @@ func (s *clientReqState) send() {
 			})
 			return
 		}
-		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
+		// 先归还连接（keep-alive 复用）再投递回调——否则回调（含下一个
+		// 请求）可能在连接归还前执行，导致连接池为空而新建连接。
+		_ = resp.Body.Close()
 
 		// 构造响应对象并回调 JS。
 		s.ctx.PostTask(func() {

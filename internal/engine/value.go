@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"math"
 	"math/big"
 	"strconv"
 	"strings"
@@ -189,6 +190,16 @@ func BigIntValue(v Value) (*big.Int, bool) {
 
 // formatNumber 按 JS Number.prototype.toString 规则格式化。
 func formatNumber(n float64) string {
+	// JS 特殊值（Infinity / -Infinity / NaN）。
+	if math.IsInf(n, 1) {
+		return "Infinity"
+	}
+	if math.IsInf(n, -1) {
+		return "-Infinity"
+	}
+	if math.IsNaN(n) {
+		return "NaN"
+	}
 	// 整数：去掉小数点
 	if n == float64(int64(n)) && n >= -9007199254740991 && n <= 9007199254740991 {
 		return strconv.FormatInt(int64(n), 10)

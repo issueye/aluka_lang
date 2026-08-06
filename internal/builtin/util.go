@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -138,6 +139,12 @@ func NewUtil(ctx engine.Context) (engine.Value, error) {
 		return engine.Str(args[1].String()), nil
 	}))
 
+	// util.parseArgs(config)：CLI 参数解析（Node 22 稳定语义，按
+	// node v22.x lib/internal/util/parse_args 移植）。
+	_ = m.Set("parseArgs", engine.NewFunction("parseArgs", func(args []engine.Value) (engine.Value, error) {
+		return parseArgsImpl(ctx, args)
+	}))
+
 	// util.types 子对象
 	types := engine.NewObject()
 	registerUtilTypes(types)
@@ -158,6 +165,412 @@ func NewUtilTypes(ctx engine.Context) (engine.Value, error) {
 	types := engine.NewObject()
 	registerUtilTypes(types)
 	return types, nil
+}
+
+// --- util.parseArgs（Node 22 语义，按 node v22.x lib/internal/util/parse_args 移植）---
+
+type parseArgsToken struct {
+	kind        string // option | positional | option-terminator
+	name        string
+	rawName     string
+	index       int
+	value       engine.Value
+	hasValue    bool
+	inlineValue bool
+}
+
+type parseArgsOpt struct {
+	typ      string // string | boolean
+	short    string
+	multiple bool
+	hasDef   bool
+	def      engine.Value
+}
+
+// codedError 携带 Node 风格错误码的错误（经 goErrorToJSValue 转为 err.code）。
+type codedError struct {
+	err  error
+	code string
+}
+
+func (e *codedError) Error() string { return e.err.Error() }
+func (e *codedError) Unwrap() error { return e.err }
+func (e *codedError) Code() string  { return e.code }
+
+func parseArgsError(code, msg string) error {
+	return &codedError{err: fmt.Errorf("%w: %s", engine.ErrTypeError, msg), code: code}
+}
+
+// parseArgsImpl 实现 util.parseArgs（Node 22 稳定语义）。
+func parseArgsImpl(ctx engine.Context, args []engine.Value) (engine.Value, error) {
+	var config engine.Object
+	if len(args) > 0 {
+		if o, ok := args[0].AsObject(); ok {
+			config = o
+		}
+	}
+	getCfg := func(name string) engine.Value {
+		if config == nil {
+			return engine.Undefined()
+		}
+		v, _ := config.Get(name)
+		return v
+	}
+	// ?? 语义：undefined 或缺省 → 默认值。
+	cfgBool := func(name string, def bool) bool {
+		v := getCfg(name)
+		if v.IsUndefined() {
+			return def
+		}
+		if b, ok := v.Bool(); ok {
+			return b
+		}
+		return def
+	}
+	strict := cfgBool("strict", true)
+	allowPositionals := cfgBool("allowPositionals", !strict)
+	returnTokens := cfgBool("tokens", false)
+	allowNegative := cfgBool("allowNegative", false)
+
+	// args：默认 process.argv.slice(2)。
+	var argsArr []engine.Value
+	if v := getCfg("args"); !v.IsUndefined() {
+		if av, ok := v.(*engine.ArrayValue); ok {
+			for _, k := range av.Keys() {
+				if k == "length" {
+					continue
+				}
+				iv, _ := av.Get(k)
+				argsArr = append(argsArr, iv)
+			}
+		}
+	} else {
+		if pv, err := ctx.Global().Get("process"); err == nil {
+			if po, ok := pv.AsObject(); ok {
+				if argv, err := po.Get("argv"); err == nil {
+					if arr, ok := argv.(*engine.ArrayValue); ok {
+						for _, k := range arr.Keys() {
+							if k == "length" {
+								continue
+							}
+							idx, aerr := strconv.Atoi(k)
+							if aerr != nil || idx < 2 {
+								continue
+							}
+							iv, _ := arr.Get(k)
+							argsArr = append(argsArr, iv)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// options 配置表。
+	opts := map[string]parseArgsOpt{}
+	if v := getCfg("options"); !v.IsUndefined() {
+		if oo, ok := v.AsObject(); ok {
+			for _, k := range oo.Keys() {
+				if k == "__proto__" {
+					continue
+				}
+				o := parseArgsOpt{typ: "boolean"}
+				if oc, ok2 := oo.Get(k); ok2 == nil {
+					if co, ok3 := oc.AsObject(); ok3 {
+						if tv, e := co.Get("type"); e == nil && tv.Type() == engine.TypeString {
+							o.typ = tv.String()
+						}
+						if sv, e := co.Get("short"); e == nil && sv.Type() == engine.TypeString {
+							o.short = sv.String()
+						}
+						if mv, e := co.Get("multiple"); e == nil {
+							if mb, ok4 := mv.Bool(); ok4 {
+								o.multiple = mb
+							}
+						}
+						if dv, e := co.Get("default"); e == nil && !dv.IsUndefined() {
+							o.hasDef = true
+							o.def = dv
+						}
+					}
+				}
+				opts[k] = o
+			}
+		}
+	}
+
+	tokens := parseArgsToTokens(argsArr, opts)
+
+	// Phase 2：处理 tokens。
+	values := engine.NewObject() // null-prototype（Node 语义）
+	var positionals []engine.Value
+	for _, t := range tokens {
+		switch t.kind {
+		case "option":
+			if strict {
+				if err := parseCheckOptionUsage(t, opts, allowNegative, allowPositionals); err != nil {
+					return engine.Undefined(), err
+				}
+			}
+			storeParseOption(t, opts, values, allowNegative)
+		case "positional":
+			if !allowPositionals {
+				return engine.Undefined(), parseArgsError("ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL",
+					fmt.Sprintf("Unexpected argument '%s'. This command does not take positional arguments", t.value.String()))
+			}
+			positionals = append(positionals, t.value)
+		}
+	}
+
+	// Phase 3：默认值。
+	for name, o := range opts {
+		if o.hasDef {
+			if v, err := values.Get(name); err == nil && v.IsUndefined() {
+				_ = values.Set(name, o.def)
+			}
+		}
+	}
+
+	result := engine.NewObject()
+	_ = result.Set("values", values)
+	posArr := engine.NewArray(positionals)
+	_ = result.Set("positionals", posArr)
+	if returnTokens {
+		tokArr := engine.NewArray(nil)
+		for i, t := range tokens {
+			tokObj := engine.NewObject()
+			_ = tokObj.Set("kind", engine.Str(t.kind))
+			switch t.kind {
+			case "option":
+				_ = tokObj.Set("name", engine.Str(t.name))
+				_ = tokObj.Set("rawName", engine.Str(t.rawName))
+				_ = tokObj.Set("index", engine.Number(float64(t.index)))
+				if t.hasValue {
+					_ = tokObj.Set("value", t.value)
+				}
+				_ = tokObj.Set("inlineValue", engine.Boolean(t.inlineValue))
+			case "positional":
+				_ = tokObj.Set("index", engine.Number(float64(t.index)))
+				_ = tokObj.Set("value", t.value)
+			case "option-terminator":
+				_ = tokObj.Set("index", engine.Number(float64(t.index)))
+			}
+			_ = tokArr.Set(strconv.Itoa(i), tokObj)
+		}
+		_ = result.Set("tokens", tokArr)
+	}
+	return result, nil
+}
+
+// parseFindLongForShort 查找 short 对应的 long 选项名；未配置则返回 short 本身。
+func parseFindLongForShort(short string, opts map[string]parseArgsOpt) string {
+	for name, o := range opts {
+		if o.short == short {
+			return name
+		}
+	}
+	return short
+}
+
+// parseArgsToTokens 分词（argsToTokens 移植）。
+func parseArgsToTokens(args []engine.Value, opts map[string]parseArgsOpt) []parseArgsToken {
+	var tokens []parseArgsToken
+	remaining := append([]engine.Value{}, args...)
+	index := -1
+	groupCount := 0
+
+	for len(remaining) > 0 {
+		arg := remaining[0]
+		remaining = remaining[1:]
+		var nextArg engine.Value = engine.Undefined()
+		if len(remaining) > 0 {
+			nextArg = remaining[0]
+		}
+		if groupCount > 0 {
+			groupCount--
+		} else {
+			index++
+		}
+		argStr := arg.String()
+
+		// 裸 '--'：其后全部为 positional。
+		if argStr == "--" {
+			tokens = append(tokens, parseArgsToken{kind: "option-terminator", index: index})
+			for _, r := range remaining {
+				index++
+				tokens = append(tokens, parseArgsToken{kind: "positional", index: index, value: r})
+			}
+			break
+		}
+
+		// isLoneShortOption：'-f'。
+		if len(argStr) == 2 && argStr[0] == '-' && argStr[1] != '-' {
+			short := argStr[1:2]
+			long := parseFindLongForShort(short, opts)
+			var value engine.Value = engine.Undefined()
+			hasValue := false
+			if o, ok := opts[long]; ok && o.typ == "string" && !nextArg.IsUndefined() && !nextArg.IsNull() {
+				value = nextArg
+				hasValue = true
+				remaining = remaining[1:]
+			}
+			tokens = append(tokens, parseArgsToken{kind: "option", name: long, rawName: argStr,
+				index: index, value: value, hasValue: hasValue, inlineValue: false})
+			if hasValue {
+				index++
+			}
+			continue
+		}
+
+		// isShortOptionGroup：'-abc' 展开（首个 short 不是 string 类型）。
+		if len(argStr) > 2 && argStr[0] == '-' && argStr[1] != '-' {
+			first := argStr[1:2]
+			long := parseFindLongForShort(first, opts)
+			if o, ok := opts[long]; !ok || o.typ != "string" {
+				var expanded []string
+				for i := 1; i < len(argStr); i++ {
+					c := argStr[i : i+1]
+					l := parseFindLongForShort(c, opts)
+					if oo, ok2 := opts[l]; ok2 && oo.typ == "string" && i != len(argStr)-1 {
+						expanded = append(expanded, "-"+argStr[i:])
+						break
+					}
+					expanded = append(expanded, "-"+c)
+				}
+				newRemaining := make([]engine.Value, 0, len(expanded)+len(remaining))
+				for _, e := range expanded {
+					newRemaining = append(newRemaining, engine.Str(e))
+				}
+				remaining = append(newRemaining, remaining...)
+				groupCount = len(expanded)
+				continue
+			}
+		}
+
+		// isShortOptionAndValue：'-fFILE'。
+		if len(argStr) > 2 && argStr[0] == '-' && argStr[1] != '-' {
+			short := argStr[1:2]
+			long := parseFindLongForShort(short, opts)
+			if o, ok := opts[long]; ok && o.typ == "string" {
+				tokens = append(tokens, parseArgsToken{kind: "option", name: long, rawName: "-" + short,
+					index: index, value: engine.Str(argStr[2:]), hasValue: true, inlineValue: true})
+				continue
+			}
+		}
+
+		// isLoneLongOption：'--foo'。
+		if len(argStr) > 2 && strings.HasPrefix(argStr, "--") && !strings.Contains(argStr[3:], "=") {
+			long := argStr[2:]
+			var value engine.Value = engine.Undefined()
+			hasValue := false
+			if o, ok := opts[long]; ok && o.typ == "string" && !nextArg.IsUndefined() && !nextArg.IsNull() {
+				value = nextArg
+				hasValue = true
+				remaining = remaining[1:]
+			}
+			tokens = append(tokens, parseArgsToken{kind: "option", name: long, rawName: argStr,
+				index: index, value: value, hasValue: hasValue, inlineValue: false})
+			if hasValue {
+				index++
+			}
+			continue
+		}
+
+		// isLongOptionAndValue：'--foo=bar'。
+		if len(argStr) > 2 && strings.HasPrefix(argStr, "--") && strings.Contains(argStr[3:], "=") {
+			eq := strings.Index(argStr[3:], "=") + 3
+			long := argStr[2:eq]
+			tokens = append(tokens, parseArgsToken{kind: "option", name: long, rawName: "--" + long,
+				index: index, value: engine.Str(argStr[eq+1:]), hasValue: true, inlineValue: true})
+			continue
+		}
+
+		tokens = append(tokens, parseArgsToken{kind: "positional", index: index, value: arg})
+	}
+	return tokens
+}
+
+// parseCheckOptionUsage strict 模式下的用法校验（checkOptionUsage +
+// checkOptionLikeValue 移植）。
+func parseCheckOptionUsage(t parseArgsToken, opts map[string]parseArgsOpt, allowNegative, allowPositionals bool) error {
+	tokName := t.name
+	if _, ok := opts[tokName]; !ok {
+		if allowNegative && strings.HasPrefix(tokName, "no-") {
+			base := tokName[3:]
+			if o, ok := opts[base]; !ok || o.typ != "boolean" {
+				return parseArgsError("ERR_PARSE_ARGS_UNKNOWN_OPTION", parseUnknownOptionMsg(t.rawName, allowPositionals))
+			}
+		} else {
+			return parseArgsError("ERR_PARSE_ARGS_UNKNOWN_OPTION", parseUnknownOptionMsg(t.rawName, allowPositionals))
+		}
+	}
+	o, _ := opts[tokName]
+	shortAndLong := "--" + tokName
+	if o.short != "" {
+		shortAndLong = "-" + o.short + ", --" + tokName
+	}
+	if o.typ == "string" && !t.hasValue {
+		return parseArgsError("ERR_PARSE_ARGS_INVALID_OPTION_VALUE",
+			fmt.Sprintf("Option '%s <value>' argument missing", shortAndLong))
+	}
+	if o.typ == "boolean" && t.hasValue {
+		return parseArgsError("ERR_PARSE_ARGS_INVALID_OPTION_VALUE",
+			fmt.Sprintf("Option '%s' does not take an argument", shortAndLong))
+	}
+	// checkOptionLikeValue：--port --verbose 类歧义。
+	if !t.inlineValue && t.hasValue {
+		vs := t.value.String()
+		if len(vs) > 1 && vs[0] == '-' {
+			example := fmt.Sprintf("'%s=-XYZ'", t.rawName)
+			if !strings.HasPrefix(t.rawName, "--") {
+				example = fmt.Sprintf("'--%s=-XYZ' or '%s-XYZ'", t.name, t.rawName)
+			}
+			return parseArgsError("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", fmt.Sprintf(
+				"Option '%s' argument is ambiguous.\nDid you forget to specify the option argument for '%s'?\nTo specify an option argument starting with a dash use %s.",
+				t.rawName, t.rawName, example))
+		}
+	}
+	return nil
+}
+
+func parseUnknownOptionMsg(option string, allowPositionals bool) string {
+	if allowPositionals {
+		return fmt.Sprintf("Unknown option '%s'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \"%s\"", option, option)
+	}
+	return fmt.Sprintf("Unknown option '%s'", option)
+}
+
+// storeParseOption 存储选项值（storeOption 移植）。
+func storeParseOption(t parseArgsToken, opts map[string]parseArgsOpt, values engine.Object, allowNegative bool) {
+	longName := t.name
+	val := engine.Undefined()
+	if t.hasValue {
+		val = t.value
+	}
+	if longName == "__proto__" {
+		return
+	}
+	if allowNegative && strings.HasPrefix(longName, "no-") && !t.hasValue {
+		// --no-foo → foo=false。
+		longName = longName[3:]
+		val = engine.Boolean(false)
+	}
+	newVal := val
+	if newVal.IsUndefined() {
+		newVal = engine.Boolean(true)
+	}
+	if o, ok := opts[longName]; ok && o.multiple {
+		if existing, err := values.Get(longName); err == nil && !existing.IsUndefined() {
+			if arr, ok := existing.(*engine.ArrayValue); ok {
+				_ = arr.Set(strconv.Itoa(len(arr.Keys())-1), newVal)
+			}
+		} else {
+			arr := engine.NewArray([]engine.Value{newVal})
+			_ = values.Set(longName, arr)
+		}
+	} else {
+		_ = values.Set(longName, newVal)
+	}
 }
 
 func debugSectionEnabled(section, setting string) bool {

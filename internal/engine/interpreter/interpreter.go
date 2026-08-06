@@ -667,6 +667,17 @@ func (interp *Interpreter) goErrorToJSValue(err error) engine.Value {
 	}
 	_ = errObj.Set("name", engine.Str(name))
 	_ = errObj.Set("message", engine.Str(msg))
+	// 携带 Node 风格错误码的错误（如 ERR_PARSE_ARGS_UNKNOWN_OPTION）→ err.code。
+	if ce, ok := err.(interface{ Code() string }); ok {
+		_ = errObj.Set("code", engine.Str(ce.Code()))
+	}
+	// exec 类错误：status/killed（execFileSync/execSync 非零退出与超时）。
+	if se, ok := err.(interface{ Status() int }); ok {
+		_ = errObj.Set("status", engine.IntValue(se.Status()))
+	}
+	if ke, ok := err.(interface{ Killed() bool }); ok {
+		_ = errObj.Set("killed", engine.Boolean(ke.Killed()))
+	}
 	return errObj
 }
 

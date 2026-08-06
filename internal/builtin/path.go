@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 )
@@ -127,6 +128,26 @@ func registerPathMethods(m engine.Object, platform string) {
 
 	_ = m.Set("sep", engine.Str(impl.sep))
 	_ = m.Set("delimiter", engine.Str(impl.delimiter))
+
+	// path.matchesGlob(path, pattern)：glob 匹配（Node 22.3+；注意参数顺序
+	// 是 (path, pattern)，与文档示例相反）。win32 时 '/' 与 '\' 等价。
+	_ = m.Set("matchesGlob", engine.NewFunction("matchesGlob", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Boolean(false), nil
+		}
+		p := args[0].String()
+		pat := args[1].String()
+		if platform == "win32" {
+			p = strings.ReplaceAll(p, "\\", "/")
+		}
+		nocase := runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+		for _, cp := range globCompilePattern(pat, nocase) {
+			if globFullMatchExact(cp, p) {
+				return engine.Boolean(true), nil
+			}
+		}
+		return engine.Boolean(false), nil
+	}))
 
 	_ = m.Set("join", engine.NewFunction("join", func(args []engine.Value) (engine.Value, error) {
 		parts := toStringSlice(args)

@@ -35,6 +35,9 @@ import (
 func NewCrypto(ctx engine.Context) (engine.Value, error) {
 	m := engine.NewObject()
 
+	// X509Certificate + createPrivateKey（Node 22 语义）。
+	registerX509(m)
+
 	// --- getHashes / hash ---
 	// undici and other Node packages use these convenience APIs for one-shot
 	// integrity checks. Keep the list deterministic and limited to algorithms

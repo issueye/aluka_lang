@@ -21,6 +21,9 @@ import (
 func NewHTTPS(ctx engine.Context) (engine.Value, error) {
 	m := engine.NewObject()
 
+	// https.Agent + globalAgent（复用 http 的 Agent 实现）。
+	registerHttpAgent(m)
+
 	// https.createServer([options][, handler])：options 需含 {key, cert}。
 	_ = m.Set("createServer", engine.NewFunction("createServer", func(args []engine.Value) (engine.Value, error) {
 		var handler engine.Value

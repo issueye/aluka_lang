@@ -32,6 +32,9 @@ func NewChildProcess(ctx engine.Context) (engine.Value, error) {
 		return forkChild(ctx, args), nil
 	}))
 
+	// 同步三件套（spawnSync/execFileSync/execSync）。
+	registerChildProcessSync(m)
+
 	return m, nil
 }
 

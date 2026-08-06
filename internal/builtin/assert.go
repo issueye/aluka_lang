@@ -135,6 +135,52 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 		return engine.Undefined(), fmt.Errorf("%w: %s", engine.ErrAssertion, msg)
 	}))
 
+	// assert.match(string, regexp, message)：字符串匹配正则（Node ≥ 15 语义）。
+	_ = m.Set("match", engine.NewFunction("match", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("%w: match: string and regexp arguments required", engine.ErrAssertion)
+		}
+		if !regexpTest(ctx, args[1], args[0]) {
+			msg := fmt.Sprintf("match: expected %s to match %s", args[0].String(), args[1].String())
+			if len(args) > 2 {
+				msg = fmt.Sprintf("%s: %s", msg, args[2].String())
+			}
+			return engine.Undefined(), fmt.Errorf("%w: %s", engine.ErrAssertion, msg)
+		}
+		return engine.Undefined(), nil
+	}))
+
+	// assert.doesNotMatch(string, regexp, message)
+	_ = m.Set("doesNotMatch", engine.NewFunction("doesNotMatch", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("%w: doesNotMatch: string and regexp arguments required", engine.ErrAssertion)
+		}
+		if regexpTest(ctx, args[1], args[0]) {
+			msg := fmt.Sprintf("doesNotMatch: expected %s to not match %s", args[0].String(), args[1].String())
+			if len(args) > 2 {
+				msg = fmt.Sprintf("%s: %s", msg, args[2].String())
+			}
+			return engine.Undefined(), fmt.Errorf("%w: %s", engine.ErrAssertion, msg)
+		}
+		return engine.Undefined(), nil
+	}))
+
+	// assert.partialDeepStrictEqual(actual, expected, message)：actual 必须
+	// 包含 expected 的所有属性（深严格比较），actual 可有多余属性。
+	_ = m.Set("partialDeepStrictEqual", engine.NewFunction("partialDeepStrictEqual", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 || !partialDeepStrictEqualImpl(args[0], args[1]) {
+			msg := "partialDeepStrictEqual mismatch"
+			if len(args) >= 2 {
+				msg = fmt.Sprintf("expected %s but got %s", args[1].String(), args[0].String())
+			}
+			if len(args) > 2 {
+				msg = fmt.Sprintf("%s: %s", msg, args[2].String())
+			}
+			return engine.Undefined(), fmt.Errorf("%w: %s", engine.ErrAssertion, msg)
+		}
+		return engine.Undefined(), nil
+	}))
+
 	// assert.rejects(promise|fn, [error], [message]) → Promise：断言目标 reject。
 	// assert.doesNotReject(...)：断言目标 resolve（Node ≥ 10 语义）。
 	_ = m.Set("rejects", engine.NewFunction("rejects", makeAssertPromise(ctx, true)))
@@ -160,7 +206,8 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	// 补全严格版方法（node:assert/strict 直接解构使用，Pi 用到
 	// deepStrictEqual/strictEqual/rejects）。
 	for _, name := range []string{"strictEqual", "notStrictEqual", "deepStrictEqual",
-		"notEqual", "doesNotThrow", "ifError", "fail", "rejects", "doesNotReject"} {
+		"notEqual", "doesNotThrow", "ifError", "fail", "rejects", "doesNotReject",
+		"match", "doesNotMatch", "partialDeepStrictEqual"} {
 		if v, _ := m.Get(name); v != nil {
 			_ = strict.Set(name, v)
 		}
@@ -305,16 +352,7 @@ func assertErrorMatches(ctx engine.Context, actual, expected engine.Value) bool 
 			if msg.IsUndefined() {
 				msg = actual
 			}
-			_ = ctx.Global().Set("__assertRe", expected)
-			_ = ctx.Global().Set("__assertMsg", msg)
-			defer ctx.Global().Delete("__assertRe")
-			defer ctx.Global().Delete("__assertMsg")
-			if v, err := ctx.Eval("__assertRe.test(__assertMsg)", "assert_rejects.js"); err == nil {
-				if b, ok := v.Bool(); ok {
-					return b
-				}
-			}
-			return false
+			return regexpTest(ctx, expected, msg)
 		}
 		// 普通对象 → 属性相等（期望对象的每个属性都匹配）。
 		if ao, ok := actual.AsObject(); ok {
@@ -330,6 +368,51 @@ func assertErrorMatches(ctx engine.Context, actual, expected engine.Value) bool 
 	}
 	// 其他 → 严格相等。
 	return strictEqual(actual, expected)
+}
+
+// regexpTest 经 Eval 桥接执行 re.test(target)（Go 侧 engine.Function.Call
+// 无 this 绑定，不能直接调用 RegExp.prototype.test）。
+func regexpTest(ctx engine.Context, re, target engine.Value) bool {
+	if reo, ok := re.AsObject(); ok {
+		if testFn, err := reo.Get("test"); err == nil && testFn.IsFunction() {
+			_ = ctx.Global().Set("__assertRe", re)
+			_ = ctx.Global().Set("__assertMsg", target)
+			defer ctx.Global().Delete("__assertRe")
+			defer ctx.Global().Delete("__assertMsg")
+			if v, err := ctx.Eval("__assertRe.test(__assertMsg)", "assert_regexp_test.js"); err == nil {
+				if b, ok := v.Bool(); ok {
+					return b
+				}
+			}
+			return false
+		}
+	}
+	return false
+}
+
+// partialDeepStrictEqualImpl：actual 必须包含 expected 的所有自有属性
+// （递归深严格比较），actual 可有多余属性。数组按索引属性比较，跳过
+// 不可枚举的 length（Node 语义：length 不参与比较）。
+func partialDeepStrictEqualImpl(actual, expected engine.Value) bool {
+	eo, ok := expected.AsObject()
+	if !ok {
+		return strictEqual(actual, expected)
+	}
+	ao, ok := actual.AsObject()
+	if !ok {
+		return false
+	}
+	for _, k := range eo.Keys() {
+		if k == "length" {
+			continue
+		}
+		ev, err1 := eo.Get(k)
+		av, err2 := ao.Get(k)
+		if err1 != nil || err2 != nil || !partialDeepStrictEqualImpl(av, ev) {
+			return false
+		}
+	}
+	return true
 }
 
 // makeErrorValue 构造带 message 的 Error 对象（Error("msg") 与 new Error 等价）。

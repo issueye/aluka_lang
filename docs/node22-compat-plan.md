@@ -176,16 +176,16 @@ M2（ES2024）独立低风险可穿插；M4（新模块）复杂度最高放最�
 
 **M2 验收**：ES2024 差分脚本（`tests/conformance/node22/es2024/`）与 node22 输出 100% 一致。
 
-### 5.4 M3：常用 API 补全（P1-API）
+### 5.4 M3：常用 API 补全（P1-API）—— ✅ 完成（2026-08-06）
 
 | ID | 任务 | 说明 | 状态 |
 |----|------|------|------|
-| N22-B5 | assert.match/doesNotMatch/partialDeepStrictEqual | 正则断言复用 assertErrorMatches 的 Eval/InvokeFn 模式 | [ ] |
-| N22-B6 | util.parseArgs | options/positionals/严格模式（Node 22 稳定语义） | [ ] |
-| N22-B7 | fs.cp/cpSync、fs.glob/globSync | 目录复制、glob 匹配（22.9 稳定） | [ ] |
-| N22-B8 | path.matchesGlob、crypto.X509Certificate、Buffer.isUtf8/isAscii | 单项补全 | [ ] |
-| N22-B9 | process.umask/cpuUsage、spawnSync/execFileSync/execSync | 同步子进程三件套 | [ ] |
-| N22-B10 | http.Agent（keepAlive 连接复用） | http/https 客户端补全 | [ ] |
+| N22-B5 | assert.match/doesNotMatch/partialDeepStrictEqual | ✅ 正则断言 + partialDeepStrictEqual（递归部分比较） | ✅ |
+| N22-B6 | util.parseArgs | ✅ 按 node v22.x 源码移植（strict/short/brace/--no-/错误码） | ✅ |
+| N22-B7 | fs.cp/cpSync、fs.glob/globSync | ✅ minimatch 子集移植 + 40+ 差分用例全绿 | ✅ |
+| N22-B8 | path.matchesGlob、crypto.X509Certificate、Buffer.isUtf8/isAscii | ✅ X509 全属性 + checkHost/verify/toLegacyObject | ✅ |
+| N22-B9 | process.umask/cpuUsage、spawnSync/execFileSync/execSync | ✅ 超时/编码/cwd/env/input 全支持 | ✅ |
+| N22-B10 | http.Agent（keepAlive 连接复用） | ✅ API 完整；精确连接计数复用留后续 | ✅ |
 
 **M3 验收**：2.4 表 API MISS 全部清零；`tests/conformance/node22/modules/` 差分全绿。
 
@@ -270,3 +270,4 @@ tests/conformance/node22/
 | v1.1 | 2026-08-06 | **里程碑规划**：阶段 A-D 打包为 M1-M5（运行时语义 → ES2024 → API → 模块 → 工具链），含工作量估、依赖关系、执行顺序与并行策略 |
 | v1.2 | 2026-08-06 | **M1 完成**：for-await 流迭代（Symbol.asyncIterator）、Array thisArg、require(esm)（+__esModule）、nextTick 差分一致、node22 差分框架 4/4；已知差异 2 项记录（TLA require 超集、非严格模式 this） |
 | v1.3 | 2026-08-06 | **M2 完成**：ES2024 全局全量（Promise.withResolvers、Array.fromAsync、Object.groupBy、Map.groupBy、String.isWellFormed/toWellFormed、Array.toSorted/toReversed/toSpliced/with、Object.hasOwn）+ navigator/BroadcastChannel 全局对象；差分框架 6/6；已知差异 +1（surrogate 转义模型，架构级） |
+| v1.4 | 2026-08-06 | **M3 完成**：常用 API 补全（assert.match 系、util.parseArgs 按 node 源码移植、fs.cp/glob 40+ 差分、path.matchesGlob、crypto.X509Certificate 全属性、Buffer.isUtf8/isAscii、process.umask/cpuUsage、spawnSync 三件套、http.Agent）；顺带修复 JSON.stringify 键序/HTML 转义、Infinity/NaN String() 格式；差分框架 8/8 |

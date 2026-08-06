@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -255,6 +256,136 @@ func NewFS(ctx engine.Context) (engine.Value, error) {
 			return engine.Undefined(), err
 		}
 		return engine.Str(abs), nil
+	}))
+
+	// fs.globSync(pattern[, options])：glob 匹配（Node 22 语义，遍历顺序一致）。
+	_ = m.Set("globSync", engine.NewFunction("globSync", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.NewArray(nil), nil
+		}
+		var patterns []*globPattern
+		nocase := runtime.GOOS == "windows" // Node glob nocase: isWindows || isMacOS
+		if arr, ok := args[0].(*engine.ArrayValue); ok {
+			for _, k := range arr.Keys() {
+				if k == "length" {
+					continue
+				}
+				iv, _ := arr.Get(k)
+				patterns = append(patterns, globCompilePattern(iv.String(), nocase)...)
+			}
+		} else {
+			patterns = globCompilePattern(args[0].String(), nocase)
+		}
+		opts := engine.Undefined()
+		if len(args) > 1 {
+			opts = args[1]
+		}
+		root, excludeFn, withFileTypes, err := globParseOptions(opts)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		g := newGlobEngine(root, nocase, excludeFn)
+		results := g.globSyncRun(patterns)
+		return engine.NewArray(globToResults(g, results, withFileTypes, root)), nil
+	}))
+
+	// fs.glob(pattern[, options], callback)：异步版本（回调风格）。
+	_ = m.Set("glob", engine.NewFunction("glob", func(args []engine.Value) (engine.Value, error) {
+		var pattern engine.Value = engine.Undefined()
+		var opts engine.Value = engine.Undefined()
+		cb := engine.Undefined()
+		for _, a := range args {
+			if a.IsFunction() {
+				cb = a
+			} else if pattern.IsUndefined() {
+				pattern = a
+			} else {
+				opts = a
+			}
+		}
+		if pattern.IsUndefined() {
+			return engine.Undefined(), fmt.Errorf("glob: pattern required")
+		}
+		if cb.IsUndefined() {
+			return engine.Undefined(), fmt.Errorf("glob: callback required")
+		}
+		release := ctx.AddRef()
+		go func() {
+			defer release()
+			ctx.PostTask(func() {
+				defer func() {
+					_ = cb
+				}()
+				f, ok := cb.AsFunction()
+				if !ok {
+					return
+				}
+				var patterns []*globPattern
+				nocase := runtime.GOOS == "windows"
+				if arr, ok := pattern.(*engine.ArrayValue); ok {
+					for _, k := range arr.Keys() {
+						if k == "length" {
+							continue
+						}
+						iv, _ := arr.Get(k)
+						patterns = append(patterns, globCompilePattern(iv.String(), nocase)...)
+					}
+				} else {
+					patterns = globCompilePattern(pattern.String(), nocase)
+				}
+				root, excludeFn, withFileTypes, err := globParseOptions(opts)
+				if err != nil {
+					_, _ = f.Call([]engine.Value{makeErrorValue(ctx, err)})
+					return
+				}
+				g := newGlobEngine(root, nocase, excludeFn)
+				results := g.globSyncRun(patterns)
+				arr := engine.NewArray(globToResults(g, results, withFileTypes, root))
+				_, _ = f.Call([]engine.Value{engine.Null(), arr})
+			})
+		}()
+		return engine.Undefined(), nil
+	}))
+
+	// fs.cpSync(src, dest[, options])：复制文件或目录（recursive 时复制整棵树）。
+	_ = m.Set("cpSync", engine.NewFunction("cpSync", func(args []engine.Value) (engine.Value, error) {
+		return fsCpSyncImpl(args)
+	}))
+
+	// fs.cp(src, dest[, options], callback)：异步版本。
+	_ = m.Set("cp", engine.NewFunction("cp", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 3 {
+			return engine.Undefined(), fmt.Errorf("cp: src, dest and callback required")
+		}
+		src := args[0].String()
+		dest := args[1].String()
+		var optsVal engine.Value = engine.Undefined()
+		cb := engine.Undefined()
+		for _, a := range args[2:] {
+			if a.IsFunction() {
+				cb = a
+			} else {
+				optsVal = a
+			}
+		}
+		if cb.IsUndefined() {
+			return engine.Undefined(), fmt.Errorf("cp: callback required")
+		}
+		opts := parseFsCpOptions(optsVal)
+		release := ctx.AddRef()
+		go func() {
+			defer release()
+			ctx.PostTask(func() {
+				if f, ok := cb.AsFunction(); ok {
+					if err := fsCpCopy(src, dest, opts, true); err != nil {
+						_, _ = f.Call([]engine.Value{makeErrorValue(ctx, err)})
+					} else {
+						_, _ = f.Call([]engine.Value{engine.Null()})
+					}
+				}
+			})
+		}()
+		return engine.Undefined(), nil
 	}))
 
 	// --- 常量 ---

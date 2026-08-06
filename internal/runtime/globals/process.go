@@ -242,6 +242,43 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		return mu, nil
 	}))
 
+	// umask([mask])：读取/设置文件权限掩码（Windows 恒 0，Node 实测）。
+	_ = proc.Set("umask", engine.NewFunction("umask", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 && !args[0].IsUndefined() {
+			var mask int
+			if n, ok := args[0].Int(); ok {
+				mask = n
+			} else if s, ok := args[0].Float(); ok {
+				mask = int(s)
+			}
+			return engine.IntValue(setUmask(mask)), nil
+		}
+		return engine.IntValue(getUmask()), nil
+	}))
+
+	// cpuUsage([prevValue])：{user, system} 微秒；带 prev 时返回增量。
+	_ = proc.Set("cpuUsage", engine.NewFunction("cpuUsage", func(args []engine.Value) (engine.Value, error) {
+		user, system := getProcessUsage()
+		if len(args) > 0 {
+			if po, ok := args[0].AsObject(); ok {
+				if pv, err := po.Get("user"); err == nil {
+					if pf, ok2 := pv.Float(); ok2 {
+						user -= int64(pf)
+					}
+				}
+				if pv, err := po.Get("system"); err == nil {
+					if pf, ok2 := pv.Float(); ok2 {
+						system -= int64(pf)
+					}
+				}
+			}
+		}
+		cu := engine.NewObject()
+		_ = cu.Set("user", engine.Number(float64(user)))
+		_ = cu.Set("system", engine.Number(float64(system)))
+		return cu, nil
+	}))
+
 	// on / emit：SIGINT/SIGTERM/SIGHUP/SIGBREAK 等信号事件实际触发
 	// （os/signal → PostTask → JS 监听器）；其余事件为普通注册。
 	listeners := make(map[string][]engine.Func)

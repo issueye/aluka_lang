@@ -1,6 +1,7 @@
 package interpreter
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -1597,8 +1598,47 @@ func jsonValueToJSON(v engine.Value) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	b, err := json.Marshal(data)
+	b, err := jsonNoEscape(data)
 	return string(b), err
+}
+
+// jsonNoEscape 序列化且不做 HTML 转义（Go json.Marshal 默认把 < > & 转成
+// \u003c 等，而 JS JSON.stringify 原样输出）。
+func jsonNoEscape(v interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	b := buf.Bytes()
+	if n := len(b); n > 0 && b[n-1] == '\n' {
+		b = b[:n-1]
+	}
+	return b, nil
+}
+
+// orderedJSON 保持对象属性插入顺序的 JSON 序列化容器
+// （JS 语义：JSON.stringify 按属性插入顺序输出，而非 Go map 的字母序）。
+type orderedJSON struct {
+	keys []string
+	vals []interface{}
+}
+
+func (o *orderedJSON) MarshalJSON() ([]byte, error) {
+	parts := make([]string, len(o.keys))
+	for i, k := range o.keys {
+		kb, err := jsonNoEscape(k)
+		if err != nil {
+			return nil, err
+		}
+		vb, err := jsonNoEscape(o.vals[i])
+		if err != nil {
+			return nil, err
+		}
+		parts[i] = string(kb) + ":" + string(vb)
+	}
+	return []byte("{" + strings.Join(parts, ",") + "}"), nil
 }
 
 // valueToJSON 将 JS 值转为可 JSON 序列化的 Go 结构。
@@ -1648,7 +1688,7 @@ func valueToJSON(v engine.Value, seen map[engine.Object]bool) (interface{}, erro
 				return nil, fmt.Errorf("%w: Converting circular structure to JSON", engine.ErrTypeError)
 			}
 			seen[o] = true
-			m := make(map[string]interface{})
+			oj := &orderedJSON{}
 			for _, k := range o.Keys() {
 				val, _ := o.Get(k)
 				if val.IsFunction() || val.IsUndefined() {
@@ -1658,10 +1698,11 @@ func valueToJSON(v engine.Value, seen map[engine.Object]bool) (interface{}, erro
 				if err != nil {
 					return nil, err
 				}
-				m[k] = r
+				oj.keys = append(oj.keys, k)
+				oj.vals = append(oj.vals, r)
 			}
 			delete(seen, o)
-			return m, nil
+			return oj, nil
 		}
 	}
 	return nil, nil
