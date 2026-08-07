@@ -141,6 +141,26 @@ $ aluka -e "var q = Aluka.SQL\`CREATE TABLE t (x INTEGER)\`.run().then(function(
 | `aluka build --compile [--outfile app] [--base <bin>] <entry>` | 单文件可执行产物（Phase 7）：嵌入预编译字节码，无 aluka/Go 环境可运行；`--base` 指定目标平台基座（跨平台） |
 | `aluka --vm` / `--ast` | 选择字节码 VM（默认）或 AST 解释器 |
 | `aluka --no-cache` | 禁用字节码磁盘缓存 |
+| `aluka --monitor[=interval]` | 性能/内存/运行时指标监控（interval 如 `500ms`/`1s` 周期采样；默认仅终报；`--monitor-format=json`、`--monitor-out=<path>` 可选） |
+| `aluka --max-memory=<n>` | 进程内存上限（`n` = 字节或 `KB`/`MB`/`GB` 后缀，如 `256MB`；环境变量 `ALUKA_MAX_MEMORY` 等效）。超限流程：先 GC → 仍超限则抛可捕获的 JS `RangeError: JavaScript heap out of memory`（V8 同款）→ 持续超限约 0.5s 后强制退出（码 3），防内存爆掉 |
+
+## 运行时监控（--monitor）
+
+`--monitor` 输出进程级性能/内存/运行时指标，用于观测长跑与高负载程序：
+
+- **性能**：解释器指令数（含速率）、函数调用数、对象分配数、IC 命中率（get/set/call）
+- **内存**：HeapAlloc/HeapInuse/HeapSys、历史峰值、Go 栈、JS 对象存活/累计、`--max-memory` 上限
+- **运行时**：goroutines、GC 次数与暂停总时长、运行总耗时
+
+```bash
+aluka --monitor app.js                      # 结束输出 text 报告（stderr）
+aluka --monitor=500ms app.js                # 每 500ms 周期采样 + 终报
+aluka --monitor --monitor-format=json app.js  # JSON 单行（工具链友好）
+aluka --monitor --monitor-out=metrics.json app.js
+```
+
+与 `--max-memory` 组合可同时观测与限制：`aluka --monitor --max-memory=256MB app.js`。
+
 
 ## 项目结构
 

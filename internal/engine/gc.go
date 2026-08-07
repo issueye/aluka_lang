@@ -43,6 +43,7 @@ func register(obj *objectValue) {
 		jsHeapGlobal.sweepLocked()
 	}
 	jsHeapGlobal.mu.Unlock()
+	BumpAlloc() // 监控计数器（gated）
 }
 
 // sweepLocked 移除已由 Go GC 回收（weak.Value()==nil）的弱引用条目。

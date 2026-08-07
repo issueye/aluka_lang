@@ -350,6 +350,17 @@ func (v *VM) run() (engine.Value, error) {
 				}
 			}
 
+			// 监控：指令计数（gated）+ OOM 安全点（--max-memory 超限抛
+			// 可捕获的 JS RangeError，V8 同款 "JavaScript heap out of memory"）。
+			if engine.MetricsEnabled() {
+				engine.BumpInsns()
+			}
+			if engine.OOMTriggered() {
+				// 一次性消费：抛 RangeError 前清除，使 catch 可运行。
+				engine.ConsumeOOM()
+				return v.handleThrow(v.interp.goErrorToJSValue(engine.OOMError()))
+			}
+
 			switch op {
 			// --- Literals & stack ---
 			case bytecode.OpNop:
@@ -1492,6 +1503,7 @@ func (v *VM) callClosureThis(cl *vmClosure, thisVal engine.Value, args []engine.
 // object for constructors. The callee and args must already be popped from
 // the stack before calling invoke; the result is returned (not pushed).
 func (v *VM) invoke(callee engine.Value, thisVal engine.Value, args []engine.Value, asNew bool) (engine.Value, error) {
+	engine.BumpCalls() // 监控：函数调用计数（gated）
 	// Bytecode closure: set up a new frame.
 	if cl, ok := callee.(*vmClosure); ok {
 		return v.callClosure(cl, thisVal, args, asNew)

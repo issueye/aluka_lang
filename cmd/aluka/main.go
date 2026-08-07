@@ -30,6 +30,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/engine/parser"
+	"github.com/aluka-lang/aluka/internal/monitor"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
 	modmodule "github.com/aluka-lang/aluka/internal/runtime/module"
 )
@@ -44,13 +45,34 @@ var profileStop func()
 // icStats 启用 IC 命中统计输出（--ic-stats，O1 验收）。
 var icStats bool
 
-// osExit 统一的进程退出入口：先 flush profile 再退出。
+// 监控器（--monitor）与内存上限（--max-memory）状态。
+var (
+	monitorInstance *monitor.Monitor
+	monitorStopCh   chan struct{}
+	monitorIC       engine.ICStats // 由 runModule 结束时捕获，供终报
+	monitorICSeen   bool
+)
+
+// osExit 统一的进程退出入口：先 flush profile/监控再退出。
 func osExit(code int) {
 	if profileStop != nil {
 		profileStop()
 		profileStop = nil
 	}
+	finishMonitor()
 	os.Exit(code)
+}
+
+// finishMonitor 停止监控并输出终报（幂等）。
+func finishMonitor() {
+	if monitorInstance != nil {
+		monitorInstance.Stop()
+		if monitorStopCh != nil {
+			close(monitorStopCh)
+			monitorStopCh = nil
+		}
+		monitorInstance = nil
+	}
 }
 
 func main() {
@@ -89,6 +111,82 @@ func main() {
 		}
 	}
 	args = filtered
+
+	// 监控器与内存上限（全局开关，任意位置）：
+	//   --monitor[=interval]            启用指标监控（interval 如 500ms/1s；默认仅终报）
+	//   --monitor-format=text|json      输出格式
+	//   --monitor-out=<path>            输出目标（默认 stderr，避免污染程序 stdout）
+	//   --max-memory=<bytes|NMB|NGB>    进程内存上限（env ALUKA_MAX_MEMORY 兜底）
+	monitorEnabled := false
+	monitorInterval := time.Duration(0)
+	monitorFormat := monitor.FormatText
+	monitorOutPath := ""
+	maxMemory := parseMaxMemoryEnv()
+	filtered = args[:0]
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--monitor":
+			monitorEnabled = true
+		case strings.HasPrefix(a, "--monitor="):
+			monitorEnabled = true
+			if d, err := time.ParseDuration(strings.TrimPrefix(a, "--monitor=")); err == nil && d > 0 {
+				monitorInterval = d
+			}
+		case strings.HasPrefix(a, "--monitor-format="):
+			f := strings.TrimPrefix(a, "--monitor-format=")
+			if f == "json" {
+				monitorFormat = monitor.FormatJSON
+			} else {
+				monitorFormat = monitor.FormatText
+			}
+		case a == "--monitor-out":
+			if i+1 < len(args) {
+				i++
+				monitorOutPath = args[i]
+			}
+		case strings.HasPrefix(a, "--monitor-out="):
+			monitorOutPath = strings.TrimPrefix(a, "--monitor-out=")
+		case a == "--max-memory":
+			if i+1 < len(args) {
+				i++
+				if n, err := parseMemorySize(args[i]); err == nil && n > 0 {
+					maxMemory = n
+				}
+			}
+		case strings.HasPrefix(a, "--max-memory="):
+			if n, err := parseMemorySize(strings.TrimPrefix(a, "--max-memory=")); err == nil && n > 0 {
+				maxMemory = n
+			}
+		default:
+			filtered = append(filtered, a)
+		}
+	}
+	args = filtered
+	if maxMemory > 0 {
+		engine.SetMemoryLimit(maxMemory)
+	}
+	if monitorEnabled {
+		out := io.Writer(os.Stderr)
+		if monitorOutPath != "" {
+			f, err := os.Create(monitorOutPath)
+			if err != nil {
+				fatalErr("aluka: cannot create --monitor-out file: " + err.Error())
+			}
+			out = f
+		}
+		monitorInstance = monitor.New(monitor.Config{
+			Enabled:  true,
+			Interval: monitorInterval,
+			Format:   monitorFormat,
+			Out:      out,
+			VMMetrics: func() engine.ICStats {
+				return monitorIC
+			},
+		})
+		monitorStopCh = make(chan struct{})
+		go monitorInstance.Run(monitorStopCh)
+	}
 
 	// 无参数 → 显示帮助
 	if len(args) == 0 {
@@ -139,6 +237,7 @@ func main() {
 		profileStop()
 		profileStop = nil
 	}
+	finishMonitor()
 }
 
 // flushProfile 供 REPL 等长时间运行的命令在退出点调用。
@@ -303,6 +402,12 @@ func runModule(path string, vm, disableCache bool) error {
 	// 进入事件循环：处理定时器/http 回调等异步任务，直到无 pending 任务。
 	if vm, ok := ctx.(interface{ RunLoop() }); ok {
 		vm.RunLoop()
+	}
+	if monitorInstance != nil {
+		if vmv, ok := ctx.(*interpreter.VM); ok {
+			monitorIC = vmv.ICStats()
+			monitorICSeen = true
+		}
 	}
 	if icStats {
 		if vmv, ok := ctx.(*interpreter.VM); ok {
@@ -1243,6 +1348,18 @@ OPTIONS:
     --vm                 Use bytecode VM (default, Phase 1B)
     --ast                Use AST-walking interpreter (Phase 1A)
     --no-cache           Disable bytecode disk cache
+    --profile <path>     Write CPU profile (heap dump to <path>.heap)
+    --ic-stats           Print inline-cache hit rates on exit
+    --monitor[=interval] Monitor performance/memory/runtime metrics
+                         (interval e.g. 500ms/1s for periodic samples;
+                         default: final report only)
+    --monitor-format=text|json   Monitor output format (default text)
+    --monitor-out=<path> Write monitor output to file (default stderr)
+    --max-memory=<n>     Process memory limit; n = bytes or KB/MB/GB
+                         suffix (e.g. 256MB); env ALUKA_MAX_MEMORY
+                         provides the same limit. On exceed: GC first,
+                         then throw JS RangeError 'out of memory', then
+                         kill after grace period.
 
 EXAMPLES:
     aluka -e "console.log(1+1)"        # 输出 2
@@ -1250,6 +1367,9 @@ EXAMPLES:
     aluka run hello.ts                   # 同上
     aluka -e "1+2" --ast                 # 用 AST 解释器执行
     aluka run app.js --no-cache          # 禁用字节码缓存强制重编译
+    aluka --monitor app.js               # 结束输出性能/内存/运行时指标
+    aluka --monitor=500ms --monitor-format=json app.js
+    aluka --max-memory=256MB app.js      # 限制堆内存上限 256MB
 
 Project: https://github.com/aluka-lang/aluka
 Docs:    https://aluka.dev
@@ -1260,6 +1380,46 @@ Docs:    https://aluka.dev
 func fatalErr(msg string) {
 	fmt.Fprintln(os.Stderr, msg)
 	osExit(1)
+}
+
+// parseMemorySize 解析内存大小（--max-memory）：
+// 纯数字 = bytes；数字+KB/MB/GB（大小写不敏感）后缀换算。
+func parseMemorySize(s string) (int64, error) {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return 0, fmt.Errorf("empty size")
+	}
+	mult := int64(1)
+	num := t
+	upper := strings.ToUpper(t)
+	switch {
+	case strings.HasSuffix(upper, "GB"):
+		mult, num = 1<<30, strings.TrimSuffix(upper, "GB")
+	case strings.HasSuffix(upper, "MB"):
+		mult, num = 1<<20, strings.TrimSuffix(upper, "MB")
+	case strings.HasSuffix(upper, "KB"):
+		mult, num = 1<<10, strings.TrimSuffix(upper, "KB")
+	case strings.HasSuffix(upper, "B"):
+		mult, num = 1, strings.TrimSuffix(upper, "B")
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(num), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("size must be positive")
+	}
+	return n * mult, nil
+}
+
+// parseMaxMemoryEnv 读取 ALUKA_MAX_MEMORY 环境变量（--max-memory 的兜底）。
+func parseMaxMemoryEnv() int64 {
+	if v := os.Getenv("ALUKA_MAX_MEMORY"); v != "" {
+		if n, err := parseMemorySize(v); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 // startProfile 启动 CPU profiling（O1-C1）：profile 写 path，
