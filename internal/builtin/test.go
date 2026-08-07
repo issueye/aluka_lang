@@ -335,8 +335,8 @@ func NewTest(ctx engine.Context) (engine.Value, error) {
 		}
 	}
 
-	// register(name, fn)：注册自定义断言（Node 22.14 语义：注册后挂到
-	// 每个 TestContext 的 t.assert 上）。
+	// register(name, fn)：注册自定义断言——Node 22.14 曾提供，22.23 运行时已
+	// 不再导出（探针验证 undefined）；保留内部机制但不再暴露到模块面。
 	_ = m.Set("register", engine.NewFunction("register", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Undefined(), fmt.Errorf("%w: register(name, fn) requires a name and a function", engine.ErrTypeError)
@@ -348,13 +348,85 @@ func NewTest(ctx engine.Context) (engine.Value, error) {
 		registerCustomAssert(name, args[1])
 		return engine.Undefined(), nil
 	}))
-	// setDefaultSnapshotSerializers(serializers)：自定义快照序列化（P1 接受并忽略）。
-	_ = m.Set("setDefaultSnapshotSerializers", engine.NewFunction("setDefaultSnapshotSerializers", func(args []engine.Value) (engine.Value, error) {
+	// snapshot 对象：自定义快照序列化与解析路径（Node 22：挂在 t.snapshot 下）。
+	snapshotObj := engine.NewObject()
+	_ = snapshotObj.Set("setDefaultSnapshotSerializers", engine.NewFunction("setDefaultSnapshotSerializers", func(args []engine.Value) (engine.Value, error) {
 		return engine.Undefined(), nil
 	}))
-	// setResolveSnapshotPath(fn)：自定义快照文件路径（P1 接受并忽略）。
-	_ = m.Set("setResolveSnapshotPath", engine.NewFunction("setResolveSnapshotPath", func(args []engine.Value) (engine.Value, error) {
+	_ = snapshotObj.Set("setResolveSnapshotPath", engine.NewFunction("setResolveSnapshotPath", func(args []engine.Value) (engine.Value, error) {
 		return engine.Undefined(), nil
+	}))
+	_ = m.Set("snapshot", snapshotObj)
+
+	// run(options)：程序化运行已注册用例（Node 22 语义）。返回事件流
+	// （EventEmitter），异步派发 test:start/test:pass/test:fail/test:skip/
+	// test:todo/test:plan/end 事件；同时标记 CLI 不再重复执行。
+	_ = m.Set("run", engine.NewFunction("run", func(args []engine.Value) (engine.Value, error) {
+		vm := currentVM(ctx)
+		if vm == nil {
+			return engine.Undefined(), nil
+		}
+		TestProgrammaticRun = true
+		stream := newEmitterInstance()
+		// 最小 stream 语义：pipe 返回自身。
+		if so, ok := stream.AsObject(); ok {
+			_ = so.Set("pipe", engine.NewFunction("pipe", func(ca []engine.Value) (engine.Value, error) {
+				return stream, nil
+			}))
+		}
+		ctx.PostTask(func() {
+			results := RunRegisteredTests(vm)
+			passing, failing, skipped, todo, cancelled := 0, 0, 0, 0, 0
+			for _, r := range results {
+				data := engine.NewObjectFrom(map[string]engine.Value{
+					"name": engine.Str(r.Name),
+				})
+				_, _ = callEmitterMethod(stream, "emit", []engine.Value{engine.Str("test:start"), data})
+				details := engine.NewObjectFrom(map[string]engine.Value{
+					"duration_ms": engine.IntValue(int(r.Duration.Milliseconds())),
+					"type":         engine.Str("test"),
+				})
+				d := engine.NewObjectFrom(map[string]engine.Value{
+					"name":    engine.Str(r.Name),
+					"details": details,
+				})
+				switch {
+				case r.Cancelled:
+					cancelled++
+					_, _ = callEmitterMethod(stream, "emit", []engine.Value{engine.Str("test:fail"), d})
+				case r.Skipped:
+					skipped++
+					_, _ = callEmitterMethod(stream, "emit", []engine.Value{engine.Str("test:skip"), d})
+				case r.Todo:
+					todo++
+					_, _ = callEmitterMethod(stream, "emit", []engine.Value{engine.Str("test:todo"), d})
+				case r.Passed:
+					passing++
+					_, _ = callEmitterMethod(stream, "emit", []engine.Value{engine.Str("test:pass"), d})
+				default:
+					failing++
+					if r.Error != "" {
+						details.Set("error", engine.Str(r.Error))
+					}
+					_, _ = callEmitterMethod(stream, "emit", []engine.Value{engine.Str("test:fail"), d})
+				}
+			}
+			planEnd := engine.NewObjectFrom(map[string]engine.Value{
+				"count":     engine.IntValue(len(results)),
+				"passing":   engine.IntValue(passing),
+				"failing":   engine.IntValue(failing),
+				"skipped":   engine.IntValue(skipped),
+				"todo":      engine.IntValue(todo),
+				"cancelled": engine.IntValue(cancelled),
+			})
+			plan := engine.NewObjectFrom(map[string]engine.Value{
+				"type": engine.Str("test"),
+				"end":  planEnd,
+			})
+			_, _ = callEmitterMethod(stream, "emit", []engine.Value{engine.Str("test:plan"), plan})
+			_, _ = callEmitterMethod(stream, "emit", []engine.Value{engine.Str("end")})
+		})
+		return stream, nil
 	}))
 
 	return m, nil
@@ -877,6 +949,17 @@ func newMockTracker(ctx engine.Context, list *[]*mockSpy) engine.Value {
 		*list = nil
 		return engine.Undefined(), nil
 	}))
+
+	// mock.reset()：恢复全部 mock 的原始实现（Node 22.23 语义；call 历史
+	// 保留的细微差异记为 knownDifference）。
+	_ = mockObj.Set("reset", engine.NewFunction("reset", func(args []engine.Value) (engine.Value, error) {
+		for _, s := range *list {
+			if !s.isFn && s.target != nil {
+				_ = s.target.Set(s.method, s.original)
+			}
+		}
+		return engine.Undefined(), nil
+	}))
 	return mockObj
 }
 
@@ -937,6 +1020,10 @@ var (
 	TestSkipPattern *regexp.Regexp
 	// TestOnly 启用 only 模式（--test-only）：只运行仅标记的用例。
 	TestOnly bool
+	// TestProgrammaticRun 表示用例已由 t.run() 程序化执行（CLI 不再重复）。
+	TestProgrammaticRun bool
+	// TestDefaultTimeout 是 --test-timeout 注入的全局默认用例超时（0 = 无限）。
+	TestDefaultTimeout time.Duration
 )
 
 // TestResult 是单个用例的执行结果。
@@ -1195,6 +1282,12 @@ func runTestCase(vm *interpreter.VM, suite *registeredSuite, tc *registeredTest,
 	}
 
 	// 子测试独立计数（Node 统计语义）。
+	// --test-timeout 全局默认：超时用例标失败（近似实现——不抢占同步执行，
+	// 仅事后判定；挂死用例仍会阻塞，见 knownDifference）。
+	if TestDefaultTimeout > 0 && time.Since(start) > TestDefaultTimeout && !res.Skipped && !res.Todo {
+		res.Passed = false
+		res.Error = fmt.Sprintf("test timed out after %dms", TestDefaultTimeout.Milliseconds())
+	}
 	out := []TestResult{*res}
 	if cancelled {
 		// 同步父测试取消：未执行的子测试标 cancelled（Node 语义）。
@@ -1548,20 +1641,8 @@ func newTestContext(vm *interpreter.VM, st *testRunState) engine.Value {
 		if len(args) < 2 {
 			return engine.Undefined(), fmt.Errorf("%w: match: string and regexp required", engine.ErrTypeError)
 		}
-		s := args[0].String()
-		matched := false
-		if ro, ok := args[1].AsObject(); ok {
-			if tv, err := ro.Get("test"); err == nil && tv.IsFunction() {
-				if tf, ok := tv.AsFunction(); ok {
-					mv, merr := tf.Call([]engine.Value{engine.Str(s)})
-					if merr == nil {
-						matched, _ = mv.Bool()
-					}
-				}
-			}
-		}
-		if !matched {
-			return engine.Undefined(), fmt.Errorf("%w: match: %q does not match", engine.ErrAssertion, s)
+		if !vmRegexpTest(vm, args[1], args[0]) {
+			return engine.Undefined(), fmt.Errorf("%w: match: %q does not match", engine.ErrAssertion, args[0].String())
 		}
 		return engine.Undefined(), nil
 	}))
@@ -1570,20 +1651,8 @@ func newTestContext(vm *interpreter.VM, st *testRunState) engine.Value {
 		if len(args) < 2 {
 			return engine.Undefined(), fmt.Errorf("%w: doesNotMatch: string and regexp required", engine.ErrTypeError)
 		}
-		s := args[0].String()
-		matched := false
-		if ro, ok := args[1].AsObject(); ok {
-			if tv, err := ro.Get("test"); err == nil && tv.IsFunction() {
-				if tf, ok := tv.AsFunction(); ok {
-					mv, merr := tf.Call([]engine.Value{engine.Str(s)})
-					if merr == nil {
-						matched, _ = mv.Bool()
-					}
-				}
-			}
-		}
-		if matched {
-			return engine.Undefined(), fmt.Errorf("%w: doesNotMatch: %q should not match", engine.ErrAssertion, s)
+		if vmRegexpTest(vm, args[1], args[0]) {
+			return engine.Undefined(), fmt.Errorf("%w: doesNotMatch: %q should not match", engine.ErrAssertion, args[0].String())
 		}
 		return engine.Undefined(), nil
 	}))
@@ -1864,6 +1933,21 @@ func newTestContext(vm *interpreter.VM, st *testRunState) engine.Value {
 
 // errTestSkipped 标记 t.skip() 的用例（内部错误，不展示给用户）。
 var errTestSkipped = fmt.Errorf("test skipped via t.skip()")
+
+// vmRegexpTest 用 vm.Eval 绑定 this 调用正则 .test()（直接 f.Call 丢失 this）。
+func vmRegexpTest(vm *interpreter.VM, re, target engine.Value) bool {
+	g := vm.Global()
+	_ = g.Set("__tAssertRe", re)
+	_ = g.Set("__tAssertTarget", target)
+	defer g.Delete("__tAssertRe")
+	defer g.Delete("__tAssertTarget")
+	if v, err := vm.Eval("__tAssertRe.test(__tAssertTarget)", "test_assert_regexp.js"); err == nil {
+		if b, ok := v.Bool(); ok {
+			return b
+		}
+	}
+	return false
+}
 
 // testDeepStrictEqual 递归严格深度相等（Node assert.deepStrictEqual 语义）。
 // 对象键集一致且每键值严格深等；数组逐元素；原始值要求类型相同。

@@ -406,6 +406,16 @@ func NewPerfHooks(ctx engine.Context) (engine.Value, error) {
 	_ = moduleObj.Set("PerformanceObserverEntryList", entryListCtor)
 	_ = moduleObj.Set("PerformanceResourceTiming", resCtor)
 
+	// 全局注册（Node 语义：globalThis.PerformanceObserver 等无需 require 即可用）。
+	for _, name := range []string{
+		"Performance", "PerformanceEntry", "PerformanceMark", "PerformanceMeasure",
+		"PerformanceObserver", "PerformanceObserverEntryList", "PerformanceResourceTiming",
+	} {
+		if v, err := moduleObj.Get(name); err == nil {
+			_ = ctx.Global().Set(name, v)
+		}
+	}
+
 	// --- constants -----------------------------------------------------------
 	constants := engine.NewObject()
 	_ = constants.Set("NODE_PERFORMANCE_GC_MAJOR", engine.IntValue(4))

@@ -1,11 +1,11 @@
 # Node 22 兼容缺口清单（M0 探针实测）
 
-> 自动生成于 2026-08-06T16:05:25.943Z，对应冻结快照 v1.0。
+> 自动生成于 2026-08-07T02:33:06.645Z，对应冻结快照 v1.0。
 > 缺口 = aluka 探针相对官方 manifest 缺失的条目；L 级判定见覆盖报告。
 
 ## 1. 缺失模块（加载失败 → L0，对应 M1）
 
-共 3 个：`domain`、`punycode`、`wasi`。
+共 0 个：。
 
 ## 2. 已有模块的名称面缺口（对应 M2-M6 逐模块审计）
 
@@ -23,7 +23,7 @@
 | `diagnostics_channel` | 13/25 | start、end、asyncStart、asyncEnd、error、Channel#return、TracingChannel、TracingChannel#subscribe |
 | `dns` | 3/27 | cancel、dns.Resolver#Resolver、dns.Resolver#setLocalAddress |
 | `dns/promises` | 1/23 | cancel |
-| `domain` | 10/10 | create、Domain、Domain#add、Domain#bind、Domain#enter、Domain#exit、Domain#intercept、Domain#remove |
+| `domain` | 8/10 | Domain#add、Domain#bind、Domain#enter、Domain#exit、Domain#intercept、Domain#remove、Domain#run、Domain#Type |
 | `events` | 27/53 | EventEmitter#event:newListener、events.EventEmitterAsyncResource#Type、Event、Event#composedPath、Event#initEvent、Event#preventDefault、Event#stopImmediatePropagation、Event#stopPropagation |
 | `fs` | 68/169 | native、FileHandle#appendFile、FileHandle#chmod、FileHandle#chown、FileHandle#close、FileHandle#createReadStream、FileHandle#createWriteStream、FileHandle#datasync |
 | `fs/promises` | 30/54 | cp、glob、lchmod、lchown、lutimes、rmdir、watch、FileHandle |
@@ -36,7 +36,6 @@
 | `net` | 57/65 | getDefaultAutoSelectFamily、setDefaultAutoSelectFamily、getDefaultAutoSelectFamilyAttemptTimeout、setDefaultAutoSelectFamilyAttemptTimeout、net.BlockList#addAddress、net.BlockList#addRange、net.BlockList#addSubnet、net.BlockList#check |
 | `perf_hooks` | 26/37 | PerformanceEntry#Type、PerformanceMark#Type、PerformanceMeasure#Type、PerformanceNodeEntry、PerformanceNodeEntry#Type、PerformanceNodeTiming、PerformanceNodeTiming#Type、PerformanceNodeTiming#return |
 | `process` | 89/102 | availableMemory、constrainedMemory、disconnect、dlopen、execve、register、registerBeforeExit、unregister |
-| `punycode` | 4/4 | decode、encode、toASCII、toUnicode |
 | `querystring` | 2/6 | decode、encode |
 | `readline` | 32/38 | InterfaceConstructor、InterfaceConstructor#close、InterfaceConstructor#[Symbol.dispose]、InterfaceConstructor#pause、InterfaceConstructor#prompt、InterfaceConstructor#resume、InterfaceConstructor#setPrompt、InterfaceConstructor#getPrompt |
 | `readline/promises` | 1/10 | readlinePromises.Interface#question |
@@ -47,18 +46,18 @@
 | `stream/web` | 68/71 | from、arrayBuffer、blob、buffer、json、text、ReadableStream#cancel、ReadableStream#getReader |
 | `string_decoder` | 2/3 | StringDecoder#end、StringDecoder#write |
 | `sys` | 50/61 | debug、diff、getCallSites、getSystemErrorName、getSystemErrorMap、getSystemErrorMessage、setTraceSigInt、parseEnv |
-| `test` | 76/83 | run、suite、skip、todo、only、register、setDefaultSnapshotSerializers、setResolveSnapshotPath |
+| `test` | 70/83 | setDefaultSnapshotSerializers、setResolveSnapshotPath、MockFunctionContext、MockFunctionContext#callCount、MockFunctionContext#mockImplementation、MockFunctionContext#mockImplementationOnce、MockFunctionContext#resetCalls、MockFunctionContext#restore |
 | `timers` | 15/21 | wait、yield、Immediate、Immediate#hasRef、Immediate#ref、Immediate#unref、Immediate#[Symbol.dispose]、Timeout |
 | `timers/promises` | 2/5 | wait、yield |
 | `tls` | 48/54 | createSecurePair、setDefaultCACertificates、getCACertificates、tls.SecurePair、tls.SecurePair#event:secure、tls.Server、tls.Server#addContext、tls.Server#address |
 | `trace_events` | 2/4 | disable、enable |
 | `tty` | 5/17 | tty.ReadStream#isRaw、tty.ReadStream#isTTY、tty.WriteStream#columns、tty.WriteStream#rows、tty.WriteStream#event:resize |
-| `url` | 25/32 | fileURLToPathBuffer、urlToHttpOptions、URL、URL#toString、URL#toJSON、URL#createObjectURL、URL#revokeObjectURL、URL#canParse |
+| `url` | 23/32 | URL、URL#toString、URL#toJSON、URL#createObjectURL、URL#revokeObjectURL、URL#canParse、URL#parse、URL#Type |
 | `util` | 50/61 | debug、diff、getCallSites、getSystemErrorName、getSystemErrorMap、getSystemErrorMessage、setTraceSigInt、parseEnv |
 | `util/types` | 48/61 | callbackify、debuglog、debug、deprecate、diff、format、formatWithOptions、getCallSites |
 | `v8` | 18/56 | onInit、onSettled、onBefore、onAfter、createHook、init、before、after |
 | `vm` | 13/25 | vm.Script#Type、vm.Module、vm.Module#evaluate、vm.Module#link、vm.Module#Type、vm.SourceTextModule、vm.SourceTextModule#createCachedData、vm.SourceTextModule#instantiate |
-| `wasi` | 5/5 | WASI、WASI#getImportObject、WASI#start、WASI#initialize、WASI#Type |
+| `wasi` | 4/5 | WASI#getImportObject、WASI#start、WASI#initialize、WASI#Type |
 | `worker_threads` | 31/43 | BroadcastChannel#close、BroadcastChannel#postMessage、BroadcastChannel#ref、BroadcastChannel#unref、BroadcastChannel#Type、MessagePort#close、MessagePort#postMessage、MessagePort#hasRef |
 | `zlib` | 29/52 | createBrotliCompress、createBrotliDecompress、createDeflate、createDeflateRaw、createGunzip、createGzip、createInflate、createInflateRaw |
 
@@ -66,38 +65,18 @@
 
 - `localstorage`（global）
 - `sessionstorage`（global）
-- `MessageEvent`（global）
 - `CloseEvent`（global）
 - `scheduler`（global）
-- `ByteLengthQueuingStrategy`（class）
-- `CompressionStream`（class）
-- `CountQueuingStrategy`（class）
-- `Crypto`（class）
-- `CryptoKey`（class）
-- `DecompressionStream`（class）
 - `EventSource`（class）
-- `MessageEvent`（class）
-- `MessagePort`（class）
 - `Navigator`（class）
 - `PerformanceEntry`（class）
 - `PerformanceMark`（class）
 - `PerformanceMeasure`（class）
-- `PerformanceObserver`（class）
 - `PerformanceObserverEntryList`（class）
 - `PerformanceResourceTiming`（class）
-- `ReadableByteStreamController`（class）
-- `ReadableStreamBYOBReader`（class）
 - `ReadableStreamBYOBRequest`（class）
-- `ReadableStreamDefaultController`（class）
-- `ReadableStreamDefaultReader`（class）
 - `Storage`（class）
-- `SubtleCrypto`（class）
-- `TextDecoderStream`（class）
-- `TextEncoderStream`（class）
-- `TransformStreamDefaultController`（class）
 - `WebAssembly`（class）
-- `WritableStreamDefaultController`（class）
-- `WritableStreamDefaultWriter`（class）
 - `Process`（class）
 
 ## 4. 事件语义缺口（EventEmitter 合同差异样例）

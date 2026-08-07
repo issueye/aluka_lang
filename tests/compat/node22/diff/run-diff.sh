@@ -24,6 +24,13 @@ if ! command -v "$NODE" >/dev/null 2>&1; then
   exit 0
 fi
 
+# DNS 协议可用性探测：node 的 dns.resolve 走 c-ares 直连 DNS 服务器（UDP-53）。
+# 沙箱/CI 屏蔽 UDP-53 时失败（而 aluka 的 Go 系统解析器仍可成功，属已知差异）。
+# 探测失败则导出 DIFF_NO_DNS=1，两侧用例对 live 解析断言归一化为 'skipped'。
+if ! "$NODE" -e "require('node:dns').resolve('localhost', function(e){ process.exit(e ? 1 : 0) })" >/dev/null 2>&1; then
+  export DIFF_NO_DNS=1
+fi
+
 PASS=0
 FAIL=0
 

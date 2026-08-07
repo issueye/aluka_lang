@@ -230,8 +230,9 @@ globalThis.__fd = fd.get('k1') + ':' + fd.getAll('k2').length;
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if got := webGlobalGet(ctx, "__h"); got != "1:true:null" {
-		t.Errorf("headers = %q, want 1:true:null", got)
+	// WHATWG：同名多次 append 后 get 返回 ", " 合并值（与 node 一致）。
+	if got := webGlobalGet(ctx, "__h"); got != "1, 2:true:null" {
+		t.Errorf("headers = %q, want 1, 2:true:null", got)
 	}
 	if got := webGlobalGet(ctx, "__fd"); got != "v1b:1" {
 		t.Errorf("formdata = %q, want v1b:1", got)

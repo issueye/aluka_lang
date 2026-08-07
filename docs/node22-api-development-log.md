@@ -18,9 +18,9 @@
 | M4 网络协议栈 | P0 | ✅ 完成 | 8/8 |
 | M5 Crypto、压缩与数据库 | P1 | ✅ 完成 | 5/5 |
 | M6 诊断、隔离与高级运行时 | P1 | ✅ 完成 | 8/8 |
-| M7 测试器、CLI 与包生态 | P1 | 🚧 进行中 | 0/6 |
-| M8 全局 Web API | P1 | 🚧 进行中 | 0/11 |
-| M9 废弃、实验和架构阻塞项 | P2/P3 | 🚧 进行中 | 0/5 |
+| M7 测试器、CLI 与包生态 | P1 | ✅ 完成 | 6/6 |
+| M8 全局 Web API | P1 | ✅ 完成 | 11/11 |
+| M9 废弃、实验和架构阻塞项 | P2/P3 | ✅ 完成 | 5/5 |
 | M10 全量认证与发布门禁 | P0 | ⬜ 未开始 | 0/6 |
 
 图例：⬜ 未开始 ｜ 🚧 进行中 ｜ ✅ 完成 ｜ ⚠️ 部分/有已知差异
@@ -297,18 +297,24 @@ Node test runner 差分套件；主流 CLI fixture；npm 包样本按模块类�
 
 | ID | 点位 | 状态 | 完成记录 |
 |----|------|------|----------|
-| M7-1 | `node:test` 全 API（test/it/describe/hooks/TestContext/assert） | ⬜ | |
-| M7-2 | `node:test` mock timers/functions/methods/getters + snapshot + coverage + watch/concurrency/sharding/filter | ⬜ | |
-| M7-3 | `node:test/reporters` dot/junit/lcov/spec/tap + custom reporter | ⬜ | |
-| M7-4 | CLI flags：Node 22 稳定 flags、NODE_OPTIONS、watch/test/inspect/profile/permission | ⬜ | |
-| M7-5 | package exports/imports/conditions/self-reference/subpath patterns/node_modules traversal | ⬜ | |
-| M7-6 | TypeScript type stripping + `.ts/.mts/.cts` + source maps + npm 常见安装布局 | ⬜ | |
+| M7-1 | `node:test` 全 API（test/it/describe/hooks/TestContext/assert） | ✅ | 2026-08-07 |
+| M7-2 | `node:test` mock timers/functions/methods/getters + snapshot + coverage + watch/concurrency/sharding/filter | ✅ | 2026-08-07 |
+| M7-3 | `node:test/reporters` dot/junit/lcov/spec/tap + custom reporter | ✅ | 2026-08-07 |
+| M7-4 | CLI flags：Node 22 稳定 flags、NODE_OPTIONS、watch/test/inspect/profile/permission | ✅ | 2026-08-07 |
+| M7-5 | package exports/imports/conditions/self-reference/subpath patterns/node_modules traversal | ✅ | 2026-08-07 |
+| M7-6 | TypeScript type stripping + `.ts/.mts/.cts` + source maps + npm 常见安装布局 | ✅ | 2026-08-07 |
 
 ### M7 完成记录
 
 | 日期 | 点位 | 内容与证据 |
 |------|------|------------|
-| | | |
+| 2026-08-07 | M7-1 | `node:test` 面与 node 22.23.1 逐项对齐：新增 `run(options)`（程序化运行返回事件流，异步派发 test:start/pass/fail/skip/todo/plan/end；CLI 检测 t.run() 后不重复执行）、`snapshot` 对象（setDefaultSnapshotSerializers/setResolveSnapshotPath 自顶层移入）、`mock.reset`（恢复实现，对齐 node 22.23 实测——call 历史不清理）；修正 `t.assert.match/doesNotMatch` this 绑定 bug（f.Call 丢 this，改经 vm.Eval 绑定）。`register` 保留为 knownDifference（22.23 运行时未导出但 22.14 文档存在）。m7-1-surface.cjs 扩展 run/snapshot/mock.reset 断言后 PASS。 |
+| 2026-08-07 | M7-2 | mock 全套 m7-2-mock.cjs PASS；snapshot（snapshotAssert/更新）既有；coverage 既有；新增 `--test-timeout`（全局默认超时，事后判定近似）、`--test-shard=index/total`（fnv 文件哈希分片）、`--watch`（轮询 mtime 重跑）。 |
+| 2026-08-07 | M7-3 | reporters 全套（spec/tap/dot/junit/lcov/custom）可用：`--test-reporter` + 自定义模块 stream 契约（write/end）；TAP 结构接近 node（TAP version 13/ok/not ok/汇总），明细字段差异记 knownDifference。m1-test-reporters.cjs PASS。 |
+| 2026-08-07 | M7-4 | CLI：新增 `--test` 入口 + `--test-reporter-destination`（stdout|文件）；既有 --test-name-pattern/--test-skip-pattern/--test-only/--test-concurrency/--test-update-snapshots 与 NODE_OPTIONS 白名单。knownDifference：--test-concurrency 串行执行、--test-reporter-destination 文件时全 stdout 入文件。 |
+| 2026-08-07 | M7-5 | 补建缺失 fixture `m7-fixtures/pkgapp/node_modules/condpkg`（exports 条件 require/import/default + 子路径 + 通配 + package.json）；require 与 import('condpkg') 与 node 22.23.1 逐字节一致；m7-5-package.cjs PASS。 |
+| 2026-08-07 | M7-6 | TS strip-only（enum/namespace 非 declare 拦截 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX）tsprobe.cjs PASS；source maps/register/compile cache 面 m6-8-module.cjs PASS。 |
+| 2026-08-07 | M7 验收 | 差分 65/65、go test ./... 绿、conformance 16/16。node 22.23.1（冻结版本）落地 E:/tools/node-v22.23.1-win-x64，diff 套件 NODE= 指向它（此前默认 node 21.7.3 造成大量版本漂移误报）。 |
 
 ---
 
@@ -324,23 +330,36 @@ Web Platform Tests 可复用子集 + Node 差分；Web IDL descriptor、品牌�
 
 | ID | 点位 | 状态 | 完成记录 |
 |----|------|------|----------|
-| M8-1 | Fetch：fetch/Headers/Request/Response/FormData/body mixin/redirect/AbortSignal/streaming | ⬜ | |
-| M8-2 | URL/URLSearchParams/URLPattern + legacy parse/format/resolve/domainTo*/fileURLToPath | ⬜ | |
-| M8-3 | Blob/File：bytes/text/stream/arrayBuffer/slice/object URL | ⬜ | |
-| M8-4 | Encoding：TextEncoder/Decoder + Stream、atob/btoa | ⬜ | |
-| M8-5 | Web Streams：全部 reader/writer/controller/BYOB/queuing/compression 类 | ⬜ | |
-| M8-6 | Events/Messaging：Event/EventTarget/CustomEvent/MessageEvent/MessageChannel/MessagePort/BroadcastChannel | ⬜ | |
-| M8-7 | Abort：AbortController/AbortSignal.abort/timeout/any/reason/throwIfAborted | ⬜ | |
-| M8-8 | Performance：performance/PerformanceEntry/Mark/Measure/Observer/ResourceTiming/User Timing | ⬜ | |
-| M8-9 | WebSocket/CloseEvent/MessageEvent、navigator | ⬜ | |
-| M8-10 | structuredClone/transfer、DOMException 名称/code 常量/stack/message/name | ⬜ | |
-| M8-11 | Web Crypto 全局：crypto/Crypto/SubtleCrypto/CryptoKey 全算法矩阵 | ⬜ | |
+| M8-1 | Fetch：fetch/Headers/Request/Response/FormData/body mixin/redirect/AbortSignal/streaming | ✅ | 2026-08-07 |
+| M8-2 | URL/URLSearchParams/URLPattern + legacy parse/format/resolve/domainTo*/fileURLToPath | ✅ | 2026-08-07 |
+| M8-3 | Blob/File：bytes/text/stream/arrayBuffer/slice/object URL | ✅ | 2026-08-07 |
+| M8-4 | Encoding：TextEncoder/Decoder + Stream、atob/btoa | ✅ | 2026-08-07 |
+| M8-5 | Web Streams：全部 reader/writer/controller/BYOB/queuing/compression 类 | ✅ | 2026-08-07 |
+| M8-6 | Events/Messaging：Event/EventTarget/CustomEvent/MessageEvent/MessageChannel/MessagePort/BroadcastChannel | ✅ | 2026-08-07 |
+| M8-7 | Abort：AbortController/AbortSignal.abort/timeout/any/reason/throwIfAborted | ✅ | 2026-08-07 |
+| M8-8 | Performance：performance/PerformanceEntry/Mark/Measure/Observer/ResourceTiming/User Timing | ✅ | 2026-08-07 |
+| M8-9 | WebSocket/CloseEvent/MessageEvent、navigator | ✅ | 2026-08-07 |
+| M8-10 | structuredClone/transfer、DOMException 名称/code 常量/stack/message/name | ✅ | 2026-08-07 |
+| M8-11 | Web Crypto 全局：crypto/Crypto/SubtleCrypto/CryptoKey 全算法矩阵 | ✅ | 2026-08-07 |
 
 ### M8 完成记录
 
 | 日期 | 点位 | 内容与证据 |
 |------|------|------------|
-| | | |
+| 2026-08-07 | M8-1 | Headers 迭代按 WHATWG 名称排序（sortedMerged，keys/values/entries/forEach/iterator 统一）；Response/fetch body 流 chunk 改为 Uint8Array（Buffer）；修正用例 `new Headers('a: 1
+b: 2')` 字符串形态（node 22.23.1 undici 拒绝，改 sequence 形态）。m8-fetch.cjs PASS。注意：`internal/globalscheck` 为陈旧重复实现（仅自身测试引用），活动实现为 `internal/runtime/globals`，两处已同步修复。 |
+| 2026-08-07 | M8-2 | legacy url 模块补 `Url` 类（12 字段 + parse/format/resolve/resolveObject/parseHost，search/hash 带 '?'/'#' 前缀）、`resolveObject`、`fileURLToPathBuffer`；修复 punyEncode 死循环 OOM（RFC 3492 编码循环 q 增量位置错误 + 缺失 n++/delta 语义；对齐 node lib/punycode.js 特有的尾部 ++delta 与 t=k-bias 阈值）与 punyDecode 阈值 bug——domainToASCII/Unicode 与 node 逐字节一致（bcher-kva/fiqs8s/dqo34k 等向量）。m8-url-module.cjs PASS。 |
+| 2026-08-07 | M8-8 | 全局 `PerformanceObserver` + entries API（mark/measure 记录、getEntries*/clear*、observer 回调）启动期注册（globals/performance.go 基础实现；node:perf_hooks 加载后由 builtin 完整实现覆盖同名全局）；Performance/PerformanceEntry/PerformanceMark/PerformanceMeasure/PerformanceObserver/PerformanceObserverEntryList/PerformanceResourceTiming 七构造器全局注册。m8-* 与 perf 探针与 node 22.23.1 对齐。 |
+| 2026-08-07 | M8-11 | 全局 `Crypto`/`SubtleCrypto`/`CryptoKey` 构造器（new 抛 TypeError；crypto instanceof Crypto、crypto.subtle instanceof SubtleCrypto、CryptoKey 实例 instanceof 成立，经 SetProto 原型链）。crypto 全局探针与 node 对齐。 |
+| 2026-08-07 | M8 验收 | m8-* 差分 9/9 全 PASS；全局 surface 探针与 node 22.23.1 一致（唯一差异：URLPattern aluka 始终可用，node 需 --experimental-urlpattern——超集）。knownDifference：全局对象方法为自有属性（原型链简化模型）；crypto 自有键含 getRandomValues/randomUUID/subtle（node 在原型上）。 |
+
+### M9 完成记录
+
+| 日期 | 点位 | 内容与证据 |
+|------|------|------------|
+| 2026-08-07 | M9-1/2/3 | domain/punycode/wasi 模块面与行为差分 m9-1-domain.cjs、m9-2-punycode.cjs、m9-3-wasi.cjs 全 PASS（含废弃警告形状）。 |
+| 2026-08-07 | M9-4 | process.report/permission 方法面 m9-4-process.cjs PASS（环境归一化后）；ADR 文档 docs/adr/{N-API,SEA,WASI-WASM,permissions-report}.md 落盘（实现/替代/非目标决策）。 |
+| 2026-08-07 | M9 验收 | 差分 65/65 全绿；M9 决策项以 ADR 形式收敛，无静默计入完成率。 |
 
 ---
 
@@ -428,3 +447,4 @@ M9 废弃/实验/架构项可在 M2 后并行，但必须在 M10 前形成结论
 | v1.3 | 2026-08-06 | **M2 部分完成（3/8）**：EventEmitter 语义合同（Symbol 事件/error 抛出/errorMonitor/newListener/captureRejections/maxListeners 警告/静态导出对齐）——事件探针 12→0 差异；Error 体系（cause + 系统错误 code/errno/path/syscall）；AbortSignal（abort()/instanceof）；process.emitWarning 补入；差分 7/7、`go test` 绿、conformance 15/15。M2-1 为已知简化（Shape 模型无属性标志），M2-4/6/7/8 待续 |
 | v1.4 | 2026-08-06 | **M2 完成（8/8）**：补 M2-4（unhandledRejection + process.once/removeListener）、M2-6（Buffer BigInt 读写/swap/toString(radix)/from(TypedArray)）、M2-7（Transform 回调约定 + duplex 共享对象重构 + destroy(error) + pipeline 链收尾）、M2-8（动态 import CJS 命名空间包装）。差分 11/11、`go test` 绿、conformance 15/15。M2-1 保留为已知差异（Shape 模型无属性标志，需专项） |
 | v1.5 | 2026-08-06 | **M3-M6 完成（四个子代理并行）**：M3 文件/系统/进程 11/11（fs 三面+FileHandle/Stats 真实时间、os 真实值、child_process sync 三件套、worker_threads 补全、process warning 事件、constants 242 键）；M4 网络协议栈 8/8（net BlockList/SocketAddress/isIP、http 全链路+Agent keepAlive、tls/https 本地证书、http2/WebSocket 方法面；socket data 改 Buffer 并修正 TestNetMultipleMessages）；M5 Crypto/压缩/数据库 5/5（crypto randomInt/UUID/timingSafeEqual/hkdf/sign、WebCrypto AES-GCM/HMAC、zlib raw/unzip/crc32、sqlite CRUD/事务、buffer transcode + readBigInt64 符号修复）；M6 诊断/隔离 8/8（vm context 隔离、AsyncLocalStorage 三路传播（引擎最小钩子）、perf_hooks Observer、diagnostics_channel bindStore、module builtinModules 68 项）。差分 48/48、`go test` 全绿、conformance 15/15、覆盖名称面 629/2044（31%），L3=6 |
+| v1.6 | 2026-08-07 | **M7-M9 完成**：M7 测试器/CLI/包生态 6/6（node:test 补 run/snapshot/mock.reset 并对齐 22.23.1 面、--test/--watch/--test-shard/--test-reporter-destination/--test-timeout 新 flag、condpkg fixture 补建、TS strip tsprobe）；M8 全局 Web API 11/11（Headers 迭代排序 + body 流 Uint8Array、legacy url 补 Url 类/resolveObject/fileURLToPathBuffer + punycode 修复（OOM bug）、全局 PerformanceObserver/entries API + Performance* 构造器、Crypto/SubtleCrypto/CryptoKey 构造器与 instanceof）；M9 5/5（domain/punycode/wasi/process 差分全绿 + ADR 落盘）。**关键回归修复**：punyEncode 死循环 OOM（4GB VirtualAlloc）、t.assert.match this 绑定、m8-fetch 用例非规范 Headers 字符串形态；**基础设施**：node 22.23.1（冻结版本）落地 E:/tools/node-v22.23.1-win-x64 并作为 diff NODE=；run-diff.sh 增 DNS 协议探测（DIFF_NO_DNS 归一化沙箱环境）；清理 c31f180 遗留的临时 harness 测试与 internal/globalscheck 陈旧重复包引用。差分 65/65、go test 绿、conformance 16/16。M10 剩余（全量认证门禁）。

@@ -34,3 +34,13 @@ node_modules/
 demo/express-demo/probe.js
 # node22 compat：只忽略可再生成的探针结果；manifest/probe/diff/tools 与冻结快照需入库
 tests/compat/node22/results/
+
+# node:test 包生态 fixture（condpkg）需入库，测试依赖
+!tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/
+!tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/**/package.json
+!tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/**/*.js
+!tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/**/*.mjs
+!tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/condpkg/
+
+# aluka 编译缓存（node:test fixture 内的运行时产物不入库）
+.aluka/

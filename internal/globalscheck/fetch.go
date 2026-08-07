@@ -10,6 +10,7 @@ package globals
 //   - Headers/FormData 用有序键值对列表（保持插入顺序，键名不区分大小写）。
 
 import (
+	"sort"
 	"fmt"
 	"io"
 	"net/http"
@@ -163,6 +164,14 @@ func (h *headerState) merged() []hdrPair {
 	return out
 }
 
+// sortedMerged 返回 merged 结果按名称字典序排序后的序列（迭代语义：
+// keys/values/entries/forEach/iterator 均按排序后的名称产出）。
+func (h *headerState) sortedMerged() []hdrPair {
+	out := h.merged()
+	sort.SliceStable(out, func(i, j int) bool { return out[i].key < out[j].key })
+	return out
+}
+
 // newHeadersInstance 构造 Headers 对象。
 func newHeadersInstance(args []engine.Value) engine.Value {
 	obj := engine.NewObject()
@@ -265,7 +274,7 @@ func newHeadersInstance(args []engine.Value) engine.Value {
 	_ = obj.Set("forEach", engine.NewFunction("forEach", func(a []engine.Value) (engine.Value, error) {
 		if len(a) > 0 && a[0].IsFunction() {
 			if f, ok := a[0].AsFunction(); ok {
-				for _, p := range state.merged() {
+				for _, p := range state.sortedMerged() {
 					_, _ = f.Call([]engine.Value{engine.Str(p.val), engine.Str(p.key), obj})
 				}
 			}
@@ -282,21 +291,21 @@ func newHeadersInstance(args []engine.Value) engine.Value {
 	}
 	_ = obj.Set("keys", engine.NewFunction("keys", func(a []engine.Value) (engine.Value, error) {
 		keys := make([]engine.Value, 0)
-		for _, p := range state.merged() {
+		for _, p := range state.sortedMerged() {
 			keys = append(keys, engine.Str(p.key))
 		}
 		return engine.NewArray(keys), nil
 	}))
 	_ = obj.Set("values", engine.NewFunction("values", func(a []engine.Value) (engine.Value, error) {
 		vals := make([]engine.Value, 0)
-		for _, p := range state.merged() {
+		for _, p := range state.sortedMerged() {
 			vals = append(vals, engine.Str(p.val))
 		}
 		return engine.NewArray(vals), nil
 	}))
 	_ = obj.Set("entries", engine.NewFunction("entries", func(a []engine.Value) (engine.Value, error) {
 		entries := make([]engine.Value, 0)
-		for _, p := range state.merged() {
+		for _, p := range state.sortedMerged() {
 			entries = append(entries, engine.NewArray([]engine.Value{engine.Str(p.key), engine.Str(p.val)}))
 		}
 		return engine.NewArray(entries), nil
@@ -311,11 +320,11 @@ func newHeadersInstance(args []engine.Value) engine.Value {
 		}
 		return engine.Str(b.String()), nil
 	}))
-	// [Symbol.iterator]()：产出 [name, value] 对。
+	// [Symbol.iterator]()：产出 [name, value] 对（按名称排序，WHATWG 语义）。
 	_ = obj.Set(engine.SymbolIterator.SymbolKey(), engine.NewFunction("[Symbol.iterator]", func(a []engine.Value) (engine.Value, error) {
 		iterObj := engine.NewObject()
 		idx := 0
-		merged := state.merged()
+		merged := state.sortedMerged()
 		next := engine.NewFunction("next", func(na []engine.Value) (engine.Value, error) {
 			result := engine.NewObject()
 			if idx >= len(merged) {
@@ -465,7 +474,7 @@ func buildResponse(ctx engine.Context, args []engine.Value, status int, statusTe
 	// 内部同步 body（供 Go 侧 Aluka.serve 等直接读取，避免 Promise this 绑定问题）。
 	_ = res.Set("_body", engine.Str(bodyStr))
 
-	// body 属性：ReadableStream（推入 body 后关闭）。
+	// body 属性：ReadableStream（推入 body 后关闭）。流内 chunk 为 Uint8Array。
 	if bodyStr != "" {
 		bodyStream, _ := newReadableStream(ctx, []engine.Value{engine.NewObjectFrom(map[string]engine.Value{
 			"start": engine.NewFunction("start", func(a []engine.Value) (engine.Value, error) {
@@ -473,7 +482,7 @@ func buildResponse(ctx engine.Context, args []engine.Value, status int, statusTe
 					if c, ok := a[0].AsObject(); ok {
 						if e, err := c.Get("enqueue"); err == nil && e.IsFunction() {
 							if f, ok := e.AsFunction(); ok {
-								_, _ = f.Call([]engine.Value{engine.Str(bodyStr)})
+								_, _ = f.Call([]engine.Value{NewBufferInstance([]byte(bodyStr))})
 							}
 						}
 						if cl, err := c.Get("close"); err == nil && cl.IsFunction() {
@@ -767,6 +776,7 @@ func httpHeaderToEngine(h http.Header) engine.Value {
 }
 
 // responseBodyStream 构造包装响应体的 ReadableStream。
+// 流内 chunk 为 Uint8Array（fetch 语义，node 的 read() 返回 object）。
 func responseBodyStream(ctx engine.Context, bodyStr string) engine.Value {
 	stream, _ := newReadableStream(ctx, []engine.Value{engine.NewObjectFrom(map[string]engine.Value{
 		"start": engine.NewFunction("start", func(a []engine.Value) (engine.Value, error) {
@@ -774,7 +784,7 @@ func responseBodyStream(ctx engine.Context, bodyStr string) engine.Value {
 				if c, ok := a[0].AsObject(); ok {
 					if e, err := c.Get("enqueue"); err == nil && e.IsFunction() {
 						if f, ok := e.AsFunction(); ok {
-							_, _ = f.Call([]engine.Value{engine.Str(bodyStr)})
+							_, _ = f.Call([]engine.Value{NewBufferInstance([]byte(bodyStr))})
 						}
 					}
 					if cl, err := c.Get("close"); err == nil && cl.IsFunction() {

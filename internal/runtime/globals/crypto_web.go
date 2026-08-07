@@ -127,12 +127,57 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 	}))
 
 	_ = crypto.Set("subtle", subtle)
-	return ctx.Global().Set("crypto", crypto)
+	if err := ctx.Global().Set("crypto", crypto); err != nil {
+		return err
+	}
+	// 全局 Crypto / SubtleCrypto / CryptoKey 构造器（Node 语义：new 抛
+	// TypeError；crypto instanceof Crypto、crypto.subtle instanceof
+	// SubtleCrypto、key instanceof CryptoKey 成立）。
+	cryptoCtor := engine.NewFunction("Crypto", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), fmt.Errorf("%w: Illegal constructor", engine.ErrTypeError)
+	})
+	cryptoProto := engine.NewObject()
+	_ = cryptoProto.Set("constructor", cryptoCtor)
+	if co, ok := cryptoCtor.AsObject(); ok {
+		_ = co.Set("prototype", cryptoProto)
+	}
+	engine.SetProto(crypto, cryptoProto)
+	_ = ctx.Global().Set("Crypto", cryptoCtor)
+
+	subtleCtor := engine.NewFunction("SubtleCrypto", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), fmt.Errorf("%w: Illegal constructor", engine.ErrTypeError)
+	})
+	subtleProto := engine.NewObject()
+	_ = subtleProto.Set("constructor", subtleCtor)
+	if so, ok := subtleCtor.AsObject(); ok {
+		_ = so.Set("prototype", subtleProto)
+	}
+	engine.SetProto(subtle, subtleProto)
+	_ = ctx.Global().Set("SubtleCrypto", subtleCtor)
+
+	keyCtor := engine.NewFunction("CryptoKey", func(args []engine.Value) (engine.Value, error) {
+		return engine.Undefined(), fmt.Errorf("%w: Illegal constructor", engine.ErrTypeError)
+	})
+	keyProto := engine.NewObject()
+	_ = keyProto.Set("constructor", keyCtor)
+	if ko, ok := keyCtor.AsObject(); ok {
+		_ = ko.Set("prototype", keyProto)
+	}
+	cryptoKeyProto = keyProto
+	_ = ctx.Global().Set("CryptoKey", keyCtor)
+
+	return nil
 }
+
+// cryptoKeyProto 是 CryptoKey.prototype（newCryptoKey 的实例原型）。
+var cryptoKeyProto engine.Object
 
 // newCryptoKey 构造 CryptoKey 对象。
 func newCryptoKey(typeStr string, extractable bool, algorithmName string, usages []string, keyData []byte) engine.Value {
 	key := engine.NewObject()
+	if cryptoKeyProto != nil {
+		engine.SetProto(key, cryptoKeyProto)
+	}
 	_ = key.Set("type", engine.Str(typeStr))
 	_ = key.Set("extractable", engine.Boolean(extractable))
 	algo := engine.NewObject()

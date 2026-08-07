@@ -16,6 +16,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aluka-lang/aluka/internal/builtin"
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -120,7 +122,7 @@ func main() {
 		startREPL(useVM(args[1:]))
 	case first == "install" || first == "add" || first == "remove" || first == "update":
 		cmdPkg(first, args[1:])
-	case first == "test":
+	case first == "test" || first == "--test":
 		// NODE_OPTIONS 中的测试运行器 flags 合并进 test 子命令。
 		cmdTest(append(nodeOpts, args[1:]...))
 	case first == "build":
@@ -335,7 +337,11 @@ func cmdTest(args []string) {
 	updateSnaps := false
 	only := false
 	reporter := "spec" // spec | tap | dot | junit | lcov | <custom path>
+	reporterDest := "stdout"
 	concurrency := 1
+	watch := false
+	shardSpec := "" // index/total
+	timeoutMs := int64(0)
 	var namePattern *regexp.Regexp
 	var skipPattern *regexp.Regexp
 	var paths []string
@@ -348,6 +354,8 @@ func cmdTest(args []string) {
 			updateSnaps = true
 		case a == "--test-only":
 			only = true
+		case a == "--watch":
+			watch = true
 		case a == "--test-reporter":
 			if i+1 < len(args) {
 				i++
@@ -355,6 +363,31 @@ func cmdTest(args []string) {
 			}
 		case strings.HasPrefix(a, "--test-reporter="):
 			reporter = strings.TrimPrefix(a, "--test-reporter=")
+		case a == "--test-reporter-destination":
+			if i+1 < len(args) {
+				i++
+				reporterDest = args[i]
+			}
+		case strings.HasPrefix(a, "--test-reporter-destination="):
+			reporterDest = strings.TrimPrefix(a, "--test-reporter-destination=")
+		case a == "--test-shard":
+			if i+1 < len(args) {
+				i++
+				shardSpec = args[i]
+			}
+		case strings.HasPrefix(a, "--test-shard="):
+			shardSpec = strings.TrimPrefix(a, "--test-shard=")
+		case a == "--test-timeout":
+			if i+1 < len(args) {
+				i++
+				if n, err := strconv.ParseInt(args[i], 10, 64); err == nil && n >= 0 {
+					timeoutMs = n
+				}
+			}
+		case strings.HasPrefix(a, "--test-timeout="):
+			if n, err := strconv.ParseInt(strings.TrimPrefix(a, "--test-timeout="), 10, 64); err == nil && n >= 0 {
+				timeoutMs = n
+			}
 		case a == "--test-concurrency":
 			if i+1 < len(args) {
 				i++
@@ -407,26 +440,88 @@ func cmdTest(args []string) {
 	builtin.TestNamePattern = namePattern
 	builtin.TestSkipPattern = skipPattern
 	builtin.TestOnly = only
+	builtin.TestProgrammaticRun = false
+	builtin.TestDefaultTimeout = time.Duration(timeoutMs) * time.Millisecond
 	_ = concurrency // 接受 --test-concurrency（执行仍按注册顺序串行；见 knownDifference）
 	files := discoverTestFiles(paths)
+
+	// --test-shard=index/total：按文件路径哈希分片（Node 语义：文件级分片）。
+	if shardSpec != "" {
+		idx, total := 0, 0
+		if _, err := fmt.Sscanf(shardSpec, "%d/%d", &idx, &total); err == nil && total > 0 && idx >= 0 && idx < total {
+			var sharded []string
+			for _, f := range files {
+				h := fnv.New32a()
+				_, _ = h.Write([]byte(f))
+				if int(h.Sum32()%uint32(total)) == idx {
+					sharded = append(sharded, f)
+				}
+			}
+			files = sharded
+		} else {
+			fmt.Fprintf(os.Stderr, "aluka: invalid --test-shard %q (expected index/total)\n", shardSpec)
+			osExit(1)
+		}
+	}
+
 	if len(files) == 0 {
 		fmt.Fprintln(os.Stderr, "aluka: no test files found")
 		osExit(1)
 	}
+
+	// --test-reporter-destination=stdout|<path>：报告器输出重定向。
+	// 近似实现：destination 为文件时，运行期全部 stdout（含用例输出）写入文件
+	//（node 仅报告器输出入文件，见 knownDifference）。
+	var destFile *os.File
+	if reporterDest != "stdout" {
+		f, err := os.Create(reporterDest)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "aluka: --test-reporter-destination %s: %v\n", reporterDest, err)
+			osExit(1)
+		}
+		defer f.Close()
+		_ = destFile
+		oldOut := os.Stdout
+		os.Stdout = f
+		defer func() { os.Stdout = oldOut }()
+	}
+	// 执行测试文件集合并输出报告（--watch 重跑复用 runTestFilesOnce）。
+	passed, failed := runTestFilesOnce(files, reporter, reporterDest == "stdout", coverage, updateSnaps, only, namePattern, skipPattern)
+	// --watch：监听测试文件变更并重跑（基础轮询实现）。
+	if watch {
+		fmt.Println("\n[watch] waiting for changes... (Ctrl+C to quit)")
+		for {
+			changed := waitForFileChange(files, 500*time.Millisecond)
+			if !changed {
+				continue
+			}
+			fmt.Println("\n[watch] change detected, re-running...")
+			passed, failed = runTestFilesOnce(files, reporter, reporterDest == "stdout", coverage, updateSnaps, only, namePattern, skipPattern)
+			_ = passed
+			_ = failed
+		}
+	}
+	if failed > 0 {
+		osExit(1)
+	}
+}
+
+// runTestFilesOnce 执行测试文件集合并输出报告（--watch 重跑复用）。
+// 返回 (passed, failed) 计数；reporter 输出始终走 os.Stdout。
+func runTestFilesOnce(files []string, reporter string, useStdout bool, coverage, updateSnaps, only bool, namePattern, skipPattern *regexp.Regexp) (int, int) {
+	builtin.TestNamePattern = namePattern
+	builtin.TestSkipPattern = skipPattern
+	builtin.TestOnly = only
 	passed, failed, skipped, todo, cancelled := 0, 0, 0, 0, 0
-	// 覆盖率统计（文件 → 已执行行集合）。
 	fileCoverage := map[string]map[int]bool{}
-	// dot 报告器：逐用例输出字符（. = pass, x = fail, , = skip, T = todo）。
-	// junit 报告器：收集 XML 用例节点。
 	var junitCases []junitCase
-	var dotFailed []string // dot 报告器的失败用例（Failed tests 节）。
-	// 自定义报告器（--test-reporter <path>）：模块导出 stream（write/end）。
+	var dotFailed []string
 	var customReporter *customReporterHandle
 	if isCustomReporterPath(reporter) {
 		cr, err := loadCustomReporter(reporter)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "aluka: --test-reporter %s: %v\n", reporter, err)
-			osExit(1)
+			return 0, 1
 		}
 		customReporter = cr
 	}
@@ -506,45 +601,35 @@ func cmdTest(args []string) {
 	case reporter == "tap":
 		fmt.Printf("\n# tests %d\n# pass  %d\n# fail  %d\n# cancelled  %d\n# skipped  %d\n# todo  %d\n", passed+failed+skipped+todo+cancelled, passed, failed, cancelled, skipped, todo)
 	case reporter == "lcov":
-		fmt.Println("# start of coverage report")
-		fmt.Println("# ----------------------------------------------------------------")
-		fmt.Println("# file            | line % | branch % | funcs % | uncovered lines")
-		fmt.Println("# ----------------------------------------------------------------")
-		totalLines, coveredLines := 0, 0
-		for src, executed := range fileCoverage {
-			total := sourceLineCount(src)
-			covered := len(executed)
-			for ln := range executed {
-				if ln > total {
-					covered--
-				}
-			}
-			pct := 0.0
-			if total > 0 {
-				pct = float64(covered) / float64(total) * 100
-			}
-			uncovered := uncoveredLineList(executed, total)
-			name := filepath.Base(src)
-			fmt.Printf("# %-15s | %6.2f | %6.2f | %6.2f | %s\n", name, pct, pct, pct, uncovered)
-			totalLines += total
-			coveredLines += covered
-		}
-		allPct := 0.0
-		if totalLines > 0 {
-			allPct = float64(coveredLines) / float64(totalLines) * 100
-		}
-		fmt.Println("# ----------------------------------------------------------------")
-		fmt.Printf("# %-15s | %6.2f | %6.2f | %6.2f | \n", "all files", allPct, allPct, allPct)
-		fmt.Println("# ----------------------------------------------------------------")
-		fmt.Println("# end of coverage report")
+		printLcovReport(fileCoverage)
 	default:
 		fmt.Printf("\nℹ tests %d\nℹ pass  %d\nℹ fail  %d\nℹ cancelled  %d\nℹ skipped  %d\nℹ todo  %d\n", passed+failed+skipped+todo+cancelled, passed, failed, cancelled, skipped, todo)
 	}
 	if coverage {
 		printCoverageReport(fileCoverage)
 	}
-	if failed > 0 {
-		osExit(1)
+	return passed, failed
+}
+
+// waitForFileChange 轮询文件 mtime，任一文件变化返回 true。
+func waitForFileChange(files []string, interval time.Duration) bool {
+	mtime := func(p string) time.Time {
+		if fi, err := os.Stat(p); err == nil {
+			return fi.ModTime()
+		}
+		return time.Time{}
+	}
+	prev := make(map[string]time.Time, len(files))
+	for _, f := range files {
+		prev[f] = mtime(f)
+	}
+	for {
+		time.Sleep(interval)
+		for _, f := range files {
+			if cur := mtime(f); !cur.Equal(prev[f]) {
+				return true
+			}
+		}
 	}
 }
 
@@ -564,6 +649,41 @@ type junitCase struct {
 	Status     string
 	Err        string
 	DurationMs int64
+}
+
+// printLcovReport 输出覆盖率汇总（Node lcov 近似：文件级行覆盖）。
+func printLcovReport(fileCoverage map[string]map[int]bool) {
+	fmt.Println("# start of coverage report")
+	fmt.Println("# ----------------------------------------------------------------")
+	fmt.Println("# file            | line % | branch % | funcs % | uncovered lines")
+	fmt.Println("# ----------------------------------------------------------------")
+	totalLines, coveredLines := 0, 0
+	for src, executed := range fileCoverage {
+		total := sourceLineCount(src)
+		covered := len(executed)
+		for ln := range executed {
+			if ln > total {
+				covered--
+			}
+		}
+		pct := 0.0
+		if total > 0 {
+			pct = float64(covered) / float64(total) * 100
+		}
+		uncovered := uncoveredLineList(executed, total)
+		name := filepath.Base(src)
+		fmt.Printf("# %-15s | %6.2f | %6.2f | %6.2f | %s\n", name, pct, pct, pct, uncovered)
+		totalLines += total
+		coveredLines += covered
+	}
+	allPct := 0.0
+	if totalLines > 0 {
+		allPct = float64(coveredLines) / float64(totalLines) * 100
+	}
+	fmt.Println("# ----------------------------------------------------------------")
+	fmt.Printf("# %-15s | %6.2f | %6.2f | %6.2f | \n", "all files", allPct, allPct, allPct)
+	fmt.Println("# ----------------------------------------------------------------")
+	fmt.Println("# end of coverage report")
 }
 
 // printJUnitReport 输出 Node 风格 junit XML（testsuite/failure）。
@@ -896,7 +1016,12 @@ func runTestFile(path string, enableCoverage bool) ([]builtin.TestResult, map[st
 	// 注意：此处不调用 vm.RunLoop()——用例执行（RunRegisteredTests）期间
 	// 的异步任务（定时器/IO）由 AwaitPromise 内部驱动；若先 RunLoop 会
 	// 在无 pending 任务时置 loopDone，导致后续 PostTask 被丢弃（async
-	// 测试挂起）。
+	// 测试挂起）。若脚本已调用 t.run()（程序化运行），驱动事件循环以派发
+	// run() 的流事件，且不再重复执行用例。
+	if builtin.TestProgrammaticRun {
+		vm.RunLoop()
+		return nil, nil, nil
+	}
 	results := builtin.RunRegisteredTests(vm)
 	return results, vm.CoverageLines(), nil
 }

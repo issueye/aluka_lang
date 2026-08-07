@@ -37,6 +37,9 @@ const surface = {
 process.stdout.write('SURFACE:' + JSON.stringify(surface) + '\n');
 
 // 2. 异步解析（localhost，避免外网依赖）。
+// 环境归一化：DNS 协议不可用（沙箱屏蔽 UDP-53，run-diff.sh 探测）时，
+// live resolve* 断言统一输出 'skipped'（两侧一致），仅保留 lookup（系统解析）。
+const NO_DNS = !!process.env.DIFF_NO_DNS;
 const results = {};
 let done = 0;
 const after = () => {
@@ -49,12 +52,12 @@ const after = () => {
 
 // resolve('localhost', 'A') → 仅 IPv4。
 dns.resolve('localhost', 'A', (err, addrs) => {
-  results.resolveA = [err === null, JSON.stringify(addrs)].join(':');
+  results.resolveA = NO_DNS ? 'skipped' : [err === null, JSON.stringify(addrs)].join(':');
   after();
 });
 // resolve4('localhost')。
 dns.resolve4('localhost', (err, addrs) => {
-  results.resolve4 = [err === null, JSON.stringify(addrs)].join(':');
+  results.resolve4 = NO_DNS ? 'skipped' : [err === null, JSON.stringify(addrs)].join(':');
   after();
 });
 // lookup：地址为 loopback，family 4/6。
@@ -65,6 +68,6 @@ dns.lookup('localhost', (err, addr, family) => {
 });
 // promises.resolve。
 dns.promises.resolve('localhost', 'A').then((addrs) => {
-  results.pResolve = JSON.stringify(addrs);
+  results.pResolve = NO_DNS ? 'skipped' : JSON.stringify(addrs);
   after();
-}).catch((e) => { results.pResolve = 'err:' + e.code; after(); });
+}).catch((e) => { results.pResolve = NO_DNS ? 'skipped' : 'err:' + e.code; after(); });

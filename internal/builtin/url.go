@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
 // NewURL 构造 node:url 模块的导出对象。
@@ -72,6 +73,11 @@ func NewURL(ctx engine.Context) (engine.Value, error) {
 		return engine.Str(fileURLToPath(strArg(args, 0))), nil
 	}))
 
+	// fileURLToPathBuffer：node 22.23 新增，返回 Buffer 形式的路径。
+	_ = m.Set("fileURLToPathBuffer", engine.NewFunction("fileURLToPathBuffer", func(args []engine.Value) (engine.Value, error) {
+		return globals.NewBufferInstance([]byte(fileURLToPath(strArg(args, 0)))), nil
+	}))
+
 	_ = m.Set("pathToFileURL", engine.NewFunction("pathToFileURL", func(args []engine.Value) (engine.Value, error) {
 		href := pathToFileURL(strArg(args, 0))
 		// node 返回 URL 对象；优先用全局 URL 构造器包装（获得 href/protocol 等）。
@@ -98,7 +104,152 @@ func NewURL(ctx engine.Context) (engine.Value, error) {
 		return urlToHttpOptions(args[0]), nil
 	}))
 
+	_ = m.Set("resolveObject", engine.NewFunction("resolveObject", func(args []engine.Value) (engine.Value, error) {
+		from := strArg(args, 0)
+		to := strArg(args, 1)
+		r := resolveURLs(from, to)
+		u, err := url.Parse(r)
+		if err != nil {
+			return engine.Undefined(), nil
+		}
+		return parseUrlFields(engine.NewObject(), u, false), nil
+	}))
+
+	registerUrlClass(m)
+
 	return m, nil
+}
+
+// legacyUrlKeys 是 node Url 实例的 12 个字段（保持 node 顺序）。
+var legacyUrlKeys = []string{
+	"protocol", "slashes", "auth", "host", "port", "hostname",
+	"hash", "search", "query", "pathname", "path", "href",
+}
+
+// resolveURLs 解析相对 URL（失败或空 base 时回退 to，node 语义）。
+func resolveURLs(from, to string) string {
+	if from == "" {
+		return to
+	}
+	base, err := url.Parse(from)
+	if err != nil {
+		return to
+	}
+	ref, err := url.Parse(to)
+	if err != nil {
+		return to
+	}
+	return base.ResolveReference(ref).String()
+}
+
+// parseUrlFields 按 node legacy 语义（search/hash 含 '?'/'#' 前缀）把解析结果
+// 填入 obj 的 12 个字段，返回 obj。用于 Url 类与 resolveObject。
+func parseUrlFields(obj engine.Object, u *url.URL, parseQueryString bool) engine.Value {
+	if u.Scheme != "" {
+		_ = obj.Set("protocol", engine.Str(u.Scheme+":"))
+		_ = obj.Set("slashes", engine.Boolean(true))
+	} else {
+		_ = obj.Set("protocol", engine.Null())
+		_ = obj.Set("slashes", engine.Null())
+	}
+	host := u.Host
+	hostname := u.Hostname()
+	port := u.Port()
+	if host == "" {
+		_ = obj.Set("host", engine.Null())
+		_ = obj.Set("hostname", engine.Null())
+		_ = obj.Set("port", engine.Null())
+	} else {
+		_ = obj.Set("host", engine.Str(host))
+		_ = obj.Set("hostname", engine.Str(hostname))
+		if port != "" {
+			_ = obj.Set("port", engine.Str(port))
+		} else {
+			_ = obj.Set("port", engine.Null())
+		}
+	}
+	_ = obj.Set("pathname", engine.Str(u.Path))
+	path := u.Path
+	if u.RawQuery != "" {
+		_ = obj.Set("search", engine.Str("?"+u.RawQuery))
+		if parseQueryString {
+			_ = obj.Set("query", queryToObject(u.Query()))
+		} else {
+			_ = obj.Set("query", engine.Str(u.RawQuery))
+		}
+		path += "?" + u.RawQuery
+	} else {
+		_ = obj.Set("search", engine.Null())
+		_ = obj.Set("query", engine.Null())
+	}
+	_ = obj.Set("path", engine.Str(path))
+	if u.Fragment != "" {
+		_ = obj.Set("hash", engine.Str("#"+u.Fragment))
+	} else {
+		_ = obj.Set("hash", engine.Null())
+	}
+	if u.User != nil {
+		_ = obj.Set("auth", engine.Str(u.User.String()))
+	} else {
+		_ = obj.Set("auth", engine.Null())
+	}
+	_ = obj.Set("href", engine.Str(u.String()))
+	return obj
+}
+
+// registerUrlClass 注册 node:url 的 legacy Url 类（构造参数被忽略，须显式 .parse()）。
+func registerUrlClass(m engine.Object) {
+	ctor := engine.NewFunction("Url", func(args []engine.Value) (engine.Value, error) {
+		obj := engine.NewObject()
+		for _, k := range legacyUrlKeys {
+			_ = obj.Set(k, engine.Null())
+		}
+
+		// parse(url[, parseQueryString])：解析并填充 12 字段，返回 this。
+		_ = obj.Set("parse", engine.NewFunction("parse", func(callArgs []engine.Value) (engine.Value, error) {
+			pq := false
+			if len(callArgs) > 1 {
+				if b, ok := callArgs[1].Bool(); ok {
+					pq = b
+				}
+			}
+			if u, err := url.Parse(strArg(callArgs, 0)); err == nil {
+				parseUrlFields(obj, u, pq)
+			}
+			return obj, nil
+		}))
+
+		// format()：用当前字段重算 href，返回 href 字符串。
+		_ = obj.Set("format", engine.NewFunction("format", func(callArgs []engine.Value) (engine.Value, error) {
+			href := formatURL(obj)
+			_ = obj.Set("href", engine.Str(href))
+			return engine.Str(href), nil
+		}))
+
+		// resolve(relative)：返回解析后的 URL 字符串。
+		_ = obj.Set("resolve", engine.NewFunction("resolve", func(callArgs []engine.Value) (engine.Value, error) {
+			href, _ := obj.Get("href")
+			return engine.Str(resolveURLs(href.String(), strArg(callArgs, 0))), nil
+		}))
+
+		// resolveObject(relative)：返回解析后的 UrlObject。
+		_ = obj.Set("resolveObject", engine.NewFunction("resolveObject", func(callArgs []engine.Value) (engine.Value, error) {
+			href, _ := obj.Get("href")
+			r := resolveURLs(href.String(), strArg(callArgs, 0))
+			if u, err := url.Parse(r); err == nil {
+				return parseUrlFields(engine.NewObject(), u, false), nil
+			}
+			return engine.Undefined(), nil
+		}))
+
+		// parseHost()：内部钩子，node 为无操作（仅设置 port/hostname）。
+		_ = obj.Set("parseHost", engine.NewFunction("parseHost", func(callArgs []engine.Value) (engine.Value, error) {
+			return engine.Undefined(), nil
+		}))
+
+		return obj, nil
+	})
+	_ = m.Set("Url", ctor)
 }
 
 // urlToObj 将 *url.URL 转为 Node.js UrlObject。
@@ -362,10 +513,12 @@ func punyEncode(input string) string {
 			processed[r] = true
 		}
 	}
+	// 与 node:lib/punycode.js 编码器逐行对齐（含其特有的尾部 ++delta 与
+	// 内层对全部 c < n 计数——不排除 basic/已处理码点）。
 	numPoints := len(runes)
-	m := n
+	delta := 0
 	for h < numPoints {
-		// 找下一个未编码码点。
+		// m = 未处理码点中 >= n 的最小者（已处理码点必 < n，天然被排除）。
 		minCP := -1
 		for _, r := range runes {
 			if r >= rune(n) && !processed[r] && (minCP == -1 || r < rune(minCP)) {
@@ -375,44 +528,40 @@ func punyEncode(input string) string {
 		if minCP < 0 {
 			break
 		}
-		m = minCP
-		delta := (m - n) * (h + 1)
-		if delta < 0 {
-			delta = 0
-		}
-		n = m
+		delta += (minCP - n) * (h + 1)
+		n = minCP
 		for _, r := range runes {
-			if r < rune(n) && !processed[r] {
+			if r < rune(n) {
 				delta++
 			}
+			if r == rune(n) {
+				// 编码 delta（RFC 3492 §6.3：q 不在此循环内增量）。
+				q := delta
+				k := punyBase
+				for {
+					t := punyBase
+					if k <= b {
+						t = punyTMin
+					} else if k >= b+punyTMax {
+						t = punyTMax
+					} else {
+						t = k - b
+					}
+					if q < t {
+						break
+					}
+					out = append(out, punyDigitToChar(t+(q-t)%(punyBase-t)))
+					q = (q - t) / (punyBase - t)
+					k += punyBase
+				}
+				out = append(out, punyDigitToChar(q))
+				b = punyAdapt(delta, h+1, h == basicLen)
+				delta = 0
+				h++
+			}
 		}
-		processed[rune(n)] = true
-		q := delta
-		k := punyBase
-		for {
-			if k <= b {
-				q++
-			} else if k >= b+punyTMax {
-				q += punyBase - punyTMin
-			} else {
-				q += k - b + 1
-			}
-			t := punyBase
-			if k <= b {
-				t = punyTMin
-			} else if k >= b+punyTMax {
-				t = punyTMax
-			}
-			if q < t {
-				break
-			}
-			out = append(out, punyDigitToChar(t+(q-t)%(punyBase-t)))
-			q = (q - t) / (punyBase - t)
-			k += punyBase
-		}
-		out = append(out, punyDigitToChar(q))
-		b = punyAdapt(delta, h+1, h == basicLen)
-		h++
+		delta++ // node lib/punycode.js 特有：每轮外循环尾部额外 +1
+		n++     // 处理下一个码点
 	}
 	return string(out)
 }
@@ -456,6 +605,8 @@ func punyDecode(input string) string {
 				t = punyTMin
 			} else if k >= bias+punyTMax {
 				t = punyTMax
+			} else {
+				t = k - bias
 			}
 			if digit < t {
 				break

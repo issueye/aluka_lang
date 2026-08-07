@@ -16,7 +16,7 @@ r.hValues = Array.from(h.values()).join(',');
 r.hEntries = Array.from(h.entries()).map(([k, v]) => k + ':' + v).join('|');
 r.hDelete = (() => { const x = new Headers({ A: '1', B: '2' }); x.delete('a'); return x.get('A') + '|' + x.get('B'); })();
 r.hSetReplace = (() => { const x = new Headers({ A: '1' }); x.append('A', '2'); x.set('a', '3'); return x.get('A'); })();
-r.hFromString = new Headers('a: 1\r\nb: 2').get('B');
+r.hFromString = new Headers([['a', '1'], ['b', '2']]).get('B');
 r.hIterable = (() => { const x = new Headers({ Z: '1', A: '2' }); return [...x].map(([k, v]) => k + ':' + v).join('|'); })();
 r.hSetCookie = (() => { const x = new Headers({ 'Set-Cookie': 'a=1' }); x.append('Set-Cookie', 'b=2'); return JSON.stringify(x.getSetCookie()); })();
 

@@ -2,12 +2,12 @@
 
 > 自动生成：`tests/compat/node22/gen-all.sh`（gen-manifest → run-probe → gen-coverage），禁止手工修改。
 > 数据源：官方 API JSON v22.23.1（sha256 `ba180cb8908e1ff4247f4b71fe55042caddab8b2f4fcc2d80f28945d8d701bf1`）、本机 Node v22.23.1、Aluka 探针实测。
-> 平台：windows/amd64 ｜ 生成时间：2026-08-06T16:05:25.942Z
+> 平台：windows/amd64 ｜ 生成时间：2026-08-07T02:33:06.643Z
 
 ## 1. 总体结论
 
-- 入口：57/57 有 manifest；名称面覆盖 629/2044（31%）。
-- 等级分布：L0=3，L1=2，L2=46，L3=6，L4=0。
+- 入口：57/57 有 manifest；名称面覆盖 644/2044（32%）。
+- 等级分布：L0=0，L1=2，L2=48，L3=7，L4=0。
 - **L0-L4 判定口径**：本报告为探针初始分级（名称面近似）。L3 表示 manifest 名称面 100% 存在；L4 只在对应模块差分/语义测试通过后授予（M10 全量认证）。
 - 已知差异与缺口见 [gaps.md](./node22/../tests/compat/node22/gaps.md) 与下文章节。
 
@@ -28,7 +28,7 @@
 | `diagnostics_channel` | L2 | diagnostics_channel | 25 | 48% | start、end、asyncStart、asyncEnd、error |
 | `dns` | L2 | dns | 27 | 89% | cancel、dns.Resolver#Resolver、dns.Resolver#setLocalAddress |
 | `dns/promises` | L2 | dns | 23 | 96% | cancel |
-| `domain` | L0 | domain | 10 | 0% | create、Domain、Domain#add、Domain#bind、Domain#enter |
+| `domain` | L2 | domain | 10 | 20% | Domain#add、Domain#bind、Domain#enter、Domain#exit、Domain#intercept |
 | `events` | L2 | Events | 53 | 49% | EventEmitter#event:newListener、events.EventEmitterAsyncResource#Type、Event、Event#composedPath、Event#initEvent |
 | `fs` | L2 | fs | 169 | 60% | native、FileHandle#appendFile、FileHandle#chmod、FileHandle#chown、FileHandle#close |
 | `fs/promises` | L2 | fs | 54 | 44% | cp、glob、lchmod、lchown、lutimes |
@@ -45,7 +45,7 @@
 | `path/win32` | L3 | path | 12 | 100% | - |
 | `perf_hooks` | L2 | performance_measurement_apis | 37 | 30% | PerformanceEntry#Type、PerformanceMark#Type、PerformanceMeasure#Type、PerformanceNodeEntry、PerformanceNodeEntry#Type |
 | `process` | L2 | global-objects | 102 | 13% | availableMemory、constrainedMemory、disconnect、dlopen、execve |
-| `punycode` | L0 | punycode | 4 | 0% | decode、encode、toASCII、toUnicode |
+| `punycode` | L3 | punycode | 4 | 100% | - |
 | `querystring` | L2 | querystring | 6 | 67% | decode、encode |
 | `readline` | L2 | readline | 38 | 16% | InterfaceConstructor、InterfaceConstructor#close、InterfaceConstructor#[Symbol.dispose]、InterfaceConstructor#pause、InterfaceConstructor#prompt |
 | `readline/promises` | L2 | readline | 10 | 90% | readlinePromises.Interface#question |
@@ -57,19 +57,19 @@
 | `stream/web` | L2 | web_streams_api | 71 | 4% | from、arrayBuffer、blob、buffer、json |
 | `string_decoder` | L2 | string_decoder | 3 | 33% | StringDecoder#end、StringDecoder#write |
 | `sys` | L2 | util | 61 | 18% | debug、diff、getCallSites、getSystemErrorName、getSystemErrorMap |
-| `test` | L2 | test_runner | 83 | 8% | run、suite、skip、todo、only |
+| `test` | L2 | test_runner | 83 | 16% | setDefaultSnapshotSerializers、setResolveSnapshotPath、MockFunctionContext、MockFunctionContext#callCount、MockFunctionContext#mockImplementation |
 | `test/reporters` | L3 | test_runner | 5 | 100% | - |
 | `timers` | L2 | timers | 21 | 29% | wait、yield、Immediate、Immediate#hasRef、Immediate#ref |
 | `timers/promises` | L2 | timers | 5 | 60% | wait、yield |
 | `tls` | L2 | tls_(ssl) | 54 | 11% | createSecurePair、setDefaultCACertificates、getCACertificates、tls.SecurePair、tls.SecurePair#event:secure |
 | `trace_events` | L2 | trace_events | 4 | 50% | disable、enable |
 | `tty` | L2 | tty | 17 | 71% | tty.ReadStream#isRaw、tty.ReadStream#isTTY、tty.WriteStream#columns、tty.WriteStream#rows、tty.WriteStream#event:resize |
-| `url` | L2 | url | 32 | 22% | fileURLToPathBuffer、urlToHttpOptions、URL、URL#toString、URL#toJSON |
+| `url` | L2 | url | 32 | 28% | URL、URL#toString、URL#toJSON、URL#createObjectURL、URL#revokeObjectURL |
 | `util` | L2 | util | 61 | 18% | debug、diff、getCallSites、getSystemErrorName、getSystemErrorMap |
 | `util/types` | L2 | util | 61 | 21% | callbackify、debuglog、debug、deprecate、diff |
 | `v8` | L2 | v8 | 56 | 68% | onInit、onSettled、onBefore、onAfter、createHook |
 | `vm` | L2 | vm | 25 | 48% | vm.Script#Type、vm.Module、vm.Module#evaluate、vm.Module#link、vm.Module#Type |
-| `wasi` | L0 | webassembly_system_interface_(wasi) | 5 | 0% | WASI、WASI#getImportObject、WASI#start、WASI#initialize、WASI#Type |
+| `wasi` | L2 | webassembly_system_interface_(wasi) | 5 | 20% | WASI#getImportObject、WASI#start、WASI#initialize、WASI#Type |
 | `worker_threads` | L2 | worker_threads | 43 | 28% | BroadcastChannel#close、BroadcastChannel#postMessage、BroadcastChannel#ref、BroadcastChannel#unref、BroadcastChannel#Type |
 | `zlib` | L2 | zlib | 52 | 44% | createBrotliCompress、createBrotliDecompress、createDeflate、createDeflateRaw、createGunzip |
 
@@ -95,7 +95,7 @@
 | `globalThis` | ✅ |
 | `URLPattern` | ✅ |
 | `AbortSignal` | ✅ |
-| `MessageEvent` | ❌ 缺失 |
+| `MessageEvent` | ✅ |
 | `CloseEvent` | ❌ 缺失 |
 | `scheduler` | ❌ 缺失 |
 
@@ -106,14 +106,14 @@
 | `AbortController` | ✅ |
 | `Blob` | ✅ |
 | `Buffer` | ✅ |
-| `ByteLengthQueuingStrategy` | ❌ 缺失 |
+| `ByteLengthQueuingStrategy` | ✅ |
 | `BroadcastChannel` | ✅ |
-| `CompressionStream` | ❌ 缺失 |
-| `CountQueuingStrategy` | ❌ 缺失 |
-| `Crypto` | ❌ 缺失 |
-| `CryptoKey` | ❌ 缺失 |
+| `CompressionStream` | ✅ |
+| `CountQueuingStrategy` | ✅ |
+| `Crypto` | ✅ |
+| `CryptoKey` | ✅ |
 | `CustomEvent` | ✅ |
-| `DecompressionStream` | ❌ 缺失 |
+| `DecompressionStream` | ✅ |
 | `Event` | ✅ |
 | `EventSource` | ❌ 缺失 |
 | `EventTarget` | ✅ |
@@ -121,39 +121,39 @@
 | `FormData` | ✅ |
 | `Headers` | ✅ |
 | `MessageChannel` | ✅ |
-| `MessageEvent` | ❌ 缺失 |
-| `MessagePort` | ❌ 缺失 |
+| `MessageEvent` | ✅ |
+| `MessagePort` | ✅ |
 | `Navigator` | ❌ 缺失 |
 | `PerformanceEntry` | ❌ 缺失 |
 | `PerformanceMark` | ❌ 缺失 |
 | `PerformanceMeasure` | ❌ 缺失 |
-| `PerformanceObserver` | ❌ 缺失 |
+| `PerformanceObserver` | ✅ |
 | `PerformanceObserverEntryList` | ❌ 缺失 |
 | `PerformanceResourceTiming` | ❌ 缺失 |
-| `ReadableByteStreamController` | ❌ 缺失 |
+| `ReadableByteStreamController` | ✅ |
 | `ReadableStream` | ✅ |
-| `ReadableStreamBYOBReader` | ❌ 缺失 |
+| `ReadableStreamBYOBReader` | ✅ |
 | `ReadableStreamBYOBRequest` | ❌ 缺失 |
-| `ReadableStreamDefaultController` | ❌ 缺失 |
-| `ReadableStreamDefaultReader` | ❌ 缺失 |
+| `ReadableStreamDefaultController` | ✅ |
+| `ReadableStreamDefaultReader` | ✅ |
 | `Response` | ✅ |
 | `Request` | ✅ |
 | `Storage` | ❌ 缺失 |
-| `SubtleCrypto` | ❌ 缺失 |
+| `SubtleCrypto` | ✅ |
 | `DOMException` | ✅ |
 | `TextDecoder` | ✅ |
-| `TextDecoderStream` | ❌ 缺失 |
+| `TextDecoderStream` | ✅ |
 | `TextEncoder` | ✅ |
-| `TextEncoderStream` | ❌ 缺失 |
+| `TextEncoderStream` | ✅ |
 | `TransformStream` | ✅ |
-| `TransformStreamDefaultController` | ❌ 缺失 |
+| `TransformStreamDefaultController` | ✅ |
 | `URL` | ✅ |
 | `URLSearchParams` | ✅ |
 | `WebAssembly` | ❌ 缺失 |
 | `WebSocket` | ✅ |
 | `WritableStream` | ✅ |
-| `WritableStreamDefaultController` | ❌ 缺失 |
-| `WritableStreamDefaultWriter` | ❌ 缺失 |
+| `WritableStreamDefaultController` | ✅ |
+| `WritableStreamDefaultWriter` | ✅ |
 | `Process` | ❌ 缺失 |
 
 ### 3.3 全局方法
