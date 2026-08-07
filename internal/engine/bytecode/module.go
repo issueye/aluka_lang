@@ -34,6 +34,12 @@ type FuncTemplate struct {
 	// arguments 对象创建（O-5 调用快速路径；编译器在函数体扫描后置位）。
 	NoArgumentsObject bool
 
+	// NativeCallback 是 O-6 简单回调描述：箭头函数体为单表达式且参数
+	// ≤2、无闭包依赖时，编译器生成该描述，数组高阶方法（map/filter/…）
+	// 在 Go 侧直接执行表达式，跳过每元素完整调用链（帧 + 解释）。nil 表示
+	// 非简单回调（走正常调用路径）。
+	NativeCallback *NativeCallbackDesc
+
 	// Code is the flat instruction stream. Fixed-width (InstrSize bytes each).
 	Code []byte
 
@@ -57,19 +63,47 @@ type FuncTemplate struct {
 	LineStarts []LineEntry // sorted by PC; sparse
 }
 
+// cbOpcode 是 O-6 简单回调的微指令（小栈求值表达式）。
+type CBOpcode uint8
+
+const (
+	CBPushParam0 CBOpcode = iota // 压入第 1 个参数
+	CBPushParam1                 // 压入第 2 个参数
+	CBPushConst                  // operand = 常量池索引
+	CBPushProp0                  // 压入 param0.属性（operand = 属性名常量索引）
+	CBPushProp1                  // 压入 param1.属性
+	CBNeg                         // 栈顶取负
+	CBBinOp                       // operand = bytecode.Opcode（算术/位）
+	CBCmp                         // operand = bytecode.Opcode（比较）
+)
+
+// cbInstr 是一条简单回调微指令。
+type CBInstr struct {
+	Op      CBOpcode
+	Operand uint32
+}
+
+// NativeCallbackDesc 描述简单回调表达式（O-6）：编译器把箭头函数体
+// 翻译成微指令序列，数组高阶方法在 Go 侧小栈求值，跳过每元素完整调用链。
+// 覆盖：恒等/字面量/一元负/二元算术位/比较/属性读/嵌套组合（如 x=>x.v%3===0）。
+type NativeCallbackDesc struct {
+	ParamCount uint8 // 1 或 2
+	Instrs     []CBInstr
+}
+
 // TryEntry describes one try/catch/finally region.
 type TryEntry struct {
-	StartPC    int  // PC of OpTryEnter
+	StartPC    int // PC of OpTryEnter
 	HasCatch   bool
 	HasFinally bool
-	CatchPC    int  // PC to jump to when an exception is thrown
-	FinallyPC  int  // PC of the finally block (run on both normal and exceptional exit)
+	CatchPC    int // PC to jump to when an exception is thrown
+	FinallyPC  int // PC of the finally block (run on both normal and exceptional exit)
 }
 
 // UpvalueCapture describes one upvalue slot in a closure.
 type UpvalueCapture struct {
-	IsLocal   bool // true: capture from immediately-enclosing function's local
-	Index     int  // local slot (if IsLocal) or outer upvalue index
+	IsLocal bool // true: capture from immediately-enclosing function's local
+	Index   int  // local slot (if IsLocal) or outer upvalue index
 }
 
 // LineEntry maps a PC offset to a source line number.
@@ -116,10 +150,10 @@ const (
 
 // ClassMethodTemplate describes one member of a class (method/accessor/ctor).
 type ClassMethodTemplate struct {
-	Name    string         // property name（计算键方法为占位名，实际键运行时求值）
+	Name    string // property name（计算键方法为占位名，实际键运行时求值）
 	Kind    MethodKindValue
 	Static  bool
-	TmplIdx int            // function-template index
+	TmplIdx int // function-template index
 }
 
 // ClassTemplate is the compiled form of a class. OpMakeClass reads the
@@ -129,7 +163,7 @@ type ClassMethodTemplate struct {
 type ClassTemplate struct {
 	Name     string
 	HasSuper bool
-	CtorIdx  int                  // function-template index for the constructor
+	CtorIdx  int // function-template index for the constructor
 	Methods  []ClassMethodTemplate
 	// ComputedIdx 是 Methods 中带计算键（[expr]() {}）的方法索引。
 	// 编译时这些键表达式按方法顺序求值压栈，OpMakeClass 时弹出使用。

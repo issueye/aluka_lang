@@ -80,7 +80,7 @@ func (interp *Interpreter) setupArrayProtoExt() {
 				return nil, err
 			}
 			cmp = func(a, b engine.Value) int {
-				v, err := fn.callWith(engine.Undefined(), []engine.Value{a, b})
+				v, err := callCb(interp.currentVM, fn, engine.Undefined(), []engine.Value{a, b})
 				if err != nil {
 					panic(err) // 由 recover 捕获并转为 error
 				}
@@ -151,7 +151,7 @@ func (interp *Interpreter) setupArrayProtoExt() {
 			thisArg = args[1]
 		}
 		for i, e := range arr.Elems() {
-			v, err := fn.callWith(thisArg, []engine.Value{e, engine.IntValue(i), arr})
+			v, err := callCb(interp.currentVM, fn, thisArg, []engine.Value{e, engine.IntValue(i), arr})
 			if err != nil {
 				return nil, err
 			}
@@ -177,7 +177,7 @@ func (interp *Interpreter) setupArrayProtoExt() {
 			thisArg = args[1]
 		}
 		for i, e := range arr.Elems() {
-			v, err := fn.callWith(thisArg, []engine.Value{e, engine.IntValue(i), arr})
+			v, err := callCb(interp.currentVM, fn, thisArg, []engine.Value{e, engine.IntValue(i), arr})
 			if err != nil {
 				return nil, err
 			}
@@ -203,7 +203,7 @@ func (interp *Interpreter) setupArrayProtoExt() {
 			thisArg = args[1]
 		}
 		for i, e := range arr.Elems() {
-			v, err := fn.callWith(thisArg, []engine.Value{e, engine.IntValue(i), arr})
+			v, err := callCb(interp.currentVM, fn, thisArg, []engine.Value{e, engine.IntValue(i), arr})
 			if err != nil {
 				return nil, err
 			}
@@ -229,7 +229,7 @@ func (interp *Interpreter) setupArrayProtoExt() {
 			thisArg = args[1]
 		}
 		for i, e := range arr.Elems() {
-			v, err := fn.callWith(thisArg, []engine.Value{e, engine.IntValue(i), arr})
+			v, err := callCb(interp.currentVM, fn, thisArg, []engine.Value{e, engine.IntValue(i), arr})
 			if err != nil {
 				return nil, err
 			}
@@ -263,7 +263,7 @@ func (interp *Interpreter) setupArrayProtoExt() {
 			startIdx = len(elems) - 2
 		}
 		for i := startIdx; i >= 0; i-- {
-			v, err := fn.callWith(engine.Undefined(), []engine.Value{acc, elems[i], engine.IntValue(i), arr})
+			v, err := callCb(interp.currentVM, fn, engine.Undefined(), []engine.Value{acc, elems[i], engine.IntValue(i), arr})
 			if err != nil {
 				return nil, err
 			}
@@ -413,7 +413,7 @@ func (interp *Interpreter) setupArrayProtoExt() {
 		}
 		var result []engine.Value
 		for i, e := range arr.Elems() {
-			v, err := fn.callWith(thisArg, []engine.Value{e, engine.IntValue(i), arr})
+			v, err := callCb(interp.currentVM, fn, thisArg, []engine.Value{e, engine.IntValue(i), arr})
 			if err != nil {
 				return nil, err
 			}
@@ -445,7 +445,7 @@ func (interp *Interpreter) setupArrayProtoExt() {
 		elems := arr.Elems()
 		for i := len(elems) - 1; i >= 0; i-- {
 			e := elems[i]
-			v, err := fn.callWith(thisArg, []engine.Value{e, engine.IntValue(i), arr})
+			v, err := callCb(interp.currentVM, fn, thisArg, []engine.Value{e, engine.IntValue(i), arr})
 			if err != nil {
 				return nil, err
 			}
@@ -473,7 +473,7 @@ func (interp *Interpreter) setupArrayProtoExt() {
 		elems := arr.Elems()
 		for i := len(elems) - 1; i >= 0; i-- {
 			e := elems[i]
-			v, err := fn.callWith(thisArg, []engine.Value{e, engine.IntValue(i), arr})
+			v, err := callCb(interp.currentVM, fn, thisArg, []engine.Value{e, engine.IntValue(i), arr})
 			if err != nil {
 				return nil, err
 			}
@@ -649,7 +649,7 @@ func (interp *Interpreter) setupArrayCtorExt(ctor engine.Object) {
 			out := make([]engine.Value, len(elems))
 			for i, e := range elems {
 				if mapFn != nil {
-					v, err := mapFn.callWith(thisArg, []engine.Value{e, engine.IntValue(i)})
+					v, err := callCb(interp.currentVM, mapFn, thisArg, []engine.Value{e, engine.IntValue(i)})
 					if err != nil {
 						return nil, err
 					}
@@ -671,7 +671,7 @@ func (interp *Interpreter) setupArrayCtorExt(ctor engine.Object) {
 			for i, r := range runes {
 				val := engine.Str(string(r))
 				if mapFn != nil {
-					v, err := mapFn.callWith(thisArg, []engine.Value{val, engine.IntValue(i)})
+					v, err := callCb(interp.currentVM, mapFn, thisArg, []engine.Value{val, engine.IntValue(i)})
 					if err != nil {
 						return nil, err
 					}
@@ -694,7 +694,7 @@ func (interp *Interpreter) setupArrayCtorExt(ctor engine.Object) {
 					idx := 0
 					err := forEachIterable(interp, src, func(item engine.Value) error {
 						if mapFn != nil {
-							v, err := mapFn.callWith(thisArg, []engine.Value{item, engine.IntValue(idx)})
+							v, err := callCb(interp.currentVM, mapFn, thisArg, []engine.Value{item, engine.IntValue(idx)})
 							if err != nil {
 								return err
 							}
@@ -726,7 +726,7 @@ func (interp *Interpreter) setupArrayCtorExt(ctor engine.Object) {
 							e = v
 						}
 						if mapFn != nil {
-							v, err := mapFn.callWith(thisArg, []engine.Value{e, engine.IntValue(i)})
+							v, err := callCb(interp.currentVM, mapFn, thisArg, []engine.Value{e, engine.IntValue(i)})
 							if err != nil {
 								return nil, err
 							}
@@ -981,7 +981,7 @@ func arrayComparator(interp *Interpreter, args []engine.Value) (func(a, b engine
 			return nil, err
 		}
 		return func(a, b engine.Value) int {
-			v, err := fn.callWith(engine.Undefined(), []engine.Value{a, b})
+			v, err := callCb(interp.currentVM, fn, engine.Undefined(), []engine.Value{a, b})
 			if err != nil {
 				panic(err) // 由调用方 recover 捕获并转为 error
 			}

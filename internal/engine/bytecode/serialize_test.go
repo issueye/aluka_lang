@@ -187,6 +187,71 @@ func TestSerializeClassTemplate(t *testing.T) {
 	}
 }
 
+func TestSerializeNativeCallback(t *testing.T) {
+	// O-6：NativeCallbackDesc 往返必须逐字段一致（此前反序列化错位读
+	// 36B 丢弃缓冲导致字节流错位，含回调的函数模板缓存加载即损坏）。
+	mod := &Module{
+		Functions: []*FuncTemplate{
+			{Name: "cb", NumParams: 1, NumLocals: 2, IsArrow: true},
+			{ // x => x.v % 3 === 0（属性读 + 取模 + 严格相等，覆盖全部指令类）
+				Name:      "cb2",
+				NumParams: 1,
+				IsArrow:   true,
+				Constants: []engine.Value{
+					engine.Str("v"),
+					engine.Number(3),
+					engine.Number(0),
+				},
+				NativeCallback: &NativeCallbackDesc{
+					ParamCount: 1,
+					Instrs: []CBInstr{
+						{Op: CBPushProp0, Operand: 0}, // x.v
+						{Op: CBPushConst, Operand: 1},  // 3
+						{Op: CBBinOp, Operand: uint32(OpMod)},
+						{Op: CBPushConst, Operand: 2}, // 0
+						{Op: CBCmp, Operand: uint32(OpStrictEq)},
+					},
+				},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	if err := Serialize(&buf, mod); err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	got, err := Deserialize(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	if len(got.Functions) != 2 {
+		t.Fatalf("func count = %d, want 2", len(got.Functions))
+	}
+	// 无回调的函数模板：NativeCallback 保持 nil。
+	if got.Functions[0].NativeCallback != nil {
+		t.Errorf("Functions[0].NativeCallback = %+v, want nil", got.Functions[0].NativeCallback)
+	}
+	nc := got.Functions[1].NativeCallback
+	if nc == nil {
+		t.Fatal("Functions[1].NativeCallback = nil, want desc")
+	}
+	if nc.ParamCount != 1 {
+		t.Errorf("ParamCount = %d, want 1", nc.ParamCount)
+	}
+	want := mod.Functions[1].NativeCallback.Instrs
+	if len(nc.Instrs) != len(want) {
+		t.Fatalf("instr count = %d, want %d", len(nc.Instrs), len(want))
+	}
+	for i, in := range nc.Instrs {
+		if in != want[i] {
+			t.Errorf("instr[%d] = %+v, want %+v", i, in, want[i])
+		}
+	}
+	// 常量池在回调后仍正确（错位 bug 会破坏 TryTable/LineStarts/常量）。
+	if len(got.Functions[1].Constants) != 3 || got.Functions[1].Constants[0].String() != "v" {
+		t.Errorf("constants corrupted: %v", got.Functions[1].Constants)
+	}
+}
+
 func TestSerializeBadMagic(t *testing.T) {
 	// 错误的 magic 应返回错误。
 	_, err := Deserialize(bytes.NewReader([]byte("XXXXXXXXXXXX")))

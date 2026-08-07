@@ -23,7 +23,9 @@ import (
 // v10 → v11：OpNewObject operand 携带批量对象字面量属性数量（ME-2）。
 // v11 → v12：FuncTemplate.NoArgumentsObject（O-5 调用快速路径：函数体未引用
 // arguments 时跳过每帧 arguments 对象创建）。
-const FormatVersion = 12
+// v12 → v13：FuncTemplate.NativeCallback（O-6 简单回调描述：数组高阶方法
+// 对 x=>x*2 等箭头回调 Go 侧直执行）。
+const FormatVersion = 13
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
@@ -147,6 +149,32 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 			return err
 		}
 	}
+	// NativeCallback（O-6）：0 = 无，1 = 有描述（marker + ParamCount +
+	// InstrCount + 每指令 2×u32）。
+	if fn.NativeCallback == nil {
+		if err := writeU32(w, 0); err != nil {
+			return err
+		}
+	} else {
+		if err := writeU32(w, 1); err != nil {
+			return err
+		}
+		nc := fn.NativeCallback
+		if err := writeU32(w, uint32(nc.ParamCount)); err != nil {
+			return err
+		}
+		if err := writeU32(w, uint32(len(nc.Instrs))); err != nil {
+			return err
+		}
+		for _, in := range nc.Instrs {
+			var ib [2 * 4]byte
+			binary.LittleEndian.PutUint32(ib[0:4], uint32(in.Op))
+			binary.LittleEndian.PutUint32(ib[4:8], in.Operand)
+			if _, err := w.Write(ib[:]); err != nil {
+				return err
+			}
+		}
+	}
 	// TryTable
 	if err := writeU32(w, uint32(len(fn.TryTable))); err != nil {
 		return err
@@ -244,6 +272,34 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 			}
 			fn.Upvalues[i] = UpvalueCapture{IsLocal: u32ToBool(isLocal), Index: int(idx)}
 		}
+	}
+	// NativeCallback（O-6）：序列化布局 = marker(1) + ParamCount + InstrCount
+	// + Instrs（每指令 2×u32）。注意：此前版本误把 ParamCount/InstrCount 与
+	// 指令流一并读入丢弃的 36B 缓冲，导致字节流错位（后续 TryTable/LineStarts
+	// 全部损坏）；修复为按布局逐字段读取（v13 缓存重建后不再触发）。
+	if hasNC, err := readU32(r); err != nil {
+		return nil, err
+	} else if hasNC != 0 {
+		pc, err := readU32(r)
+		if err != nil {
+			return nil, err
+		}
+		instrCount, err := readU32(r)
+		if err != nil {
+			return nil, err
+		}
+		desc := &NativeCallbackDesc{ParamCount: uint8(pc)}
+		for i := uint32(0); i < instrCount; i++ {
+			var ib [2 * 4]byte
+			if _, err := io.ReadFull(r, ib[:]); err != nil {
+				return nil, err
+			}
+			desc.Instrs = append(desc.Instrs, CBInstr{
+				Op:      CBOpcode(binary.LittleEndian.Uint32(ib[0:4])),
+				Operand: binary.LittleEndian.Uint32(ib[4:8]),
+			})
+		}
+		fn.NativeCallback = desc
 	}
 	// TryTable
 	tryCount, err := readU32(r)

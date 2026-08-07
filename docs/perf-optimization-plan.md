@@ -49,7 +49,7 @@ isBigInt 3.4%、convT64 2.5%（cum 17.7%）、doCall 2.5%（cum 13.5%）。
 
 | ID | 任务 | 方案 | 预期 | 工作量 | 风险 |
 |----|------|------|------|--------|------|
-| **O-6** | **数组高阶回调原生化**（最高优先级） | `map/filter/reduce/forEach` 已 Go 原生循环，但每元素 `fn.callWith` 走完整调用链（帧+解释）。方案：编译期识别"简单回调"（箭头函数、体为单一表达式、无闭包依赖、参数 ≤2）→ `FuncTemplate.CallableNative` 标记；Go 侧在数组高阶内对该标记回调**直接执行表达式**（switch 覆盖二元运算/属性读/字面量/单参数恒等），跳过 callClosure/run。非简单回调回退现状。 | arrayMap 类 **5-20x**；混合负载 -30%+ | ~300-500 行 | 语义一致性（this/参数序/错误传播/稀疏数组/自定义 Symbol.iterator 数组回退）；需差分用例 m6-array-hof.cjs |
+| **O-6** | **数组高阶回调原生化**（最高优先级） | `map/filter/reduce/forEach` 已 Go 原生循环，但每元素 `fn.callWith` 走完整调用链（帧+解释）。方案：编译期识别"简单回调"（箭头函数、体为单一表达式、无闭包依赖、参数 ≤2）→ `FuncTemplate.NativeCallback` 微指令描述（CBPushParam/Const/Prop + CBNeg/CBBinOp/CBCmp）；Go 侧数组高阶对该标记回调**直接求值**（`execNativeCallback` 小栈，跳过 callClosure/run），非简单回调回退 `callWith`。 | arrayMap 类 **5-20x**；混合负载 -30%+ | ~300-500 行 | ✅ **已实施（2026-08-07）**：接入 map/filter/forEach/reduce/reduceRight/find/findIndex/some/every/findLast/findLastIndex/flatMap/sort/toSorted/Array.from；修复多参数箭头 nil 条目误拒绝；修复序列化错位（v13）；差分用例 m6-array-hof.cjs（47 断言）+ round-trip 测试 + 编译器检测测试 |
 | **O-7** | 方法调用 IC 覆盖回调调用 | 现状 callIC（per-PC 槽，CallCached/CallPut）仅覆盖 `OpCallMethod`；`map` 回调等 `OpCall`（函数值调用）无缓存。方案：`OpCall` 增加 per-PC 函数值槽（同 callee 复用 invoke 结果/快路径）。 | 回调场景 -10% | ~100 行 | 函数值易变（回调每次不同则失效）；需命中率统计门禁 |
 
 ### P1 —— 类型分派/指令实现（M-P1 辅助，-5~8%）

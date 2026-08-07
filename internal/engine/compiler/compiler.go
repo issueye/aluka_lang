@@ -2427,6 +2427,16 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 	}
 	c.funcStack = append(c.funcStack, fc)
 
+	// O-6 简单回调检测：纯箭头函数（非 async/非 generator、无默认值/rest）
+	// 体为单表达式时生成 NativeCallback 描述（数组高阶方法 Go 侧直执行）。
+	// 必须在 body 编译前调用（向常量池追加字面量/属性名索引）。
+	// 注意：parser 对多参数箭头会填 nil 条目的 ParamPatterns/Defaults 数组
+	// （单参数时才是空数组），必须按“是否存在非 nil 条目”判断，而非 len==0。
+	if isArrow && !isAsync && !isGenerator && rest == nil &&
+		!hasNonNilPatterns(patterns) && !hasNonNilDefaults(defaults) {
+		tmpl.NativeCallback = c.analyzeSimpleCallback(params, body)
+	}
+
 	// Emit default-parameter initialization at function entry. For each param
 	// with a default expression, if the bound argument is `undefined`, evaluate
 	// the default and store it. (JS triggers defaults on === undefined, not on
