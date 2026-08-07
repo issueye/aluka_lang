@@ -175,6 +175,27 @@ func (r *Resolver) tryFile(path string) (string, bool) {
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
 		return path, true
 	}
+	// TypeScript packages commonly preserve `.js` specifiers in source while
+	// publishing/execing the corresponding `.ts` file directly.
+	ext := strings.ToLower(filepath.Ext(path))
+	var tsExts []string
+	switch ext {
+	case ".js":
+		tsExts = []string{".ts", ".tsx"}
+	case ".mjs":
+		tsExts = []string{".mts", ".ts"}
+	case ".cjs":
+		tsExts = []string{".cts", ".ts"}
+	}
+	if len(tsExts) > 0 {
+		base := strings.TrimSuffix(path, filepath.Ext(path))
+		for _, tsExt := range tsExts {
+			candidate := base + tsExt
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate, true
+			}
+		}
+	}
 	// With extensions
 	for _, ext := range r.Extensions {
 		full := path + ext

@@ -49,6 +49,10 @@ type Loader struct {
 	builtins   map[string]engine.Value                               // 已构造的导出对象缓存
 	builtinFns map[string]func(engine.Context) (engine.Value, error) // 工厂函数
 
+	// virtualModules 为宿主注册的模块导出，用于编译产物加载外部扩展时
+	// 复用已嵌入的 SDK/TUI/typebox 实例。
+	virtualModules map[string]engine.Value
+
 	// objectProto 缓存 Object.prototype，用于把模块导出对象的原型设为
 	// Object.prototype（engine.NewObject 产生的对象原型为 nil，缺少
 	// hasOwnProperty/toString 等常用方法，会破坏依赖它的 npm 包）。
@@ -58,11 +62,12 @@ type Loader struct {
 // NewLoader creates a module loader bound to the given context.
 func NewLoader(ctx engine.Context) *Loader {
 	return &Loader{
-		ctx:        ctx,
-		resolver:   NewResolver(),
-		cache:      make(map[string]engine.Value),
-		builtins:   make(map[string]engine.Value),
-		builtinFns: make(map[string]func(engine.Context) (engine.Value, error)),
+		ctx:            ctx,
+		resolver:       NewResolver(),
+		cache:          make(map[string]engine.Value),
+		builtins:       make(map[string]engine.Value),
+		builtinFns:     make(map[string]func(engine.Context) (engine.Value, error)),
+		virtualModules: make(map[string]engine.Value),
 	}
 }
 
@@ -133,6 +138,12 @@ func (l *Loader) RegisterBuiltin(name string, factory func(engine.Context) (engi
 	l.builtinFns[name] = factory
 }
 
+// RegisterVirtualModule 注册宿主提供的模块导出。外部扩展中的同名 import/
+// require 会直接复用该值，不再访问文件系统。
+func (l *Loader) RegisterVirtualModule(name string, value engine.Value) {
+	l.virtualModules[name] = value
+}
+
 // Run is the entry point for executing a file as the main module.
 // It determines the module type (ESM or CJS) from the file extension and
 // package.json, then loads and executes the module.
@@ -165,6 +176,10 @@ func (l *Loader) require(specifier, parentPath string) (engine.Value, error) {
 // （不含 "import"）——否则 require 一个带 {"import":..., "require":...}
 // 条件的包会错误加载 ESM 入口。
 func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engine.Value, error) {
+	// Bun SQLite 兼容别名：复用纯 Go 的 node:sqlite 实现。
+	if specifier == "bun:sqlite" {
+		return l.loadBuiltin("node:sqlite")
+	}
 	// 内置模块拦截：node: 前缀（如 node:fs、node:path、node:fs/promises）。
 	if isBuiltinSpecifier(specifier) {
 		return l.loadBuiltin(specifier)
@@ -174,43 +189,46 @@ func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engin
 	if isBareSpecifier(specifier) && l.hasBuiltin(specifier) {
 		return l.loadBuiltin("node:" + specifier)
 	}
+	if virtual, ok := l.virtualModules[specifier]; ok {
+		return virtual, nil
+	}
 
-	// 产物模式（M2）：按构建期解析映射加载嵌入模块，未命中报错
-	// （不加载外部文件，Bun 编译产物同语义）。
+	// 产物模式优先按构建期映射加载。绝对路径入口以及其后续依赖允许
+	// 回退文件系统，用于加载用户安装的 TypeScript 扩展。
 	if l.embedded != nil {
-		key, ok := l.embedded.ResolveEmbedded(specifier, parentPath)
-		if !ok {
+		if key, ok := l.embedded.ResolveEmbedded(specifier, parentPath); ok {
+			// 循环依赖/重复 require：模块已在执行或完成时返回缓存
+			// （RunPrecompiled 内部会预填 cache）。
+			l.mu.Lock()
+			if cached, cachedOK := l.cache[key]; cachedOK {
+				l.mu.Unlock()
+				return cached, nil
+			}
+			l.mu.Unlock()
+			// JSON 资源（M3）：直接解析嵌入字节，语义同文件模式的 loadJSON。
+			if l.embedded.ModuleTypeOf(key) == "json" {
+				data, assetOK := l.embedded.LoadJSON(key)
+				if !assetOK {
+					return engine.Undefined(), fmt.Errorf("module: compiled mode: JSON asset %q not found", key)
+				}
+				val, err := parseOrderedJSON(data)
+				if err != nil {
+					return engine.Undefined(), fmt.Errorf("module: invalid JSON in %q: %w", key, err)
+				}
+				l.mu.Lock()
+				l.cache[key] = val
+				l.mu.Unlock()
+				return val, nil
+			}
+			mod, err := l.embedded.LoadModule(key)
+			if err != nil {
+				return engine.Undefined(), err
+			}
+			return l.RunPrecompiled(key, mod, l.embedded.ModuleTypeOf(key) == "esm")
+		}
+		if !filepath.IsAbs(specifier) && !filepath.IsAbs(parentPath) {
 			return engine.Undefined(), fmt.Errorf("module: compiled mode: cannot load external module %q from %q (not embedded; rebuild with aluka build)", specifier, parentPath)
 		}
-		// 循环依赖/重复 require：模块已在执行或完成时返回缓存
-		// （RunPrecompiled 内部会预填 cache）。
-		l.mu.Lock()
-		if cached, ok := l.cache[key]; ok {
-			l.mu.Unlock()
-			return cached, nil
-		}
-		l.mu.Unlock()
-		// JSON 资源（M3）：直接解析嵌入字节，语义同文件模式的 loadJSON
-		// （保序解析——对象键保持文档顺序）。
-		if l.embedded.ModuleTypeOf(key) == "json" {
-			data, ok := l.embedded.LoadJSON(key)
-			if !ok {
-				return engine.Undefined(), fmt.Errorf("module: compiled mode: JSON asset %q not found", key)
-			}
-			val, err := parseOrderedJSON(data)
-			if err != nil {
-				return engine.Undefined(), fmt.Errorf("module: invalid JSON in %q: %w", key, err)
-			}
-			l.mu.Lock()
-			l.cache[key] = val
-			l.mu.Unlock()
-			return val, nil
-		}
-		mod, err := l.embedded.LoadModule(key)
-		if err != nil {
-			return engine.Undefined(), err
-		}
-		return l.RunPrecompiled(key, mod, l.embedded.ModuleTypeOf(key) == "esm")
 	}
 
 	var resolved string
@@ -351,13 +369,114 @@ func (l *Loader) loadJSONFile(absPath string) error {
 
 // makeRequireFunc creates a JS require function for the given module path.
 func (l *Loader) makeRequireFunc(modulePath string) engine.Function {
-	return engine.NewFunction("require", func(args []engine.Value) (engine.Value, error) {
+	requireFn := engine.NewFunction("require", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Undefined(), fmt.Errorf("require: missing module specifier")
 		}
 		spec := args[0].String()
 		return l.require(spec, modulePath)
 	})
+
+	resolveFn := engine.NewFunction("resolve", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("require.resolve: missing module specifier")
+		}
+		spec := args[0].String()
+		paths := requireResolvePathsOption(args)
+		resolved, err := l.resolveRequire(spec, modulePath, paths)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.Str(resolved), nil
+	})
+	if resolveObj, ok := resolveFn.AsObject(); ok {
+		_ = resolveObj.Set("paths", engine.NewFunction("paths", func(args []engine.Value) (engine.Value, error) {
+			if len(args) > 0 {
+				spec := strings.TrimPrefix(args[0].String(), "node:")
+				if _, ok := l.builtinFns[spec]; ok {
+					return engine.Null(), nil
+				}
+				if _, ok := l.builtins[spec]; ok {
+					return engine.Null(), nil
+				}
+			}
+			return engine.NewArray(stringValues(nodeModuleSearchPaths(modulePath))), nil
+		}))
+	}
+	if requireObj, ok := requireFn.AsObject(); ok {
+		_ = requireObj.Set("resolve", resolveFn)
+		_ = requireObj.Set("cache", engine.NewObject())
+		_ = requireObj.Set("extensions", engine.NewObject())
+		_ = requireObj.Set("main", engine.Undefined())
+	}
+	return requireFn
+}
+
+func requireResolvePathsOption(args []engine.Value) []string {
+	if len(args) < 2 || !args[1].IsObject() {
+		return nil
+	}
+	opts, ok := args[1].AsObject()
+	if !ok {
+		return nil
+	}
+	pathsValue, err := opts.Get("paths")
+	if err != nil {
+		return nil
+	}
+	pathsArray, ok := pathsValue.(*engine.ArrayValue)
+	if !ok {
+		return nil
+	}
+	paths := make([]string, 0, len(pathsArray.Elems()))
+	for _, value := range pathsArray.Elems() {
+		paths = append(paths, value.String())
+	}
+	return paths
+}
+
+func (l *Loader) resolveRequire(spec, modulePath string, paths []string) (string, error) {
+	builtin := strings.TrimPrefix(spec, "node:")
+	if _, ok := l.builtinFns[builtin]; ok {
+		return spec, nil
+	}
+	if _, ok := l.builtins[builtin]; ok {
+		return spec, nil
+	}
+	if l.embedded != nil {
+		if resolved, ok := l.embedded.ResolveEmbedded(spec, modulePath); ok {
+			return resolved, nil
+		}
+	}
+	for _, searchPath := range paths {
+		parent := filepath.Join(searchPath, "_index.js")
+		if resolved, err := l.resolver.Resolve(spec, parent); err == nil {
+			return resolved, nil
+		}
+	}
+	return l.resolver.Resolve(spec, modulePath)
+}
+
+func nodeModuleSearchPaths(modulePath string) []string {
+	dir := filepath.Dir(modulePath)
+	var paths []string
+	for {
+		paths = append(paths, filepath.Join(dir, "node_modules"))
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return paths
+}
+
+func stringValues(values []string) []engine.Value {
+	result := make([]engine.Value, len(values))
+	for i, value := range values {
+		result[i] = engine.Str(value)
+	}
+	return result
 }
 
 // MakeRequireFunc 创建基于指定模块路径的 require 函数（公开版，供

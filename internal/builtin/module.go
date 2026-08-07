@@ -74,6 +74,15 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 	}
 	_ = m.Set("builtinModules", engine.NewArray(bmVals))
 
+	// Aluka 编译产物的外部扩展加载桥：把宿主已嵌入模块注册为
+	// 虚拟模块，扩展中的同名 import/require 直接复用这些导出。
+	_ = m.Set("registerVirtualModule", engine.NewFunction("registerVirtualModule", func(args []engine.Value) (engine.Value, error) {
+		if len(args) >= 2 {
+			loader.RegisterVirtualModule(args[0].String(), args[1])
+		}
+		return engine.Undefined(), nil
+	}))
+
 	// constants：compileCacheStatus。
 	constants := engine.NewObject()
 	ccs := engine.NewObject()
@@ -153,6 +162,24 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 		}))
 		_ = co.Set("_resolveFilename", engine.NewFunction("_resolveFilename", func(args []engine.Value) (engine.Value, error) {
 			return engine.Undefined(), nil
+		}))
+		_ = co.Set("_nodeModulePaths", engine.NewFunction("_nodeModulePaths", func(args []engine.Value) (engine.Value, error) {
+			start := "."
+			if len(args) > 0 && args[0].String() != "" {
+				start = args[0].String()
+			}
+			if abs, err := filepath.Abs(start); err == nil {
+				start = abs
+			}
+			var values []engine.Value
+			for dir := start; ; dir = filepath.Dir(dir) {
+				values = append(values, engine.Str(filepath.Join(dir, "node_modules")))
+				parent := filepath.Dir(dir)
+				if parent == dir {
+					break
+				}
+			}
+			return engine.NewArray(values), nil
 		}))
 		_ = co.Set("globalPaths", engine.NewArray(nil))
 	}

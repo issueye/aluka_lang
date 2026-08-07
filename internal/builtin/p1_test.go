@@ -68,12 +68,51 @@ func TestModuleCreateRequire(t *testing.T) {
 var mod = require('node:module');
 var r2 = mod.createRequire('/tmp/fake/path.js');
 globalThis.__r = typeof r2;
+globalThis.__resolve = typeof r2.resolve;
+globalThis.__resolvePaths = typeof r2.resolve.paths;
+globalThis.__builtin = r2.resolve('node:fs');
+globalThis.__pathsArray = Array.isArray(r2.resolve.paths('some-package'));
+globalThis.__nodeModulePaths = typeof mod.Module._nodeModulePaths;
+globalThis.__nodeModulePathsArray = Array.isArray(mod.Module._nodeModulePaths('/tmp/fake'));
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if got := env.globalGet("__r"); got != "function" {
 		t.Errorf("createRequire = %q, want function", got)
+	}
+	if got := env.globalGet("__resolve"); got != "function" {
+		t.Errorf("createRequire.resolve = %q, want function", got)
+	}
+	if got := env.globalGet("__resolvePaths"); got != "function" {
+		t.Errorf("createRequire.resolve.paths = %q, want function", got)
+	}
+	if got := env.globalGet("__builtin"); got != "node:fs" {
+		t.Errorf("createRequire.resolve builtin = %q, want node:fs", got)
+	}
+	if got := env.globalGet("__pathsArray"); got != "true" {
+		t.Errorf("createRequire.resolve.paths result = %q, want true", got)
+	}
+	if got := env.globalGet("__nodeModulePaths"); got != "function" {
+		t.Errorf("Module._nodeModulePaths = %q, want function", got)
+	}
+	if got := env.globalGet("__nodeModulePathsArray"); got != "true" {
+		t.Errorf("Module._nodeModulePaths result = %q, want true", got)
+	}
+}
+
+func TestSpawnSyncEncodingReturnsStrings(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var cp = require('node:child_process');
+var result = cp.spawnSync('go', ['version'], { encoding: 'utf-8' });
+globalThis.__r = typeof result.stdout + ':' + typeof result.stderr + ':' + result.stdout.includes('go version');
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "string:string:true" {
+		t.Errorf("spawnSync encoding = %q, want string:string:true", got)
 	}
 }
 
@@ -189,6 +228,23 @@ var fsp = require('node:fs/promises');
 	}
 	if got := env.globalGet("__n"); got != "1" {
 		t.Errorf("readdir = %q, want 1", got)
+	}
+}
+
+// TestFSRealpathSyncNative 验证 Node 的 realpathSync.native 函数别名。
+func TestFSRealpathSyncNative(t *testing.T) {
+	env := newHTTPEnv(t)
+	dir := strings.ReplaceAll(t.TempDir(), "\\", "/")
+	err := env.runWithLoop(t, `
+var fs = require('node:fs');
+globalThis.__r = typeof fs.realpathSync.native + ':' + (fs.realpathSync.native === fs.realpathSync) + ':' + fs.realpathSync.native('`+dir+`');
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	want := "function:true:" + dir
+	if got := strings.ReplaceAll(env.globalGet("__r"), "\\", "/"); got != want {
+		t.Errorf("realpathSync.native = %q, want %q", got, want)
 	}
 }
 

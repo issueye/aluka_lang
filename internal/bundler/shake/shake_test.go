@@ -130,3 +130,43 @@ func TestShakeReExportPruning(t *testing.T) {
 		t.Errorf("re-exported unused module not removed: %v", set)
 	}
 }
+
+func TestShakeNamespaceImportThroughStarBarrel(t *testing.T) {
+	gr := buildFixture(t, map[string]string{
+		"main.js":   "import * as T from './barrel.js';\nconsole.log(T.a, T.b);\n",
+		"barrel.js": "export * from './a.js';\nexport * from './nested.js';\n",
+		"nested.js": "export * from './b.js';\n",
+		"a.js":      "export const a = 'A';\n",
+		"b.js":      "export const b = 'B';\n",
+	}, "main.js")
+	vm, _ := interpreter.NewVM()
+	res, err := Shake(vm, gr, gr.Entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := pathSet(&graph.Result{Modules: res.Modules})
+	for _, name := range []string{"main.js", "barrel.js", "nested.js", "a.js", "b.js"} {
+		if !set[name] {
+			t.Errorf("namespace import removed %s: %v", name, set)
+		}
+	}
+}
+
+func TestShakeNamedNamespaceReExport(t *testing.T) {
+	gr := buildFixture(t, map[string]string{
+		"main.js":   "import { Type } from './barrel.js';\nconsole.log(Type.a);\n",
+		"barrel.js": "export * as Type from './types.js';\n",
+		"types.js":  "export const a = 'A';\nexport const b = 'B';\n",
+	}, "main.js")
+	vm, _ := interpreter.NewVM()
+	res, err := Shake(vm, gr, gr.Entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := pathSet(&graph.Result{Modules: res.Modules})
+	for _, name := range []string{"main.js", "barrel.js", "types.js"} {
+		if !set[name] {
+			t.Errorf("named namespace re-export removed %s: %v", name, set)
+		}
+	}
+}

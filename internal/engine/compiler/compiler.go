@@ -1397,6 +1397,21 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 			c.emit(bytecode.OpPushUndefined, 0)
 		}
 		return nil
+	case *ast.NewTargetExpr:
+		// `new.target` 按词法解析 `__newTarget__`：非箭头函数为 local 槽位
+		// （VM 在 new 调用时填入构造器），箭头函数经 upvalue 链继承外层。
+		kind, idx := c.resolve("__newTarget__")
+		switch kind {
+		case "local", "upvalue":
+			if kind == "local" {
+				c.emit(bytecode.OpLoadLocal, uint32(idx))
+			} else {
+				c.emit(bytecode.OpLoadUpvalue, uint32(idx))
+			}
+		default:
+			c.emit(bytecode.OpPushUndefined, 0)
+		}
+		return nil
 	case *ast.ArrayLit:
 		// Fast path: no spread → use OpNewArray.
 		hasSpread := false
@@ -1956,7 +1971,12 @@ func (c *Compiler) compileAssign(n *ast.AssignExpr) error {
 		return c.compileLogicalAssign(n.Left, n.Right, bytecode.OpJmpNullishKeep)
 	}
 	// compound: desugar a OP= b → a = a OP b
-	if err := c.compileExpr(n.Left); err != nil {
+	leftExpr, ok := n.Left.(ast.Expression)
+	if !ok {
+		// 解构模式不能作为复合赋值左值（JS 语法错误）。
+		return fmt.Errorf("invalid compound assignment target %T", n.Left)
+	}
+	if err := c.compileExpr(leftExpr); err != nil {
 		return err
 	}
 	if err := c.compileExpr(n.Right); err != nil {
@@ -1984,8 +2004,20 @@ func (c *Compiler) compileAssign(n *ast.AssignExpr) error {
 //	OpDup                      // 复制（一份赋值，一份作为结果保留）
 //	assignTo(left)             // 赋值给左值
 //	end:                       // 栈顶为结果值（left 或 right）
-func (c *Compiler) compileLogicalAssign(left ast.Expression, right ast.Expression, jmpOp bytecode.Opcode) error {
-	if err := c.compileExpr(left); err != nil {
+func (c *Compiler) compileLogicalAssign(left ast.Node, right ast.Expression, jmpOp bytecode.Opcode) error {
+	if _, ok := left.(*ast.ObjectPattern); ok {
+		// 解构模式不能作为逻辑赋值左值（JS 语法错误）。
+		return fmt.Errorf("invalid logical assignment target %T", left)
+	}
+	if _, ok := left.(*ast.ArrayPattern); ok {
+		// 解构模式不能作为逻辑赋值左值（JS 语法错误）。
+		return fmt.Errorf("invalid logical assignment target %T", left)
+	}
+	leftExpr, ok := left.(ast.Expression)
+	if !ok {
+		return fmt.Errorf("invalid logical assignment target %T", left)
+	}
+	if err := c.compileExpr(leftExpr); err != nil {
 		return err
 	}
 	jumpSkip := c.emit(jmpOp, 0)
@@ -2041,8 +2073,125 @@ func (c *Compiler) assignTo(ref ast.Node) error {
 			c.emit(bytecode.OpSetPropTop, uint32(nameIdx))
 		}
 		return nil
+	case *ast.ObjectPattern, *ast.ArrayPattern:
+		// 解构赋值：({a, b} = x) / [a, b] = x。栈顶值为右值，
+		// storePattern 会按模式展开存入已有引用并保留右值。
+		return c.storePattern(ref)
 	}
 	return fmt.Errorf("invalid assignment target %T", ref)
+}
+
+// storePattern 把栈顶值按模式解构并存储到已有引用（ES2015 解构赋值）。
+// 与声明解构（compileBindPattern）不同：不声明新变量，标识符按
+// local/upvalue/global 解析，成员表达式走属性存储；值经临时槽展开后
+// 重新压回栈顶，保证赋值表达式的结果（右值）保留。
+func (c *Compiler) storePattern(p ast.Node) error {
+	switch pat := p.(type) {
+	case *ast.Identifier:
+		return c.assignTo(pat)
+	case *ast.MemberExpr:
+		return c.assignTo(pat)
+	case *ast.ArrayPattern:
+		tmp := c.newSlot()
+		c.emit(bytecode.OpStoreLocal, uint32(tmp)) // 右值入临时槽
+		for i, el := range pat.Elements {
+			if el.Target == nil {
+				continue // 空洞
+			}
+			if el.IsRest {
+				// rest: src.slice(i)
+				c.emit(bytecode.OpLoadLocal, uint32(tmp))
+				c.emit(bytecode.OpPushInt, uint32(i))
+				sliceNameIdx := c.cur().tmpl.AddStringConst("slice")
+				operand := uint32(1)<<16 | uint32(sliceNameIdx&0xFFFF)
+				c.emit(bytecode.OpCallMethod, operand)
+			} else {
+				c.emit(bytecode.OpLoadLocal, uint32(tmp))
+				c.emit(bytecode.OpPushInt, uint32(i))
+				c.emit(bytecode.OpGetElem, 0)
+			}
+			if err := c.compileDefaultGuard(el.Default); err != nil {
+				return err
+			}
+			if err := c.storePattern(el.Target); err != nil {
+				return err
+			}
+		}
+		c.emit(bytecode.OpLoadLocal, uint32(tmp))
+		return nil
+	case *ast.ObjectPattern:
+		tmp := c.newSlot()
+		c.emit(bytecode.OpStoreLocal, uint32(tmp)) // 右值入临时槽
+		for propIndex, prop := range pat.Properties {
+			if prop.Value == nil {
+				return fmt.Errorf("invalid assignment target in destructuring")
+			}
+			if prop.IsRest {
+				// rest: { ...src } 再删除已绑定键
+				c.emit(bytecode.OpNewObject, 0)
+				c.emit(bytecode.OpLoadLocal, uint32(tmp))
+				c.emit(bytecode.OpSpreadObject, 0)
+				for _, bound := range pat.Properties[:propIndex] {
+					c.emit(bytecode.OpDup, 0)
+					if bound.Computed {
+						if err := c.compileExpr(bound.Key); err != nil {
+							return err
+						}
+						c.emit(bytecode.OpDelElem, 0)
+					} else {
+						nameIdx := c.cur().tmpl.AddStringConst(propKey(bound.Key))
+						c.emit(bytecode.OpDelProp, uint32(nameIdx))
+					}
+					c.emit(bytecode.OpPop, 0)
+				}
+				if err := c.storePattern(prop.Value); err != nil {
+					return err
+				}
+				continue
+			}
+			// result = src[key]
+			c.emit(bytecode.OpLoadLocal, uint32(tmp))
+			if prop.Computed {
+				if err := c.compileExpr(prop.Key); err != nil {
+					return err
+				}
+				c.emit(bytecode.OpGetElem, 0)
+			} else {
+				nameIdx := c.cur().tmpl.AddStringConst(propKey(prop.Key))
+				c.emit(bytecode.OpGetProp, uint32(nameIdx))
+			}
+			if err := c.compileDefaultGuard(prop.Default); err != nil {
+				return err
+			}
+			if err := c.storePattern(prop.Value); err != nil {
+				return err
+			}
+		}
+		c.emit(bytecode.OpLoadLocal, uint32(tmp))
+		return nil
+	}
+	return fmt.Errorf("invalid assignment target %T", p)
+}
+
+// compileDefaultGuard 编译解构默认值守卫：栈顶值 === undefined 时用
+// 默认值替换，否则保持栈顶原值。defaultExpr 为 nil 时无操作。
+// 栈序：[v] → (undefined 分支) pop v → push default；
+// (非 undefined 分支) 跳过后仍为 [v]。
+func (c *Compiler) compileDefaultGuard(defaultExpr ast.Expression) error {
+	if defaultExpr == nil {
+		return nil
+	}
+	c.emit(bytecode.OpDup, 0)
+	c.emit(bytecode.OpPushUndefined, 0)
+	c.emit(bytecode.OpStrictEq, 0)
+	jSkip := c.emit(bytecode.OpJmpFalsePop, 0)
+	// 走到这里说明 v === undefined：丢弃 v，压入默认值。
+	c.emit(bytecode.OpPop, 0)
+	if err := c.compileExpr(defaultExpr); err != nil {
+		return err
+	}
+	c.patchJumpToHere(jSkip)
+	return nil
 }
 
 func (c *Compiler) compileCall(n *ast.CallExpr) error {
@@ -2382,6 +2531,13 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 	restoreControlFlow := c.isolateControlFlow()
 	defer restoreControlFlow()
 
+	// 隔离外层可选链：嵌套函数编译时 c.cur() 切换到本函数字节码缓冲区，
+	// 若内层链的 OpOptionalJump 记入外层链，外层 endOptionalChain 会用
+	// 错误缓冲区 patch（PatchOperand out of range panic）。
+	savedOptionalStack := c.optionalChainStack
+	c.optionalChainStack = nil
+	defer func() { c.optionalChainStack = savedOptionalStack }()
+
 	// 普通函数：`this` slot = 0；params = slots 1..N；rest 参数 = slot N+1。
 	// 箭头函数：无 own `this`（slot 0 仍保留以兼容 frame 布局，但不会被引用）。
 	numLocals := 1 + len(params)
@@ -2424,6 +2580,12 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 		tmpl.ArgumentsSlot = argsSlot
 		tmpl.NumLocals++
 		fc.scopes[0].decls["arguments"] = argsSlot
+		// new.target 槽位：非箭头函数分配；箭头函数不声明，
+		// 经 upvalue 链词法解析到外层函数（与 `this` 同机制）。
+		ntSlot := tmpl.NumLocals
+		tmpl.NewTargetSlot = ntSlot
+		tmpl.NumLocals++
+		fc.scopes[0].decls["__newTarget__"] = ntSlot
 	}
 	c.funcStack = append(c.funcStack, fc)
 
@@ -3060,6 +3222,11 @@ func (c *Compiler) compileMethod(name string, fn *ast.FunctionExpr) (int, error)
 	tmpl.ArgumentsSlot = argsSlot
 	tmpl.NumLocals++
 	fc.scopes[0].decls["arguments"] = argsSlot
+	// 类方法同样分配 new.target 槽位（new.target.prototype 等用法）。
+	ntSlot := tmpl.NumLocals
+	tmpl.NewTargetSlot = ntSlot
+	tmpl.NumLocals++
+	fc.scopes[0].decls["__newTarget__"] = ntSlot
 	c.funcStack = append(c.funcStack, fc)
 
 	// Default-parameter initialization at function entry.
@@ -3109,8 +3276,10 @@ func (c *Compiler) compileDefaultBaseCtor() (int, error) {
 		NumParams:  0,
 		NumLocals:  1, // slot 0 = this
 		SourceFile: c.cur().tmpl.SourceFile,
-		// 合成空构造器不引用 `arguments`：显式置 -1，避免默认 0 覆盖 this。
+		// 合成空构造器不引用 `arguments` / `new.target`：显式置 -1，
+		// 避免默认 0 覆盖 this。
 		ArgumentsSlot: -1,
+		NewTargetSlot: -1,
 	}
 	funcIdx := c.module.AddFunction(tmpl)
 	fc := &funcCtx{
@@ -3134,8 +3303,9 @@ func (c *Compiler) compileDefaultDerivedCtor() (int, error) {
 		NumLocals:  2, // slot 0 = this, slot 1 = rest "args"
 		IsVarArgs:  true,
 		SourceFile: c.cur().tmpl.SourceFile,
-		// 合成派生构造器通过 rest 转发 super，不引用 `arguments`：置 -1。
+		// 合成派生构造器通过 rest 转发 super，不引用 `arguments`/`new.target`：置 -1。
 		ArgumentsSlot: -1,
+		NewTargetSlot: -1,
 	}
 	funcIdx := c.module.AddFunction(tmpl)
 	fc := &funcCtx{

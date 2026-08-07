@@ -15,6 +15,8 @@ crypto.subtle.digest('SHA-256', Buffer.from('abc')).then(function(d) {
 });
 globalThis.__uuid = crypto.randomUUID().length;
 globalThis.__rng = crypto.getRandomValues(Buffer.alloc(16)).length;
+const typed = new Uint8Array(16);
+globalThis.__rngTyped = crypto.getRandomValues(typed) === typed && typed.length === 16;
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -28,6 +30,9 @@ globalThis.__rng = crypto.getRandomValues(Buffer.alloc(16)).length;
 	}
 	if got := webGlobalGet(ctx, "__rng"); got != "16" {
 		t.Errorf("rng = %q, want 16", got)
+	}
+	if got := webGlobalGet(ctx, "__rngTyped"); got != "true" {
+		t.Errorf("typed array rng = %q, want true", got)
 	}
 }
 

@@ -366,8 +366,15 @@ func translateClassEscape(pattern string, i int, f Flags) (string, int, error) {
 			return "c", i + 2, nil
 		}
 		return fmt.Sprintf(`\x%02x`, ch&0x1f), i + 3, nil
-	case strings.ContainsRune("dDwWbBnrtfv]", rune(esc)):
-		// \b 在字符类内表示退格（与 JS 一致）；\] 转义字面 ]。
+	case esc == 'b':
+		// JS 中字符类里的 \b 表示退格；RE2 不接受字符类中的
+		// \b，改写为等价的 NUL 控制码点。
+		return `\x08`, i + 2, nil
+	case esc == 'B':
+		// JS 中字符类里的 \B 是 identity escape，表示字面量 B。
+		return "B", i + 2, nil
+	case strings.ContainsRune("dDwWnrtfv]", rune(esc)):
+		// \] 转义字面 ]；其余转义可由 RE2 直接处理。
 		return pattern[i : i+2], i + 2, nil
 	case esc == 'p' || esc == 'P':
 		if (f.Unicode || f.UnicodeSets) && i+2 < len(pattern) && pattern[i+2] == '{' {

@@ -487,11 +487,15 @@ func (l *Lexer) readTemplate(startLine, startCol int) (Token, error) {
 func SkipTemplateExpr(raw string, i int) (int, bool) {
 	depth := 1
 	j := i + 2
+	// lastSig 记录最近一个有效字符，用于判定 `/` 是正则起始还是除法。
+	// 初始为 '{'（插值开括号之后允许正则）。
+	lastSig := byte('{')
 	for j < len(raw) && depth > 0 {
 		c := raw[j]
 		switch {
 		case c == '\\':
 			if j+1 < len(raw) {
+				lastSig = raw[j+1]
 				j += 2
 			} else {
 				j++
@@ -508,6 +512,7 @@ func SkipTemplateExpr(raw string, i int) (int, bool) {
 				}
 			}
 			j++ // 跳过结尾引号
+			lastSig = quote
 			continue
 		case c == '`':
 			nj, ok := skipTemplateLiteral(raw, j)
@@ -515,11 +520,13 @@ func SkipTemplateExpr(raw string, i int) (int, bool) {
 				return 0, false
 			}
 			j = nj
+			lastSig = '`'
 			continue
 		case c == '/' && j+1 < len(raw) && raw[j+1] == '/':
 			for j < len(raw) && raw[j] != '\n' {
 				j++
 			}
+			lastSig = '/'
 			continue
 		case c == '/' && j+1 < len(raw) && raw[j+1] == '*':
 			j += 2
@@ -529,6 +536,34 @@ func SkipTemplateExpr(raw string, i int) (int, bool) {
 			if j+1 < len(raw) {
 				j += 2
 			}
+			lastSig = '/'
+			continue
+		case c == '/' && skipTemplateRegexAllowed(lastSig):
+			// 正则字面量：扫描到未转义的闭合 '/'（字符类内 '/' 为普通字符），
+			// 再消费 flags。结束后 `/` 视为除法。
+			k := j + 1
+			inClass := false
+			for k < len(raw) {
+				ch := raw[k]
+				if ch == '\\' {
+					k += 2
+					continue
+				}
+				if ch == '[' {
+					inClass = true
+				} else if ch == ']' {
+					inClass = false
+				} else if ch == '/' && !inClass {
+					break
+				}
+				k++
+			}
+			k++ // 闭合 /
+			for k < len(raw) && (isIdentStart(raw[k]) || isDigit(raw[k])) {
+				k++
+			}
+			lastSig = 'x' // 标识符类字符：之后 / 是除法
+			j = k
 			continue
 		case c == '{':
 			depth++
@@ -537,10 +572,29 @@ func SkipTemplateExpr(raw string, i int) (int, bool) {
 			if depth == 0 {
 				return j + 1, true
 			}
+		default:
+			if c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+				lastSig = c
+			}
 		}
 		j++
 	}
 	return 0, false
+}
+
+// skipTemplateRegexAllowed 判定模板插值扫描中 `/` 是否开启正则字面量：
+// 前一个有效字符不是标识符/数字/右括号/右中括号/右大括号/引号/反引号时，
+// `/` 起始正则（与主词法器 regexAllowedAfter 规则一致）。
+func skipTemplateRegexAllowed(last byte) bool {
+	switch {
+	case isIdentStart(last) || isDigit(last):
+		return false
+	case last == ')' || last == ']' || last == '}':
+		return false
+	case last == '\'' || last == '"' || last == '`':
+		return false
+	}
+	return true
 }
 
 // skipTemplateLiteral 跳过 raw[i]=='`' 处的模板字面量（含其插值），返回结尾 ` 之后的下标。

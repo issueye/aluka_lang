@@ -1629,6 +1629,11 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 	// Reserve local slots: slot 0 = this, 1..N = params, rest = undefined.
 	v.reserveUndefined(tmpl.NumLocals)
 	v.stack[frame.base] = thisVal
+	// new.target 槽位：new 调用时填入构造器函数（vmClosure 值本身，
+	// 与全局绑定身份一致），普通调用保持 undefined。
+	if tmpl.NewTargetSlot >= 0 && asNew {
+		v.stack[frame.base+tmpl.NewTargetSlot] = cl
+	}
 	for i := 0; i < tmpl.NumParams && i < len(args); i++ {
 		v.stack[frame.base+1+i] = args[i]
 	}

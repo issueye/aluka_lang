@@ -91,6 +91,26 @@ func TestStringConcat(t *testing.T) {
 	}
 }
 
+func TestNumberParseAliases(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{`Number.parseInt === parseInt`, "true"},
+		{`Number.parseFloat === parseFloat`, "true"},
+		{`Number.parseInt("10", 10)`, "10"},
+		{`Number.parseFloat("3.5")`, "3.5"},
+		{`Number.isSafeInteger(9007199254740991)`, "true"},
+		{`Number.isSafeInteger(9007199254740992)`, "false"},
+		{`Number.isSafeInteger(1.5)`, "false"},
+	}
+	for _, c := range cases {
+		if got := evalStr(t, c.code); got != c.want {
+			t.Errorf("Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
 func TestComparisons(t *testing.T) {
 	cases := []struct {
 		code string

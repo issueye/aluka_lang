@@ -30,8 +30,13 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 				_, _ = rand.Read(b)
 				return args[0], nil
 			}
+			if ta, ok := engine.AsTypedArray(args[0]); ok &&
+				ta.Kind() != engine.KindFloat32 && ta.Kind() != engine.KindFloat64 {
+				_, _ = rand.Read(ta.Bytes())
+				return args[0], nil
+			}
 		}
-		return engine.Undefined(), fmt.Errorf("getRandomValues: expects a typed array")
+		return engine.Undefined(), fmt.Errorf("getRandomValues: expects an integer typed array")
 	}))
 
 	// randomUUID() → UUID v4 字符串。

@@ -18,6 +18,10 @@ func TestSQLiteDatabaseSync(t *testing.T) {
 	if err != nil || !ctor.IsFunction() {
 		t.Fatalf("DatabaseSync constructor missing")
 	}
+	bunCtor, err := mo.Get("Database")
+	if err != nil || bunCtor != ctor {
+		t.Fatalf("bun:sqlite Database alias missing")
+	}
 	cf, _ := ctor.AsFunction()
 	dbVal, err := cf.Call([]engine.Value{engine.Str(":memory:")})
 	if err != nil {
@@ -92,6 +96,25 @@ func TestSQLiteDatabaseSync(t *testing.T) {
 	}
 	if err := callMethodErr(t, db, "exec", engine.Str("COMMIT")); err != nil {
 		t.Fatal(err)
+	}
+
+	// Bun/better-sqlite3 transaction(fn) wrapper.
+	transaction, _ := db.Get("transaction")
+	tf, _ := transaction.AsFunction()
+	callback := engine.NewFunction("write", func(args []engine.Value) (engine.Value, error) {
+		return rf.Call([]engine.Value{engine.Str("carol"), engine.Number(3.5)})
+	})
+	wrapped, err := tf.Call([]engine.Value{callback})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrappedFn, _ := wrapped.AsFunction()
+	if _, err := wrappedFn.Call(nil); err != nil {
+		t.Fatalf("transaction wrapper: %v", err)
+	}
+	rowCarol, err := gf2.(engine.Function).Call([]engine.Value{engine.Str("carol")})
+	if err != nil || rowCarol.IsUndefined() {
+		t.Fatalf("transaction did not commit: row=%v err=%v", rowCarol, err)
 	}
 
 	// bigint 读

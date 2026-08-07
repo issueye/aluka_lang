@@ -226,8 +226,13 @@ func runSyncCommand(cmd *exec.Cmd, optsVal engine.Value) (engine.Value, error) {
 	}
 	_ = result.Set("status", engine.IntValue(status))
 	_ = result.Set("signal", signal)
-	_ = result.Set("stdout", globals.NewBufferInstance(stdoutBuf.Bytes()))
-	_ = result.Set("stderr", globals.NewBufferInstance(stderrBuf.Bytes()))
+	if opts.encoding != "" && opts.encoding != "buffer" {
+		_ = result.Set("stdout", engine.Str(stdoutBuf.String()))
+		_ = result.Set("stderr", engine.Str(stderrBuf.String()))
+	} else {
+		_ = result.Set("stdout", globals.NewBufferInstance(stdoutBuf.Bytes()))
+		_ = result.Set("stderr", globals.NewBufferInstance(stderrBuf.Bytes()))
+	}
 	if runErr != nil {
 		if atomic.LoadInt32(&timedOut) == 1 {
 			// 超时：error 属性（code ETIMEDOUT，Node 语义），signal 为

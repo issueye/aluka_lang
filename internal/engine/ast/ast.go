@@ -353,6 +353,7 @@ type ObjectLit struct {
 type Property struct {
 	Key      Expression
 	Value    Expression
+	Default  Expression // 解构默认值（仅模式语境：{ a = 1 } / { a: b = 1 }）
 	Kind     PropertyKind
 	Computed bool
 	Loc      Pos
@@ -394,6 +395,7 @@ type MemberExpr struct {
 
 func (m *MemberExpr) Pos() Pos  { return m.Loc }
 func (m *MemberExpr) exprNode() {}
+func (m *MemberExpr) patternNode() {}
 func (m *MemberExpr) node()     {}
 
 type CallExpr struct {
@@ -462,7 +464,7 @@ func (l *LogicalExpr) node()     {}
 
 type AssignExpr struct {
 	Op    string
-	Left  Expression
+	Left  Node // Expression（普通赋值）或 Pattern（解构赋值 ({a} = x) / [a] = x）
 	Right Expression
 	Loc   Pos
 }
@@ -827,6 +829,39 @@ func stmtHasAwait(s Statement) bool {
 	}
 }
 
+// nodeHasAwait 判断任意 AST 节点（Expression 或 Pattern）中是否出现 await。
+// AssignExpr.Left 可能是 Pattern（解构赋值），Pattern 内只有默认值表达式
+// 可能含 await。
+func nodeHasAwait(n Node) bool {
+	if e, ok := n.(Expression); ok {
+		return exprHasAwait(e)
+	}
+	switch pat := n.(type) {
+	case *ArrayPattern:
+		for _, el := range pat.Elements {
+			if el.Default != nil && exprHasAwait(el.Default) {
+				return true
+			}
+			if el.Target != nil && nodeHasAwait(el.Target) {
+				return true
+			}
+		}
+	case *ObjectPattern:
+		for _, prop := range pat.Properties {
+			if prop.Default != nil && exprHasAwait(prop.Default) {
+				return true
+			}
+			if prop.Key != nil && prop.Computed && exprHasAwait(prop.Key) {
+				return true
+			}
+			if prop.Value != nil && nodeHasAwait(prop.Value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // exprHasAwait 判断表达式（不深入函数表达式体）中是否出现 await。
 func exprHasAwait(e Expression) bool {
 	switch n := e.(type) {
@@ -839,7 +874,7 @@ func exprHasAwait(e Expression) bool {
 	case *LogicalExpr:
 		return exprHasAwait(n.Left) || exprHasAwait(n.Right)
 	case *AssignExpr:
-		if exprHasAwait(n.Left) {
+		if nodeHasAwait(n.Left) {
 			return true
 		}
 		return n.Right != nil && exprHasAwait(n.Right)

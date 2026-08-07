@@ -64,6 +64,22 @@ p.sum();
 	}
 }
 
+func TestTSConstructorParameterProperties(t *testing.T) {
+	code := `
+class Base {}
+class Box extends Base {
+  constructor(private readonly value: number, public label = "box") {
+    super();
+  }
+  describe() { return this.label + ":" + this.value; }
+}
+new Box(42).describe();
+`
+	if got := vmEvalStr(t, code); got != "box:42" {
+		t.Errorf("constructor parameter properties = %q, want box:42", got)
+	}
+}
+
 func TestComputedClassFields(t *testing.T) {
 	code := `
 let calls = 0;

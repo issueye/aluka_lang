@@ -89,12 +89,26 @@ func Shake(vm *interpreter.VM, gr *graph.Result, entry string) (*Result, error) 
 		if usedExports[key] == nil {
 			usedExports[key] = make(map[string]bool)
 		}
-		usedExports[key][name] = true
+		if !usedExports[key][name] {
+			usedExports[key][name] = true
+			// 新使用标记写入已处理完的模块时重新入队：re-export 传播依赖
+			// 目标模块被处理时 usedExports 已完整（队列顺序不能保证——
+			// 后入队的导入者可能晚于目标模块出队）。不动点迭代保证
+			// re-export 链（export {x} from 'm'）的目标被保留。
+			if processed[key] {
+				processed[key] = false
+				queue = append(queue, key)
+			}
+		}
 	}
 	// markImportUsed 把导入名映射到目标模块的导出名并保留目标。
 	markImportUsed := func(t, imported string) {
 		switch imported {
 		case "*":
+			// Namespace imports require the complete export surface. Keep a
+			// wildcard marker even when this module is a pure export-* barrel
+			// and therefore has no directly declared exports.
+			markUsed(t, "*")
 			if tin := infos[t]; tin != nil && tin.prog != nil {
 				for name := range tin.exports {
 					markUsed(t, name)
@@ -160,18 +174,39 @@ func Shake(vm *interpreter.VM, gr *graph.Result, entry string) (*Result, error) 
 				continue
 			}
 			handled[t] = true
-			if re.IsStar {
+			if re.IsStar && re.StarName != "" {
+				// export * as ns：ns 被使用时，目标模块的完整命名空间
+				// 都可观察，必须保留其全部导出。
+				if usedExports[key]["*"] || usedExports[key][re.StarName] {
+					keepMod(t)
+					markUsed(t, "*")
+					if tin := infos[t]; tin != nil && tin.prog != nil {
+						for name := range tin.exports {
+							markUsed(t, name)
+						}
+					}
+				}
+			} else if re.IsStar {
 				// export *：运行时 Object.assign(module.exports, require())
 				// 需加载目标；本模块的 used 导出转发到目标同名导出。
 				keepMod(t)
-				for name := range usedExports[key] {
-					if name != "default" {
-						markUsed(t, name)
+				if usedExports[key]["*"] {
+					markUsed(t, "*")
+					if tin := infos[t]; tin != nil && tin.prog != nil {
+						for name := range tin.exports {
+							markUsed(t, name)
+						}
+					}
+				} else {
+					for name := range usedExports[key] {
+						if name != "default" {
+							markUsed(t, name)
+						}
 					}
 				}
 			} else {
 				for _, spec := range re.Specifiers {
-					if usedExports[key][spec.Exported] {
+					if usedExports[key]["*"] || usedExports[key][spec.Exported] {
 						markUsed(t, spec.Local)
 						keepMod(t)
 					}
@@ -266,6 +301,9 @@ func analyze(key string, prog *ast.Program, gr *graph.Result) *moduleInfo {
 				}
 			} else if n.Source != "" {
 				info.reExports = append(info.reExports, n)
+				if n.IsStar && n.StarName != "" {
+					info.exports[n.StarName] = true
+				}
 			} else {
 				for _, spec := range n.Specifiers {
 					info.exports[spec.Exported] = true
@@ -325,7 +363,7 @@ func pruneModule(info *moduleInfo, usedExports map[string]map[string]bool, infos
 				names := declNames(n.Declaration)
 				allUsed := true
 				for _, name := range names {
-					if !used[name] {
+					if !used["*"] && !used[name] {
 						allUsed = false
 						break
 					}
@@ -351,6 +389,14 @@ func pruneModule(info *moduleInfo, usedExports map[string]map[string]bool, infos
 			}
 			if n.Source != "" {
 				// re-export：名字未使用 → 删除语句。
+				if n.IsStar && n.StarName != "" {
+					if !used["*"] && !used[n.StarName] {
+						changed = true
+						continue
+					}
+					newBody = append(newBody, stmt)
+					continue
+				}
 				if n.IsStar {
 					// export *：本模块 used 名非空则保留（运行时
 					// Object.assign 传播全部导出，需加载目标模块）。
@@ -370,7 +416,7 @@ func pruneModule(info *moduleInfo, usedExports map[string]map[string]bool, infos
 				}
 				kept := false
 				for _, spec := range n.Specifiers {
-					if used[spec.Exported] {
+					if used["*"] || used[spec.Exported] {
 						kept = true
 						break
 					}
@@ -385,7 +431,7 @@ func pruneModule(info *moduleInfo, usedExports map[string]map[string]bool, infos
 			// export {a, b as c}：过滤未使用的 specifier。
 			var specs []ast.ExportSpecifier
 			for _, spec := range n.Specifiers {
-				if used[spec.Exported] {
+				if used["*"] || used[spec.Exported] {
 					specs = append(specs, spec)
 				}
 			}
@@ -399,7 +445,7 @@ func pruneModule(info *moduleInfo, usedExports map[string]map[string]bool, infos
 			}
 			newBody = append(newBody, stmt)
 		case *ast.ExportDefaultDecl:
-			if used["default"] {
+			if used["*"] || used["default"] {
 				newBody = append(newBody, stmt)
 			} else {
 				changed = true

@@ -25,7 +25,8 @@ import (
 // arguments 时跳过每帧 arguments 对象创建）。
 // v12 → v13：FuncTemplate.NativeCallback（O-6 简单回调描述：数组高阶方法
 // 对 x=>x*2 等箭头回调 Go 侧直执行）。
-const FormatVersion = 13
+// v13 → v14：FuncTemplate.NewTargetSlot（new.target 词法槽位）。
+const FormatVersion = 14
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
@@ -105,7 +106,7 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 	if err := writeString(w, fn.Name); err != nil {
 		return err
 	}
-	var scalars [9 * 4]byte // NumParams, NumLocals, IsVarArgs, IsGenerator, IsAsync, IsArrow, len(Code), ArgumentsSlot, NoArgumentsObject
+	var scalars [10 * 4]byte // NumParams, NumLocals, IsVarArgs, IsGenerator, IsAsync, IsArrow, len(Code), ArgumentsSlot, NoArgumentsObject, NewTargetSlot
 	binary.LittleEndian.PutUint32(scalars[0:4], uint32(fn.NumParams))
 	binary.LittleEndian.PutUint32(scalars[4:8], uint32(fn.NumLocals))
 	binary.LittleEndian.PutUint32(scalars[8:12], boolToU32(fn.IsVarArgs))
@@ -115,6 +116,7 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 	binary.LittleEndian.PutUint32(scalars[24:28], uint32(len(fn.Code)))
 	binary.LittleEndian.PutUint32(scalars[28:32], uint32(fn.ArgumentsSlot))
 	binary.LittleEndian.PutUint32(scalars[32:36], boolToU32(fn.NoArgumentsObject))
+	binary.LittleEndian.PutUint32(scalars[36:40], uint32(fn.NewTargetSlot))
 	if _, err := w.Write(scalars[:]); err != nil {
 		return err
 	}
@@ -210,7 +212,7 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 	if err != nil {
 		return nil, err
 	}
-	var scalars [9 * 4]byte
+	var scalars [10 * 4]byte
 	if _, err := io.ReadFull(r, scalars[:]); err != nil {
 		return nil, err
 	}
@@ -227,6 +229,7 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 		// 4294967295（正数），绕过 callClosure 的 `>= 0` 检查导致栈越界 panic。
 		ArgumentsSlot:     int(int32(binary.LittleEndian.Uint32(scalars[28:32]))),
 		NoArgumentsObject: u32ToBool(binary.LittleEndian.Uint32(scalars[32:36])),
+		NewTargetSlot:     int(int32(binary.LittleEndian.Uint32(scalars[36:40]))),
 	}
 	codeLen := binary.LittleEndian.Uint32(scalars[24:28])
 	if codeLen > 0 {

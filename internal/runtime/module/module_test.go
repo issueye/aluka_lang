@@ -328,6 +328,19 @@ func TestResolverExtensionResolution(t *testing.T) {
 	}
 }
 
+func TestResolverJSSpecifierToTypeScriptSource(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "mod.ts"), []byte("export const value = 1;"), 0644)
+	resolved, err := NewResolver().ResolveImport("./mod.js", filepath.Join(dir, "main.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(dir, "mod.ts")
+	if resolved != expected {
+		t.Errorf("js-to-ts resolution: got %q, want %q", resolved, expected)
+	}
+}
+
 func TestResolverDirectoryWithPackageJson(t *testing.T) {
 	dir := t.TempDir()
 	pkgDir := filepath.Join(dir, "mymod")

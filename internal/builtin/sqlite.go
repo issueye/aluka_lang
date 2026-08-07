@@ -64,6 +64,7 @@ func NewSQLite(ctx engine.Context) (engine.Value, error) {
 	_ = proto.Set("constructor", ctor)
 	_ = ctorObj.Set("prototype", proto)
 	_ = m.Set("DatabaseSync", ctor)
+	_ = m.Set("Database", ctor) // bun:sqlite compatibility
 	return m, nil
 }
 
@@ -96,6 +97,31 @@ func newDatabaseSyncInstance(state *sqliteDbState) engine.Value {
 	_ = obj.Set("close", engine.NewFunction("close", func(args []engine.Value) (engine.Value, error) {
 		_ = state.db.Close()
 		return engine.Undefined(), nil
+	}))
+
+	// bun:sqlite / better-sqlite3 compatibility: transaction(fn) returns a
+	// callable transaction wrapper. Hermes uses this API for atomic indexing.
+	_ = obj.Set("transaction", engine.NewFunction("transaction", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 || !args[0].IsFunction() {
+			return engine.Undefined(), fmt.Errorf("node:sqlite: transaction requires function")
+		}
+		callback := args[0]
+		return engine.NewFunction("transaction", func(callArgs []engine.Value) (engine.Value, error) {
+			if _, err := state.db.Exec("BEGIN"); err != nil {
+				return engine.Undefined(), fmt.Errorf("node:sqlite: begin transaction: %w", err)
+			}
+			f, _ := callback.AsFunction()
+			result, err := f.Call(callArgs)
+			if err != nil {
+				_, _ = state.db.Exec("ROLLBACK")
+				return engine.Undefined(), err
+			}
+			if _, err := state.db.Exec("COMMIT"); err != nil {
+				_, _ = state.db.Exec("ROLLBACK")
+				return engine.Undefined(), fmt.Errorf("node:sqlite: commit transaction: %w", err)
+			}
+			return result, nil
+		}), nil
 	}))
 
 	// isOpen 只读属性（Node 语义：DatabaseSync.isOpen，close 后为 false）。

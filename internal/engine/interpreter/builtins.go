@@ -1336,6 +1336,14 @@ func (interp *Interpreter) setupNumberCtor() {
 		f, ok := args[0].Float()
 		return engine.Boolean(ok && !math.IsNaN(f) && !math.IsInf(f, 0) && f == float64(int64(f))), nil
 	}))
+	_ = ctor.Set("isSafeInteger", interp.makeFunc("isSafeInteger", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Boolean(false), nil
+		}
+		f, ok := args[0].Float()
+		return engine.Boolean(ok && !math.IsNaN(f) && !math.IsInf(f, 0) &&
+			f == math.Trunc(f) && math.Abs(f) <= 9007199254740991), nil
+	}))
 	_ = ctor.Set("prototype", interp.numberProto)
 	_ = interp.numberProto.Set("constructor", ctor)
 	_ = interp.globalObj.Set("Number", ctor)
@@ -1752,7 +1760,7 @@ func jsonToValue(data interface{}) engine.Value {
 // --- Global functions ---
 
 func (interp *Interpreter) setupGlobalFuncs() {
-	_ = interp.globalObj.Set("parseInt", interp.makeFunc("parseInt", func(args []engine.Value) (engine.Value, error) {
+	parseIntFn := interp.makeFunc("parseInt", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Number(math.NaN()), nil
 		}
@@ -1769,8 +1777,9 @@ func (interp *Interpreter) setupGlobalFuncs() {
 			return engine.Number(math.NaN()), nil
 		}
 		return engine.Number(float64(n)), nil
-	}))
-	_ = interp.globalObj.Set("parseFloat", interp.makeFunc("parseFloat", func(args []engine.Value) (engine.Value, error) {
+	})
+	_ = interp.globalObj.Set("parseInt", parseIntFn)
+	parseFloatFn := interp.makeFunc("parseFloat", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Number(math.NaN()), nil
 		}
@@ -1779,7 +1788,16 @@ func (interp *Interpreter) setupGlobalFuncs() {
 			return engine.Number(math.NaN()), nil
 		}
 		return engine.Number(f), nil
-	}))
+	})
+	_ = interp.globalObj.Set("parseFloat", parseFloatFn)
+	// Number.parseInt / Number.parseFloat are the same function objects as
+	// their global counterparts (ECMAScript 2024, 21.1.2.13/14).
+	if numberVal, err := interp.globalObj.Get("Number"); err == nil {
+		if numberObj, ok := numberVal.AsObject(); ok {
+			_ = numberObj.Set("parseInt", parseIntFn)
+			_ = numberObj.Set("parseFloat", parseFloatFn)
+		}
+	}
 	_ = interp.globalObj.Set("isNaN", interp.makeFunc("isNaN", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Boolean(true), nil

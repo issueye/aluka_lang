@@ -21,9 +21,12 @@ const (
 	constTagNumber = 1
 	constTagString = 2
 	constTagBigInt = 3
+	constTagBool   = 4
+	constTagNull   = 5
 )
 
-// EncodeConst 将单个常量值编码到 w。仅支持 number/string/bigint。
+// EncodeConst 将单个常量值编码到 w。支持 number/string/bigint/bool/null
+// （NativeCallback 的 cbConstValue 会把 bool/null 字面量加入常量池）。
 func EncodeConst(w io.Writer, v Value) error {
 	switch v.Type() {
 	case TypeNumber:
@@ -47,8 +50,22 @@ func EncodeConst(w io.Writer, v Value) error {
 		bi, _ := BigIntValue(v)
 		// *big.Int 用 TextMarshaler/Unmarshaler（十进制字符串）。
 		return writeLenString(w, bi.String())
+	case TypeBoolean:
+		if _, err := w.Write([]byte{constTagBool}); err != nil {
+			return err
+		}
+		b, _ := v.Bool()
+		if b {
+			_, err := w.Write([]byte{1})
+			return err
+		}
+		_, err := w.Write([]byte{0})
+		return err
+	case TypeNull:
+		_, err := w.Write([]byte{constTagNull})
+		return err
 	default:
-		return fmt.Errorf("const codec: unsupported constant type %s", v.Type())
+		return fmt.Errorf("const codec: unsupported constant type %s value=%q goType=%T", v.Type(), v.String(), v)
 	}
 }
 
@@ -81,6 +98,14 @@ func DecodeConst(r io.Reader) (Value, error) {
 			return nil, fmt.Errorf("const codec: invalid big int %q", s)
 		}
 		return BigInt(bi), nil
+	case constTagBool:
+		var b [1]byte
+		if _, err := io.ReadFull(r, b[:]); err != nil {
+			return nil, err
+		}
+		return Boolean(b[0] != 0), nil
+	case constTagNull:
+		return Null(), nil
 	default:
 		return nil, fmt.Errorf("const codec: unknown tag %d", tag[0])
 	}

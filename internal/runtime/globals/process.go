@@ -3,10 +3,12 @@ package globals
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -171,7 +173,6 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 	}))
 	_ = proc.Set("report", report)
 
-
 	// abort()：终止进程（Node 语义，SIGABRT）。
 	_ = proc.Set("abort", engine.NewFunction("abort", func(args []engine.Value) (engine.Value, error) {
 		fmt.Fprintln(os.Stderr, "Aborted")
@@ -260,15 +261,124 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		return engine.Undefined(), p.Kill()
 	}))
 
-	// stdin（简化只读流）。
+	// stdin：按需读取并派发 data/end，支持 CLI 的管道输入路径。
 	stdin := engine.NewObject()
 	_ = stdin.Set("readable", engine.Boolean(true))
-	_ = stdin.Set("isTTY", engine.Undefined())
+	stdinTTY := streamIsTTY(os.Stdin)
+	_ = stdin.Set("isTTY", engine.Boolean(stdinTTY))
+	_ = stdin.Set("isRaw", engine.Boolean(false))
+	var stdinMu sync.Mutex
+	stdinListeners := map[string][]engine.Value{}
+	stdinEncoding := ""
+	var stdinResume sync.Once
+	addStdinListener := func(args []engine.Value) engine.Value {
+		if len(args) >= 2 && args[1].IsFunction() {
+			stdinMu.Lock()
+			stdinListeners[args[0].String()] = append(stdinListeners[args[0].String()], args[1])
+			stdinMu.Unlock()
+		}
+		return stdin
+	}
 	_ = stdin.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
-		// 简化：不读取输入，仅返回自身（链式兼容）。
-		return stdin, nil
+		return addStdinListener(args), nil
+	}))
+	_ = stdin.Set("once", engine.NewFunction("once", func(args []engine.Value) (engine.Value, error) {
+		return addStdinListener(args), nil
+	}))
+	removeStdinListener := func(args []engine.Value) engine.Value {
+		if len(args) >= 2 {
+			event := args[0].String()
+			stdinMu.Lock()
+			listeners := stdinListeners[event]
+			kept := listeners[:0]
+			for _, listener := range listeners {
+				if listener != args[1] {
+					kept = append(kept, listener)
+				}
+			}
+			stdinListeners[event] = kept
+			stdinMu.Unlock()
+		}
+		return stdin
+	}
+	_ = stdin.Set("removeListener", engine.NewFunction("removeListener", func(args []engine.Value) (engine.Value, error) {
+		return removeStdinListener(args), nil
+	}))
+	_ = stdin.Set("off", engine.NewFunction("off", func(args []engine.Value) (engine.Value, error) {
+		return removeStdinListener(args), nil
 	}))
 	_ = stdin.Set("setEncoding", engine.NewFunction("setEncoding", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			stdinMu.Lock()
+			stdinEncoding = args[0].String()
+			stdinMu.Unlock()
+		}
+		return stdin, nil
+	}))
+	_ = stdin.Set("setRawMode", engine.NewFunction("setRawMode", func(args []engine.Value) (engine.Value, error) {
+		enabled := false
+		if len(args) > 0 {
+			enabled, _ = args[0].Bool()
+		}
+		if err := setStdinRawMode(enabled); err != nil {
+			return engine.Undefined(), err
+		}
+		_ = stdin.Set("isRaw", engine.Boolean(enabled))
+		return stdin, nil
+	}))
+	_ = stdin.Set("pause", engine.NewFunction("pause", func(args []engine.Value) (engine.Value, error) {
+		return stdin, nil
+	}))
+	_ = stdin.Set("resume", engine.NewFunction("resume", func(args []engine.Value) (engine.Value, error) {
+		stdinResume.Do(func() {
+			release := ctx.AddRef()
+			go func() {
+				buf := make([]byte, 4096)
+				for {
+					n, readErr := os.Stdin.Read(buf)
+					if n > 0 {
+						data := append([]byte(nil), buf[:n]...)
+						ctx.PostTask(func() {
+							stdinMu.Lock()
+							callbacks := append([]engine.Value(nil), stdinListeners["data"]...)
+							encoding := stdinEncoding
+							stdinMu.Unlock()
+							chunk := engine.Value(NewBufferInstance(data))
+							if encoding != "" {
+								chunk = engine.Str(string(data))
+							}
+							for _, cb := range callbacks {
+								if f, ok := cb.AsFunction(); ok {
+									_, _ = f.Call([]engine.Value{chunk})
+								}
+							}
+						})
+					}
+					if readErr != nil {
+						ctx.PostTask(func() {
+							defer release()
+							stdinMu.Lock()
+							endCallbacks := append([]engine.Value(nil), stdinListeners["end"]...)
+							errorCallbacks := append([]engine.Value(nil), stdinListeners["error"]...)
+							stdinMu.Unlock()
+							if readErr != io.EOF {
+								for _, cb := range errorCallbacks {
+									if f, ok := cb.AsFunction(); ok {
+										_, _ = f.Call([]engine.Value{engine.Str(readErr.Error())})
+									}
+								}
+							}
+							for _, cb := range endCallbacks {
+								if f, ok := cb.AsFunction(); ok {
+									_, _ = f.Call(nil)
+								}
+							}
+						})
+						return
+					}
+				}
+			}()
+		})
 		return stdin, nil
 	}))
 	_ = proc.Set("stdin", stdin)
@@ -293,6 +403,14 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		}))
 		_ = obj.Set("writeSync", engine.NewFunction("writeSync", writeFn))
 		_ = obj.Set("fd", engine.IntValue(int(w.Fd())))
+		_ = obj.Set("isTTY", engine.Boolean(streamIsTTY(w)))
+		_ = obj.Set("columns", engine.IntValue(80))
+		_ = obj.Set("rows", engine.IntValue(24))
+		for _, name := range []string{"on", "once", "off", "removeListener"} {
+			_ = obj.Set(name, engine.NewFunction(name, func(args []engine.Value) (engine.Value, error) {
+				return obj, nil
+			}))
+		}
 		return obj
 	}
 	_ = proc.Set("stdout", makeStream(os.Stdout))
@@ -475,6 +593,19 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		}
 		return engine.Undefined(), nil
 	}))
+	// prependListener(event, listener)：Node EventEmitter API。Pi 在启动时
+	// 用它确保终端恢复/信号处理器优先执行；普通 on() 保持追加顺序。
+	_ = proc.Set("prependListener", engine.NewFunction("prependListener", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 || !args[1].IsFunction() {
+			return proc, nil
+		}
+		event := args[0].String()
+		listeners[event] = append([]engine.Value{args[1]}, listeners[event]...)
+		if sig, ok := goSignalByName(event); ok {
+			osSignalNotify(sigCh, sig)
+		}
+		return proc, nil
+	}))
 	_ = proc.Set("once", engine.NewFunction("once", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Undefined(), nil
@@ -505,9 +636,9 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		}
 		return engine.Undefined(), nil
 	}))
-	_ = proc.Set("removeListener", engine.NewFunction("removeListener", func(args []engine.Value) (engine.Value, error) {
+	removeListener := engine.NewFunction("removeListener", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
-			return engine.Undefined(), nil
+			return proc, nil
 		}
 		event := args[0].String()
 		target := args[1]
@@ -515,11 +646,15 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		for i, x := range l {
 			if x == target {
 				listeners[event] = append(append([]engine.Value{}, l[:i]...), l[i+1:]...)
-				return engine.Undefined(), nil
+				return proc, nil
 			}
 		}
-		return engine.Undefined(), nil
-	}))
+		return proc, nil
+	})
+	_ = proc.Set("removeListener", removeListener)
+	// off() 是 removeListener() 的 Node 别名。保持同一函数值也让
+	// removeListener/off 的行为和监听器身份比较完全一致。
+	_ = proc.Set("off", removeListener)
 	_ = proc.Set("emit", engine.NewFunction("emit", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Boolean(false), nil
@@ -619,20 +754,20 @@ func buildReportMap(argv []string) map[string]interface{} {
 	copy(cmdLine, argv)
 	host, _ := os.Hostname()
 	header := map[string]interface{}{
-		"reportVersion":   5,
-		"event":           "JavaScript API",
-		"trigger":         "getReport",
-		"filename":        "",
-		"dumpEventTime":   time.Now().Format(time.RFC3339),
+		"reportVersion":      5,
+		"event":              "JavaScript API",
+		"trigger":            "getReport",
+		"filename":           "",
+		"dumpEventTime":      time.Now().Format(time.RFC3339),
 		"dumpEventTimeStamp": time.Now().UnixMilli(),
-		"processId":       os.Getpid(),
-		"threadId":        0,
-		"cwd":             cwd,
-		"commandLine":     cmdLine,
-		"nodejsVersion":   "v0.1.0-aluka",
-		"wordSize":        64,
-		"arch":            archName(),
-		"platform":        platformName(),
+		"processId":          os.Getpid(),
+		"threadId":           0,
+		"cwd":                cwd,
+		"commandLine":        cmdLine,
+		"nodejsVersion":      "v0.1.0-aluka",
+		"wordSize":           64,
+		"arch":               archName(),
+		"platform":           platformName(),
 		"componentVersions": map[string]interface{}{
 			"aluka": "0.1.0",
 			"go":    runtime.Version(),
@@ -641,25 +776,25 @@ func buildReportMap(argv []string) map[string]interface{} {
 			"name": "aluka",
 			"lts":  nil,
 		},
-		"osName":     runtime.GOOS,
-		"osRelease":  runtime.GOOS,
-		"osVersion":  runtime.GOOS,
-		"osMachine":  runtime.GOARCH,
-		"cpus":       []interface{}{},
+		"osName":            runtime.GOOS,
+		"osRelease":         runtime.GOOS,
+		"osVersion":         runtime.GOOS,
+		"osMachine":         runtime.GOARCH,
+		"cpus":              []interface{}{},
 		"networkInterfaces": map[string]interface{}{},
-		"host":       host,
+		"host":              host,
 	}
 	return map[string]interface{}{
-		"header":               header,
-		"javascriptStack":      map[string]interface{}{"message": "No stack trace was produced", "stack": []interface{}{}},
-		"javascriptHeap":       map[string]interface{}{},
-		"nativeStack":          []interface{}{},
-		"resourceUsage":        map[string]interface{}{},
+		"header":                header,
+		"javascriptStack":       map[string]interface{}{"message": "No stack trace was produced", "stack": []interface{}{}},
+		"javascriptHeap":        map[string]interface{}{},
+		"nativeStack":           []interface{}{},
+		"resourceUsage":         map[string]interface{}{},
 		"uvthreadResourceUsage": map[string]interface{}{},
-		"libuv":                []interface{}{},
-		"workers":              []interface{}{},
-		"environmentVariables": map[string]interface{}{},
-		"sharedObjects":        []interface{}{},
+		"libuv":                 []interface{}{},
+		"workers":               []interface{}{},
+		"environmentVariables":  map[string]interface{}{},
+		"sharedObjects":         []interface{}{},
 	}
 }
 

@@ -270,7 +270,7 @@ func NewFS(ctx engine.Context) (engine.Value, error) {
 		return engine.Undefined(), os.WriteFile(args[1].String(), data, 0644)
 	}))
 
-	_ = m.Set("realpathSync", engine.NewFunction("realpathSync", func(args []engine.Value) (engine.Value, error) {
+	realpathSync := engine.NewFunction("realpathSync", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Str(""), nil
 		}
@@ -278,8 +278,16 @@ func NewFS(ctx engine.Context) (engine.Value, error) {
 		if err != nil {
 			return engine.Undefined(), err
 		}
-		return engine.Str(abs), nil
-	}))
+		real, err := filepath.EvalSymlinks(abs)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.Str(real), nil
+	})
+	if realpathObj, ok := realpathSync.AsObject(); ok {
+		_ = realpathObj.Set("native", realpathSync)
+	}
+	_ = m.Set("realpathSync", realpathSync)
 
 	// fs.mkdtempSync(prefix[, options])：创建唯一临时目录（prefix + 6 随机字符）。
 	_ = m.Set("mkdtempSync", engine.NewFunction("mkdtempSync", func(args []engine.Value) (engine.Value, error) {

@@ -30,6 +30,12 @@ type FuncTemplate struct {
 	// (arrow functions and the top-level program).
 	ArgumentsSlot int
 
+	// NewTargetSlot 是保存 `new.target` 的局部槽位（非箭头函数；
+	// 经 new 调用时为构造器函数，普通调用/顶层为 undefined）。
+	// 箭头函数不分配，经 upvalue 链词法解析到外层函数的槽位。
+	// -1 表示未分配。
+	NewTargetSlot int
+
 	// NoArgumentsObject 标记函数体未引用 `arguments`：运行时跳过每帧
 	// arguments 对象创建（O-5 调用快速路径；编译器在函数体扫描后置位）。
 	NoArgumentsObject bool

@@ -131,6 +131,17 @@ func (p *Parser) expect(typ lexer.TokenType, val string) (lexer.Token, error) {
 	return t, nil
 }
 
+// expectName 读取一个标识符名：普通 TokenIdent 或上下文关键字
+// （async/of/await/yield 等是合法 IdentifierName，可作变量/参数名）。
+func (p *Parser) expectName() (lexer.Token, error) {
+	t := p.peek()
+	if t.Type == lexer.TokenIdent || t.Type == lexer.TokenKeyword {
+		p.pos++
+		return t, nil
+	}
+	return t, p.errorf(t, "expected name but got %q", t.Value)
+}
+
 func (p *Parser) expectPunct(val string) error {
 	_, err := p.expect(lexer.TokenPunct, val)
 	return err
@@ -477,12 +488,18 @@ func (p *Parser) parseVarDeclarator() (ast.VarDeclarator, error) {
 		}
 		vd.Pattern = pat
 	} else {
-		nameTok, err := p.expect(lexer.TokenIdent, "")
-		if err != nil {
-			return vd, err
+		nameTok := p.peek()
+		// 上下文关键字（async/of/await/yield 等）是合法变量名（IdentifierName）。
+		if nameTok.Type == lexer.TokenIdent || nameTok.Type == lexer.TokenKeyword {
+			p.next()
+		} else {
+			return vd, p.errorf(nameTok, "expected variable name")
 		}
 		vd.Name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
 	}
+	// TypeScript: definite assignment assertion `let x!: T` — 断言此处
+	// 已初始化（仅编译期标记，运行时无语义），直接消费 `!`。
+	p.matchPunct("!")
 	// TypeScript: optional type annotation `: T`.
 	if err := p.parseTypeAnnotation(); err != nil {
 		return vd, err
@@ -566,12 +583,28 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Pattern, []a
 	var patterns []ast.Pattern
 	var defaults []ast.Expression
 	var rest *ast.Identifier
+	var parameterProperties []*ast.Identifier
 	if !(p.peek().Type == lexer.TokenPunct && p.peek().Value == ")") {
 		for {
+			// TypeScript constructor parameter properties: consume visibility/
+			// readonly modifiers and emit this.name = name after parsing the body.
+			isParameterProperty := false
+			for {
+				current := p.peek()
+				next := p.peekAt(1)
+				isModifier := current.Value == "public" || current.Value == "private" ||
+					current.Value == "protected" || current.Value == "readonly"
+				nextIsName := next.Type == lexer.TokenIdent || next.Type == lexer.TokenKeyword
+				if !isModifier || !nextIsName {
+					break
+				}
+				p.next()
+				isParameterProperty = true
+			}
 			// ES2015 rest parameter: `...name`
 			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "..." {
 				p.next()
-				nameTok, err := p.expect(lexer.TokenIdent, "")
+				nameTok, err := p.expectName()
 				if err != nil {
 					return nil, nil, nil, nil, nil, err
 				}
@@ -613,12 +646,16 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Pattern, []a
 				}
 				continue
 			}
-			nameTok, err := p.expect(lexer.TokenIdent, "")
+			nameTok, err := p.expectName()
 			if err != nil {
 				return nil, nil, nil, nil, nil, err
 			}
-			params = append(params, &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)})
+			param := &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
+			params = append(params, param)
 			patterns = append(patterns, nil)
+			if isParameterProperty {
+				parameterProperties = append(parameterProperties, param)
+			}
 			// TypeScript: optional `?` marker (param?: T) and type annotation.
 			if p.matchPunct("?") {
 				// optional parameter marker — just consume
@@ -655,6 +692,37 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Pattern, []a
 	body, err := p.parseBlock()
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
+	}
+	if len(parameterProperties) > 0 {
+		assignments := make([]ast.Statement, 0, len(parameterProperties))
+		for _, param := range parameterProperties {
+			loc := param.Loc
+			assignments = append(assignments, &ast.ExprStmt{Expr: &ast.AssignExpr{
+				Op: "=",
+				Left: &ast.MemberExpr{
+					Object:   &ast.ThisExpr{Loc: loc},
+					Property: &ast.Identifier{Name: param.Name, Loc: loc},
+					Loc:      loc,
+				},
+				Right: &ast.Identifier{Name: param.Name, Loc: loc},
+				Loc:   loc,
+			}, Loc: loc})
+		}
+		insertAt := 0
+		if len(body.Body) > 0 {
+			if exprStmt, ok := body.Body[0].(*ast.ExprStmt); ok {
+				if call, ok := exprStmt.Expr.(*ast.CallExpr); ok {
+					if _, ok := call.Callee.(*ast.SuperExpr); ok {
+						insertAt = 1
+					}
+				}
+			}
+		}
+		newBody := make([]ast.Statement, 0, len(body.Body)+len(assignments))
+		newBody = append(newBody, body.Body[:insertAt]...)
+		newBody = append(newBody, assignments...)
+		newBody = append(newBody, body.Body[insertAt:]...)
+		body.Body = newBody
 	}
 	return params, patterns, defaults, rest, body, nil
 }
@@ -1138,17 +1206,98 @@ func (p *Parser) parseAssignment() (ast.Expression, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &ast.AssignExpr{Op: t.Value, Left: left, Right: right, Loc: posOf(t)}, nil
+		// 解构赋值：`({a, b} = x)` / `[a, b] = x`。解析器在此处已把 LHS
+		// 按表达式解析成 ObjectLit/ArrayLit，转换为 Pattern 后两个后端
+		// （编译器/解释器）统一按模式目标处理。
+		return &ast.AssignExpr{Op: t.Value, Left: p.litToPattern(left), Right: right, Loc: posOf(t)}, nil
 	}
 	return left, nil
 }
 
-// parseYield parses a `yield` expression. Must only be called when inside a
-// generator function. Forms:
-//
-//	yield            -> bare yield (argument is undefined)
-//	yield expr       -> yield the value of expr
-//	yield* expr      -> delegate: iterate expr's iterator and yield each value
+// litToPattern 把赋值 LHS 的 ObjectLit/ArrayLit 表达式转换为对应的
+// ObjectPattern/ArrayPattern 绑定模式（ES2015 解构赋值）。
+// 非字面量目标（标识符/成员访问等）原样返回。
+func (p *Parser) litToPattern(expr ast.Expression) ast.Node {
+	switch n := expr.(type) {
+	case *ast.ObjectLit:
+		return exprToPattern(n)
+	case *ast.ArrayLit:
+		return exprToPattern(n)
+	}
+	return expr
+}
+
+// exprToPattern 递归把表达式转换为绑定模式（用于解构赋值的嵌套目标）。
+// 嵌套对象/数组字面量继续转换；标识符与成员表达式保持原样；
+// 赋值表达式（{a: b = 1} / [a = 1] 的解析产物）解包为目标 + 默认值。
+// 非法目标（数字/字符串等字面量）返回 nil，后端会报错。
+func exprToPattern(expr ast.Node) ast.Pattern {
+	switch n := expr.(type) {
+	case *ast.ObjectLit:
+		pat := &ast.ObjectPattern{Loc: n.Loc}
+		for _, prop := range n.Properties {
+			if prop.Kind == ast.PropertySpread {
+				pat.Properties = append(pat.Properties, ast.ObjectPatternProperty{
+					Key:    prop.Key,
+					Value:  exprToPattern(prop.Value),
+					IsRest: true,
+				})
+				continue
+			}
+			var val ast.Node = prop.Value
+			def := prop.Default
+			if as, ok := prop.Value.(*ast.AssignExpr); ok && as.Op == "=" {
+				// {a: b = 1} / {a: {b} = 1}：目标 + 默认值
+				val = as.Left
+				def = as.Right
+			}
+			pat.Properties = append(pat.Properties, ast.ObjectPatternProperty{
+				Key:      prop.Key,
+				Value:    exprToPattern(val),
+				Default:  def,
+				Computed: prop.Computed,
+			})
+		}
+		return pat
+	case *ast.ArrayLit:
+		pat := &ast.ArrayPattern{Loc: n.Loc}
+		for _, el := range n.Elements {
+			if sp, ok := el.(*ast.SpreadElement); ok {
+				pat.Elements = append(pat.Elements, ast.ArrayPatternElement{
+					Target: exprToPattern(sp.Arg),
+					IsRest: true,
+				})
+			} else if el != nil {
+				var target ast.Node = el
+				var def ast.Expression
+				if as, ok := el.(*ast.AssignExpr); ok && as.Op == "=" {
+					// [a = 1] / [[x] = 1]
+					target = as.Left
+					def = as.Right
+				}
+				pat.Elements = append(pat.Elements, ast.ArrayPatternElement{
+					Target:  exprToPattern(target),
+					Default: def,
+				})
+			} else {
+				pat.Elements = append(pat.Elements, ast.ArrayPatternElement{})
+			}
+		}
+		return pat
+	case *ast.Identifier:
+		return n
+	case *ast.MemberExpr:
+		return n
+	case *ast.ObjectPattern:
+		// 嵌套解构已被 parseAssignment 转换（{a: {b}} = v）
+		return n
+	case *ast.ArrayPattern:
+		return n
+	}
+	return nil
+}
+
+
 func (p *Parser) parseYield() (ast.Expression, error) {
 	t := p.next() // consume `yield`
 	y := &ast.YieldExpr{Loc: posOf(t)}
@@ -1221,8 +1370,11 @@ func (p *Parser) tryParseAsyncArrow() (ast.Expression, bool, error) {
 		if next.Type == lexer.TokenPunct && next.Value == "=>" {
 			p.next() // ident
 			p.next() // =>
+			// 块体解析需要 async 上下文（await 合法性校验）。
+			p.asyncStack = append(p.asyncStack, true)
 			expr, ok, err := p.parseArrowBody(
 				[]*ast.Identifier{{Name: t.Value, Loc: posOf(t)}}, nil, nil, nil)
+			p.asyncStack = p.asyncStack[:len(p.asyncStack)-1]
 			if err != nil || !ok {
 				return nil, false, err
 			}
@@ -2400,13 +2552,25 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 			}
 			nameTok, err := p.expect(lexer.TokenIdent, "")
 			if err != nil {
-				return nil, err
+				// 保留字作为导出名合法：export { function } / export { default as X }
+				if p.peek().Type == lexer.TokenKeyword {
+					p.next()
+					nameTok = lexer.Token{Type: lexer.TokenIdent, Value: p.tokens[p.pos-1].Value}
+				} else {
+					return nil, err
+				}
 			}
 			spec := ast.ExportSpecifier{Local: nameTok.Value, Exported: nameTok.Value}
 			if p.matchIdent("as") {
 				exportedTok, err := p.expect(lexer.TokenIdent, "")
 				if err != nil {
-					return nil, err
+					// export { X as default }：default 关键字作为导出名
+					if p.peek().Type == lexer.TokenKeyword {
+						p.next()
+						exportedTok = lexer.Token{Type: lexer.TokenIdent, Value: p.tokens[p.pos-1].Value}
+					} else {
+						return nil, err
+					}
 				}
 				spec.Exported = exportedTok.Value
 			}
@@ -3119,7 +3283,17 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: val, Kind: ast.PropertyInit, Computed: computedKey, Loc: posOf(propTok)})
 			} else if id, ok := key.(*ast.Identifier); ok {
 				// shorthand: { x } → { x: x }
-				obj.Properties = append(obj.Properties, ast.Property{Key: key, Value: id, Kind: ast.PropertyInit, Computed: computedKey, Loc: posOf(propTok)})
+				prop := ast.Property{Key: key, Value: id, Kind: ast.PropertyInit, Computed: computedKey, Loc: posOf(propTok)}
+				// 解构默认值：{ x = 1 }（仅模式语境合法；表达式语境由后端报错）
+				if p.peek().Type == lexer.TokenPunct && p.peek().Value == "=" {
+					p.next()
+					def, err := p.parseAssignment()
+					if err != nil {
+						return nil, err
+					}
+					prop.Default = def
+				}
+				obj.Properties = append(obj.Properties, prop)
 			} else {
 				return nil, p.errorf(p.peek(), "expected ':' after object key")
 			}
