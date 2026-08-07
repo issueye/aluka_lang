@@ -1648,7 +1648,7 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 	// ArgumentsSlot). The arguments object is array-like: it has numeric
 	// indices and a `length`. We bind it as a local so `arguments.length` /
 	// `arguments[i]` work（get-intrinsic 等 npm 包依赖它）。
-	if tmpl.ArgumentsSlot >= 0 {
+	if tmpl.ArgumentsSlot >= 0 && !tmpl.NoArgumentsObject {
 		argsObj := engine.NewArray(append([]engine.Value{}, args...))
 		engine.SetProto(argsObj, v.interp.arrayProto)
 		_ = argsObj.Set("callee", cl.obj)

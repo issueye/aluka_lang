@@ -37,6 +37,25 @@
 2. **strConcat 从 463x 收窄到 3.1x**——ME-1 rope 字符串（commit 107b617）近乎追平 V8，内存从 259MB → 1.2MB（-99.5%）。
 3. 调用主导用例（callOverhead/methodCall/fib）差距仍最大（442x–985x）——v2 中 node 端数字更小（JIT 更强），差距被放大；**调用路径仍是第一优化面**。
 
+## 2.1 O-5 实测（2026-08-07，同机同参：仅差 O-5 改动）
+
+| 用例 | 基线 ms | O-5 ms | 提升 |
+|------|---------|--------|------|
+| fib25 | 262 | 72 | **-72%** |
+| fib30 | 3747 | 787 | **-79%** |
+| callOverhead-1M | 1531 | 291 | **-80%** |
+| methodCall-1M | 1609 | 325 | **-79%** |
+| gcPressure-500K | 2806 | 1810 | **-35%** |
+| 其余 6 用例 | — | — | ±5%（噪声内） |
+| **11 用例合计** | 12713 | 6146 | **-52%** |
+
+> 关键教训：该优化曾**被字节码磁盘缓存掩盖**——`FuncTemplate` 新增字段后未递增
+> `FormatVersion`，旧缓存（无 `NoArgumentsObject`）持续命中导致真实运行零收益
+> 而 go test（无缓存）显示 4x。修复：序列化新字段 + FormatVersion 11→12。
+> 语义回归防护：tests/conformance/node22/cases/17-arguments.cjs（8 项
+> arguments 语义，与 node 逐行一致）；knownDifference：`eval('arguments')`
+> 动态执行不支持（基线既有）。
+
 ## 3. 引擎基准矩阵（go test ./bench）
 
 | 基准 | v1 耗时 | v2 耗时 | 分配 v2 | 说明 |
@@ -99,7 +118,7 @@ heap 峰值 51 MB ｜ GC 326 次，暂停累计 11.7ms（0.07%）
 | # | 优化点 | 依据 | 预期 | 工作量 |
 |---|--------|------|------|--------|
 | O-6 | **数组高阶回调原生化**（PF-5）：`map/filter/reduce/forEach` 对原生 ArrayValue + **简单回调（箭头函数单表达式、无闭包依赖）走 Go 侧直接执行**，跳过每元素完整帧+解释 | doCallMethod cum **71%**（混合负载 9000 万次回调调用全走解释器） | arrayMap 类 **5-20x**（混合负载大头） | ~300 行 |
-| O-5 | **callClosure 快速路径**（PF-1）：无闭包捕获/少参数函数跳过帧初始化 + **跳过 arguments 对象创建**（每帧 `NewArray`，line 1634） | callClosure 5.8% flat；fib30 35.8M 分配 | fib/调用类 -20~40% | ~300 行 |
+| O-5 | **callClosure 快速路径：跳过未引用 arguments 的函数每帧 arguments 对象创建**（编译器 `usedArguments` 检测 → `NoArgumentsObject`；含箭头函数词法继承路径；序列化版本 v12） | callClosure 5.8% flat；fib30 35.8M 分配 | **已实施：fib -72~79%、callOverhead/methodCall -79~80%、gcPressure -35%，11 用例合计 -52%** | ✅ |
 | O-7 | **方法调用 IC 覆盖回调**：`map` 回调等 `OpCall` 场景复用 callIC 槽 | call IC 0/300K miss | 回调场景 -10% | ~100 行 |
 
 ### P1 —— 架构级（长期）
@@ -137,3 +156,22 @@ go tool pprof -top p.out
   内存 259MB→1.2MB），归因 ME-1 rope 字符串 + ME-2 对象批量构造（commit 107b617）。
 - 调用/回调路径取代字符串拼接成为第一优化面；混合负载中 map 高阶回调
   占 doCallMethod cum 71%，是当前最集中的单一热点。
+
+## 10. 达 50% 提升的路径（2026-08-07 实测更新）
+
+**单靠 O-5（去每帧 arguments 对象）已达成 -52% 整体提升**（11 用例合计
+12713→6146ms）。拆解：
+
+- **O-5 贡献 ~52%**：所有非箭头函数每帧一个 `NewArray`+`SetProto`+`Set(callee)`+
+  参数拷贝；fib/callOverhead/methodCall 递归或高频调用中被放大。编译器检测
+  函数体是否引用 arguments（含嵌套箭头函数词法继承），未引用则运行时跳过。
+- 达到 **75-80%** 需再加：O-6（回调原生化，arrayMap/高阶）+ O-2（int→str
+  intern）+ O-3（栈预分配）+ O-4（isBigInt 合并），预计再 -20~30%。
+- 达到 **2-3x**（调用类对 node 差距从 191x 收窄到 <30x）需 O-8（宽值表示）
+  或 JIT（O-10）。
+
+推荐顺序（按收益/成本）：
+```
+O-5（✅ 已实施，-52%）→ O-6（回调原生，arrayMap 5-20x）→ O-2/O-3/O-4（各 -2~5%）
+→ O-8（宽值，综合 +15-25%，架构级）→ O-10（JIT，长期）
+```

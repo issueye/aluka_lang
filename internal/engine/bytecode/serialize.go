@@ -21,7 +21,9 @@ import (
 // v5 → v6：新增解构参数（ParamPatterns）编译语义。
 // v9 → v10：新增 OpGetPropLocal superinstruction（O2-D1）。
 // v10 → v11：OpNewObject operand 携带批量对象字面量属性数量（ME-2）。
-const FormatVersion = 11
+// v11 → v12：FuncTemplate.NoArgumentsObject（O-5 调用快速路径：函数体未引用
+// arguments 时跳过每帧 arguments 对象创建）。
+const FormatVersion = 12
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
@@ -101,7 +103,7 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 	if err := writeString(w, fn.Name); err != nil {
 		return err
 	}
-	var scalars [8 * 4]byte // NumParams, NumLocals, IsVarArgs, IsGenerator, IsAsync, IsArrow, len(Code), ArgumentsSlot
+	var scalars [9 * 4]byte // NumParams, NumLocals, IsVarArgs, IsGenerator, IsAsync, IsArrow, len(Code), ArgumentsSlot, NoArgumentsObject
 	binary.LittleEndian.PutUint32(scalars[0:4], uint32(fn.NumParams))
 	binary.LittleEndian.PutUint32(scalars[4:8], uint32(fn.NumLocals))
 	binary.LittleEndian.PutUint32(scalars[8:12], boolToU32(fn.IsVarArgs))
@@ -110,6 +112,7 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 	binary.LittleEndian.PutUint32(scalars[20:24], boolToU32(fn.IsArrow))
 	binary.LittleEndian.PutUint32(scalars[24:28], uint32(len(fn.Code)))
 	binary.LittleEndian.PutUint32(scalars[28:32], uint32(fn.ArgumentsSlot))
+	binary.LittleEndian.PutUint32(scalars[32:36], boolToU32(fn.NoArgumentsObject))
 	if _, err := w.Write(scalars[:]); err != nil {
 		return err
 	}
@@ -179,7 +182,7 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 	if err != nil {
 		return nil, err
 	}
-	var scalars [8 * 4]byte
+	var scalars [9 * 4]byte
 	if _, err := io.ReadFull(r, scalars[:]); err != nil {
 		return nil, err
 	}
@@ -194,7 +197,8 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 		// ArgumentsSlot 是带符号的哨兵槽：-1 表示箭头函数（无 own arguments）。
 		// 序列化时经 uint32 存储，反序列化必须按 int32 解释，否则 -1 变成
 		// 4294967295（正数），绕过 callClosure 的 `>= 0` 检查导致栈越界 panic。
-		ArgumentsSlot: int(int32(binary.LittleEndian.Uint32(scalars[28:32]))),
+		ArgumentsSlot:     int(int32(binary.LittleEndian.Uint32(scalars[28:32]))),
+		NoArgumentsObject: u32ToBool(binary.LittleEndian.Uint32(scalars[32:36])),
 	}
 	codeLen := binary.LittleEndian.Uint32(scalars[24:28])
 	if codeLen > 0 {

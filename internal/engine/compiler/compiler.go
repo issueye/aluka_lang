@@ -74,6 +74,10 @@ type funcCtx struct {
 	// curLine 是当前编译语句的源行号（覆盖率 LineStarts 用）。
 	curLine int
 
+	// usedArguments 标记函数体引用了 own `arguments`（未引用则运行时
+	// 跳过每帧 arguments 对象创建，O-5 调用快速路径）。
+	usedArguments bool
+
 	scopes []*scope // scope chain; scopes[0] is the function scope
 
 	// upvalueIndex maps a name to its index in tmpl.Upvalues.
@@ -354,6 +358,9 @@ func (c *Compiler) resolve(name string) (string, int) {
 	fc := c.cur()
 	for i := len(fc.scopes) - 1; i >= 0; i-- {
 		if slot, ok := fc.scopes[i].decls[name]; ok {
+			if name == "arguments" {
+				fc.usedArguments = true
+			}
 			return "local", slot
 		}
 	}
@@ -382,6 +389,8 @@ func (c *Compiler) resolveUpvalue(name string) (int, bool) {
 	if !ok {
 		return 0, false
 	}
+	// 箭头函数词法继承外层 own `arguments`：拥有槽的外层函数必须创建
+	// arguments 对象（O-5：resolveUpvalueFrom 已在拥有者上置位）。
 	// Create the upvalue in the current function. isLocal/idx describe the
 	// source relative to the immediately-enclosing function.
 	return c.addUpvalue(name, isLocal, idx), true
@@ -405,6 +414,10 @@ func (c *Compiler) resolveUpvalueFrom(name string, ctxIdx int) (bool, int, bool)
 	// upvalue capture (so IsLocal=true is relative to the caller's parent).
 	for i := len(fc.scopes) - 1; i >= 0; i-- {
 		if slot, ok := fc.scopes[i].decls[name]; ok {
+			if name == "arguments" {
+				// 拥有 arguments 槽的函数必须创建对象（嵌套箭头/闭包引用）。
+				fc.usedArguments = true
+			}
 			return true, slot, true
 		}
 	}
@@ -2467,6 +2480,10 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 		return bodyErr
 	}
 	c.emit(bytecode.OpReturnUndef, 0)
+	fc = c.cur()
+	if !fc.usedArguments {
+		fc.tmpl.NoArgumentsObject = true
+	}
 	c.funcStack = c.funcStack[:len(c.funcStack)-1]
 
 	// Emit OpMakeClosure in the enclosing function.

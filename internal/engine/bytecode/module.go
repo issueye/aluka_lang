@@ -30,6 +30,10 @@ type FuncTemplate struct {
 	// (arrow functions and the top-level program).
 	ArgumentsSlot int
 
+	// NoArgumentsObject 标记函数体未引用 `arguments`：运行时跳过每帧
+	// arguments 对象创建（O-5 调用快速路径；编译器在函数体扫描后置位）。
+	NoArgumentsObject bool
+
 	// Code is the flat instruction stream. Fixed-width (InstrSize bytes each).
 	Code []byte
 
