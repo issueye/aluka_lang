@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	enableProcessedInput = 0x0001
-	enableLineInput      = 0x0002
-	enableEchoInput      = 0x0004
+	enableProcessedInput       = 0x0001
+	enableLineInput            = 0x0002
+	enableEchoInput            = 0x0004
+	enableVirtualTerminalInput = 0x0200
 )
 
 var stdinConsoleMode struct {
@@ -24,6 +25,21 @@ var stdinConsoleMode struct {
 func streamIsTTY(file *os.File) bool {
 	var mode uint32
 	return windows.GetConsoleMode(windows.Handle(file.Fd()), &mode) == nil
+}
+
+func terminalSize(file *os.File) (columns, rows int, ok bool) {
+	var info windows.ConsoleScreenBufferInfo
+	if err := windows.GetConsoleScreenBufferInfo(windows.Handle(file.Fd()), &info); err != nil {
+		return 0, 0, false
+	}
+	columns = int(info.Window.Right-info.Window.Left) + 1
+	rows = int(info.Window.Bottom-info.Window.Top) + 1
+	return columns, rows, columns > 0 && rows > 0
+}
+
+func rawStdinConsoleMode(mode uint32) uint32 {
+	mode &^= enableProcessedInput | enableLineInput | enableEchoInput
+	return mode | enableVirtualTerminalInput
 }
 
 func setStdinRawMode(enabled bool) error {
@@ -42,8 +58,7 @@ func setStdinRawMode(enabled bool) error {
 			stdinConsoleMode.saved = mode
 			stdinConsoleMode.valid = true
 		}
-		mode &^= enableProcessedInput | enableLineInput | enableEchoInput
-		return windows.SetConsoleMode(handle, mode)
+		return windows.SetConsoleMode(handle, rawStdinConsoleMode(mode))
 	}
 	if stdinConsoleMode.valid {
 		err := windows.SetConsoleMode(handle, stdinConsoleMode.saved)

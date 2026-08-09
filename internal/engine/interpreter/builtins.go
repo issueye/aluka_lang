@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -753,6 +754,47 @@ func (interp *Interpreter) setupArrayCtor() {
 
 // --- String.prototype ---
 
+func jsStringUnits(s string) []uint16 {
+	return utf16.Encode([]rune(s))
+}
+
+func jsStringFromUnits(units []uint16) string {
+	return string(utf16.Decode(units))
+}
+
+func jsStringUnitAt(s string, index int) (string, bool) {
+	units := jsStringUnits(s)
+	if index < 0 || index >= len(units) {
+		return "", false
+	}
+	return jsStringFromUnits(units[index : index+1]), true
+}
+
+func jsStringIndex(haystack, needle []uint16, from int) int {
+	if from < 0 {
+		from = 0
+	}
+	if len(needle) == 0 {
+		if from > len(haystack) {
+			return len(haystack)
+		}
+		return from
+	}
+	for i := from; i+len(needle) <= len(haystack); i++ {
+		match := true
+		for j := range needle {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
 func (interp *Interpreter) setupStringProto() {
 	p := interp.stringProto
 	_ = p.Set("charAt", interp.nativeMethod("charAt", func(this engine.Value, args []engine.Value) (engine.Value, error) {
@@ -763,23 +805,45 @@ func (interp *Interpreter) setupStringProto() {
 				idx = n
 			}
 		}
-		if idx < 0 || idx >= len(s) {
+		unit, ok := jsStringUnitAt(s, idx)
+		if !ok {
 			return engine.Str(""), nil
 		}
-		return engine.Str(string(s[idx])), nil
+		return engine.Str(unit), nil
 	}))
 	_ = p.Set("charCodeAt", interp.nativeMethod("charCodeAt", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		s := this.String()
+		units := jsStringUnits(this.String())
 		idx := 0
 		if len(args) > 0 {
 			if n, ok := args[0].Int(); ok {
 				idx = n
 			}
 		}
-		if idx < 0 || idx >= len(s) {
+		if idx < 0 || idx >= len(units) {
 			return engine.Number(math.NaN()), nil
 		}
-		return engine.Number(float64(s[idx])), nil
+		return engine.Number(float64(units[idx])), nil
+	}))
+	_ = p.Set("codePointAt", interp.nativeMethod("codePointAt", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		units := utf16.Encode([]rune(this.String()))
+		idx := 0
+		if len(args) > 0 {
+			if n, ok := args[0].Int(); ok {
+				idx = n
+			}
+		}
+		if idx < 0 || idx >= len(units) {
+			return engine.Undefined(), nil
+		}
+		first := units[idx]
+		if first >= 0xD800 && first <= 0xDBFF && idx+1 < len(units) {
+			second := units[idx+1]
+			if second >= 0xDC00 && second <= 0xDFFF {
+				codePoint := 0x10000 + (int(first)-0xD800)*0x400 + int(second) - 0xDC00
+				return engine.IntValue(codePoint), nil
+			}
+		}
+		return engine.IntValue(int(first)), nil
 	}))
 	_ = p.Set("toUpperCase", interp.nativeMethod("toUpperCase", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		return engine.Str(strings.ToUpper(this.String())), nil
@@ -787,23 +851,30 @@ func (interp *Interpreter) setupStringProto() {
 	_ = p.Set("toLowerCase", interp.nativeMethod("toLowerCase", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		return engine.Str(strings.ToLower(this.String())), nil
 	}))
+	_ = p.Set("localeCompare", interp.nativeMethod("localeCompare", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		other := "undefined"
+		if len(args) > 0 {
+			other = args[0].String()
+		}
+		return engine.IntValue(strings.Compare(this.String(), other)), nil
+	}))
 	_ = p.Set("slice", interp.nativeMethod("slice", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		s := this.String()
-		start, end := normalizeSliceArgs(len(s), args)
+		units := jsStringUnits(this.String())
+		start, end := normalizeSliceArgs(len(units), args)
 		if start >= end {
 			return engine.Str(""), nil
 		}
-		return engine.Str(s[start:end]), nil
+		return engine.Str(jsStringFromUnits(units[start:end])), nil
 	}))
 	_ = p.Set("substring", interp.nativeMethod("substring", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		s := this.String()
-		n := len(s)
+		units := jsStringUnits(this.String())
+		n := len(units)
 		start, end := normalizeSubstringArgs(n, args)
-		return engine.Str(s[start:end]), nil
+		return engine.Str(jsStringFromUnits(units[start:end])), nil
 	}))
 	_ = p.Set("substr", interp.nativeMethod("substr", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		s := this.String()
-		n := len(s)
+		units := jsStringUnits(this.String())
+		n := len(units)
 		// start：负值从末尾倒数（至少 0）；length：省略则取到末尾，
 		// 负值/NaN 视为 0。
 		start := 0
@@ -833,36 +904,44 @@ func (interp *Interpreter) setupStringProto() {
 		if end := start + length; end < n {
 			n = end
 		}
-		return engine.Str(s[start:n]), nil
+		return engine.Str(jsStringFromUnits(units[start:n])), nil
 	}))
 	_ = p.Set("indexOf", interp.nativeMethod("indexOf", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.IntValue(-1), nil
 		}
-		s := this.String()
-		needle := args[0].String()
+		s := jsStringUnits(this.String())
+		needle := jsStringUnits(args[0].String())
 		from := 0
 		if len(args) > 1 {
 			if n, ok := args[1].Int(); ok && n > 0 {
 				from = n
 			}
 		}
-		if from >= len(s) {
+		if from > len(s) {
 			return engine.IntValue(-1), nil
 		}
-		idx := strings.Index(s[from:], needle)
-		if idx < 0 {
-			return engine.IntValue(-1), nil
-		}
-		return engine.IntValue(idx + from), nil
+		return engine.IntValue(jsStringIndex(s, needle, from)), nil
 	}))
 	_ = p.Set("lastIndexOf", interp.nativeMethod("lastIndexOf", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.IntValue(-1), nil
 		}
-		s := this.String()
-		needle := args[0].String()
-		return engine.IntValue(strings.LastIndex(s, needle)), nil
+		s := jsStringUnits(this.String())
+		needle := jsStringUnits(args[0].String())
+		if len(needle) == 0 {
+			return engine.IntValue(len(s)), nil
+		}
+		last := -1
+		for from := 0; ; {
+			idx := jsStringIndex(s, needle, from)
+			if idx < 0 {
+				break
+			}
+			last = idx
+			from = idx + 1
+		}
+		return engine.IntValue(last), nil
 	}))
 	_ = p.Set("includes", interp.nativeMethod("includes", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
@@ -898,9 +977,10 @@ func (interp *Interpreter) setupStringProto() {
 		}
 		sep := args[0].String()
 		if sep == "" {
-			elems := make([]engine.Value, 0, len(s))
-			for _, ch := range s {
-				elems = append(elems, engine.Str(string(ch)))
+			units := jsStringUnits(s)
+			elems := make([]engine.Value, 0, len(units))
+			for _, unit := range units {
+				elems = append(elems, engine.Str(jsStringFromUnits([]uint16{unit})))
 			}
 			return engine.NewArray(elems), nil
 		}
@@ -1073,18 +1153,21 @@ func (interp *Interpreter) setupStringProto() {
 		return engine.Str(s + strings.Repeat(pad, rep)[:need]), nil
 	}))
 	_ = p.Set("at", interp.nativeMethod("at", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		s := this.String()
+		units := jsStringUnits(this.String())
 		if len(args) == 0 {
-			return engine.Str(string(s[0])), nil
+			if len(units) == 0 {
+				return engine.Undefined(), nil
+			}
+			return engine.Str(jsStringFromUnits(units[:1])), nil
 		}
 		idx, _ := args[0].Int()
 		if idx < 0 {
-			idx += len(s)
+			idx += len(units)
 		}
-		if idx < 0 || idx >= len(s) {
+		if idx < 0 || idx >= len(units) {
 			return engine.Undefined(), nil
 		}
-		return engine.Str(string(s[idx])), nil
+		return engine.Str(jsStringFromUnits(units[idx : idx+1])), nil
 	}))
 	_ = p.Set("toString", interp.nativeMethod("toString", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		return engine.Str(this.String()), nil
@@ -1180,6 +1263,17 @@ func (interp *Interpreter) setupStringCtor() {
 		for _, a := range args {
 			n, _ := a.Int()
 			b.WriteRune(rune(n))
+		}
+		return engine.Str(b.String()), nil
+	}))
+	_ = ctor.Set("fromCodePoint", interp.makeFunc("fromCodePoint", func(args []engine.Value) (engine.Value, error) {
+		var b strings.Builder
+		for _, arg := range args {
+			codePoint, ok := arg.Int()
+			if !ok || codePoint < 0 || codePoint > utf8.MaxRune {
+				return engine.Undefined(), fmt.Errorf("%w: Invalid code point %s", engine.ErrRangeError, arg.String())
+			}
+			b.WriteRune(rune(codePoint))
 		}
 		return engine.Str(b.String()), nil
 	}))

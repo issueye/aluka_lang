@@ -61,7 +61,7 @@ func TestProcessStdinStreamShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("stdin is not an object")
 	}
-	for _, name := range []string{"on", "once", "off", "removeListener", "setEncoding", "setRawMode", "pause", "resume"} {
+	for _, name := range []string{"on", "once", "off", "removeListener", "setEncoding", "setRawMode", "pause", "resume", "isPaused"} {
 		value, getErr := stdinObject.Get(name)
 		if getErr != nil || !value.IsFunction() {
 			t.Errorf("stdin.%s is not a function", name)
@@ -83,6 +83,28 @@ func TestProcessStdinStreamShape(t *testing.T) {
 		value, getErr := stdoutObject.Get(name)
 		if getErr != nil || !value.IsFunction() {
 			t.Errorf("stdout.%s is not a function", name)
+		}
+	}
+	for name, want := range map[string]int{"columns": 80, "rows": 24} {
+		value, getErr := stdoutObject.Get(name)
+		if getErr != nil {
+			t.Fatalf("stdout.%s: %v", name, getErr)
+		}
+		accessor, ok := value.(*engine.AccessorValue)
+		if !ok {
+			t.Fatalf("stdout.%s is not an accessor", name)
+		}
+		getter, ok := accessor.Getter.AsFunction()
+		if !ok {
+			t.Fatalf("stdout.%s getter is not a function", name)
+		}
+		got, callErr := getter.Call(nil)
+		if callErr != nil {
+			t.Fatalf("stdout.%s getter: %v", name, callErr)
+		}
+		n, ok := got.Int()
+		if !ok || n != want {
+			t.Fatalf("redirected stdout.%s = %v, want %d", name, got, want)
 		}
 	}
 }

@@ -568,12 +568,12 @@ func (l *Loader) makeImportReqFunc(modulePath string) engine.Function {
 // makeImportMetaFunc 构造 import.meta 元数据访问函数（__importMeta()）。
 // 返回当前模块的元数据对象：{ url, dirname, filename, resolve }。
 // parser 把 import.meta lower 为对全局 __importMeta() 的调用。
-// 产物模式下 url 用 bun:// 前缀（虚拟路径，Bun 编译产物风格）；
+// 产物模式下 url 用 bun://~BUN/ 前缀（虚拟路径，Bun 编译产物风格）；
 // 文件模式保持 file:// URL。
 func (l *Loader) makeImportMetaFunc(modulePath string) engine.Value {
 	meta := engine.NewObject()
 	if l.embedded != nil {
-		_ = meta.Set("url", engine.Str("bun://"+filepath.ToSlash(modulePath)))
+		_ = meta.Set("url", engine.Str("bun://~BUN/"+strings.TrimLeft(filepath.ToSlash(modulePath), "/")))
 	} else {
 		_ = meta.Set("url", engine.Str(pathToFileURLString(modulePath)))
 	}

@@ -583,6 +583,7 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Pattern, []a
 	var patterns []ast.Pattern
 	var defaults []ast.Expression
 	var rest *ast.Identifier
+	var restPattern ast.Pattern
 	var parameterProperties []*ast.Identifier
 	if !(p.peek().Type == lexer.TokenPunct && p.peek().Value == ")") {
 		for {
@@ -603,12 +604,24 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Pattern, []a
 			}
 			// ES2015 rest parameter: `...name`
 			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "..." {
-				p.next()
-				nameTok, err := p.expectName()
-				if err != nil {
-					return nil, nil, nil, nil, nil, err
+				restTok := p.next()
+				if p.peek().Type == lexer.TokenPunct && (p.peek().Value == "[" || p.peek().Value == "{") {
+					pat, err := p.parsePatternTarget()
+					if err != nil {
+						return nil, nil, nil, nil, nil, err
+					}
+					restPattern = pat
+					rest = &ast.Identifier{
+						Name: fmt.Sprintf("__aluka_rest_%d_%d", restTok.Line, restTok.Col),
+						Loc:  posOf(restTok),
+					}
+				} else {
+					nameTok, err := p.expectName()
+					if err != nil {
+						return nil, nil, nil, nil, nil, err
+					}
+					rest = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
 				}
-				rest = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
 				// TypeScript: rest param type annotation `: T[]`
 				if err := p.parseTypeAnnotation(); err != nil {
 					return nil, nil, nil, nil, nil, err
@@ -692,6 +705,16 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Pattern, []a
 	body, err := p.parseBlock()
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
+	}
+	if restPattern != nil {
+		body.Body = append([]ast.Statement{&ast.VarDecl{
+			Kind: "let",
+			Decls: []ast.VarDeclarator{{
+				Pattern: restPattern,
+				Init:    &ast.Identifier{Name: rest.Name, Loc: rest.Loc},
+			}},
+			Loc: rest.Loc,
+		}}, body.Body...)
 	}
 	if len(parameterProperties) > 0 {
 		assignments := make([]ast.Statement, 0, len(parameterProperties))
@@ -1296,7 +1319,6 @@ func exprToPattern(expr ast.Node) ast.Pattern {
 	}
 	return nil
 }
-
 
 func (p *Parser) parseYield() (ast.Expression, error) {
 	t := p.next() // consume `yield`
@@ -3202,12 +3224,26 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 					p.next()
 					asyncGenerator = true
 				}
-				if id.Name == "async" && (asyncGenerator || p.peek().Type != lexer.TokenPunct) {
-					methodTok := p.next()
+				if id.Name == "async" && (asyncGenerator || p.peek().Type != lexer.TokenPunct || p.peek().Value == "[") {
+					methodTok := p.peek()
 					var methodKey ast.Expression
-					if methodTok.Type == lexer.TokenIdent || methodTok.Type == lexer.TokenKeyword {
+					methodComputed := false
+					if methodTok.Type == lexer.TokenPunct && methodTok.Value == "[" {
+						p.next()
+						computedExpr, err := p.parseAssignment()
+						if err != nil {
+							return nil, err
+						}
+						if err := p.expectPunct("]"); err != nil {
+							return nil, err
+						}
+						methodKey = computedExpr
+						methodComputed = true
+					} else if methodTok.Type == lexer.TokenIdent || methodTok.Type == lexer.TokenKeyword {
+						p.next()
 						methodKey = &ast.Identifier{Name: methodTok.Value, Loc: posOf(methodTok)}
 					} else if methodTok.Type == lexer.TokenString {
+						p.next()
 						methodKey = &ast.StringLit{Value: methodTok.Value, Loc: posOf(methodTok)}
 					} else {
 						return nil, p.errorf(methodTok, "invalid async method name")
@@ -3224,7 +3260,7 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 						return nil, err
 					}
 					fn := &ast.FunctionExpr{Params: params, ParamPatterns: patterns, Defaults: defaults, RestParam: rest, Body: body, IsAsync: true, IsGenerator: asyncGenerator, Loc: posOf(methodTok)}
-					obj.Properties = append(obj.Properties, ast.Property{Key: methodKey, Value: fn, Kind: ast.PropertyMethod, Loc: posOf(propTok)})
+					obj.Properties = append(obj.Properties, ast.Property{Key: methodKey, Value: fn, Kind: ast.PropertyMethod, Computed: methodComputed, Loc: posOf(propTok)})
 					if !p.matchPunct(",") {
 						break
 					}
@@ -3977,6 +4013,26 @@ func (p *Parser) transformExportedDecl(stmt ast.Statement, nsIdent *ast.Identifi
 // Used for variable declarators, parameters, return types, and class fields.
 func (p *Parser) parseTypeAnnotation() error {
 	if !p.matchPunct(":") {
+		return nil
+	}
+	// TypeScript assertion signatures:
+	//
+	//   function assert(value: unknown): asserts value { ... }
+	//   function assertFoo(value: unknown): asserts value is Foo { ... }
+	//
+	// `asserts` and `is` are contextual identifiers. The asserted target may
+	// also be `this`, which the lexer classifies as a keyword.
+	if p.peek().Type == lexer.TokenIdent && p.peek().Value == "asserts" {
+		p.next()
+		target := p.peek()
+		if target.Type != lexer.TokenIdent && !(target.Type == lexer.TokenKeyword && target.Value == "this") {
+			return p.errorf(target, "expected assertion target after 'asserts'")
+		}
+		p.next()
+		if p.peek().Type == lexer.TokenIdent && p.peek().Value == "is" {
+			p.next()
+			return p.skipType()
+		}
 		return nil
 	}
 	// TypeScript 类型谓词返回注解：(provider): provider is X => ...——

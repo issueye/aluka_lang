@@ -696,6 +696,9 @@ func (interp *Interpreter) goErrorToJSValue(err error) engine.Value {
 	if ke, ok := err.(interface{ Killed() bool }); ok {
 		_ = errObj.Set("killed", engine.Boolean(ke.Killed()))
 	}
+	// VM/runtime failures converted to JavaScript errors should expose the same
+	// V8-style stack property as errors constructed from JavaScript.
+	interp.setErrorStack(errObj)
 	return errObj
 }
 
@@ -989,6 +992,12 @@ func (interp *Interpreter) getProperty(obj engine.Value, key string) (engine.Val
 		if key == "length" {
 			n, _ := engine.StringLen(obj)
 			return engine.IntValue(n), nil
+		}
+		if n, err := strconv.Atoi(key); err == nil {
+			if unit, ok := jsStringUnitAt(obj.String(), n); ok {
+				return engine.Str(unit), nil
+			}
+			return engine.Undefined(), nil
 		}
 		if interp.stringProto != nil {
 			return interp.stringProto.Get(key)

@@ -900,9 +900,11 @@ func (c *Compiler) compileForOf(left ast.Node, right ast.Expression, body ast.St
 
 	// ES2015 语义：for (let/const x of ...) 每次迭代创建新的块作用域绑定，
 	// 使闭包捕获每次迭代的值（而非共享同一槽位的最终值）。
-	// 实现：循环体包在新的 pushBlock 内，left 在该 block 声明。
+	// The compiler reuses local slots, so captured slots are closed at the end
+	// of each iteration before the next value is stored into them.
 	c.pushBlock()
 	defer c.popBlock()
+	iterationSlotStart := c.cur().tmpl.NumLocals
 
 	// Get value and bind to left.
 	c.emit(bytecode.OpLoadLocal, uint32(tmpResult))
@@ -930,11 +932,14 @@ func (c *Compiler) compileForOf(left ast.Node, right ast.Expression, body ast.St
 	continuePC := c.curPC()
 	c.topLoop().continueTarget = continuePC
 	c.patchLoopContinues(continuePC)
+	c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
 	c.emit(bytecode.OpJmp, uint32(loopStart-(c.curPC()+bytecode.InstrSize)))
+	breakCleanupPC := c.curPC()
+	c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
 	exit := c.curPC()
 	c.patchJumpToHere(jumpExit)
 	c.topLoop().breakTarget = exit
-	c.patchLoopBreaks(exit)
+	c.patchLoopBreaks(breakCleanupPC)
 	return nil
 }
 
@@ -1423,6 +1428,12 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 		}
 		if !hasSpread {
 			for _, el := range n.Elements {
+				if el == nil {
+					// Preserve sparse-array position and length. The current array
+					// representation stores holes as undefined values.
+					c.emit(bytecode.OpPushUndefined, 0)
+					continue
+				}
 				if err := c.compileExpr(el); err != nil {
 					return err
 				}
@@ -1433,6 +1444,11 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 		// Slow path: build incrementally with spread support.
 		c.emit(bytecode.OpBuildArray, 0)
 		for _, el := range n.Elements {
+			if el == nil {
+				c.emit(bytecode.OpPushUndefined, 0)
+				c.emit(bytecode.OpArrayPush, 0)
+				continue
+			}
 			if sp, ok := el.(*ast.SpreadElement); ok {
 				if err := c.compileExpr(sp.Arg); err != nil {
 					return err
@@ -2225,20 +2241,18 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 	if m, ok := n.Callee.(*ast.MemberExpr); ok {
 		if _, isSuper := m.Object.(*ast.SuperExpr); isSuper {
 			c.emitSuperProto()
+			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
+			c.emit(bytecode.OpGetProp, uint32(nameIdx))
 			if !hasSpread {
 				for _, a := range n.Arguments {
 					if err := c.compileExpr(a); err != nil {
 						return err
 					}
 				}
-				nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
-				c.emit(bytecode.OpGetProp, uint32(nameIdx))
 				c.emit(bytecode.OpCallThis, uint32(len(n.Arguments)))
 				return nil
 			}
 			c.compileArgsArray(n.Arguments)
-			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
-			c.emit(bytecode.OpGetProp, uint32(nameIdx))
 			c.emit(bytecode.OpCallThisArgs, 0)
 			return nil
 		}

@@ -363,6 +363,13 @@ func TestStringLower(t *testing.T) {
 	}
 }
 
+func TestStringLocaleCompare(t *testing.T) {
+	got := evalStr(t, "['a'.localeCompare('b'), 'b'.localeCompare('a'), 'a'.localeCompare('a')].join(',')")
+	if got != "-1,1,0" {
+		t.Errorf("got %q, want -1,1,0", got)
+	}
+}
+
 func TestStringSlice(t *testing.T) {
 	got := evalStr(t, "'hello world'.slice(0, 5)")
 	if got != "hello" {
@@ -435,6 +442,24 @@ func TestStringCharCodeAt(t *testing.T) {
 	got := evalStr(t, "'A'.charCodeAt(0)")
 	if got != "65" {
 		t.Errorf("got %q, want 65", got)
+	}
+}
+
+func TestStringCodePointAt(t *testing.T) {
+	got := evalStr(t, `'A'.codePointAt(0) + ',' + '😀'.codePointAt(0) + ',' + '😀'.codePointAt(1) + ',' + String('x'.codePointAt(2))`)
+	if got != "65,128512,56832,undefined" {
+		t.Errorf("codePointAt result = %q", got)
+	}
+}
+
+func TestStringFromCodePoint(t *testing.T) {
+	got := evalStr(t, `String.fromCodePoint(65, 0x1F600)`)
+	if got != "A😀" {
+		t.Errorf("fromCodePoint result = %q", got)
+	}
+	got = evalStr(t, `try { String.fromCodePoint(0x110000) } catch (error) { error.name }`)
+	if got != "RangeError" {
+		t.Errorf("invalid fromCodePoint error = %q", got)
 	}
 }
 

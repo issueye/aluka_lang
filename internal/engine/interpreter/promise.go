@@ -61,11 +61,11 @@ func (r *promiseReaction) run(state promiseState, result engine.Value) {
 // PromiseValue is a JavaScript Promise object. It implements engine.Value and
 // engine.Object, mirroring the GeneratorValue pattern.
 type PromiseValue struct {
-	obj       engine.Object
-	interp    *Interpreter
-	state     promiseState
-	result    engine.Value
-	reactions []promiseReaction
+	obj        engine.Object
+	interp     *Interpreter
+	state      promiseState
+	result     engine.Value
+	reactions  []promiseReaction
 	hadHandler bool // M2-4：是否已挂接处理（Then/Catch），用于 unhandledRejection 判定
 }
 
@@ -149,6 +149,11 @@ func (p *PromiseValue) dispatchUnhandledRejection() {
 	}
 	// stderr 兜底（Node 风格，仅首行）。
 	fmt.Fprintf(os.Stderr, "UnhandledPromiseRejection: %s\n", p.result.String())
+	if obj, ok := p.result.AsObject(); ok {
+		if stack, err := obj.Get("stack"); err == nil && !stack.IsUndefined() && stack.String() != "" {
+			fmt.Fprintln(os.Stderr, stack.String())
+		}
+	}
 }
 
 // resolve resolves the promise with the given value. If the value is a Promise,

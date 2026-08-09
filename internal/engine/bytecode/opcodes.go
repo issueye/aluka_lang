@@ -168,6 +168,9 @@ const (
 	// 读取 local 槽位值并取属性，省 1 次 dispatch 与压栈/弹栈。
 	OpGetPropLocal
 
+	// Close captured lexical bindings before a loop reuses their local slots.
+	OpCloseUpvalues // A: first local slot to close
+
 	OpEnd // sentinel marking end of code (for safety)
 )
 
@@ -287,8 +290,9 @@ var opNames = [...]string{
 	// 正则字面量：弹 flags + pattern，压入 RegExp 实例。
 	OpMakeRegexp: "MAKE_REGEXP",
 
-	OpSetGetterObj: "SET_GETTER_OBJ",
-	OpSetSetterObj: "SET_SETTER_OBJ",
+	OpSetGetterObj:  "SET_GETTER_OBJ",
+	OpSetSetterObj:  "SET_SETTER_OBJ",
+	OpCloseUpvalues: "CLOSE_UPVALUES",
 
 	OpEnd: "END",
 }

@@ -129,6 +129,8 @@ func TestCompileMatch(t *testing.T) {
 		{"escaped slash", `a\/b`, "", "a/b", true, "a/b"},
 		{"whitespace", `\s+`, "", "a \t\nb", true, " \t\n"},
 		{"unicode property", `\p{L}+`, "u", "héllo", true, "héllo"},
+		{"alphabetic property", `[\p{Alphabetic}\p{N}]+`, "u", "é7", true, "é7"},
+		{"alphabetic property excludes punctuation", `[\p{Alphabetic}\p{N}]`, "u", "_", false, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

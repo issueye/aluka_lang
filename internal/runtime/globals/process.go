@@ -267,36 +267,57 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 	stdinTTY := streamIsTTY(os.Stdin)
 	_ = stdin.Set("isTTY", engine.Boolean(stdinTTY))
 	_ = stdin.Set("isRaw", engine.Boolean(false))
+	_ = stdin.Set("readableEnded", engine.Boolean(false))
+	type stdinListener struct {
+		callback engine.Value
+		once     bool
+	}
 	var stdinMu sync.Mutex
-	stdinListeners := map[string][]engine.Value{}
+	stdinListeners := map[string][]stdinListener{}
 	stdinEncoding := ""
-	var stdinResume sync.Once
-	addStdinListener := func(args []engine.Value) engine.Value {
+	stdinPaused := true
+	stdinEnded := false
+	var stdinRelease func()
+	var stdinReader sync.Once
+	addStdinListener := func(args []engine.Value, once bool) engine.Value {
 		if len(args) >= 2 && args[1].IsFunction() {
 			stdinMu.Lock()
-			stdinListeners[args[0].String()] = append(stdinListeners[args[0].String()], args[1])
+			event := args[0].String()
+			stdinListeners[event] = append(stdinListeners[event], stdinListener{callback: args[1], once: once})
 			stdinMu.Unlock()
 		}
 		return stdin
 	}
+	takeStdinListenersLocked := func(event string) []engine.Value {
+		listeners := stdinListeners[event]
+		callbacks := make([]engine.Value, 0, len(listeners))
+		kept := listeners[:0]
+		for _, listener := range listeners {
+			callbacks = append(callbacks, listener.callback)
+			if !listener.once {
+				kept = append(kept, listener)
+			}
+		}
+		stdinListeners[event] = kept
+		return callbacks
+	}
 	_ = stdin.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
-		return addStdinListener(args), nil
+		return addStdinListener(args, false), nil
 	}))
 	_ = stdin.Set("once", engine.NewFunction("once", func(args []engine.Value) (engine.Value, error) {
-		return addStdinListener(args), nil
+		return addStdinListener(args, true), nil
 	}))
 	removeStdinListener := func(args []engine.Value) engine.Value {
 		if len(args) >= 2 {
 			event := args[0].String()
 			stdinMu.Lock()
 			listeners := stdinListeners[event]
-			kept := listeners[:0]
-			for _, listener := range listeners {
-				if listener != args[1] {
-					kept = append(kept, listener)
+			for i := len(listeners) - 1; i >= 0; i-- {
+				if listeners[i].callback == args[1] {
+					stdinListeners[event] = append(listeners[:i], listeners[i+1:]...)
+					break
 				}
 			}
-			stdinListeners[event] = kept
 			stdinMu.Unlock()
 		}
 		return stdin
@@ -327,11 +348,32 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		return stdin, nil
 	}))
 	_ = stdin.Set("pause", engine.NewFunction("pause", func(args []engine.Value) (engine.Value, error) {
+		stdinMu.Lock()
+		stdinPaused = true
+		release := stdinRelease
+		stdinRelease = nil
+		stdinMu.Unlock()
+		if release != nil {
+			release()
+		}
 		return stdin, nil
 	}))
+	_ = stdin.Set("isPaused", engine.NewFunction("isPaused", func(args []engine.Value) (engine.Value, error) {
+		stdinMu.Lock()
+		paused := stdinPaused
+		stdinMu.Unlock()
+		return engine.Boolean(paused), nil
+	}))
 	_ = stdin.Set("resume", engine.NewFunction("resume", func(args []engine.Value) (engine.Value, error) {
-		stdinResume.Do(func() {
-			release := ctx.AddRef()
+		stdinMu.Lock()
+		if !stdinEnded {
+			stdinPaused = false
+			if stdinRelease == nil {
+				stdinRelease = ctx.AddRef()
+			}
+		}
+		stdinMu.Unlock()
+		stdinReader.Do(func() {
 			go func() {
 				buf := make([]byte, 4096)
 				for {
@@ -340,7 +382,11 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 						data := append([]byte(nil), buf[:n]...)
 						ctx.PostTask(func() {
 							stdinMu.Lock()
-							callbacks := append([]engine.Value(nil), stdinListeners["data"]...)
+							if stdinPaused || stdinEnded {
+								stdinMu.Unlock()
+								return
+							}
+							callbacks := takeStdinListenersLocked("data")
 							encoding := stdinEncoding
 							stdinMu.Unlock()
 							chunk := engine.Value(NewBufferInstance(data))
@@ -349,18 +395,28 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 							}
 							for _, cb := range callbacks {
 								if f, ok := cb.AsFunction(); ok {
-									_, _ = f.Call([]engine.Value{chunk})
+									if _, callErr := f.Call([]engine.Value{chunk}); callErr != nil {
+										fmt.Fprintf(os.Stderr, "Uncaught stdin data listener error: %v\n", callErr)
+									}
 								}
 							}
 						})
 					}
 					if readErr != nil {
 						ctx.PostTask(func() {
-							defer release()
 							stdinMu.Lock()
-							endCallbacks := append([]engine.Value(nil), stdinListeners["end"]...)
-							errorCallbacks := append([]engine.Value(nil), stdinListeners["error"]...)
+							stdinEnded = true
+							stdinPaused = true
+							release := stdinRelease
+							stdinRelease = nil
+							endCallbacks := takeStdinListenersLocked("end")
+							errorCallbacks := takeStdinListenersLocked("error")
 							stdinMu.Unlock()
+							_ = stdin.Set("readable", engine.Boolean(false))
+							_ = stdin.Set("readableEnded", engine.Boolean(true))
+							if release != nil {
+								release()
+							}
 							if readErr != io.EOF {
 								for _, cb := range errorCallbacks {
 									if f, ok := cb.AsFunction(); ok {
@@ -386,6 +442,74 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 	// stdout / stderr（提供 write/writeSync）
 	makeStream := func(w *os.File) engine.Object {
 		obj := engine.NewObject()
+		type resizeListener struct {
+			callback engine.Value
+			once     bool
+		}
+		var resizeMu sync.Mutex
+		var resizeListeners []resizeListener
+		var resizeStop chan struct{}
+		var resizeRelease func()
+
+		stopResizePollingLocked := func() {
+			if resizeStop != nil {
+				close(resizeStop)
+				resizeStop = nil
+			}
+			if resizeRelease != nil {
+				resizeRelease()
+				resizeRelease = nil
+			}
+		}
+		startResizePollingLocked := func() {
+			if resizeStop != nil || w != os.Stdout || !streamIsTTY(w) {
+				return
+			}
+			stop := make(chan struct{})
+			resizeStop = stop
+			resizeRelease = ctx.AddRef()
+			lastColumns, lastRows, _ := terminalSize(w)
+			go func() {
+				ticker := time.NewTicker(100 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						columns, rows, ok := terminalSize(w)
+						if !ok || (columns == lastColumns && rows == lastRows) {
+							continue
+						}
+						lastColumns, lastRows = columns, rows
+						resizeMu.Lock()
+						listeners := append([]resizeListener(nil), resizeListeners...)
+						if len(listeners) > 0 {
+							kept := resizeListeners[:0]
+							for _, listener := range resizeListeners {
+								if !listener.once {
+									kept = append(kept, listener)
+								}
+							}
+							resizeListeners = kept
+							if len(resizeListeners) == 0 {
+								stopResizePollingLocked()
+							}
+						}
+						resizeMu.Unlock()
+						if len(listeners) > 0 {
+							ctx.PostTask(func() {
+								for _, listener := range listeners {
+									if fn, ok := listener.callback.AsFunction(); ok {
+										_, _ = fn.Call(nil)
+									}
+								}
+							})
+						}
+					case <-stop:
+						return
+					}
+				}
+			}()
+		}
 		writeFn := func(args []engine.Value) (engine.Value, error) {
 			if len(args) == 0 {
 				return engine.Boolean(false), nil
@@ -404,13 +528,53 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		_ = obj.Set("writeSync", engine.NewFunction("writeSync", writeFn))
 		_ = obj.Set("fd", engine.IntValue(int(w.Fd())))
 		_ = obj.Set("isTTY", engine.Boolean(streamIsTTY(w)))
-		_ = obj.Set("columns", engine.IntValue(80))
-		_ = obj.Set("rows", engine.IntValue(24))
-		for _, name := range []string{"on", "once", "off", "removeListener"} {
-			_ = obj.Set(name, engine.NewFunction(name, func(args []engine.Value) (engine.Value, error) {
+		engine.UpdateAccessor(obj, "columns", true, engine.NewFunction("get columns", func(args []engine.Value) (engine.Value, error) {
+			if columns, _, ok := terminalSize(w); ok {
+				return engine.IntValue(columns), nil
+			}
+			return engine.IntValue(80), nil
+		}))
+		engine.UpdateAccessor(obj, "rows", true, engine.NewFunction("get rows", func(args []engine.Value) (engine.Value, error) {
+			if _, rows, ok := terminalSize(w); ok {
+				return engine.IntValue(rows), nil
+			}
+			return engine.IntValue(24), nil
+		}))
+		addListener := func(args []engine.Value, once bool) (engine.Value, error) {
+			if len(args) < 2 || args[0].String() != "resize" || !args[1].IsFunction() {
 				return obj, nil
-			}))
+			}
+			resizeMu.Lock()
+			resizeListeners = append(resizeListeners, resizeListener{callback: args[1], once: once})
+			startResizePollingLocked()
+			resizeMu.Unlock()
+			return obj, nil
 		}
+		removeListener := func(args []engine.Value) (engine.Value, error) {
+			if len(args) < 2 || args[0].String() != "resize" {
+				return obj, nil
+			}
+			resizeMu.Lock()
+			for i := len(resizeListeners) - 1; i >= 0; i-- {
+				if resizeListeners[i].callback == args[1] {
+					resizeListeners = append(resizeListeners[:i], resizeListeners[i+1:]...)
+					break
+				}
+			}
+			if len(resizeListeners) == 0 {
+				stopResizePollingLocked()
+			}
+			resizeMu.Unlock()
+			return obj, nil
+		}
+		_ = obj.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
+			return addListener(args, false)
+		}))
+		_ = obj.Set("once", engine.NewFunction("once", func(args []engine.Value) (engine.Value, error) {
+			return addListener(args, true)
+		}))
+		_ = obj.Set("off", engine.NewFunction("off", removeListener))
+		_ = obj.Set("removeListener", engine.NewFunction("removeListener", removeListener))
 		return obj
 	}
 	_ = proc.Set("stdout", makeStream(os.Stdout))

@@ -184,7 +184,7 @@ else
     *) ok=0 ;;
   esac
   case "$out" in
-    *"meta:bun://main.ts"*) ;;
+    *"meta:bun://~BUN/main.ts"*) ;;
     *) ok=0 ;;
   esac
   if [ "$ok" = "1" ]; then

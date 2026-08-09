@@ -1,5 +1,7 @@
 package engine
 
+import "sync"
+
 // 隐藏类（Hidden Class / Shape）——开发计划 1B.5。
 //
 // 设计（V8 风格 shape 树）：
@@ -20,6 +22,11 @@ type Shape struct {
 
 // shapeCounter 分配 Shape 唯一 id。
 var shapeCounter uint64
+
+// shapeTransitionMu serializes writes to the process-wide Shape tree. Native
+// async operations may prepare JS values on worker goroutines while the VM is
+// active, so rootShape transitions are not confined to the event-loop thread.
+var shapeTransitionMu sync.Mutex
 
 // rootShape 是空对象 Shape（所有 Shape 转移树的根）。
 var rootShape = &Shape{
@@ -42,6 +49,9 @@ func (s *Shape) lookup(name string) (int, bool) {
 
 // transition 派生加 name 属性后的新 Shape（共享父 Shape）。
 func (s *Shape) transition(name string) *Shape {
+	shapeTransitionMu.Lock()
+	defer shapeTransitionMu.Unlock()
+
 	if s.next == nil {
 		s.next = make(map[string]*Shape)
 	}

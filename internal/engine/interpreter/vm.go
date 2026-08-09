@@ -1145,6 +1145,8 @@ func (v *VM) run() (engine.Value, error) {
 				// value's Promise settles.
 				awaitedVal := v.pop()
 				return v.doAwait(awaitedVal)
+			case bytecode.OpCloseUpvalues:
+				v.closeUpvalues(v.cur().base + int(operand))
 
 			default:
 				return engine.Undefined(), fmt.Errorf("aluka: unknown opcode %s (%d)", op, op)
@@ -1811,9 +1813,8 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 		}
 		// Numeric index → character.
 		if n, err := strconv.Atoi(key); err == nil {
-			s := obj.String()
-			if n >= 0 && n < len(s) {
-				return engine.Str(string(s[n])), nil
+			if unit, ok := jsStringUnitAt(obj.String(), n); ok {
+				return engine.Str(unit), nil
 			}
 			return engine.Undefined(), nil
 		}
@@ -2329,6 +2330,10 @@ func (v *VM) AwaitPromise(p *PromiseValue) (engine.Value, error) {
 		select {
 		case fn := <-v.interp.taskCh:
 			fn()
+			// PostTask increments active for the queued task. AwaitPromise drives
+			// that queue before RunLoop starts, so it must perform the matching
+			// decrement that RunLoop normally does after executing a task.
+			v.interp.decActive()
 		case <-v.interp.idleCh:
 			// 空闲信号：无任务在途，继续微任务驱动（TLA 依赖同步 promise）。
 		default:

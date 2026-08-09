@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf16"
 )
 
 // stringifyGuard 跟踪当前正在格式化的对象。
@@ -217,7 +218,7 @@ type stringValue string
 // tree once through String(), while truthiness and length stay allocation-free.
 type ropeStringValue struct {
 	left, right Value
-	byteLen     int
+	utf16Len    int
 	flat        atomic.Pointer[string]
 }
 
@@ -252,19 +253,19 @@ func ConcatStrings(left, right Value) Value {
 			}
 		}
 	}
-	return &ropeStringValue{left: left, right: right, byteLen: leftLen + rightLen}
+	return &ropeStringValue{left: left, right: right, utf16Len: leftLen + rightLen}
 }
 
-// StringLen returns the byte length used by the runtime's current string
-// indexing semantics. It avoids flattening rope strings for `.length` reads.
+// StringLen returns the ECMAScript UTF-16 code-unit length. It avoids
+// flattening rope strings for repeated `.length` reads.
 func StringLen(v Value) (int, bool) {
 	if v.Type() != TypeString {
 		return 0, false
 	}
 	if r, ok := v.(*ropeStringValue); ok {
-		return r.byteLen, true
+		return r.utf16Len, true
 	}
-	return len(v.String()), true
+	return len(utf16.Encode([]rune(v.String()))), true
 }
 
 func (s stringValue) Type() ValueType { return TypeString }
@@ -298,7 +299,7 @@ func (s *ropeStringValue) String() string {
 	}
 
 	var b strings.Builder
-	b.Grow(s.byteLen)
+	b.Grow(s.utf16Len)
 	stack := []Value{s}
 	for len(stack) > 0 {
 		last := len(stack) - 1
@@ -327,7 +328,7 @@ func (s *ropeStringValue) Float() (float64, bool) {
 	n, err := strconv.ParseFloat(strings.TrimSpace(s.String()), 64)
 	return n, err == nil
 }
-func (s *ropeStringValue) Bool() (bool, bool)           { return s.byteLen != 0, true }
+func (s *ropeStringValue) Bool() (bool, bool)           { return s.utf16Len != 0, true }
 func (s *ropeStringValue) IsUndefined() bool            { return false }
 func (s *ropeStringValue) IsNull() bool                 { return false }
 func (s *ropeStringValue) IsObject() bool               { return false }

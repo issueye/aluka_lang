@@ -82,6 +82,45 @@ for (let i = 0; i < 10000; i++) s += "chunk" + i;
 	}
 }
 
+func TestVMStringUsesUTF16CodeUnits(t *testing.T) {
+	got := vmEvalStr(t, `
+const text = "A•πB";
+let rebuilt = "";
+for (let i = 0; i < text.length; i++) rebuilt += text[i];
+[text.length, rebuilt, text.charAt(1), text.charCodeAt(2), text.slice(1, 3), text.indexOf("π"), "😀".length].join("|");
+`)
+	if got != "4|A•πB|•|960|•π|2|2" {
+		t.Fatalf("UTF-16 string semantics = %q", got)
+	}
+}
+
+func TestVMAnsiStrippingPreservesUnicodeWidthInput(t *testing.T) {
+	got := vmEvalStr(t, `
+const plain = "0.0%/272k (auto)" + " ".repeat(62) + "gpt-5.6-terra • medium";
+const colored = "\x1b[38;2;102;102;102m" + plain + "\x1b[39m\x1b[0m\x1b]8;;\x07";
+let stripped = "";
+for (let i = 0; i < colored.length;) {
+  if (colored[i] === "\x1b" && colored[i + 1] === "[") {
+    let j = i + 2;
+    while (j < colored.length && !/[mGKHJ]/.test(colored[j])) j++;
+    i = j + 1;
+    continue;
+  }
+  if (colored[i] === "\x1b" && colored[i + 1] === "]") {
+    let j = i + 2;
+    while (j < colored.length && colored[j] !== "\x07") j++;
+    i = j + 1;
+    continue;
+  }
+  stripped += colored[i++];
+}
+[stripped === plain, stripped.length, plain.length].join("|");
+`)
+	if got != "true|100|100" {
+		t.Fatalf("ANSI Unicode reconstruction = %q", got)
+	}
+}
+
 func TestVMTemplateLiteral(t *testing.T) {
 	got := vmEvalStr(t, "`hello world`")
 	if got != "hello world" {
@@ -349,6 +388,10 @@ func TestVMStringMethods(t *testing.T) {
 	if got != "e" {
 		t.Errorf(`"hello"[1] = %q, want e`, got)
 	}
+	got = vmEvalStr(t, `["b", "a", "c"].sort((a, b) => a.localeCompare(b)).join("")`)
+	if got != "abc" {
+		t.Errorf("localeCompare sort = %q, want abc", got)
+	}
 }
 
 // === Logical operators ====================================================
@@ -419,6 +462,61 @@ try { null.foo; } catch (e) { msg = "caught"; }
 msg`)
 	if got != "caught" {
 		t.Errorf("try/catch TypeError = %q, want caught", got)
+	}
+}
+
+func TestVMRuntimeTypeErrorIncludesStack(t *testing.T) {
+	vm, err := NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := vm.Eval(`
+		function invokeInvalid() {
+			const value = {};
+			return value();
+		}
+		try {
+			invokeInvalid();
+		} catch (error) {
+			error.stack;
+		}
+	`, "runtime-stack.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack := got.String()
+	if !strings.Contains(stack, "TypeError") || !strings.Contains(stack, "runtime-stack.js") {
+		t.Fatalf("runtime TypeError stack = %q", stack)
+	}
+}
+
+func TestVMSuperMethodCallWithArguments(t *testing.T) {
+	got := vmEvalStr(t, `
+		class Base {
+			append(value) { this.values.push(value); }
+		}
+		class Derived extends Base {
+			constructor() {
+				super();
+				this.values = [];
+			}
+			append(value) { super.append(value); }
+			appendMany(...values) { super.append(...values); }
+		}
+		const instance = new Derived();
+		instance.append("direct");
+		instance.appendMany("spread");
+		instance.values.join(",");
+	`)
+	if got != "direct,spread" {
+		t.Fatalf("super method calls with arguments = %q, want direct,spread", got)
+	}
+}
+
+func TestVMStringCodePointAPIs(t *testing.T) {
+	got := vmEvalStr(t, `'😀'.codePointAt(0) + ',' + String.fromCodePoint(0x1F600)`)
+	if got != "128512,😀" {
+		t.Fatalf("code point APIs = %q, want 128512,😀", got)
 	}
 }
 
@@ -545,6 +643,30 @@ s`)
 	}
 }
 
+func TestVMForOfCreatesPerIterationBindings(t *testing.T) {
+	got := vmEvalStr(t, `
+const callbacks = [];
+for (const value of [1, 2, 3]) callbacks.push(() => value);
+callbacks.map((callback) => callback()).join(",");
+`)
+	if got != "1,2,3" {
+		t.Fatalf("for-of closure bindings = %q", got)
+	}
+}
+
+func TestVMDestructuredForOfGetterCapturesIteration(t *testing.T) {
+	got := vmEvalStr(t, `
+const target = {};
+for (const [name, style] of [["bold", { open: "<b>" }], ["red", { open: "<r>" }]]) {
+  Object.defineProperty(target, name, { get() { return style.open; } });
+}
+target.bold + target.red;
+`)
+	if got != "<b><r>" {
+		t.Fatalf("destructured for-of getter captures = %q", got)
+	}
+}
+
 // === Switch ==============================================================
 
 func TestVMSwitch(t *testing.T) {
@@ -579,6 +701,15 @@ func TestVMRestParam(t *testing.T) {
 	got = vmEvalStr(t, `function f(a, ...rest) { return rest.length; } f(1)`)
 	if got != "0" {
 		t.Errorf("empty rest = %q, want 0", got)
+	}
+	// Rest binding patterns destructure the collected argument array.
+	got = vmEvalStr(t, `function f(...[first, second]) { return first + second; } f(4, 5)`)
+	if got != "9" {
+		t.Errorf("destructured rest = %q, want 9", got)
+	}
+	got = vmEvalStr(t, `class Box { constructor(...[value]) { this.value = value; } } new Box(42).value`)
+	if got != "42" {
+		t.Errorf("constructor destructured rest = %q, want 42", got)
 	}
 }
 
@@ -632,6 +763,10 @@ func TestVMSpreadArrayLit(t *testing.T) {
 	if got != "4" {
 		t.Errorf("nested spread = %q, want 4", got)
 	}
+	got = vmEvalStr(t, `var a = [, 2]; String(a[0]) + ":" + a[1] + ":" + a.length`)
+	if got != "undefined:2:2" {
+		t.Errorf("array hole = %q, want undefined:2:2", got)
+	}
 }
 
 func TestVMSpreadObjectLit(t *testing.T) {
@@ -643,6 +778,13 @@ func TestVMSpreadObjectLit(t *testing.T) {
 	got = vmEvalStr(t, `var a = { x: 1 }; var b = { ...a, x: 99 }; b.x`)
 	if got != "99" {
 		t.Errorf("spread object override = %q, want 99", got)
+	}
+}
+
+func TestVMComputedAsyncGeneratorMethod(t *testing.T) {
+	got := vmEvalStr(t, `var o = { async *["run"]() { yield 1; } }; typeof o.run`)
+	if got != "function" {
+		t.Errorf("computed async generator method = %q, want function", got)
 	}
 }
 

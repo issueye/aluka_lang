@@ -66,3 +66,25 @@ const iterators = {
 		t.Fatalf("parse: %v", err)
 	}
 }
+
+func TestAssertionSignatureReturnTypes(t *testing.T) {
+	src := `
+type Success = { ok: true };
+function assertPresent(value: unknown): asserts value {
+  if (!value) throw new Error("missing");
+}
+function assertSuccess(output: unknown): asserts output is Success {
+  if (!output) throw new Error("invalid");
+}
+class Validator {
+  assertReady(): asserts this is Validator & { ready: true } {}
+}
+`
+	p, err := NewFromString(src)
+	if err != nil {
+		t.Fatalf("lex: %v", err)
+	}
+	if _, err := p.parseProgram(); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+}

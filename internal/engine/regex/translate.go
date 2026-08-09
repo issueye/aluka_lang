@@ -129,27 +129,27 @@ func translateEscape(pattern string, i int, f Flags) (string, int, error) {
 			// ID_Start / ID_Continue 是 ECMAScript 用于标识符检测的衍生属性，
 			// Go 的 regexp 不支持，这里展开为 Go 可识别的通用类别并集
 			// （覆盖绝大多数标识符字符，path-to-regexp 等依赖它）。
-				prop := pattern[i+3 : end]
-				if esc == 'p' {
-					if prop == "ID_Start" {
-						return `\p{L}\p{Nl}`, end + 1, nil
-					}
-					if prop == "ID_Continue" {
-						return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
-					}
-					// Go RE2 不支持的属性（Default_Ignorable_Code_Point / RGI_Emoji）：
-					// 展开为码点类或近似类；类外需包裹 [] 表示单字符匹配。
-					if s, ok := unicodePropToGo(prop); ok {
-						return "[" + s + "]", end + 1, nil
-					}
-					// Script_Extensions=X：Go 只支持 Script=X。近似映射到
-					// 同名声母（Script_Extensions 是 Script 的超集，常用
-					// 汉字/假名/谚文场景差异可忽略）。
-					if strings.HasPrefix(prop, "Script_Extensions=") {
-						name := prop[len("Script_Extensions="):]
-						return `\p{` + name + `}`, end + 1, nil
-					}
+			prop := pattern[i+3 : end]
+			if esc == 'p' {
+				if prop == "ID_Start" {
+					return `\p{L}\p{Nl}`, end + 1, nil
 				}
+				if prop == "ID_Continue" {
+					return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
+				}
+				// Go RE2 不支持的属性（Default_Ignorable_Code_Point / RGI_Emoji）：
+				// 展开为码点类或近似类；类外需包裹 [] 表示单字符匹配。
+				if s, ok := unicodePropToGo(prop); ok {
+					return "[" + s + "]", end + 1, nil
+				}
+				// Script_Extensions=X：Go 只支持 Script=X。近似映射到
+				// 同名声母（Script_Extensions 是 Script 的超集，常用
+				// 汉字/假名/谚文场景差异可忽略）。
+				if strings.HasPrefix(prop, "Script_Extensions=") {
+					name := prop[len("Script_Extensions="):]
+					return `\p{` + name + `}`, end + 1, nil
+				}
+			}
 			return pattern[i : end+1], end + 1, nil
 		}
 		return string(esc), i + 2, nil
@@ -385,24 +385,24 @@ func translateClassEscape(pattern string, i int, f Flags) (string, int, error) {
 			if end >= len(pattern) {
 				return "", 0, errors.New("invalid regular expression: unterminated \\p escape")
 			}
-				// 与 translateEscape 一致：展开 Go 不支持的 ECMAScript 标识符属性。
-				prop := pattern[i+3 : end]
-				if esc == 'p' {
-					if prop == "ID_Start" {
-						return `\p{L}\p{Nl}`, end + 1, nil
-					}
-					if prop == "ID_Continue" {
-						return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
-					}
-					// 类内直接输出展开串（无需包裹 []）。
-					if s, ok := unicodePropToGo(prop); ok {
-						return s, end + 1, nil
-					}
-					if strings.HasPrefix(prop, "Script_Extensions=") {
-						name := prop[len("Script_Extensions="):]
-						return `\p{` + name + `}`, end + 1, nil
-					}
+			// 与 translateEscape 一致：展开 Go 不支持的 ECMAScript 标识符属性。
+			prop := pattern[i+3 : end]
+			if esc == 'p' {
+				if prop == "ID_Start" {
+					return `\p{L}\p{Nl}`, end + 1, nil
 				}
+				if prop == "ID_Continue" {
+					return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
+				}
+				// 类内直接输出展开串（无需包裹 []）。
+				if s, ok := unicodePropToGo(prop); ok {
+					return s, end + 1, nil
+				}
+				if strings.HasPrefix(prop, "Script_Extensions=") {
+					name := prop[len("Script_Extensions="):]
+					return `\p{` + name + `}`, end + 1, nil
+				}
+			}
 			return pattern[i : end+1], end + 1, nil
 		}
 		return string(esc), i + 2, nil
@@ -454,6 +454,11 @@ func translateGroup(pattern string, i int) (string, int, error) {
 // 返回可嵌入字符类的展开串。返回值用于类内（裸）或类外（调用方包裹 []）。
 func unicodePropToGo(prop string) (string, bool) {
 	switch prop {
+	case "Alphabetic":
+		// ECMAScript Alphabetic = Letter + Letter_Number + Other_Alphabetic.
+		// Go regexp supports the general categories but not this binary
+		// property, so expand the remaining Unicode property table exactly.
+		return `\p{L}\p{Nl}` + rangeTableClass(unicode.Properties["Other_Alphabetic"]), true
 	case "Default_Ignorable_Code_Point":
 		// Unicode 15.1 PropList.txt：软连字符/零宽字符/变体选择符/标签字符等。
 		// Go regexp 无此属性表，展开为码点范围类。
@@ -464,6 +469,10 @@ func unicodePropToGo(prop string) (string, bool) {
 		return `\p{So}`, true
 	}
 	return "", false
+}
+
+func rangeTableClass(rt *unicode.RangeTable) string {
+	return setDifferenceClass(rt, nil)
 }
 
 // translateSetDifference 处理 v 模式字符类差集 [\p{Prop}--[子集]]。
@@ -610,7 +619,15 @@ func setDifferenceClass(rt *unicode.RangeTable, exclude map[rune]bool) string {
 			b.WriteString(goCodePoint(lo) + "-" + goCodePoint(hi))
 		}
 	}
-	emitRanges := func(lo, hi rune) {
+	emitRanges := func(lo, hi, stride rune) {
+		if stride > 1 {
+			for current := lo; current <= hi; current += stride {
+				if !exclude[current] {
+					emit(current, current)
+				}
+			}
+			return
+		}
 		for lo <= hi {
 			for lo <= hi && exclude[lo] {
 				lo++
@@ -626,10 +643,10 @@ func setDifferenceClass(rt *unicode.RangeTable, exclude map[rune]bool) string {
 		}
 	}
 	for _, r := range rt.R16 {
-		emitRanges(rune(r.Lo), rune(r.Hi))
+		emitRanges(rune(r.Lo), rune(r.Hi), rune(r.Stride))
 	}
 	for _, r := range rt.R32 {
-		emitRanges(rune(r.Lo), rune(r.Hi))
+		emitRanges(rune(r.Lo), rune(r.Hi), rune(r.Stride))
 	}
 	return b.String()
 }
