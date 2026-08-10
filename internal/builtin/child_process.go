@@ -5,12 +5,15 @@ package builtin
 // 经 PostTask 回 JS 线程触发 'data'；退出触发 'exit'。
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
 // NewChildProcess 构造 node:child_process 模块导出对象。
@@ -86,6 +89,7 @@ func spawnChild(ctx engine.Context, args []engine.Value) engine.Value {
 
 	// stdout/stderr 流（管道模式）。
 	var stdout, stderr engine.Object
+	var stdoutPipe, stderrPipe io.ReadCloser
 	if inheritStdio {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
@@ -96,6 +100,23 @@ func spawnChild(ctx engine.Context, args []engine.Value) engine.Value {
 	} else {
 		stdout = newEmitterInstance().(engine.Object)
 		stderr = newEmitterInstance().(engine.Object)
+		installChildReadable := func(stream engine.Object, pipe *io.ReadCloser) {
+			_ = stream.Set("readable", engine.Boolean(true))
+			_ = stream.Set("readableEnded", engine.Boolean(false))
+			_ = stream.Set("destroyed", engine.Boolean(false))
+			var destroyOnce sync.Once
+			_ = stream.Set("destroy", engine.NewFunction("destroy", func(a []engine.Value) (engine.Value, error) {
+				destroyOnce.Do(func() {
+					_ = stream.Set("destroyed", engine.Boolean(true))
+					if *pipe != nil {
+						_ = (*pipe).Close()
+					}
+				})
+				return stream, nil
+			}))
+		}
+		installChildReadable(stdout, &stdoutPipe)
+		installChildReadable(stderr, &stderrPipe)
 		_ = cp.Set("stdout", stdout)
 		_ = cp.Set("stderr", stderr)
 		stdin := engine.NewObject()
@@ -109,49 +130,43 @@ func spawnChild(ctx engine.Context, args []engine.Value) engine.Value {
 	}
 
 	if !inheritStdio {
-		stdoutPipe, err := cmd.StdoutPipe()
+		var err error
+		stdoutPipe, err = cmd.StdoutPipe()
 		if err != nil {
 			emitEvent(cp, "error", engine.Str(err.Error()))
 			return cp
 		}
-		stderrPipe, err := cmd.StderrPipe()
+		stderrPipe, err = cmd.StderrPipe()
 		if err != nil {
 			emitEvent(cp, "error", engine.Str(err.Error()))
 			return cp
 		}
 
-		// 读 stdout。
-		go func() {
+		readPipe := func(pipe io.ReadCloser, stream engine.Object) {
+			defer func() {
+				ctx.PostTask(func() {
+					_ = stream.Set("readable", engine.Boolean(false))
+					_ = stream.Set("readableEnded", engine.Boolean(true))
+					emitEvent(stream, "end")
+					emitEvent(stream, "close")
+				})
+			}()
 			buf := make([]byte, 4096)
 			for {
-				n, rerr := stdoutPipe.Read(buf)
+				n, rerr := pipe.Read(buf)
 				if n > 0 {
-					data := string(buf[:n])
+					data := append([]byte(nil), buf[:n]...)
 					ctx.PostTask(func() {
-						emitEvent(stdout, "data", engine.Str(data))
+						emitEvent(stream, "data", globals.NewBufferInstance(data))
 					})
 				}
 				if rerr != nil {
 					break
 				}
 			}
-		}()
-		// 读 stderr。
-		go func() {
-			buf := make([]byte, 4096)
-			for {
-				n, rerr := stderrPipe.Read(buf)
-				if n > 0 {
-					data := string(buf[:n])
-					ctx.PostTask(func() {
-						emitEvent(stderr, "data", engine.Str(data))
-					})
-				}
-				if rerr != nil {
-					break
-				}
-			}
-		}()
+		}
+		go readPipe(stdoutPipe, stdout)
+		go readPipe(stderrPipe, stderr)
 	}
 
 	// 子进程计入事件循环活跃度（运行期间保持进程存活）。

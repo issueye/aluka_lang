@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -131,6 +134,102 @@ fetch('%s/api', { method: 'POST', headers: headers, body: 'payload' })
 	}
 	if got := webGlobalGet(ctx, "__r"); got != "POST:abc:payload" {
 		t.Errorf("post = %q, want POST:abc:payload", got)
+	}
+}
+
+// TestFetchStreamsResponseBody verifies that fetch resolves on headers and
+// exposes network reads incrementally instead of buffering the complete body.
+func TestFetchStreamsResponseBody(t *testing.T) {
+	releaseSecondChunk := make(chan struct{})
+	streamFinished := make(chan struct{})
+	var releaseOnce sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/release" {
+			releaseOnce.Do(func() { close(releaseSecondChunk) })
+			_, _ = fmt.Fprint(w, "released")
+			return
+		}
+		_, _ = fmt.Fprint(w, "first")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-releaseSecondChunk:
+		case <-time.After(2 * time.Second):
+		}
+		_, _ = fmt.Fprint(w, "second")
+		close(streamFinished)
+	}))
+	defer srv.Close()
+
+	ctx := newFetchTestEnv(t)
+	code := fmt.Sprintf(`
+fetch('%[1]s/stream').then(function(res) {
+  globalThis.__fetchResolved = 'true';
+  fetch('%[1]s/release');
+  var reader = res.body.getReader();
+  return reader.read().then(function(first) {
+    globalThis.__first = first.value.toString();
+    return reader.read();
+  }).then(function(second) {
+    globalThis.__second = second.value.toString();
+    return reader.read();
+  }).then(function(last) {
+    globalThis.__done = String(last.done);
+  });
+});
+`, srv.URL)
+	if err := fetchRun(t, ctx, code); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	select {
+	case <-streamFinished:
+	default:
+		t.Fatal("stream handler did not finish")
+	}
+	if got := webGlobalGet(ctx, "__fetchResolved"); got != "true" {
+		t.Errorf("fetch resolved = %q, want true", got)
+	}
+	if got := webGlobalGet(ctx, "__first"); got != "first" {
+		t.Errorf("first chunk = %q, want first", got)
+	}
+	if got := webGlobalGet(ctx, "__second"); got != "second" {
+		t.Errorf("second chunk = %q, want second", got)
+	}
+	if got := webGlobalGet(ctx, "__done"); got != "true" {
+		t.Errorf("stream done = %q, want true", got)
+	}
+}
+
+// TestFetchDoesNotBlockTimers verifies that waiting for response headers does
+// not monopolize the JS thread used by TUI progress and input timers.
+func TestFetchDoesNotBlockTimers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(250 * time.Millisecond)
+		_, _ = fmt.Fprint(w, "ready")
+	}))
+	defer srv.Close()
+
+	ctx := newFetchTestEnv(t)
+	code := fmt.Sprintf(`
+var ticks = 0;
+var timer = setInterval(function() { ticks++; }, 10);
+fetch('%s').then(function(res) { return res.text(); }).then(function(text) {
+  clearInterval(timer);
+  globalThis.__fetchTimerProgress = text + ':' + ticks;
+});
+`, srv.URL)
+	if err := fetchRun(t, ctx, code); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	value := webGlobalGet(ctx, "__fetchTimerProgress")
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 || parts[0] != "ready" {
+		t.Fatalf("fetch timer result = %q, want ready:<ticks>", value)
+	}
+	ticks, err := strconv.Atoi(parts[1])
+	if err != nil || ticks < 10 {
+		t.Fatalf("timer ticks during fetch = %q, want at least 10", parts[1])
 	}
 }
 

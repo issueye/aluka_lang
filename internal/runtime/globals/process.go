@@ -452,6 +452,32 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 	// stdout / stderr（提供 write/writeSync）
 	makeStream := func(w *os.File) engine.Object {
 		obj := engine.NewObject()
+		type outputWrite struct {
+			data     string
+			callback engine.Value
+			release  func()
+		}
+		// Console writes can block on Windows while the TUI is repainting. Keep
+		// the JS thread responsive by serializing TTY writes on a worker; each
+		// queued write owns an event-loop reference until the bytes are written.
+		var outputQueue chan outputWrite
+		if streamIsTTY(w) {
+			outputQueue = make(chan outputWrite, 256)
+			go func() {
+				for request := range outputQueue {
+					_, _ = w.WriteString(request.data)
+					if request.callback != nil && request.callback.IsFunction() {
+						callback := request.callback
+						ctx.PostTask(func() {
+							if f, ok := callback.AsFunction(); ok {
+								_, _ = f.Call(nil)
+							}
+						})
+					}
+					request.release()
+				}
+			}()
+		}
 		type resizeListener struct {
 			callback engine.Value
 			once     bool
@@ -520,22 +546,57 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 				}
 			}()
 		}
-		writeFn := func(args []engine.Value) (engine.Value, error) {
+		parseWriteArgs := func(args []engine.Value) (string, engine.Value, bool) {
 			if len(args) == 0 {
-				return engine.Boolean(false), nil
+				return "", nil, false
 			}
 			data := args[0].String()
+			callbackIndex := 1
+			if len(args) > 1 && !args[1].IsFunction() {
+				callbackIndex = 2
+			}
+			var callback engine.Value
+			if callbackIndex < len(args) && args[callbackIndex].IsFunction() {
+				callback = args[callbackIndex]
+			}
+			return data, callback, true
+		}
+		invokeWriteCallback := func(callback engine.Value) {
+			if callback != nil && !callback.IsUndefined() {
+				if callbackFn, ok := callback.AsFunction(); ok {
+					_, _ = callbackFn.Call(nil)
+				}
+			}
+		}
+		writeSyncFn := func(args []engine.Value) (engine.Value, error) {
+			data, callback, ok := parseWriteArgs(args)
+			if !ok {
+				return engine.Boolean(false), nil
+			}
 			_, err := w.WriteString(data)
 			if err != nil {
 				return engine.Boolean(false), err
 			}
+			invokeWriteCallback(callback)
 			return engine.Boolean(true), nil
+		}
+		writeFn := func(args []engine.Value) (engine.Value, error) {
+			data, callback, ok := parseWriteArgs(args)
+			if !ok {
+				return engine.Boolean(false), nil
+			}
+			if outputQueue != nil {
+				release := ctx.AddRef()
+				outputQueue <- outputWrite{data: data, callback: callback, release: release}
+				return engine.Boolean(true), nil
+			}
+			return writeSyncFn(args)
 		}
 		_ = obj.Set("write", engine.NewFunction("write", func(args []engine.Value) (engine.Value, error) {
 			// Phase 0 简化为同步写入
 			return writeFn(args)
 		}))
-		_ = obj.Set("writeSync", engine.NewFunction("writeSync", writeFn))
+		_ = obj.Set("writeSync", engine.NewFunction("writeSync", writeSyncFn))
 		_ = obj.Set("fd", engine.IntValue(int(w.Fd())))
 		_ = obj.Set("isTTY", engine.Boolean(streamIsTTY(w)))
 		engine.UpdateAccessor(obj, "columns", true, engine.NewFunction("get columns", func(args []engine.Value) (engine.Value, error) {

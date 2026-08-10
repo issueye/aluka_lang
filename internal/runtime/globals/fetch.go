@@ -4,9 +4,9 @@ package globals
 //
 // 实现要点：
 //   - fetch 用 Go net/http 在 goroutine 发请求，经 PostTask 回 JS 线程，
-//     resolve 一个 Response 对象（用全局 Promise 构造器）。
-//   - Response.body 是 ReadableStream（构造时推入响应体并关闭），
-//     text()/json()/arrayBuffer() 基于已缓冲的响应体。
+//     在响应头到达后 resolve 一个 Response 对象（用全局 Promise 构造器）。
+//   - fetch Response.body 是实时 ReadableStream，网络数据按读取批次入队；
+//     text()/json()/arrayBuffer() 等待流结束后聚合响应体。
 //   - Headers/FormData 用有序键值对列表（保持插入顺序，键名不区分大小写）。
 
 import (
@@ -556,6 +556,171 @@ func buildResponse(ctx engine.Context, args []engine.Value, status int, statusTe
 	return res
 }
 
+// fetchBodyWaiter 保存等待完整响应体的 text/json/arrayBuffer Promise。
+type fetchBodyWaiter struct {
+	kind    string
+	resolve engine.Value
+	reject  engine.Value
+}
+
+// fetchBodyState 在 JS 事件循环线程中接收网络分块，同时为完整正文方法缓存数据。
+type fetchBodyState struct {
+	ctx     engine.Context
+	res     engine.Object
+	stream  engine.Object
+	data    []byte
+	done    bool
+	err     string
+	used    bool
+	waiters []fetchBodyWaiter
+}
+
+func newStreamingFetchResponse(ctx engine.Context, status int, statusText string, headers engine.Value, url string) (engine.Value, *fetchBodyState) {
+	resValue := buildResponse(ctx, []engine.Value{engine.Null()}, status, statusText, headers, true)
+	res, _ := resValue.AsObject()
+	streamValue, _ := newReadableStream(ctx, nil)
+	stream, _ := streamValue.AsObject()
+	body := &fetchBodyState{ctx: ctx, res: res, stream: stream}
+
+	_ = res.Set("url", engine.Str(url))
+	_ = res.Set("body", streamValue)
+	_ = res.Set("text", engine.NewFunction("text", func(a []engine.Value) (engine.Value, error) {
+		return body.consume("text")
+	}))
+	_ = res.Set("arrayBuffer", engine.NewFunction("arrayBuffer", func(a []engine.Value) (engine.Value, error) {
+		return body.consume("arrayBuffer")
+	}))
+	_ = res.Set("json", engine.NewFunction("json", func(a []engine.Value) (engine.Value, error) {
+		return body.consume("json")
+	}))
+	_ = res.Set("clone", engine.NewFunction("clone", func(a []engine.Value) (engine.Value, error) {
+		if body.used {
+			return engine.Undefined(), fmt.Errorf("Response.clone: body has already been consumed")
+		}
+		if !body.done {
+			return engine.Undefined(), fmt.Errorf("Response.clone: streaming body is not complete")
+		}
+		return buildResponse(ctx, []engine.Value{engine.Str(string(body.data))}, status, statusText, headers, true), nil
+	}))
+
+	// Reading the exposed stream also marks the owning Response body as used.
+	if getReader, err := stream.Get("getReader"); err == nil && getReader.IsFunction() {
+		_ = stream.Set("getReader", engine.NewFunction("getReader", func(a []engine.Value) (engine.Value, error) {
+			body.markUsed()
+			if f, ok := getReader.AsFunction(); ok {
+				return f.Call(a)
+			}
+			return engine.Undefined(), nil
+		}))
+	}
+	if asyncIterator, err := stream.Get(engine.SymbolAsyncIterator.SymbolKey()); err == nil && asyncIterator.IsFunction() {
+		_ = stream.Set(engine.SymbolAsyncIterator.SymbolKey(), engine.NewFunction("[Symbol.asyncIterator]", func(a []engine.Value) (engine.Value, error) {
+			body.markUsed()
+			if f, ok := asyncIterator.AsFunction(); ok {
+				return f.Call(a)
+			}
+			return engine.Undefined(), nil
+		}))
+	}
+
+	return resValue, body
+}
+
+func (b *fetchBodyState) markUsed() bool {
+	if b.used {
+		return false
+	}
+	b.used = true
+	_ = b.res.Set("bodyUsed", engine.Boolean(true))
+	return true
+}
+
+func (b *fetchBodyState) consume(kind string) (engine.Value, error) {
+	if !b.markUsed() {
+		return promiseRejectValue(b.ctx, "Body has already been consumed")
+	}
+	return newPromise(b.ctx, engine.NewFunction("executor", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), nil
+		}
+		waiter := fetchBodyWaiter{kind: kind, resolve: args[0], reject: args[1]}
+		if b.done {
+			b.settle(waiter)
+		} else {
+			b.waiters = append(b.waiters, waiter)
+		}
+		return engine.Undefined(), nil
+	}))
+}
+
+func (b *fetchBodyState) append(chunk []byte) {
+	if b.done || len(chunk) == 0 {
+		return
+	}
+	b.data = append(b.data, chunk...)
+	_ = b.res.Set("_body", engine.Str(string(b.data)))
+	if enqueue, err := b.stream.Get("enqueue"); err == nil && enqueue.IsFunction() {
+		if f, ok := enqueue.AsFunction(); ok {
+			_, _ = f.Call([]engine.Value{NewBufferInstance(chunk)})
+		}
+	}
+}
+
+func (b *fetchBodyState) finish(err error) {
+	if b.done {
+		return
+	}
+	b.done = true
+	if err != nil {
+		b.err = "fetch: " + err.Error()
+	}
+	if closeFn, getErr := b.stream.Get("close"); getErr == nil && closeFn.IsFunction() {
+		if f, ok := closeFn.AsFunction(); ok {
+			_, _ = f.Call(nil)
+		}
+	}
+	waiters := b.waiters
+	b.waiters = nil
+	for _, waiter := range waiters {
+		b.settle(waiter)
+	}
+}
+
+func (b *fetchBodyState) settle(waiter fetchBodyWaiter) {
+	if b.err != "" {
+		callReject(waiter.reject, b.err)
+		return
+	}
+	switch waiter.kind {
+	case "arrayBuffer":
+		callResolve(waiter.resolve, NewBufferInstance(append([]byte(nil), b.data...)))
+	case "json":
+		jsonGlobal, err := b.ctx.Global().Get("JSON")
+		if err != nil || !jsonGlobal.IsObject() {
+			callReject(waiter.reject, "JSON not available")
+			return
+		}
+		jsonObject, _ := jsonGlobal.AsObject()
+		parse, err := jsonObject.Get("parse")
+		if err != nil || !parse.IsFunction() {
+			callReject(waiter.reject, "JSON.parse not available")
+			return
+		}
+		if f, ok := parse.AsFunction(); ok {
+			parsed, parseErr := f.Call([]engine.Value{engine.Str(string(b.data))})
+			if parseErr != nil {
+				callReject(waiter.reject, parseErr.Error())
+				return
+			}
+			callResolve(waiter.resolve, parsed)
+			return
+		}
+		callReject(waiter.reject, "JSON.parse failed")
+	default:
+		callResolve(waiter.resolve, engine.Str(string(b.data)))
+	}
+}
+
 // --- FormData -------------------------------------------------------------
 
 // fdEntry 是有序表单字段。
@@ -765,17 +930,33 @@ func doFetch(ctx engine.Context, args []engine.Value) (engine.Value, error) {
 				return
 			}
 			defer resp.Body.Close()
-			body, _ := io.ReadAll(resp.Body)
-
+			bodyReady := make(chan *fetchBodyState, 1)
 			ctx.PostTask(func() {
-				defer release()
-				// 用真实响应体构造 Response（text()/json() 闭包捕获 body）。
-				res := buildResponse(ctx, []engine.Value{engine.Str(string(body))}, resp.StatusCode, resp.Status, httpHeaderToEngine(resp.Header), true)
-				if ro, ok := res.AsObject(); ok {
-					_ = ro.Set("url", engine.Str(urlStr))
-				}
+				res, body := newStreamingFetchResponse(ctx, resp.StatusCode, resp.Status, httpHeaderToEngine(resp.Header), urlStr)
 				callResolve(resolve, res)
+				bodyReady <- body
 			})
+			body := <-bodyReady
+
+			buf := make([]byte, 32*1024)
+			for {
+				n, readErr := resp.Body.Read(buf)
+				if n > 0 {
+					chunk := append([]byte(nil), buf[:n]...)
+					ctx.PostTask(func() { body.append(chunk) })
+				}
+				if readErr != nil {
+					ctx.PostTask(func() {
+						defer release()
+						if readErr == io.EOF {
+							body.finish(nil)
+						} else {
+							body.finish(readErr)
+						}
+					})
+					return
+				}
+			}
 		}()
 		return engine.Undefined(), nil
 	})

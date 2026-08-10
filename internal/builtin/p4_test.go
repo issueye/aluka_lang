@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,42 @@ child.on('exit', function(code) { globalThis.__r = code + ':' + out.trim(); });
 	}
 }
 
+// TestChildProcessSpawnWindowsHide covers the lifecycle used by Pi's bash
+// tool. Its close handler destroys both stdio streams before resolving the
+// tool promise, so missing stream methods leave the tool pending forever.
+func TestChildProcessSpawnWindowsHide(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows conhost regression")
+	}
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var cp = require('node:child_process');
+var child = cp.spawn('powershell.exe', ['-NoProfile', '-Command', 'Write-Output aluka-child'], {
+  windowsHide: true,
+  stdio: ['ignore', 'pipe', 'pipe']
+});
+var out = '';
+var isBuffer = true;
+var stdoutEnded = false;
+child.stdout.on('data', function(d) {
+  out += d.toString();
+  if (!Buffer.isBuffer(d)) isBuffer = false;
+});
+child.stdout.on('end', function() { stdoutEnded = true; });
+child.on('close', function(code) {
+	child.stdout.destroy();
+	child.stderr.destroy();
+  globalThis.__r = code + ':' + out.trim() + ':' + isBuffer + ':' + stdoutEnded;
+});
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "0:aluka-child:true:true" {
+		t.Errorf("spawn Windows lifecycle = %q", got)
+	}
+}
+
 // TestChildProcessExec 验证 exec 回调（用平台内建命令 echo）。
 func TestChildProcessExec(t *testing.T) {
 	env := newHTTPEnv(t)
@@ -42,6 +79,28 @@ cp.exec('echo hello exec', function(err, stdout, stderr) {
 	}
 	if got := env.globalGet("__r"); got != "true:hello exec" {
 		t.Errorf("exec = %q, want true:hello exec", got)
+	}
+}
+
+// TestChildProcessExecSequential verifies that multiple async tool-style
+// commands can complete in the same event loop turn.
+func TestChildProcessExecSequential(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var cp = require('node:child_process');
+cp.exec('echo first', function(firstErr, firstOut) {
+  if (firstErr) throw firstErr;
+  cp.exec('echo second', function(secondErr, secondOut) {
+    if (secondErr) throw secondErr;
+    globalThis.__r = firstOut.trim() + ':' + secondOut.trim();
+  });
+});
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "first:second" {
+		t.Errorf("sequential exec = %q, want first:second", got)
 	}
 }
 

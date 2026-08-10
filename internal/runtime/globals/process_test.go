@@ -110,6 +110,35 @@ func TestProcessStdinStreamShape(t *testing.T) {
 	}
 }
 
+// TestProcessOutputWriteCallbacks covers the callback overloads used by Pi's
+// raw stdout backpressure queue. A missing callback leaves every later agent
+// event waiting behind the first write.
+func TestProcessOutputWriteCallbacks(t *testing.T) {
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatalf("NewVM: %v", err)
+	}
+	defer vm.Close()
+
+	if err := NewProcess(vm, ProcessConfig{}); err != nil {
+		t.Fatalf("NewProcess: %v", err)
+	}
+	_, err = vm.Eval(`
+var callbacks = [];
+var stdoutResult = process.stdout.write('', function() { callbacks.push('stdout'); });
+var stderrResult = process.stderr.write('', 'utf8', function() { callbacks.push('stderr'); });
+globalThis.__writeCallbacks = callbacks.join(',') + ':' + stdoutResult + ':' + stderrResult;
+`, "process-write-callback.js")
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+
+	value, _ := vm.Global().Get("__writeCallbacks")
+	if got, want := value.String(), "stdout,stderr:true:true"; got != want {
+		t.Fatalf("write callbacks = %q, want %q", got, want)
+	}
+}
+
 // TestProcessListenerAliases 验证 Pi 交互模式使用的 prependListener/off。
 func TestProcessListenerAliases(t *testing.T) {
 	eng := engine.NewStubEngine()

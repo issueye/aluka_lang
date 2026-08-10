@@ -31,10 +31,24 @@ func NewFS(ctx engine.Context) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Undefined(), fmt.Errorf("readFileSync: path required")
 		}
-		path := args[0].String()
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return engine.Undefined(), fsReadError(path, err)
+		var data []byte
+		if fd, ok := args[0].Int(); ok && args[0].Type() == engine.TypeNumber {
+			f := osFileFromFD(fd)
+			if f == nil {
+				return engine.Undefined(), fdOpError("read", fd, os.ErrInvalid)
+			}
+			var err error
+			data, err = io.ReadAll(f)
+			if err != nil {
+				return engine.Undefined(), fdOpError("read", fd, err)
+			}
+		} else {
+			path := args[0].String()
+			var err error
+			data, err = os.ReadFile(path)
+			if err != nil {
+				return engine.Undefined(), fsReadError(path, err)
+			}
 		}
 		// 第二参数：编码或 options。'utf8'/'utf-8' → 返回字符串，否则返回 Buffer/字符串。
 		encoding := ""
@@ -66,14 +80,25 @@ func NewFS(ctx engine.Context) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Undefined(), fmt.Errorf("writeFileSync: path and data required")
 		}
-		path := args[0].String()
-		var data []byte
-		switch args[1].Type() {
-		case engine.TypeString:
-			data = []byte(args[1].String())
-		default:
-			data = []byte(args[1].String())
+		data := fsDataBytes(args[1])
+		if fd, ok := args[0].Int(); ok && args[0].Type() == engine.TypeNumber {
+			f := osFileFromFD(fd)
+			if f == nil {
+				return engine.Undefined(), fdOpError("write", fd, os.ErrInvalid)
+			}
+			for len(data) > 0 {
+				n, err := f.Write(data)
+				if err != nil {
+					return engine.Undefined(), fdOpError("write", fd, err)
+				}
+				if n == 0 {
+					return engine.Undefined(), fdOpError("write", fd, io.ErrShortWrite)
+				}
+				data = data[n:]
+			}
+			return engine.Undefined(), nil
 		}
+		path := args[0].String()
 		err := os.WriteFile(path, data, 0644)
 		if err != nil {
 			return engine.Undefined(), err
@@ -85,8 +110,16 @@ func NewFS(ctx engine.Context) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Undefined(), fmt.Errorf("appendFileSync: path and data required")
 		}
+		data := fsDataBytes(args[1])
+		if fd, ok := args[0].Int(); ok && args[0].Type() == engine.TypeNumber {
+			f := osFileFromFD(fd)
+			if f == nil {
+				return engine.Undefined(), fdOpError("write", fd, os.ErrInvalid)
+			}
+			_, err := f.Write(data)
+			return engine.Undefined(), fdOpError("write", fd, err)
+		}
 		path := args[0].String()
-		data := []byte(args[1].String())
 		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return engine.Undefined(), err

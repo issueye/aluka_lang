@@ -25,6 +25,75 @@ import (
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
+// fsFDRegistry keeps the *os.File that owns every descriptor returned by an
+// fs open call.  Returning only f.Fd() lets Go's finalizer close the descriptor
+// as soon as the original *os.File becomes unreachable, which makes a later
+// Node-style closeSync(fd) fail with EBADF.  Node keeps descriptors alive until
+// the caller closes them, so retain the owner here as well.
+var fsFDRegistry = struct {
+	sync.Mutex
+	files map[int]*os.File
+}{files: make(map[int]*os.File)}
+
+func registerFSFD(f *os.File) int {
+	if f == nil {
+		return -1
+	}
+	fd := int(f.Fd())
+	fsFDRegistry.Lock()
+	fsFDRegistry.files[fd] = f
+	fsFDRegistry.Unlock()
+	return fd
+}
+
+func lookupFSFD(fd int) *os.File {
+	if fd < 0 {
+		return nil
+	}
+	fsFDRegistry.Lock()
+	f := fsFDRegistry.files[fd]
+	fsFDRegistry.Unlock()
+	if f != nil {
+		return f
+	}
+	return os.NewFile(uintptr(fd), fmt.Sprintf("fd:%d", fd))
+}
+
+// takeFSFD removes the registered owner before closing it.  This prevents a
+// second close from reusing a stale *os.File after the OS recycles the number.
+func takeFSFD(fd int) *os.File {
+	if fd < 0 {
+		return nil
+	}
+	fsFDRegistry.Lock()
+	f := fsFDRegistry.files[fd]
+	delete(fsFDRegistry.files, fd)
+	fsFDRegistry.Unlock()
+	if f != nil {
+		return f
+	}
+	return os.NewFile(uintptr(fd), fmt.Sprintf("fd:%d", fd))
+}
+
+func unregisterFSFD(fd int, owner *os.File) {
+	if fd < 0 {
+		return
+	}
+	fsFDRegistry.Lock()
+	if current := fsFDRegistry.files[fd]; current == owner {
+		delete(fsFDRegistry.files, fd)
+	}
+	fsFDRegistry.Unlock()
+}
+
+func closeFSFD(fd int) error {
+	f := takeFSFD(fd)
+	if f == nil {
+		return os.ErrInvalid
+	}
+	return f.Close()
+}
+
 // addFSFD 在 fs 模块对象上注册 fd 操作与补充 API。
 func addFSFD(ctx engine.Context, m engine.Object) {
 	// --- 打开/关闭 ---
@@ -53,7 +122,7 @@ func addFSFD(ctx engine.Context, m engine.Object) {
 		if err != nil {
 			return engine.Undefined(), err
 		}
-		return engine.IntValue(int(f.Fd())), nil
+		return engine.IntValue(registerFSFD(f)), nil
 	}))
 
 	// open(path, flags[, mode], callback)
@@ -88,7 +157,7 @@ func addFSFD(ctx engine.Context, m engine.Object) {
 			if err != nil {
 				return engine.Undefined(), err
 			}
-			return engine.IntValue(int(f.Fd())), nil
+			return engine.IntValue(registerFSFD(f)), nil
 		}, cb)
 		return engine.Undefined(), nil
 	}))
@@ -99,7 +168,7 @@ func addFSFD(ctx engine.Context, m engine.Object) {
 		if !ok {
 			return engine.Undefined(), fmt.Errorf("closeSync: fd required")
 		}
-		err := osFileFromFD(fd).Close()
+		err := closeFSFD(fd)
 		return engine.Undefined(), fdOpError("close", fd, err)
 	}))
 
@@ -114,7 +183,7 @@ func addFSFD(ctx engine.Context, m engine.Object) {
 			return engine.Undefined(), fmt.Errorf("close: callback required")
 		}
 		fsAsync(ctx, func() (engine.Value, error) {
-			err := osFileFromFD(fd).Close()
+			err := closeFSFD(fd)
 			return engine.Undefined(), fdOpError("close", fd, err)
 		}, cb)
 		return engine.Undefined(), nil
@@ -784,10 +853,7 @@ func argFD(args []engine.Value, i int) (int, bool) {
 
 // osFileFromFD 由 fd 重建 *os.File。fd<0 时返回空文件（操作报错）。
 func osFileFromFD(fd int) *os.File {
-	if fd < 0 {
-		return nil
-	}
-	return os.NewFile(uintptr(fd), fmt.Sprintf("fd:%d", fd))
+	return lookupFSFD(fd)
 }
 
 // fsParseFlags 把 Node 打开模式字符串映射为 Go os 标志。
@@ -1058,7 +1124,8 @@ func readAllFile(f *os.File) ([]byte, error) {
 // newFileHandle 构造 FileHandle 对象（fs/promises.open 的返回值）。
 func newFileHandle(ctx engine.Context, f *os.File) engine.Value {
 	h := engine.NewObject()
-	_ = h.Set("fd", engine.IntValue(int(f.Fd())))
+	fd := registerFSFD(f)
+	_ = h.Set("fd", engine.IntValue(fd))
 
 	p := func(op func() (engine.Value, error)) (engine.Value, error) {
 		return fsPromise(ctx, nil, op)
@@ -1124,6 +1191,7 @@ func newFileHandle(ctx engine.Context, f *os.File) engine.Value {
 	}))
 	_ = h.Set("close", engine.NewFunction("close", func(args []engine.Value) (engine.Value, error) {
 		return p(func() (engine.Value, error) {
+			unregisterFSFD(fd, f)
 			return engine.Undefined(), f.Close()
 		})
 	}))
