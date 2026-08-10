@@ -1,6 +1,7 @@
 # aluka 值类型化栈优化实施方案
 
 > 日期：2026-08-10 ｜ 依据：perf-report-v4（合计 42.5x vs node）+ pprof 装箱热点定位
+> **⚠️ 状态：阶段 A 已实验，结论为"纯 Go 下不可行"，方案暂停（见 §9）**。
 > 目标：消除 JS 数字经 `engine.Value` 接口的**逃逸装箱**（pprof 实测 `engine.Number` cum 18%、
 > `convT64` 15.6%、`mallocgcTiny` 12.5%），把 propAccess/Set、gcPressure、arrayPush、fib 类
 > 用例再压 **-30~40%**，作为通向 ≤10x 的**必要但不充分**的第一大步。
@@ -158,3 +159,36 @@ inline-tiered-bytecode-plan.md §8）。
 值类型化栈是当前**收益最明确的单项优化**（消除 ~12-30% 装箱开销），也是通向 ≤10x 的
 必经之路。单独实施后合计差距预计 **42.5x → ~30x**；配合迭代化 + O-6 原生化扩展可达
 **~16x**（部分用例 ≤10x）。全部用例 ≤10x 需 JIT 级热函数编译。
+
+## 9. 阶段 A 实验结论（2026-08-10，已回退）
+
+阶段 A（`stackSlot` 标签联合栈）**已完整实施并通过全量测试（22 包绿）**，基准结果：
+
+| 用例 | v4 基线 (ms) | stackSlot (ms) | 变化 |
+|------|-------------|----------------|------|
+| propAccess-3M | 583 | 545 | **-7%** ✓ |
+| fib25/30 | 30 / 327 | 30 / 338 | ~0 / +3% |
+| propSet-3M | 370 | 406 | +10% |
+| callOverhead-1M | 157 | 171 | +9% |
+| closureCall-1M | 190 | 223 | +17% |
+| methodCall-1M | 188 | 214 | +14% |
+| gcPressure-500K | 360 | 436 | +21% |
+| **合计** | **2656** | **2833** | **+7%** |
+
+**结论**：
+1. **stackSlot 为 32 字节**（`engine.Value` 16 + `float64` 8 + tag，8 字节对齐），比原
+   interface 大 2 倍。变量/闭包/对象密集用例的 LoadLocal/StoreLocal 栈拷贝开销抵消了
+   装箱收益（propAccess 的纯加法链 -7%，但整体 +7%）。
+2. **纯 Go 无法做 compact tagged value**（V8 的 SMI+pointer 方案）：
+   - `unsafe.Pointer` 字段存数字位模式会被 Go GC 当指针扫描 → 误标记/内存损坏
+   - `uintptr` 字段不参与 GC 跟踪 → 存对象指针会泄漏/悬垂
+   - 故栈元素无法压缩到 16 字节，**值类型化栈在纯 Go 接口/GC 约束下收益不成立**。
+
+**已回退**（git checkout，回到 v4 基线 2656ms）。`stackSlot` 方案暂停。
+
+**替代方向**（重新排期）：
+- **双栈**：`numStack []float64`（8 字节）只服务纯数字算术指令，值栈保持 engine.Value；
+  需解决两栈操作数序一致性（复杂度高，收益待验证）。
+- **迭代化调用 + O-6 原生化扩展**（见 inline-tiered-bytecode-plan.md）：把更多 JS 模式
+  下沉到 Go 侧直执行，绕过解释器装箱（已在 arrayMap 验证 16x→9.4x）。
+- **热函数编译（JIT 雏形）**：唯一能全部 ≤10x 的途径。
