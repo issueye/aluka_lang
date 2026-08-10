@@ -47,9 +47,9 @@ func TestInlinableMarking(t *testing.T) {
 		{"arrow block single return", `const g = (x) => { return x + 1; };`, true},
 		{"arrow no params", `const z = () => 42;`, true},
 		{"closure capture", `const y = 5; const h = (x) => x + y;`, false},
-		// 顶层箭头引用 `arguments`：resolve 为 undefined 全局（无 upvalue，
-		// aluka 顶层程序无 arguments 绑定），内联展开行为一致，故可内联。
-		{"arguments reference (top-level)", `const r = (x) => arguments.length;`, true},
+		// 顶层箭头引用 `arguments`：解析为 undefined 全局（OpLoadGlobal，
+		// 不在内联白名单）→ 不标记（回退普通调用，行为一致且更安全）。
+		{"arguments reference (top-level)", `const r = (x) => arguments.length;`, false},
 		{"recursive self", `const rec = (n) => n <= 0 ? 0 : rec(n - 1);`, false},
 		{"multi statement", `const m = (x) => { x++; return x; };`, false},
 		{"async", `const a = async (x) => x + 1;`, false},
@@ -83,5 +83,36 @@ func TestInlinableRoundTrip(t *testing.T) {
 	round := roundTripModule(t, mod)
 	if len(findInlinable(round)) != 1 {
 		t.Fatalf("Inlinable lost after round trip: %v", findInlinable(round))
+	}
+}
+
+// TestInlineExpandsCallSite: const 绑定的可内联函数调用点被展开——
+// 顶层程序 Code 中不再出现对 add 的 OpCall（被内联体指令替换）。
+func TestInlineExpandsCallSite(t *testing.T) {
+	mod := compileFn(t, `
+const add = (a, b) => a + b;
+globalThis.__r = add(1, 2);
+`)
+	top := mod.Functions[0]
+	for pc := 0; pc+4 <= len(top.Code); pc += bytecode.InstrSize {
+		op := bytecode.Opcode(top.Code[pc])
+		if op == bytecode.OpCall || op == bytecode.OpCallMethod || op == bytecode.OpMakeClosure {
+			// OpMakeClosure 出现在 const add 的初始化处（合法）；
+			// OpCall 应被内联替换。
+			if op == bytecode.OpCall {
+				t.Errorf("call site was not inlined: OpCall at pc=%d", pc)
+			}
+		}
+	}
+	// 内联体指令应出现：LoadLocal 参数槽 + OpAdd。
+	seenAdd := false
+	for pc := 0; pc+4 <= len(top.Code); pc += bytecode.InstrSize {
+		if bytecode.Opcode(top.Code[pc]) == bytecode.OpAdd {
+			seenAdd = true
+			break
+		}
+	}
+	if !seenAdd {
+		t.Error("inlined body (OpAdd) not found in caller code")
 	}
 }

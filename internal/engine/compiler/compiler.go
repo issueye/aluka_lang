@@ -52,6 +52,10 @@ type Compiler struct {
 	// (set by compileLabeled). Loops pick it up as their loopCtx.hasLabel so
 	// that labeled break/continue jumps can be resolved to this loop.
 	curLabel string
+
+	// lastFuncExprIdx 是最近一次 compileFunction 编译的函数模板索引
+	// （I-2 const 绑定登记用：compileVarDecl 在 Init 为函数表达式时读取）。
+	lastFuncExprIdx int
 }
 
 type pendingJump struct {
@@ -82,6 +86,10 @@ type funcCtx struct {
 
 	// upvalueIndex maps a name to its index in tmpl.Upvalues.
 	upvalueIndex map[string]int
+
+	// inlineCandidates 记录当前函数作用域内 const/let 绑定名 → 函数模板
+	// 索引（-1 = 绑定不可内联）。I-2 调用点展开用；同名重绑定会覆盖。
+	inlineCandidates map[string]int
 }
 
 type scope struct {
@@ -125,8 +133,9 @@ func (c *Compiler) Compile(prog *ast.Program, filename string) (*bytecode.Module
 	c.module.AddFunction(tmpl)
 
 	fc := &funcCtx{
-		tmpl:         tmpl,
-		upvalueIndex: make(map[string]int),
+		tmpl:             tmpl,
+		upvalueIndex:     make(map[string]int),
+		inlineCandidates: map[string]int{},
 	}
 	fc.scopes = []*scope{{decls: make(map[string]int), isFunc: true}}
 	c.funcStack = append(c.funcStack, fc)
@@ -554,8 +563,37 @@ func (c *Compiler) compileVarDecl(d *ast.VarDecl) error {
 			slot = c.declareLocal(decl.Name.Name)
 		}
 		if decl.Init != nil {
-			if err := c.compileExpr(decl.Init); err != nil {
-				return err
+			if d.Kind == "const" {
+				// I-2：登记 const 绑定的函数表达式为内联候选（同名重绑定覆盖
+				// 为不可内联）；let/var 可重赋值，不登记。
+				if fe, ok := decl.Init.(*ast.ArrowFunc); ok {
+					if err := c.compileExpr(decl.Init); err != nil {
+						return err
+					}
+					if fe.IsAsync {
+						c.cur().inlineCandidates[decl.Name.Name] = -1
+					} else {
+						c.cur().inlineCandidates[decl.Name.Name] = c.lastFuncExprIdx
+					}
+				} else if fe, ok := decl.Init.(*ast.FunctionExpr); ok {
+					if err := c.compileExpr(decl.Init); err != nil {
+						return err
+					}
+					if fe.IsAsync || fe.IsGenerator {
+						c.cur().inlineCandidates[decl.Name.Name] = -1
+					} else {
+						c.cur().inlineCandidates[decl.Name.Name] = c.lastFuncExprIdx
+					}
+				} else {
+					c.cur().inlineCandidates[decl.Name.Name] = -1
+					if err := c.compileExpr(decl.Init); err != nil {
+						return err
+					}
+				}
+			} else {
+				if err := c.compileExpr(decl.Init); err != nil {
+					return err
+				}
 			}
 			c.emit(bytecode.OpStoreLocal, uint32(slot))
 		}
@@ -2391,6 +2429,17 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 	}
 
 	// Regular call: f(args)
+	// I-2 内联展开：const 绑定的可内联函数调用（非 optional、非 spread）。
+	if !n.Optional && !hasSpread {
+		if id, ok := n.Callee.(*ast.Identifier); ok {
+			if c.tryInlineCall(id, n.Arguments) {
+				if chainHead {
+					c.endOptionalChain()
+				}
+				return nil
+			}
+		}
+	}
 	if err := c.compileExpr(n.Callee); err != nil {
 		return err
 	}
@@ -2583,10 +2632,12 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 		SourceFile:    c.cur().tmpl.SourceFile,
 	}
 	funcIdx := c.module.AddFunction(tmpl)
+	c.lastFuncExprIdx = funcIdx // I-2 const 绑定登记用（最近编译的函数模板）
 
 	fc := &funcCtx{
-		tmpl:         tmpl,
-		upvalueIndex: make(map[string]int),
+		tmpl:             tmpl,
+		upvalueIndex:     make(map[string]int),
+		inlineCandidates: map[string]int{},
 	}
 	fc.scopes = []*scope{{decls: make(map[string]int), isFunc: true}}
 	if !isArrow {
@@ -2686,10 +2737,12 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 	// I-1 可内联判定：纯箭头函数（非 async/generator/rest/默认值/解构、
 	// 参数 ≤ 8、体为单表达式）、编译体后无闭包捕获（upvalueIndex 为空——
 	// 箭头函数的 this/arguments 只能经 upvalue 引用，空即未引用）、未引用
-	// own arguments。仅作标记，调用点展开见 compileCall；未展开走正常调用。
+	// own arguments、指令在白名单内（复制时可安全重映射）。仅作标记，调用
+	// 点展开见 compileCall；未展开走正常调用。
 	if isArrow && !isAsync && !isGenerator && rest == nil &&
 		!hasNonNilDefaults(defaults) && !hasNonNilPatterns(patterns) &&
-		len(params) <= 8 && simpleBody && len(fc.upvalueIndex) == 0 && !fc.usedArguments {
+		len(params) <= 8 && simpleBody && len(fc.upvalueIndex) == 0 && !fc.usedArguments &&
+		isInlinableCode(fc.tmpl.Code) {
 		fc.tmpl.Inlinable = true
 	}
 	c.funcStack = c.funcStack[:len(c.funcStack)-1]
@@ -3239,8 +3292,9 @@ func (c *Compiler) compileMethod(name string, fn *ast.FunctionExpr) (int, error)
 	funcIdx := c.module.AddFunction(tmpl)
 
 	fc := &funcCtx{
-		tmpl:         tmpl,
-		upvalueIndex: make(map[string]int),
+		tmpl:             tmpl,
+		upvalueIndex:     make(map[string]int),
+		inlineCandidates: map[string]int{},
 	}
 	fc.scopes = []*scope{{decls: make(map[string]int), isFunc: true}}
 	fc.scopes[0].decls["__this__"] = 0
@@ -3323,8 +3377,9 @@ func (c *Compiler) compileDefaultBaseCtor() (int, error) {
 	}
 	funcIdx := c.module.AddFunction(tmpl)
 	fc := &funcCtx{
-		tmpl:         tmpl,
-		upvalueIndex: make(map[string]int),
+		tmpl:             tmpl,
+		upvalueIndex:     make(map[string]int),
+		inlineCandidates: map[string]int{},
 	}
 	fc.scopes = []*scope{{decls: make(map[string]int), isFunc: true}}
 	fc.scopes[0].decls["__this__"] = 0
@@ -3349,8 +3404,9 @@ func (c *Compiler) compileDefaultDerivedCtor() (int, error) {
 	}
 	funcIdx := c.module.AddFunction(tmpl)
 	fc := &funcCtx{
-		tmpl:         tmpl,
-		upvalueIndex: make(map[string]int),
+		tmpl:             tmpl,
+		upvalueIndex:     make(map[string]int),
+		inlineCandidates: map[string]int{},
 	}
 	fc.scopes = []*scope{{decls: make(map[string]int), isFunc: true}}
 	fc.scopes[0].decls["__this__"] = 0
