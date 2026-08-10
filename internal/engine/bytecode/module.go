@@ -46,6 +46,13 @@ type FuncTemplate struct {
 	// 非简单回调（走正常调用路径）。
 	NativeCallback *NativeCallbackDesc
 
+	// Inlinable 标记该函数可在调用点展开（小函数内联，I-1）：纯函数
+	// （非 async/generator/rest/默认值/解构）、体为单表达式、无闭包捕获
+	// （upvalueIndex 为空，含箭头函数的 this）、不引用 arguments、参数 ≤ 8。
+	// 仅作编译期标记；调用点展开逻辑见 compileCall（未展开时走正常调用，
+	// 语义不受影响）。
+	Inlinable bool
+
 	// Code is the flat instruction stream. Fixed-width (InstrSize bytes each).
 	Code []byte
 

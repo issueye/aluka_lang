@@ -2545,6 +2545,19 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 	restoreControlFlow := c.isolateControlFlow()
 	defer restoreControlFlow()
 
+	// I-1：简单函数体判定（单表达式或单条 `return expr;`），供可内联标记。
+	simpleBody := false
+	switch b := body.(type) {
+	case ast.Expression:
+		simpleBody = true
+	case *ast.BlockStmt:
+		if len(b.Body) == 1 {
+			if rs, ok := b.Body[0].(*ast.ReturnStmt); ok && rs.Arg != nil {
+				simpleBody = true
+			}
+		}
+	}
+
 	// 隔离外层可选链：嵌套函数编译时 c.cur() 切换到本函数字节码缓冲区，
 	// 若内层链的 OpOptionalJump 记入外层链，外层 endOptionalChain 会用
 	// 错误缓冲区 patch（PatchOperand out of range panic）。
@@ -2669,6 +2682,15 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 	fc = c.cur()
 	if !fc.usedArguments {
 		fc.tmpl.NoArgumentsObject = true
+	}
+	// I-1 可内联判定：纯箭头函数（非 async/generator/rest/默认值/解构、
+	// 参数 ≤ 8、体为单表达式）、编译体后无闭包捕获（upvalueIndex 为空——
+	// 箭头函数的 this/arguments 只能经 upvalue 引用，空即未引用）、未引用
+	// own arguments。仅作标记，调用点展开见 compileCall；未展开走正常调用。
+	if isArrow && !isAsync && !isGenerator && rest == nil &&
+		!hasNonNilDefaults(defaults) && !hasNonNilPatterns(patterns) &&
+		len(params) <= 8 && simpleBody && len(fc.upvalueIndex) == 0 && !fc.usedArguments {
+		fc.tmpl.Inlinable = true
 	}
 	c.funcStack = c.funcStack[:len(c.funcStack)-1]
 

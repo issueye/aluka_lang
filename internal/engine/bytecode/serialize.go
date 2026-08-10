@@ -26,7 +26,8 @@ import (
 // v12 → v13：FuncTemplate.NativeCallback（O-6 简单回调描述：数组高阶方法
 // 对 x=>x*2 等箭头回调 Go 侧直执行）。
 // v13 → v14：FuncTemplate.NewTargetSlot（new.target 词法槽位）。
-const FormatVersion = 14
+// v14 → v15：FuncTemplate.Inlinable（I-1 小函数内联标记）。
+const FormatVersion = 15
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
@@ -106,7 +107,9 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 	if err := writeString(w, fn.Name); err != nil {
 		return err
 	}
-	var scalars [10 * 4]byte // NumParams, NumLocals, IsVarArgs, IsGenerator, IsAsync, IsArrow, len(Code), ArgumentsSlot, NoArgumentsObject, NewTargetSlot
+	// NumParams, NumLocals, IsVarArgs, IsGenerator, IsAsync, IsArrow,
+	// len(Code), ArgumentsSlot, NoArgumentsObject, NewTargetSlot, Inlinable
+	var scalars [11 * 4]byte
 	binary.LittleEndian.PutUint32(scalars[0:4], uint32(fn.NumParams))
 	binary.LittleEndian.PutUint32(scalars[4:8], uint32(fn.NumLocals))
 	binary.LittleEndian.PutUint32(scalars[8:12], boolToU32(fn.IsVarArgs))
@@ -117,6 +120,7 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 	binary.LittleEndian.PutUint32(scalars[28:32], uint32(fn.ArgumentsSlot))
 	binary.LittleEndian.PutUint32(scalars[32:36], boolToU32(fn.NoArgumentsObject))
 	binary.LittleEndian.PutUint32(scalars[36:40], uint32(fn.NewTargetSlot))
+	binary.LittleEndian.PutUint32(scalars[40:44], boolToU32(fn.Inlinable))
 	if _, err := w.Write(scalars[:]); err != nil {
 		return err
 	}
@@ -212,24 +216,25 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 	if err != nil {
 		return nil, err
 	}
-	var scalars [10 * 4]byte
+	var scalars [11 * 4]byte
 	if _, err := io.ReadFull(r, scalars[:]); err != nil {
 		return nil, err
 	}
 	fn := &FuncTemplate{
-		Name:        name,
-		NumParams:   int(binary.LittleEndian.Uint32(scalars[0:4])),
-		NumLocals:   int(binary.LittleEndian.Uint32(scalars[4:8])),
-		IsVarArgs:   u32ToBool(binary.LittleEndian.Uint32(scalars[8:12])),
-		IsGenerator: u32ToBool(binary.LittleEndian.Uint32(scalars[12:16])),
-		IsAsync:     u32ToBool(binary.LittleEndian.Uint32(scalars[16:20])),
-		IsArrow:     u32ToBool(binary.LittleEndian.Uint32(scalars[20:24])),
+		Name:              name,
+		NumParams:         int(binary.LittleEndian.Uint32(scalars[0:4])),
+		NumLocals:         int(binary.LittleEndian.Uint32(scalars[4:8])),
+		IsVarArgs:         u32ToBool(binary.LittleEndian.Uint32(scalars[8:12])),
+		IsGenerator:       u32ToBool(binary.LittleEndian.Uint32(scalars[12:16])),
+		IsAsync:           u32ToBool(binary.LittleEndian.Uint32(scalars[16:20])),
+		IsArrow:           u32ToBool(binary.LittleEndian.Uint32(scalars[20:24])),
 		// ArgumentsSlot 是带符号的哨兵槽：-1 表示箭头函数（无 own arguments）。
 		// 序列化时经 uint32 存储，反序列化必须按 int32 解释，否则 -1 变成
 		// 4294967295（正数），绕过 callClosure 的 `>= 0` 检查导致栈越界 panic。
 		ArgumentsSlot:     int(int32(binary.LittleEndian.Uint32(scalars[28:32]))),
 		NoArgumentsObject: u32ToBool(binary.LittleEndian.Uint32(scalars[32:36])),
 		NewTargetSlot:     int(int32(binary.LittleEndian.Uint32(scalars[36:40]))),
+		Inlinable:         u32ToBool(binary.LittleEndian.Uint32(scalars[40:44])),
 	}
 	codeLen := binary.LittleEndian.Uint32(scalars[24:28])
 	if codeLen > 0 {
