@@ -121,7 +121,8 @@ func TestFetchPost(t *testing.T) {
 
 	ctx := newFetchTestEnv(t)
 	code := fmt.Sprintf(`
-fetch('%s/api', { method: 'POST', headers: { 'X-Token': 'abc' }, body: 'payload' })
+var headers = new Headers({ 'X-Token': 'abc' });
+fetch('%s/api', { method: 'POST', headers: headers, body: 'payload' })
   .then(function(res) { return res.text(); })
   .then(function(t) { globalThis.__r = t; });
 `, srv.URL)

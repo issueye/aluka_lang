@@ -1592,6 +1592,9 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 	// Generator function: calling it returns a generator object rather than
 	// executing the body. The body runs lazily on each .next() call.
 	if tmpl.IsGenerator {
+		if tmpl.IsAsync {
+			return NewAsyncGeneratorValue(v, tmpl, cl.module, cl.upvalues, thisVal, args), nil
+		}
 		gen := NewGeneratorValue(v, tmpl, cl.module, cl.upvalues, thisVal, args)
 		return gen, nil
 	}
@@ -2067,7 +2070,7 @@ func (v *VM) getProto(val engine.Value) engine.Object {
 func (v *VM) inOp(l, r engine.Value) bool {
 	// Proxy interception: dispatch to the has trap if defined.
 	if p, ok := r.(*ProxyValue); ok {
-		has, err := p.proxyHas(l.String())
+		has, err := p.proxyHas(propertyKeyOf(l))
 		if err != nil {
 			return false
 		}
@@ -2077,7 +2080,7 @@ func (v *VM) inOp(l, r engine.Value) bool {
 	if !ok {
 		return false
 	}
-	key := l.String()
+	key := propertyKeyOf(l)
 	// Walk the prototype chain checking key existence. We cannot rely on
 	// Get() returning an error for missing keys (it returns Undefined, nil),
 	// so we check Keys() membership at each level.

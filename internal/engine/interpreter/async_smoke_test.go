@@ -69,6 +69,35 @@ foo().then(function(v) { globalThis.__r = v });
 	}
 }
 
+func TestAsyncMultipleAwaitsPreserveOperandStack(t *testing.T) {
+	got := vmEvalPromise(t, `
+async function foo() {
+  return [await Promise.resolve("a"), await Promise.resolve("b")].join(",");
+}
+foo().then(function(v) { globalThis.__r = v });
+`)
+	if got != "a,b" {
+		t.Errorf("multiple await operands = %q, want a,b", got)
+	}
+}
+
+func TestAsyncMultipleAwaitedMethodsPreserveThisAndOperands(t *testing.T) {
+	got := vmEvalPromise(t, `
+class Client {
+  constructor(value) { this.value = value; }
+  async first() { return { value: this.value }; }
+  async second() { return undefined; }
+  async both() { return [await this.first(), await this.second()]; }
+}
+new Client("secret").both().then(function(v) {
+  globalThis.__r = v[0].value + ":" + String(v[1]);
+});
+`)
+	if got != "secret:undefined" {
+		t.Errorf("multiple awaited methods = %q, want secret:undefined", got)
+	}
+}
+
 // TestAsyncChainedAwaits: await chains where each depends on the previous.
 func TestAsyncChainedAwaits(t *testing.T) {
 	got := vmEvalPromise(t, `

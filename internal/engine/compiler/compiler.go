@@ -3274,6 +3274,10 @@ func (c *Compiler) compileMethod(name string, fn *ast.FunctionExpr) (int, error)
 	}
 
 	c.hoistFunc(fn.Body)
+	// Methods are function scopes too. Hoist and emit nested function
+	// declarations before compiling the body; npm stream implementations use
+	// local async generator declarations inside static methods.
+	c.hoistFunctionDecls(fn.Body.Body)
 	if err := c.compileStmts(fn.Body.Body); err != nil {
 		return 0, err
 	}

@@ -918,21 +918,21 @@ func (interp *Interpreter) evalObjectLit(e *ast.ObjectLit, scope *Scope) (engine
 			continue
 		}
 		var key string
-		switch k := prop.Key.(type) {
-		case *ast.Identifier:
-			key = k.Name
-		case *ast.StringLit:
-			key = k.Value
-		case *ast.NumberLit:
-			key = k.Raw
-		default:
-			if prop.Computed {
-				kv, err := interp.evalExpr(prop.Key, scope)
-				if err != nil {
-					return nil, err
-				}
-				key = kv.String()
-			} else {
+		if prop.Computed {
+			kv, err := interp.evalExpr(prop.Key, scope)
+			if err != nil {
+				return nil, err
+			}
+			key = propertyKeyOf(kv)
+		} else {
+			switch k := prop.Key.(type) {
+			case *ast.Identifier:
+				key = k.Name
+			case *ast.StringLit:
+				key = k.Value
+			case *ast.NumberLit:
+				key = k.Raw
+			default:
 				return nil, fmt.Errorf("%w: invalid object key", engine.ErrSyntaxError)
 			}
 		}

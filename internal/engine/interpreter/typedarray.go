@@ -269,6 +269,13 @@ func (interp *Interpreter) setupTypedArrayProto(p engine.Object, kind engine.Typ
 			for i := 0; i < st.Length() && offset+i < t.Length(); i++ {
 				_ = t.SetElement(offset+i, st.ElementAt(i))
 			}
+		} else if bytes, ok := engine.AsBuffer(args[0]); ok {
+			for i, b := range bytes {
+				if offset+i >= t.Length() {
+					break
+				}
+				_ = t.SetElement(offset+i, engine.IntValue(int(b)))
+			}
 		} else if arr, ok := args[0].(*engine.ArrayValue); ok {
 			for i, e := range arr.Elems() {
 				if offset+i < t.Length() {
@@ -286,10 +293,14 @@ func (interp *Interpreter) setupTypedArrayProto(p engine.Object, kind engine.Typ
 		}
 		begin, end := sliceRange(args, t.Length())
 		byteLen := (end - begin) * t.Kind().BytesPerElement()
+		var out *engine.TypedArrayValue
 		if t.Buffer() != nil {
-			return engine.NewTypedArrayView(t.Kind(), t.Buffer(), t.ByteOffset()+begin*t.Kind().BytesPerElement(), byteLen), nil
+			out = engine.NewTypedArrayView(t.Kind(), t.Buffer(), t.ByteOffset()+begin*t.Kind().BytesPerElement(), byteLen)
+		} else {
+			out = engine.NewTypedArrayValue(t.Kind(), append([]byte(nil), t.Bytes()[begin*t.Kind().BytesPerElement():end*t.Kind().BytesPerElement()]...))
 		}
-		return engine.NewTypedArrayValue(t.Kind(), append([]byte(nil), t.Bytes()[begin*t.Kind().BytesPerElement():end*t.Kind().BytesPerElement()]...)), nil
+		engine.SetProto(out, p)
+		return out, nil
 	}))
 
 	_ = p.Set("slice", interp.nativeMethod("slice", func(this engine.Value, args []engine.Value) (engine.Value, error) {
@@ -299,6 +310,7 @@ func (interp *Interpreter) setupTypedArrayProto(p engine.Object, kind engine.Typ
 		}
 		begin, end := sliceRange(args, t.Length())
 		out := engine.NewTypedArrayValue(t.Kind(), make([]byte, (end-begin)*t.Kind().BytesPerElement()))
+		engine.SetProto(out, p)
 		for i := begin; i < end; i++ {
 			_ = out.SetElement(i-begin, t.ElementAt(i))
 		}
@@ -436,6 +448,7 @@ func (interp *Interpreter) setupTypedArrayProto(p engine.Object, kind engine.Typ
 		}
 		fn, _ := args[0].AsFunction()
 		out := engine.NewTypedArrayValue(t.Kind(), make([]byte, t.Length()*t.Kind().BytesPerElement()))
+		engine.SetProto(out, p)
 		for i := 0; i < t.Length(); i++ {
 			v, err := fn.Call([]engine.Value{t.ElementAt(i), engine.IntValue(i), this})
 			if err != nil {
@@ -463,6 +476,7 @@ func (interp *Interpreter) setupTypedArrayProto(p engine.Object, kind engine.Typ
 			}
 		}
 		out := engine.NewTypedArrayValue(t.Kind(), make([]byte, len(kept)*t.Kind().BytesPerElement()))
+		engine.SetProto(out, p)
 		for i, e := range kept {
 			_ = out.SetElement(i, e)
 		}

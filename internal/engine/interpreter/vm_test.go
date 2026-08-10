@@ -1215,6 +1215,22 @@ func TestVMTypedArrayIterator(t *testing.T) {
 	}
 }
 
+func TestVMTypedArrayDerivedValuesKeepPrototype(t *testing.T) {
+	got := vmEvalStr(t, `
+		var bytes = new Uint8Array([1, 2, 3, 4]);
+		var tail = bytes.subarray(1).subarray(1);
+		[
+			tail.join(","),
+			typeof bytes.slice(1).subarray,
+			typeof bytes.map(x => x).subarray,
+			typeof bytes.filter(x => x > 1).subarray
+		].join(":")
+	`)
+	if got != "3,4:function:function:function" {
+		t.Errorf("typed array derived prototypes = %q", got)
+	}
+}
+
 func TestVMClassStaticInheritance(t *testing.T) {
 	got := vmEvalStr(t, `
 		class Base {

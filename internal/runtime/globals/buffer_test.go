@@ -72,6 +72,24 @@ globalThis.__r = b.toString() + ':' + b.length;
 	}
 }
 
+// TestUint8ArraySetBuffer covers byte concatenation used by streaming decoders.
+func TestUint8ArraySetBuffer(t *testing.T) {
+	ctx := newBufferTestContext(t)
+	got := evalGet(t, ctx, `
+const buffers = [Buffer.from([1, 2]), Buffer.from([3, 4, 5])];
+const output = new Uint8Array(5);
+let offset = 0;
+for (const buffer of buffers) {
+  output.set(buffer, offset);
+  offset += buffer.length;
+}
+globalThis.__r = [...output].join(',');
+`, "__r")
+	if got != "1,2,3,4,5" {
+		t.Errorf("Uint8Array.set(Buffer) = %q, want 1,2,3,4,5", got)
+	}
+}
+
 // TestBufferIndexAccess 验证数字索引读写与只读 length。
 func TestBufferIndexAccess(t *testing.T) {
 	ctx := newBufferTestContext(t)

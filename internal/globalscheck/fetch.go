@@ -10,10 +10,10 @@ package globals
 //   - Headers/FormData 用有序键值对列表（保持插入顺序，键名不区分大小写）。
 
 import (
-	"sort"
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -355,8 +355,26 @@ func headersToGo(v engine.Value) http.Header {
 		return h
 	}
 	if o, ok := v.AsObject(); ok {
+		if forEach, err := o.Get("forEach"); err == nil && forEach.IsFunction() {
+			visited := false
+			collector := engine.NewFunction("", func(args []engine.Value) (engine.Value, error) {
+				if len(args) >= 2 {
+					h.Add(args[1].String(), args[0].String())
+					visited = true
+				}
+				return engine.Undefined(), nil
+			})
+			if f, ok := forEach.AsFunction(); ok {
+				if _, err := f.Call([]engine.Value{collector}); err == nil && visited {
+					return h
+				}
+			}
+		}
 		for _, k := range o.Keys() {
 			if val, err := o.Get(k); err == nil {
+				if strings.HasPrefix(k, "\x00symbol:") || val.IsFunction() {
+					continue
+				}
 				h.Set(k, val.String())
 			}
 		}

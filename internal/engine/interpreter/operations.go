@@ -93,8 +93,12 @@ func applyBinaryOp(op string, l, r engine.Value) engine.Value {
 		return engine.Number(float64(uint32(ln) >> (uint(rn) & 31)))
 	case "in":
 		if o, ok := r.AsObject(); ok {
-			_, err := o.Get(l.String())
-			return engine.Boolean(err == nil)
+			key := propertyKeyOf(l)
+			for cur := o; cur != nil; cur = engine.GetProto(cur) {
+				if hasOwn(cur, key) {
+					return engine.Boolean(true)
+				}
+			}
 		}
 		return engine.Boolean(false)
 	case "instanceof":
