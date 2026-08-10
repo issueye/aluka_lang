@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 	"weak"
 )
 
@@ -30,32 +31,19 @@ import (
 type jsHeap struct {
 	mu      sync.Mutex
 	objects map[weak.Pointer[objectValue]]struct{}
-	sweeps  int64 // 累计 sweep 次数（锁内访问）
 }
 
 // gcSweepEvery 控制注册表自动清扫频率：每分配这么多对象就清扫一次，
 // 移除已被 Go GC 回收（weak.Value()==nil）的弱引用条目，防止注册表无限增长。
 const gcSweepEvery = 4096
 
-// freeOSEverySweep 控制周期性归还 OS 内存的频率：每完成这么多次 sweep
-// （即每 gcSweepEvery*freeOSEverySweep 次对象分配）触发一次
-// runtime.GC() + debug.FreeOSMemory()。默认 16 → 约每 65K 分配归还一次，
-// 兼顾 RSS 稳定与 FreeOSMemory 的 syscall 成本。可由环境变量
-// ALUKA_FREEOS_INTERVAL 覆盖（<=0 禁用周期归还）。
-var freeOSEverySweep = int64(16)
+// freeOSAllocThreshold 控制高分配压力下通知后台 freeOS 的频率：每分配这么
+// 多对象 try-send 一次信号。默认 32*gcSweepEvery ≈ 131K，让重负载（如对话
+// 上下文构建）期间后台 goroutine 及时归还 OS，而轻负载只靠定时器周期触发。
+const freeOSAllocThreshold = 32 * gcSweepEvery
 
 // allocCount 是累计对象分配数（原子累加，无需持锁/无需 map）。
-// 历史上挂在 jsHeap.alloc（锁内），但计数本身不需要弱引用 map；
-// 拆出后让 register 在未启用监控时完全跳过 map 插入。
 var allocCount atomic.Int64
-
-func init() {
-	if v := os.Getenv("ALUKA_FREEOS_INTERVAL"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			freeOSEverySweep = n
-		}
-	}
-}
 
 // jsHeapGlobal 是全局对象堆。
 var jsHeapGlobal = &jsHeap{objects: make(map[weak.Pointer[objectValue]]struct{})}
@@ -66,25 +54,30 @@ var jsHeapGlobal = &jsHeap{objects: make(map[weak.Pointer[objectValue]]struct{})
 // 映射的唯一目的是供 GC()/monitor 统计存活对象数（liveCount），它对正确性
 // 没有任何影响——标记-清除靠 markFromRoots 从根集遍历。对 200K 对象，弱引用
 // map 本身约占 9-12MB 并产生等量的 register/weak 分配，是默认运行时的纯开销。
-// 监控关闭时跳过 map 插入，只累加原子计数器并驱动周期 sweep/FreeOS。
+// 监控关闭时跳过 map 插入，只累加原子计数器。
+//
+// 归还 OS 内存（FreeOSMemory）不在热路径同步执行——那会因 runtime.GC() 的
+// STW + FreeOSMemory syscall 阻塞分配线程，在对话/交互场景造成可感知卡顿。
+// 改由后台 freeOSLoop goroutine 按空闲周期触发（见 startFreeOSLoop）。
 func register(obj *objectValue) {
 	alloc := allocCount.Add(1)
-	// 周期 sweep 与 FreeOS 仅依赖分配计数，与是否注册弱引用无关。
+	// 周期清扫弱引用 map（仅统计用，map 空时为 no-op）。扫描本身只遍历 map
+	// 条目，不触发 GC/FreeOS，开销低。
 	if alloc%gcSweepEvery == 0 {
-		var needFree bool
 		jsHeapGlobal.mu.Lock()
-		// 仅在 map 非空（监控启用过）时才清扫。
 		if len(jsHeapGlobal.objects) > 0 {
 			jsHeapGlobal.sweepLocked()
 		}
-		jsHeapGlobal.sweeps++
-		if freeOSEverySweep > 0 && jsHeapGlobal.sweeps%freeOSEverySweep == 0 {
-			needFree = true
-		}
 		jsHeapGlobal.mu.Unlock()
-		if needFree {
-			runtime.GC()
-			debug.FreeOSMemory()
+		// 高分配压力下非阻塞通知后台 freeOS goroutine（try-send，缓冲 1 合并
+		// 冗余）。不阻塞分配热路径；goroutine 在下次调度点执行 GC+FreeOS。
+		// 仅在累积较多分配（每 freeOSAllocThreshold 次 sweep）时通知，避免
+		// 频繁发信号。
+		if alloc%freeOSAllocThreshold == 0 {
+			select {
+			case freeOSSig <- struct{}{}:
+			default:
+			}
 		}
 	}
 	// 弱引用注册仅在监控启用时进行（liveCount 统计用）。
@@ -95,6 +88,62 @@ func register(obj *objectValue) {
 	}
 	BumpAlloc() // 监控计数器（gated）
 }
+
+// freeOSInterval 控制后台归还 OS 内存的周期。默认 2s：在对话/交互的间隙
+// 触发 GC+FreeOSMemory，把已回收页归还 OS，而不阻塞分配热路径。可由环境
+// 变量 ALUKA_FREEOS_INTERVAL 覆盖：
+//   >0 ：以秒为单位的周期（如 3 = 每 3 秒）
+//   <=0：禁用后台归还（RSS 将单调增长，但零延迟开销）
+var freeOSInterval = 2 * time.Second
+
+// freeOSSig 是 register→freeOSLoop 的非阻塞信号：达到分配阈值后 try-send，
+// goroutine 收到或定时器到期时执行 GC+FreeOS。缓冲 1 容许一次冗余触发合并。
+var freeOSSig = make(chan struct{}, 1)
+
+func init() {
+	if v := os.Getenv("ALUKA_FREEOS_INTERVAL"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			switch {
+			case n <= 0:
+				freeOSInterval = 0 // 禁用
+			default:
+				freeOSInterval = time.Duration(n) * time.Second
+			}
+		}
+	}
+	// 启动后台归还 OS 内存 goroutine（sync.Once 内部守卫，禁用时直接返回）。
+	startFreeOSLoop()
+}
+
+// startFreeOSLoop 启动后台归还 OS 内存 goroutine。进程生命周期内只启一次
+// （sync.Once）。goroutine 在定时器到期或 freeOSSig 收到信号时执行
+// runtime.GC()+debug.FreeOSMemory()——STW 发生在后台 goroutine 调度点，
+// 不阻塞 register 热路径。空闲时按 freeOSInterval 周期触发，忙时由分配阈值
+// 信号触发但合并冗余。
+func startFreeOSLoop() {
+	freeOSLoopOnce.Do(func() {
+		if freeOSInterval <= 0 {
+			return // 禁用
+		}
+		go func() {
+			ticker := time.NewTicker(freeOSInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-freeOSSig:
+					runtime.GC()
+					debug.FreeOSMemory()
+				case <-ticker.C:
+					runtime.GC()
+					debug.FreeOSMemory()
+				}
+			}
+		}()
+	})
+}
+
+// freeOSLoopOnce 保证后台 goroutine 只启动一次。
+var freeOSLoopOnce sync.Once
 
 // sweepLocked 移除已由 Go GC 回收（weak.Value()==nil）的弱引用条目。
 // 调用方须持有 mu。同时清理所有已注册 WeakMap（builtin 包关联存储）的
