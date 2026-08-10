@@ -356,3 +356,51 @@ if echo "$bad_log" | grep -q "non-constant specifier" && [ -x "$DIR/t2/dynbad.ex
 else
   echo "FAIL  T2-B4 unresolvable dynamic import warns"; FAIL=$((FAIL + 1))
 fi
+
+# 19) Bytecode optimization：优化前后行为一致，并在报告中暴露阶段收益。
+printf '%s\n' \
+'1;' \
+'function choose(flag) {' \
+'  if (flag) { return "yes"; } else { return "no"; }' \
+'}' \
+'console.log("byteopt:" + choose(true));' > "$DIR/t2/byteopt.js"
+plain_byteopt="$("$ALUKA" build --compile --outfile "$DIR/t2/byteopt-plain.exe" "$DIR/t2/byteopt.js" >/dev/null 2>&1; "$DIR/t2/byteopt-plain.exe" 2>&1)"
+optimized_byteopt="$("$ALUKA" build --compile --optimize --outfile "$DIR/t2/byteopt-opt.exe" "$DIR/t2/byteopt.js" >/dev/null 2>&1; "$DIR/t2/byteopt-opt.exe" 2>&1)"
+if [ "$optimized_byteopt" = "$plain_byteopt" ] && [ "$optimized_byteopt" = "byteopt:yes" ]; then
+  echo "PASS  bytecode optimize output identical"; PASS=$((PASS + 1))
+else
+  echo "FAIL  bytecode optimize output identical"; FAIL=$((FAIL + 1))
+fi
+"$ALUKA" build --compile --optimize --analyze=json --analyze-out "$DIR/t2/byteopt-report.json" \
+  --outfile "$DIR/t2/byteopt-report.exe" "$DIR/t2/byteopt.js" >/dev/null 2>&1
+if grep -q '"bytecodeOptimized"' "$DIR/t2/byteopt-report.json" \
+   && grep -q '"bytecode"' "$DIR/t2/byteopt-report.json"; then
+  echo "PASS  bytecode analysis report"; PASS=$((PASS + 1))
+else
+  echo "FAIL  bytecode analysis report"; FAIL=$((FAIL + 1))
+fi
+
+# 20) analyze-only 不写 outfile。
+"$ALUKA" build --compile --analyze-only --analyze=json --analyze-out "$DIR/t2/analyze-only.json" \
+  --outfile "$DIR/t2/analyze-only.exe" "$DIR/t2/byteopt.js" >/dev/null 2>&1
+if [ -f "$DIR/t2/analyze-only.json" ] && [ ! -f "$DIR/t2/analyze-only.exe" ]; then
+  echo "PASS  analyze-only skips artifact"; PASS=$((PASS + 1))
+else
+  echo "FAIL  analyze-only skips artifact"; FAIL=$((FAIL + 1))
+fi
+
+# 21) payload 预算超限返回退出码 2，且不写产物。
+set +e
+"$ALUKA" build --compile --max-payload=1B --outfile "$DIR/t2/budget.exe" "$DIR/t2/byteopt.js" >/dev/null 2>&1
+budget_rc=$?
+set -u
+if [ "$budget_rc" -eq 2 ] && [ ! -f "$DIR/t2/budget.exe" ]; then
+  echo "PASS  payload budget gate"; PASS=$((PASS + 1))
+else
+  echo "FAIL  payload budget gate (rc=$budget_rc)"; FAIL=$((FAIL + 1))
+fi
+
+echo "ℹ build conformance: $PASS passed, $FAIL failed"
+if [ "$FAIL" -gt 0 ]; then
+  exit 1
+fi

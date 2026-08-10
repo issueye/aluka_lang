@@ -1370,6 +1370,15 @@ OPTIONS:
                          then throw JS RangeError 'out of memory', then
                          kill after grace period.
 
+BUILD OPTIMIZATION:
+    aluka build --compile --optimize <entry>
+                         Enable tree-shake, AST minify and bytecode optimize
+    aluka build --compile --analyze[=text|json] <entry>
+                         Report payload/module hotspots and optimization gains
+    --analyze-out=<path> Write build analysis report to a file
+    --analyze-only       Analyze payload without writing an executable
+    --max-payload=<size> Fail with exit code 2 when payload exceeds budget
+
 EXAMPLES:
     aluka -e "console.log(1+1)"        # 输出 2
     aluka hello.js                       # 执行 hello.js

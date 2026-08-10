@@ -11,6 +11,9 @@
 //
 //	--tree-shake / --no-tree-shake  模块级 tree-shaking（默认开启）
 //	--minify                        死代码消除 + 未用声明删除 + 常量折叠
+//	--bytecode-opt                  基础 VM 字节码优化（指令删除/跳转穿透/融合）
+//	--optimize                      启用 tree-shake + minify + bytecode-opt
+//	--analyze[=text|json]            输出 payload 热点和阶段收益报告
 //	--outdir <dir>                  多入口分别产出（共享模块构建期去重）
 package main
 
@@ -19,16 +22,42 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/aluka-lang/aluka/internal/bundler/analyze"
 	"github.com/aluka-lang/aluka/internal/bundler/compile"
 	"github.com/aluka-lang/aluka/internal/bundler/graph"
 	"github.com/aluka-lang/aluka/internal/bundler/minify"
 	"github.com/aluka-lang/aluka/internal/bundler/shake"
+	"github.com/aluka-lang/aluka/internal/engine/bytecode"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/engine/parser"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
+
+type buildOptions struct {
+	compileOnly   bool
+	outfile       string
+	outdir        string
+	basePath      string
+	treeShake     bool
+	minify        bool
+	bytecodeOpt   bool
+	analyzeFormat string
+	analyzeOut    string
+	analyzeOnly   bool
+	analyzeTop    int
+	maxPayload    int64
+	noTreeShake   bool
+	noBytecodeOpt bool
+}
+
+type buildResult struct {
+	summary        string
+	report         *analyze.Report
+	budgetExceeded bool
+}
 
 // stripBOM 剥离开头的 UTF-8 BOM。
 func stripBOM(src []byte) []byte {
@@ -41,49 +70,85 @@ func stripBOM(src []byte) []byte {
 // cmdBuild 实现 `aluka build [--compile] [--outfile <path>] [--outdir <dir>]
 // [--base <path>] [--tree-shake|--no-tree-shake] [--minify] <entry>...`。
 func cmdBuild(args []string) {
-	compileOnly := false
-	outfile := ""
-	outdir := ""
-	basePath := ""
-	treeShake := true
-	doMinify := false
+	opts := buildOptions{treeShake: true, analyzeTop: 10}
+	optimize := false
 	var entries []string
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--compile":
-			compileOnly = true
+			opts.compileOnly = true
 		case arg == "--outfile":
 			if i+1 >= len(args) {
 				fatalErr("aluka build: --outfile requires a path")
 			}
 			i++
-			outfile = args[i]
+			opts.outfile = args[i]
 		case strings.HasPrefix(arg, "--outfile="):
-			outfile = strings.TrimPrefix(arg, "--outfile=")
+			opts.outfile = strings.TrimPrefix(arg, "--outfile=")
 		case arg == "--outdir":
 			if i+1 >= len(args) {
 				fatalErr("aluka build: --outdir requires a path")
 			}
 			i++
-			outdir = args[i]
+			opts.outdir = args[i]
 		case strings.HasPrefix(arg, "--outdir="):
-			outdir = strings.TrimPrefix(arg, "--outdir=")
+			opts.outdir = strings.TrimPrefix(arg, "--outdir=")
 		case arg == "--base":
 			if i+1 >= len(args) {
 				fatalErr("aluka build: --base requires a path")
 			}
 			i++
-			basePath = args[i]
+			opts.basePath = args[i]
 		case strings.HasPrefix(arg, "--base="):
-			basePath = strings.TrimPrefix(arg, "--base=")
+			opts.basePath = strings.TrimPrefix(arg, "--base=")
 		case arg == "--tree-shake":
-			treeShake = true
+			opts.treeShake = true
+			opts.noTreeShake = false
 		case arg == "--no-tree-shake":
-			treeShake = false
+			opts.treeShake = false
+			opts.noTreeShake = true
 		case arg == "--minify":
-			doMinify = true
+			opts.minify = true
+		case arg == "--bytecode-opt":
+			opts.bytecodeOpt = true
+			opts.noBytecodeOpt = false
+		case arg == "--no-bytecode-opt":
+			opts.bytecodeOpt = false
+			opts.noBytecodeOpt = true
+		case arg == "--optimize":
+			optimize = true
+		case arg == "--analyze":
+			opts.analyzeFormat = "text"
+		case strings.HasPrefix(arg, "--analyze="):
+			opts.analyzeFormat = strings.TrimPrefix(arg, "--analyze=")
+		case arg == "--analyze-out":
+			if i+1 >= len(args) {
+				fatalErr("aluka build: --analyze-out requires a path")
+			}
+			i++
+			opts.analyzeOut = args[i]
+		case strings.HasPrefix(arg, "--analyze-out="):
+			opts.analyzeOut = strings.TrimPrefix(arg, "--analyze-out=")
+		case arg == "--analyze-only":
+			opts.analyzeOnly = true
+		case arg == "--analyze-top":
+			if i+1 >= len(args) {
+				fatalErr("aluka build: --analyze-top requires a number")
+			}
+			i++
+			opts.analyzeTop = parseAnalyzeTop(args[i])
+		case strings.HasPrefix(arg, "--analyze-top="):
+			opts.analyzeTop = parseAnalyzeTop(strings.TrimPrefix(arg, "--analyze-top="))
+		case arg == "--max-payload":
+			if i+1 >= len(args) {
+				fatalErr("aluka build: --max-payload requires a size")
+			}
+			i++
+			opts.maxPayload = parsePayloadBudget(args[i])
+		case strings.HasPrefix(arg, "--max-payload="):
+			opts.maxPayload = parsePayloadBudget(strings.TrimPrefix(arg, "--max-payload="))
 		case arg == "--sourcemap" || arg == "--target":
 			fatalErr("aluka build: " + arg + " not implemented (scope: --compile only)")
 		case strings.HasPrefix(arg, "-"):
@@ -93,16 +158,36 @@ func cmdBuild(args []string) {
 		}
 	}
 
-	if !compileOnly {
+	if optimize {
+		if opts.noTreeShake {
+			fatalErr("aluka build: --optimize conflicts with --no-tree-shake")
+		}
+		if opts.noBytecodeOpt {
+			fatalErr("aluka build: --optimize conflicts with --no-bytecode-opt")
+		}
+		opts.treeShake = true
+		opts.minify = true
+		opts.bytecodeOpt = true
+	}
+	if opts.analyzeOnly && opts.analyzeFormat == "" {
+		opts.analyzeFormat = "text"
+	}
+	if opts.analyzeFormat != "" && opts.analyzeFormat != "text" && opts.analyzeFormat != "json" {
+		fatalErr("aluka build: --analyze must be text or json")
+	}
+	if opts.analyzeOut != "" && opts.analyzeFormat == "" {
+		fatalErr("aluka build: --analyze-out requires --analyze")
+	}
+	if !opts.compileOnly {
 		fatalErr("aluka build: M1 supports only --compile (single-file executable); plain bundling is not implemented")
 	}
 	if len(entries) == 0 {
 		fatalErr("aluka build: missing entry file")
 	}
-	if outdir != "" && outfile != "" {
+	if opts.outdir != "" && opts.outfile != "" {
 		fatalErr("aluka build: --outdir and --outfile are mutually exclusive")
 	}
-	if len(entries) > 1 && outdir == "" {
+	if len(entries) > 1 && opts.outdir == "" {
 		fatalErr("aluka build: multiple entries require --outdir")
 	}
 
@@ -114,21 +199,52 @@ func cmdBuild(args []string) {
 
 	// 基座：--base 指定（跨平台产物 = 目标平台基座 + 同一 payload，
 	// 字节码平台无关）；默认当前可执行文件。
-	if basePath == "" {
+	if opts.basePath == "" {
 		if exe, err := os.Executable(); err == nil {
-			basePath = exe
+			opts.basePath = exe
 		} else {
 			fatalErr("aluka build: cannot locate base binary: " + err.Error())
 		}
 	}
 
+	results := make([]buildResult, 0, len(entries))
 	for _, entry := range entries {
-		buildOne(vm, resolver, basePath, entry, outfile, outdir, treeShake, doMinify)
+		results = append(results, buildOne(vm, resolver, entry, opts))
+	}
+
+	jsonStdout := opts.analyzeFormat == "json" && opts.analyzeOut == ""
+	for _, result := range results {
+		if result.summary == "" {
+			continue
+		}
+		if jsonStdout {
+			fmt.Fprintln(os.Stderr, result.summary)
+		} else {
+			fmt.Println(result.summary)
+		}
+	}
+	reports := make([]*analyze.Report, 0, len(results))
+	budgetExceeded := false
+	for _, result := range results {
+		if result.report != nil {
+			reports = append(reports, result.report)
+		}
+		budgetExceeded = budgetExceeded || result.budgetExceeded
+	}
+	if opts.analyzeFormat != "" {
+		if err := writeAnalysisReports(opts, reports); err != nil {
+			fatalErr("aluka build: " + err.Error())
+		}
+	}
+	if budgetExceeded {
+		fmt.Fprintf(os.Stderr, "aluka build: payload exceeds --max-payload=%d bytes\n", opts.maxPayload)
+		osExit(2)
 	}
 }
 
 // buildOne 构建单个入口的产物。
-func buildOne(vm *interpreter.VM, resolver *module.Resolver, basePath, entry, outfile, outdir string, treeShake, doMinify bool) {
+func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts buildOptions) buildResult {
+	needAnalysis := opts.analyzeFormat != "" || opts.maxPayload > 0
 	// 构建模块图：入口 + 静态可达依赖（import/export/require/动态 import
 	// 字面量与可折叠常量），编译全部模块并记录构建期解析映射。
 	graphResult, err := graph.Build(vm, resolver, entry)
@@ -141,12 +257,17 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, basePath, entry, ou
 		fmt.Fprintf(os.Stderr, "aluka build: warning: %s: dynamic import with non-constant specifier cannot be precompiled; it will fail at runtime\n", key)
 	}
 
+	var rawStage, shakenStage, minifiedStage, optimizedStage analyze.StageMeasurement
+	if needAnalysis {
+		rawStage = mustMeasureStage(graphResult.Modules)
+	}
+
 	// 打包数据（tree-shake → minify → pack）。
 	modules := graphResult.Modules
 	resolutions := graphResult.Resolutions
 	assets := graphResult.Assets
 	removed := 0
-	if treeShake {
+	if opts.treeShake {
 		shaken, err := shake.Shake(vm, graphResult, graphResult.Entry)
 		if err != nil {
 			fatalErr("aluka build: " + err.Error())
@@ -156,7 +277,10 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, basePath, entry, ou
 		assets = shaken.Assets
 		removed = shaken.Removed
 	}
-	if doMinify {
+	if needAnalysis {
+		shakenStage = mustMeasureStage(modules)
+	}
+	if opts.minify {
 		rootDir := graphResult.RootDir
 		for i, m := range modules {
 			nd, err := minifyModule(vm, rootDir, m)
@@ -166,40 +290,181 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, basePath, entry, ou
 			modules[i] = nd
 		}
 	}
+	if needAnalysis {
+		minifiedStage = mustMeasureStage(modules)
+	}
+	var bytecodeStats bytecode.OptimizationStats
+	if opts.bytecodeOpt {
+		for _, mod := range modules {
+			stats, err := bytecode.OptimizeModule(mod.Module)
+			if err != nil {
+				fatalErr("aluka build: bytecode optimize " + mod.Path + ": " + err.Error())
+			}
+			mergeBytecodeStats(&bytecodeStats, stats)
+		}
+	}
+	if needAnalysis {
+		optimizedStage = mustMeasureStage(modules)
+	}
 
 	payload, err := compile.Pack(graphResult.Entry, modules, resolutions, assets)
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
 	}
 
-	// 输出路径：--outfile 或 <entry 基名>（去掉扩展名）；--outdir 下进入目录。
-	out := outfile
-	if out == "" {
-		base := filepath.Base(entry)
-		out = strings.TrimSuffix(base, filepath.Ext(base))
-		if out == "" {
-			out = "app"
-		}
-		if outdir != "" {
-			if err := os.MkdirAll(outdir, 0755); err != nil {
+	out := buildOutputPath(entry, opts.outfile, opts.outdir)
+	baseSize := fileSize(opts.basePath)
+	budgetExceeded := opts.maxPayload > 0 && int64(len(payload)) > opts.maxPayload
+	payloadOffset := baseSize
+	artifactSize := int64(0)
+	if !opts.analyzeOnly && !budgetExceeded {
+		if opts.outdir != "" {
+			if err := os.MkdirAll(opts.outdir, 0755); err != nil {
 				fatalErr("aluka build: " + err.Error())
 			}
-			out = filepath.Join(outdir, out)
 		}
+		var err error
+		payloadOffset, err = writeCompiledBinary(opts.basePath, out, payload)
+		if err != nil {
+			fatalErr("aluka build: " + err.Error())
+		}
+		artifactSize = fileSize(out)
 	}
 
-	payloadOffset, err := writeCompiledBinary(basePath, out, payload)
-	if err != nil {
-		fatalErr("aluka build: " + err.Error())
-	}
-
-	size, _ := os.Stat(out)
 	shakeNote := ""
 	if removed > 0 {
 		shakeNote = fmt.Sprintf(", tree-shaken %d modules", removed)
 	}
-	fmt.Printf("Compiled %s → %s (%d bytes, payload at %d, %d modules%s, base %s)\n",
-		entry, out, size.Size(), payloadOffset, len(modules), shakeNote, basePath)
+	result := buildResult{budgetExceeded: budgetExceeded}
+	switch {
+	case budgetExceeded:
+		result.summary = fmt.Sprintf("Analyzed %s (payload %d bytes exceeds budget %d bytes; artifact not written)", entry, len(payload), opts.maxPayload)
+	case opts.analyzeOnly:
+		result.summary = fmt.Sprintf("Analyzed %s (%d payload bytes, %d modules%s; artifact not written)", entry, len(payload), len(modules), shakeNote)
+	default:
+		result.summary = fmt.Sprintf("Compiled %s → %s (%d bytes, payload at %d, %d modules%s, base %s)",
+			entry, out, artifactSize, payloadOffset, len(modules), shakeNote, opts.basePath)
+	}
+	if needAnalysis {
+		report, err := analyze.BuildReport(analyze.Input{
+			Entry:             graphResult.Entry,
+			Output:            out,
+			RootDir:           graphResult.RootDir,
+			Resolutions:       graphResult.Resolutions,
+			UnresolvedDynamic: graphResult.UnresolvedDynamic,
+			Assets:            assets,
+			Raw:               rawStage,
+			Shaken:            shakenStage,
+			Minified:          minifiedStage,
+			BytecodeOptimized: optimizedStage,
+			PayloadBytes:      int64(len(payload)),
+			BaseBytes:         baseSize,
+			ArtifactBytes:     artifactSize,
+			Options: analyze.Options{
+				TreeShake:        opts.treeShake,
+				Minify:           opts.minify,
+				BytecodeOptimize: opts.bytecodeOpt,
+				MaxPayloadBytes:  opts.maxPayload,
+			},
+			BytecodeStats: bytecodeStats,
+		})
+		if err != nil {
+			fatalErr("aluka build: " + err.Error())
+		}
+		result.report = report
+	}
+	return result
+}
+
+func parseAnalyzeTop(value string) int {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 || n > 100 {
+		fatalErr("aluka build: --analyze-top must be an integer from 1 to 100")
+	}
+	return n
+}
+
+func parsePayloadBudget(value string) int64 {
+	n, err := parseMemorySize(value)
+	if err != nil || n <= 0 {
+		fatalErr("aluka build: invalid --max-payload value " + value)
+	}
+	return n
+}
+
+func buildOutputPath(entry, outfile, outdir string) string {
+	if outfile != "" {
+		return outfile
+	}
+	base := filepath.Base(entry)
+	out := strings.TrimSuffix(base, filepath.Ext(base))
+	if out == "" {
+		out = "app"
+	}
+	if outdir != "" {
+		out = filepath.Join(outdir, out)
+	}
+	return out
+}
+
+func fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		fatalErr("aluka build: stat " + path + ": " + err.Error())
+	}
+	return info.Size()
+}
+
+func mustMeasureStage(modules []*compile.EntryData) analyze.StageMeasurement {
+	stage, err := analyze.MeasureStage(modules)
+	if err != nil {
+		fatalErr("aluka build: " + err.Error())
+	}
+	return stage
+}
+
+func mergeBytecodeStats(dst *bytecode.OptimizationStats, src bytecode.OptimizationStats) {
+	dst.FunctionsBefore += src.FunctionsBefore
+	dst.FunctionsAfter += src.FunctionsAfter
+	dst.InstructionsBefore += src.InstructionsBefore
+	dst.InstructionsAfter += src.InstructionsAfter
+	dst.RemovedInstructions += src.RemovedInstructions
+	dst.FusedInstructions += src.FusedInstructions
+	dst.ThreadedJumps += src.ThreadedJumps
+}
+
+func writeAnalysisReports(opts buildOptions, reports []*analyze.Report) error {
+	var w io.Writer = os.Stdout
+	var file *os.File
+	if opts.analyzeOut != "" {
+		dir := filepath.Dir(opts.analyzeOut)
+		if dir != "." {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return fmt.Errorf("create analyze output directory: %w", err)
+			}
+		}
+		var err error
+		file, err = os.Create(opts.analyzeOut)
+		if err != nil {
+			return fmt.Errorf("create analyze output: %w", err)
+		}
+		defer file.Close()
+		w = file
+	}
+	if opts.analyzeFormat == "json" {
+		return analyze.WriteJSON(w, reports)
+	}
+	for i, report := range reports {
+		if i > 0 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+		if err := analyze.WriteText(w, report, opts.analyzeTop); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // minifyModule 重新解析并最小化 ESM 模块（CJS 保守跳过——字符串包装
