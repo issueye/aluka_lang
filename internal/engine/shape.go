@@ -23,6 +23,15 @@ type Shape struct {
 // shapeCounter 分配 Shape 唯一 id。
 var shapeCounter uint64
 
+// maxShapeProps 限制 Shape transition 树深度。rootShape 是进程级全局树且
+// 永不回收：若对同一对象持续添加不同属性名（如动态对象 o["k"+i]=i），每
+// 个新属性派生一个新 Shape 并挂到树上，第 N 个 Shape 累积 N 个属性名，总
+// 内存 O(N²)，最终 OOM。超过阈值后 transition 返回"不参与树缓存"的独立
+// Shape（仍带完整 names/index，对象释放后可随 Go GC 回收），把最坏内存
+// 降到 O(N)。正常对象（固定结构，属性数通常远小于该值）仍完整享受 Shape
+// 共享。
+const maxShapeProps = 128
+
 // shapeTransitionMu serializes writes to the process-wide Shape tree. Native
 // async operations may prepare JS values on worker goroutines while the VM is
 // active, so rootShape transitions are not confined to the event-loop thread.
@@ -52,6 +61,23 @@ func (s *Shape) transition(name string) *Shape {
 	shapeTransitionMu.Lock()
 	defer shapeTransitionMu.Unlock()
 
+	// 深度超限：创建独立 Shape（不挂全局树，对象释放后可回收），
+	// 防止动态属性名把 O(N²) 的 shape 树撑爆。
+	if len(s.names) >= maxShapeProps {
+		shapeCounter++
+		ns := &Shape{
+			id:    shapeCounter,
+			names: append(append([]string(nil), s.names...), name),
+			index: make(map[string]int, len(s.index)+1),
+			next:  make(map[string]*Shape),
+		}
+		for k, v := range s.index {
+			ns.index[k] = v
+		}
+		ns.index[name] = len(s.names)
+		return ns
+	}
+
 	if s.next == nil {
 		s.next = make(map[string]*Shape)
 	}
@@ -61,15 +87,13 @@ func (s *Shape) transition(name string) *Shape {
 	shapeCounter++
 	ns := &Shape{
 		id:    shapeCounter,
-		names: make([]string, 0, len(s.names)+1),
+		names: append(append([]string(nil), s.names...), name),
 		index: make(map[string]int, len(s.index)+1),
 		next:  make(map[string]*Shape),
 	}
-	ns.names = append(ns.names, s.names...)
 	for k, v := range s.index {
 		ns.index[k] = v
 	}
-	ns.names = append(ns.names, name)
 	ns.index[name] = len(s.names)
 	s.next[name] = ns
 	return ns

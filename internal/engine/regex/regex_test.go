@@ -312,3 +312,32 @@ func TestUnicodeSetsV(t *testing.T) {
 		})
 	}
 }
+
+// TestCompileCache 验证相同 (source, flags) 复用编译结果（正则字面量每次
+// 求值都会调用 Compile；缓存避免重复翻译 + Go regexp 编译）。
+func TestCompileCache(t *testing.T) {
+	a, err := Compile(`([a-z]+)(\d+)`, "")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	b, err := Compile(`([a-z]+)(\d+)`, "")
+	if err != nil {
+		t.Fatalf("Compile second: %v", err)
+	}
+	if a != b {
+		t.Error("identical (source, flags) should return the cached instance")
+	}
+	// 不同 flags 不共享缓存。
+	c, err := Compile(`([a-z]+)(\d+)`, "i")
+	if err != nil {
+		t.Fatalf("Compile with 'i': %v", err)
+	}
+	if a == c {
+		t.Error("different flags must not share the cache entry")
+	}
+	// 缓存的 Compiled 可正常匹配。
+	m := a.MatchIndex("prefix abc123 suffix")
+	if m == nil {
+		t.Fatal("cached compiled regex should match")
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Flags 是解析后的 RegExp 标志位集合。
@@ -122,9 +123,31 @@ type Compiled struct {
 	bt *btRegexp
 }
 
+// compileCache 缓存已编译正则（进程级）。JS 正则字面量每次求值都会创建新
+// RegExp 对象并调用 Compile；若每次重新翻译 + Go regexp.Compile，循环内使用
+// 字面量（如 /.../.test(s)）会比 V8（复用字面量编译结果）慢数十倍。Compiled
+// 只读（re/bt/GroupNames 只用于匹配），可安全跨对象共享。
+var (
+	compileCache   = map[string]*Compiled{}
+	compileCacheMu sync.Mutex
+)
+
+// maxCompiledCacheSize 限制缓存条数，防止用户代码动态生成无限模式时缓存
+// 无限膨胀。超限时简单重建（丢弃全部）——真实应用常用模式数远低于此。
+const maxCompiledCacheSize = 512
+
 // Compile 校验 flags、翻译 JS 语法并编译为 Go 正则。
 // 翻译或编译失败返回错误（引擎层将其转为 SyntaxError）。
+// 相同 (source, flags) 的编译结果被缓存复用。
 func Compile(source, flagsStr string) (*Compiled, error) {
+	key := source + "\x00" + flagsStr
+	compileCacheMu.Lock()
+	if c, ok := compileCache[key]; ok {
+		compileCacheMu.Unlock()
+		return c, nil
+	}
+	compileCacheMu.Unlock()
+
 	f, err := ParseFlags(flagsStr)
 	if err != nil {
 		return nil, err
@@ -138,7 +161,9 @@ func Compile(source, flagsStr string) (*Compiled, error) {
 			if berr != nil {
 				return nil, err
 			}
-			return &Compiled{Source: source, Flags: f, bt: bt}, nil
+			compiled := &Compiled{Source: source, Flags: f, bt: bt}
+			cacheCompiled(key, compiled)
+			return compiled, nil
 		}
 		return nil, err
 	}
@@ -155,7 +180,19 @@ func Compile(source, flagsStr string) (*Compiled, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid regular expression: %w", err)
 	}
-	return &Compiled{Source: source, Flags: f, re: re, GroupNames: re.SubexpNames()}, nil
+	compiled := &Compiled{Source: source, Flags: f, re: re, GroupNames: re.SubexpNames()}
+	cacheCompiled(key, compiled)
+	return compiled, nil
+}
+
+// cacheCompiled 把编译结果写入缓存（带条数上限）。
+func cacheCompiled(key string, c *Compiled) {
+	compileCacheMu.Lock()
+	defer compileCacheMu.Unlock()
+	if len(compileCache) >= maxCompiledCacheSize {
+		compileCache = map[string]*Compiled{}
+	}
+	compileCache[key] = c
 }
 
 // NumGroups 返回捕获组数量（不含整体匹配）。
