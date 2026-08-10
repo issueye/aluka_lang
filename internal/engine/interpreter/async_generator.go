@@ -215,12 +215,7 @@ func (g *AsyncGeneratorValue) restoreFrame() {
 	g.vm.appendValues(g.savedStack)
 	g.savedStack = nil
 	g.savedTryStack = nil
-	for _, cu := range g.closedUps {
-		relIdx := cu.absIdx - g.savedBase
-		if relIdx >= 0 && relIdx < len(g.vm.stack)-g.savedBase {
-			g.vm.stack[g.savedBase+relIdx] = cu.uv.closed
-		}
-	}
+	g.vm.reopenUpvalues(&frame, g.closedUps, g.savedBase)
 	g.closedUps = nil
 	g.vm.frames = append(g.vm.frames, frame)
 }

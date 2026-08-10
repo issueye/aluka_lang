@@ -428,3 +428,23 @@ main();
 		t.Errorf("multi closure mutation = %q, want ab", got)
 	}
 }
+
+// TestAsyncClosureMutationAfterResume verifies that captures are reopened
+// after await. A closure invoked while the frame is running must update the
+// local value observed after the next suspension.
+func TestAsyncClosureMutationAfterResume(t *testing.T) {
+	got := vmEvalPromise(t, `
+async function main() {
+  let terminal = false;
+  function finalize() { terminal = true; }
+  await Promise.resolve();
+  finalize();
+  await Promise.resolve();
+  return terminal;
+}
+main().then(function(value) { globalThis.__r = String(value); });
+`)
+	if got != "true" {
+		t.Errorf("closure mutation after resume = %q, want true", got)
+	}
+}

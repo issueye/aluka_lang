@@ -1748,6 +1748,24 @@ type upvalueClose struct {
 	absIdx int
 }
 
+// reopenUpvalues rebinds captures that were closed while an async frame was
+// suspended. Rebinding is required because the resumed function reads the
+// local stack slot directly while nested closures read/write through upvalues.
+// Keeping an upvalue closed after resume lets those two copies diverge.
+func (v *VM) reopenUpvalues(frame *vmFrame, closed []upvalueClose, base int) {
+	for _, cu := range closed {
+		relIdx := cu.absIdx - base
+		if relIdx < 0 || relIdx >= len(v.stack)-base {
+			continue
+		}
+		absIdx := base + relIdx
+		v.stack[absIdx] = cu.uv.closed
+		cu.uv.index = absIdx
+		cu.uv.slot = &v.stack[absIdx]
+		frame.openUpvalues = append(frame.openUpvalues, cu.uv)
+	}
+}
+
 // closeUpvalues closes all open upvalues pointing at stack slots >= threshold.
 // 返回被关闭的 upvalue 列表（供 async 挂起/恢复时同步捕获的局部变量）。
 func (v *VM) closeUpvalues(threshold int) []upvalueClose {

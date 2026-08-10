@@ -177,14 +177,9 @@ func (ar *asyncRunner) restoreFrame() {
 	ar.vm.appendValues(ar.savedStack)
 	ar.savedStack = nil
 	ar.savedTryStack = nil
-	// 恢复被闭包捕获的局部变量：挂起期间闭包（如定时器回调）可能修改了
-	// upvalue 的 closed 值，写回函数体读写的栈槽保持共享语义。
-	for _, cu := range ar.closedUps {
-		relIdx := cu.absIdx - ar.savedBase
-		if relIdx >= 0 && relIdx < len(ar.vm.stack)-ar.savedBase {
-			ar.vm.stack[ar.savedBase+relIdx] = cu.uv.closed
-		}
-	}
+	// Synchronize closure writes made while suspended and reopen the captures
+	// so later closure writes and direct local reads continue sharing one slot.
+	ar.vm.reopenUpvalues(&frame, ar.closedUps, ar.savedBase)
 	ar.closedUps = nil
 	ar.vm.frames = append(ar.vm.frames, frame)
 }

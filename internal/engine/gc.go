@@ -15,6 +15,7 @@ package engine
 
 import (
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"weak"
 )
@@ -83,6 +84,9 @@ func GC(roots []Value) HeapStats {
 
 	// 触发 Go 物理回收。
 	runtime.GC()
+	// Return released pages to the OS for long-running TUI processes. This is
+	// intentionally part of explicit gc(), not the normal allocation path.
+	debug.FreeOSMemory()
 
 	return HeapStats{
 		AllocCount:  alloc,
