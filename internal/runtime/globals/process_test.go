@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // TestProcessArgv 验证 process.argv 显式注入。
@@ -243,5 +244,59 @@ func TestProcessMemoryUsage(t *testing.T) {
 	}
 	if _, ok := v.Float(); !ok {
 		t.Errorf("rss not number: %v", v)
+	}
+}
+
+func TestProcessNextTickPrecedesPromiseMicrotasks(t *testing.T) {
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatalf("NewVM: %v", err)
+	}
+	defer vm.Close()
+
+	if err := NewProcess(vm, ProcessConfig{}); err != nil {
+		t.Fatalf("NewProcess: %v", err)
+	}
+	_, err = vm.Eval(`
+const order = [];
+Promise.resolve().then(() => order.push("promise"));
+process.nextTick(() => order.push("tick"));
+queueMicrotask(() => {
+  order.push("microtask");
+  globalThis.__nextTickOrder = order.join(",");
+});
+`, "nexttick-order.js")
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+
+	value, _ := vm.Global().Get("__nextTickOrder")
+	if got, want := value.String(), "tick,promise,microtask"; got != want {
+		t.Fatalf("nextTick order = %q, want %q", got, want)
+	}
+}
+
+func TestProcessNextTickPassesArguments(t *testing.T) {
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatalf("NewVM: %v", err)
+	}
+	defer vm.Close()
+
+	if err := NewProcess(vm, ProcessConfig{}); err != nil {
+		t.Fatalf("NewProcess: %v", err)
+	}
+	_, err = vm.Eval(`
+process.nextTick((a, b) => {
+  globalThis.__nextTickArgs = a + ":" + b;
+}, "left", 42);
+`, "nexttick-args.js")
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+
+	value, _ := vm.Global().Get("__nextTickArgs")
+	if got, want := value.String(), "left:42"; got != want {
+		t.Fatalf("nextTick args = %q, want %q", got, want)
 	}
 }

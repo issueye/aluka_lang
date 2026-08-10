@@ -107,6 +107,12 @@ func (v *VM) EnqueueMicrotask(fn func()) {
 	v.interp.enqueueMicrotask(fn)
 }
 
+// EnqueueNextTick queues a Node process.nextTick callback separately from
+// Promise microtasks so it can run first at the next checkpoint.
+func (v *VM) EnqueueNextTick(fn func()) {
+	v.interp.enqueueNextTick(fn)
+}
+
 // Global returns the global object (implements engine.Context).
 func (v *VM) Global() engine.Object { return v.interp.Global() }
 
@@ -214,18 +220,18 @@ func (v *VM) runModule(mod *bytecode.Module) (engine.Value, error) {
 	result, err := v.run()
 
 	if isTopLevel {
-		// Clean up leftover stack values before draining microtasks
-		// (microtask callbacks reuse v.stack). Keep v.module alive —
-		// microtask callbacks (Promise reactions, async continuations)
+		// Clean up leftover stack values before draining scheduled jobs
+		// (callbacks reuse v.stack). Keep v.module alive —
+		// nextTick/microtask callbacks (Promise reactions, async continuations)
 		// AND event-loop tasks (timers, http handlers, user closures)
 		// may call back into the VM and need the module's templates.
 		// module 在事件循环（RunLoop）结束后才允许被 GC 回收。
 		v.stack = v.stack[:0]
 		v.frames = v.frames[:0]
-		// Drain the microtask queue (Promise reactions, queueMicrotask
-		// callbacks). Errors from microtasks are handled internally by
+		// Drain the Node job queues (nextTick before Promise reactions and
+		// queueMicrotask callbacks). Errors from microtasks are handled internally by
 		// Promise reactions; any uncaught error is silently ignored here.
-		v.interp.drainMicrotasks()
+		v.interp.drainJobQueues()
 	} else {
 		// Restore the caller's execution state so its run() loop continues.
 		v.stack = savedStack
@@ -2327,17 +2333,17 @@ func (v *VM) InvokeFn(fn, this engine.Value, args []engine.Value) (engine.Value,
 	return v.invoke(fn, this, args, false)
 }
 
-// DrainMicrotasks 排空微任务队列（Promise reactions、queueMicrotask、async
-// 继续）。仅当无活跃 JS 帧（顶层模块加载场景）时安全调用，供 Loader 在
+// DrainMicrotasks 排空 Node job queues（process.nextTick 优先于 Promise
+// reactions、queueMicrotask、async 续体）。仅当无活跃 JS 帧（顶层模块加载场景）时安全调用，供 Loader 在
 // 模块函数包装（P0-1）执行完毕后触发，模拟原 RunModule 顶层分支的排水行为。
 func (v *VM) DrainMicrotasks() {
 	if len(v.frames) == 0 {
-		v.interp.drainMicrotasks()
+		v.interp.drainJobQueues()
 	}
 }
 
 // AwaitPromise 同步等待 promise settle（顶层 await / TLA 的模块加载语义）。
-// 循环驱动微任务队列与投递的任务（IO 回调等），直至 promise 完成。
+// 循环驱动 Node job queues 与投递的任务（IO 回调等），直至 promise 完成。
 // 供 Loader 在 async 模块函数（含 TLA）执行后调用。
 func (v *VM) AwaitPromise(p *PromiseValue) (engine.Value, error) {
 	for {
@@ -2347,7 +2353,7 @@ func (v *VM) AwaitPromise(p *PromiseValue) (engine.Value, error) {
 		case promiseRejected:
 			return engine.Undefined(), &jsThrow{val: p.result}
 		}
-		v.interp.drainMicrotasks()
+		v.interp.drainJobQueues()
 		select {
 		case fn := <-v.interp.taskCh:
 			fn()
@@ -2364,9 +2370,9 @@ func (v *VM) AwaitPromise(p *PromiseValue) (engine.Value, error) {
 	}
 }
 
-// FlushMicrotasks 无条件排空微任务队列（implements engine.Context）。
+// FlushMicrotasks 无条件排空 Node job queues（implements engine.Context）。
 // 与 DrainMicrotasks 不同，不计较是否有活跃 JS 帧：HTTP handler 等在
 // 同步返回后仍需驱动 Promise/async 续期，直到响应完成。
 func (v *VM) FlushMicrotasks() bool {
-	return v.interp.drainMicrotasksReport()
+	return v.interp.drainJobQueues()
 }

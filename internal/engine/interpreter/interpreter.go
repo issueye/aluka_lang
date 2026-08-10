@@ -70,6 +70,9 @@ type Interpreter struct {
 
 	argumentsSupported bool
 
+	// nextTickQueue is kept separate because Node drains process.nextTick jobs
+	// before Promise reactions and queueMicrotask callbacks.
+	nextTickQueue []func()
 	// microtaskQueue holds pending microtasks (Promise reactions, queueMicrotask).
 	microtaskQueue []func()
 

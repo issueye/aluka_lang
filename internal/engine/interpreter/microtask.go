@@ -1,45 +1,68 @@
 package interpreter
 
-// enqueueMicrotask adds a job to the microtask queue. Microtasks run after the
-// current synchronous execution completes (i.e., after the VM's top-level
-// runModule returns).
-//
-// 异步上下文传播（AsyncLocalStorage）：入队时捕获当前异步上下文，执行时恢复
-// ——使 Promise reaction / async 续体 / queueMicrotask 能继承入队时刻的 store。
-// 钩子未安装时零开销（AsyncContextCapture/Restore 为 nil）。
-func (interp *Interpreter) enqueueMicrotask(fn func()) {
+// captureAsyncContext wraps a scheduled job with the AsyncLocalStorage state
+// active when it was queued. When hooks are disabled the original function is
+// returned without allocation.
+func captureAsyncContext(fn func()) func() {
 	if AsyncContextCapture != nil {
 		captured := AsyncContextCapture()
-		interp.microtaskQueue = append(interp.microtaskQueue, func() {
+		return func() {
 			if AsyncContextRestore != nil && captured != nil {
 				saved := AsyncContextCapture()
 				AsyncContextRestore(captured)
 				defer func() { AsyncContextRestore(saved) }()
 			}
 			fn()
-		})
-		return
+		}
 	}
-	interp.microtaskQueue = append(interp.microtaskQueue, fn)
+	return fn
+}
+
+// enqueueNextTick adds a process.nextTick job. Node gives this queue priority
+// over Promise reactions at every event-loop checkpoint.
+func (interp *Interpreter) enqueueNextTick(fn func()) {
+	interp.nextTickQueue = append(interp.nextTickQueue, captureAsyncContext(fn))
+}
+
+// enqueueMicrotask adds a Promise reaction or queueMicrotask callback.
+func (interp *Interpreter) enqueueMicrotask(fn func()) {
+	interp.microtaskQueue = append(interp.microtaskQueue, captureAsyncContext(fn))
+}
+
+func drainQueue(queue *[]func()) bool {
+	if len(*queue) == 0 {
+		return false
+	}
+	for len(*queue) > 0 {
+		fn := (*queue)[0]
+		(*queue)[0] = nil
+		*queue = (*queue)[1:]
+		fn()
+	}
+	// Do not retain callback closures through an empty slice's backing array.
+	*queue = nil
+	return true
 }
 
 // drainMicrotasks runs all pending microtasks until the queue is empty.
 // New microtasks may be enqueued during execution (e.g., chained Promise
 // reactions), and they will be processed in the same drain cycle.
 func (interp *Interpreter) drainMicrotasks() {
-	for len(interp.microtaskQueue) > 0 {
-		fn := interp.microtaskQueue[0]
-		interp.microtaskQueue = interp.microtaskQueue[1:]
-		fn()
-	}
+	drainQueue(&interp.microtaskQueue)
 }
 
-// drainMicrotasksReport 排空微任务队列，返回本次是否执行了微任务。
-// 若无待执行微任务返回 false（供调用方判断是否继续排空）。
-func (interp *Interpreter) drainMicrotasksReport() bool {
-	if len(interp.microtaskQueue) == 0 {
-		return false
+// drainJobQueues runs a complete Node-style microtask checkpoint. nextTick
+// jobs always run before Promise/queueMicrotask jobs. If a microtask schedules
+// another nextTick, the outer loop services it before leaving the checkpoint.
+func (interp *Interpreter) drainJobQueues() bool {
+	ran := false
+	for len(interp.nextTickQueue) > 0 || len(interp.microtaskQueue) > 0 {
+		if drainQueue(&interp.nextTickQueue) {
+			ran = true
+		}
+		if drainQueue(&interp.microtaskQueue) {
+			ran = true
+		}
 	}
-	interp.drainMicrotasks()
-	return true
+	return ran
 }

@@ -94,7 +94,7 @@ func (interp *Interpreter) RunLoop() {
 		}()
 		// 先处理挂起的 microtask：顶层 async 调用（fire-and-forget）可能
 		// 在此创建定时器/投递任务，否则事件循环会误判为空闲立即退出。
-		interp.drainMicrotasks()
+		interp.drainJobQueues()
 		// 启动时若无活跃任务（纯同步程序），立即退出。
 		interp.loopMu.Lock()
 		if interp.active == 0 && !interp.loopDone {
@@ -110,7 +110,7 @@ func (interp *Interpreter) RunLoop() {
 				fn()
 				interp.decActive() // 任务完成
 				// 任务执行后排空 microtask（Promise/async 续期）。
-				interp.drainMicrotasks()
+				interp.drainJobQueues()
 			case <-interp.idleCh:
 				// 空闲信号可能已过期（期间又有新任务）。确认后才退出。
 				interp.loopMu.Lock()

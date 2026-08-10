@@ -45,6 +45,13 @@ type Context interface {
 	FlushMicrotasks() bool
 }
 
+// NextTickScheduler is implemented by runtimes that provide Node-compatible
+// process.nextTick scheduling. nextTick jobs use a queue separate from Promise
+// microtasks and are drained first at each event-loop checkpoint.
+type NextTickScheduler interface {
+	EnqueueNextTick(fn func())
+}
+
 // Value 是 JS 值的统一抽象。
 // 实现：Undefined / Null / Boolean / Number / String / Object / Function。
 type Value interface {

@@ -169,11 +169,21 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 	// exitCode：退出码属性（默认 undefined；process.exit() 无参数时使用）。
 	_ = proc.Set("exitCode", engine.Undefined())
 
-	// nextTick(fn)：复用全局 queueMicrotask（engine 层已注册）。
+	// nextTick(fn, ...args)：使用独立高优先级队列。Node 会在 Promise
+	// reaction / queueMicrotask 之前排空 nextTick，TUI 等调度器依赖该顺序。
 	_ = proc.Set("nextTick", engine.NewFunction("nextTick", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 || !args[0].IsFunction() {
 			return engine.Undefined(), nil
 		}
+		if scheduler, ok := ctx.(engine.NextTickScheduler); ok {
+			callback, _ := args[0].AsFunction()
+			callbackArgs := append([]engine.Value(nil), args[1:]...)
+			scheduler.EnqueueNextTick(func() {
+				_, _ = callback.Call(callbackArgs)
+			})
+			return engine.Undefined(), nil
+		}
+		// Minimal contexts without a Node scheduler retain the old fallback.
 		if q, err := ctx.Global().Get("queueMicrotask"); err == nil && q.IsFunction() {
 			if f, ok := q.AsFunction(); ok {
 				_, _ = f.Call([]engine.Value{args[0]})
