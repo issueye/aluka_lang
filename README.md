@@ -102,6 +102,11 @@ aluka remove is-number # 移除依赖
 # 单文件可执行产物（Phase 7，--compile）
 aluka build --compile --outfile app ./src/index.ts
 ./app                  # 无 aluka/Go 环境直接运行（32MB，启动 ~50ms）
+
+# 优化并输出打包热点报告
+aluka build --compile --optimize --analyze ./src/index.ts
+aluka build --compile --analyze=json --analyze-out dist/analyze.json \
+  --max-payload=2MB ./src/index.ts
 ```
 
 ### 示例
@@ -139,6 +144,10 @@ $ aluka -e "var q = Aluka.SQL\`CREATE TABLE t (x INTEGER)\`.run().then(function(
 | `aluka install [pkg]` | 安装依赖（Phase 5，含 workspace/.npmrc） |
 | `aluka add <pkg>` / `remove <pkg>` / `update` | 包管理 |
 | `aluka build --compile [--outfile app] [--base <bin>] <entry>` | 单文件可执行产物（Phase 7）：嵌入预编译字节码，无 aluka/Go 环境可运行；`--base` 指定目标平台基座（跨平台） |
+| `aluka build --compile --optimize <entry>` | 启用 tree-shaking、AST minify 和基础 VM 字节码优化 |
+| `aluka build --compile --analyze[=text|json] <entry>` | 分析 payload、模块/资源热点、优化阶段收益和代码优化建议 |
+| `aluka build --compile --analyze-only <entry>` | 只生成分析结果，不写原生可执行文件 |
+| `aluka build --compile --max-payload=<size> <entry>` | 设置 payload 体积预算；超限退出码为 `2` |
 | `aluka --vm` / `--ast` | 选择字节码 VM（默认）或 AST 解释器 |
 | `aluka --no-cache` | 禁用字节码磁盘缓存 |
 | `aluka --monitor[=interval]` | 性能/内存/运行时指标监控（interval 如 `500ms`/`1s` 周期采样；默认仅终报；`--monitor-format=json`、`--monitor-out=<path>` 可选） |
