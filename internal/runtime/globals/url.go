@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // URLConfig 配置 URL 全局（当前无可用选项）。
@@ -335,7 +336,9 @@ func newURLSearchParamsInstance(pairs []urlParam, onChange func([]urlParam)) eng
 		}
 		f, _ := args[0].AsFunction()
 		for _, p := range pairs {
-			_, _ = f.Call([]engine.Value{engine.Str(p.val), engine.Str(p.key), obj})
+			if _, err := f.Call([]engine.Value{engine.Str(p.val), engine.Str(p.key), obj}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 		return engine.Undefined(), nil
 	}))

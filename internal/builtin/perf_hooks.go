@@ -91,7 +91,9 @@ func (s *perfState) notifyObservers(ctx engine.Context, entryType string, entry 
 				return
 			}
 			if f, ok := o.cb.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{newEntryList([]engine.Value{entry})})
+				if _, err := f.Call([]engine.Value{newEntryList([]engine.Value{entry})}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		})
 	}

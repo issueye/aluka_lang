@@ -8,6 +8,7 @@ package builtin
 import (
 	"bufio"
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"os"
 	"strings"
 
@@ -86,7 +87,9 @@ func NewReplModule(ctx engine.Context) (engine.Value, error) {
 						}
 						return engine.Undefined(), nil
 					})
-					_, _ = f.Call([]engine.Value{engine.Str(line), ctx.Global(), engine.Str("[repl]"), cb})
+					if _, err := f.Call([]engine.Value{engine.Str(line), ctx.Global(), engine.Str("[repl]"), cb}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 				continue
 			}

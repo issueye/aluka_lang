@@ -14,6 +14,7 @@ package builtin
 
 import (
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"os"
 	"runtime"
 	"strconv"
@@ -1319,9 +1320,13 @@ func fsAsyncRW(ctx engine.Context, op func() (int, error), bufVal engine.Value, 
 			}
 			f, _ := cb.AsFunction()
 			if err != nil {
-				_, _ = f.Call([]engine.Value{fsErrorToJS(ctx, err)})
+				if _, err := f.Call([]engine.Value{fsErrorToJS(ctx, err)}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			} else {
-				_, _ = f.Call([]engine.Value{engine.Null(), engine.IntValue(n), bufVal})
+				if _, err := f.Call([]engine.Value{engine.Null(), engine.IntValue(n), bufVal}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		})
 	}()
@@ -1350,7 +1355,9 @@ func fsWatchFile(ctx engine.Context, p string, listener engine.Value) {
 				ctx.PostTask(func() {
 					if listener.IsFunction() {
 						if f, ok := listener.AsFunction(); ok {
-							_, _ = f.Call([]engine.Value{curr, prev})
+							if _, err := f.Call([]engine.Value{curr, prev}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 				})

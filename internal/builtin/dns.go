@@ -11,6 +11,7 @@ package builtin
 
 import (
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"net"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -226,15 +227,21 @@ func asyncLookup(ctx engine.Context, hostname string, cb engine.Value,
 			}
 			f, _ := cb.AsFunction()
 			if err != nil || len(addrs) == 0 {
-				_, _ = f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", hostname), engine.Null()})
+				if _, err := f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", hostname), engine.Null()}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 				return
 			}
 			result, family, cerr := convert(addrs)
 			if cerr != nil {
-				_, _ = f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", hostname), engine.Null()})
+				if _, err := f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", hostname), engine.Null()}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 				return
 			}
-			_, _ = f.Call([]engine.Value{engine.Null(), result, engine.IntValue(family)})
+			if _, err := f.Call([]engine.Value{engine.Null(), result, engine.IntValue(family)}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		})
 	}()
 }
@@ -251,10 +258,14 @@ func asyncResolve(ctx engine.Context, cb engine.Value, compute func() (engine.Va
 		ctx.PostTask(func() {
 			defer release()
 			if cerr != nil {
-				_, _ = f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", errHostname(cerr)), engine.Null()})
+				if _, err := f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", errHostname(cerr)), engine.Null()}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 				return
 			}
-			_, _ = f.Call([]engine.Value{engine.Null(), result})
+			if _, err := f.Call([]engine.Value{engine.Null(), result}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		})
 	}()
 }

@@ -29,6 +29,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"hash"
 	"io"
 	"math/big"
@@ -174,9 +175,13 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 				if cb.IsFunction() {
 					if f, ok := cb.AsFunction(); ok {
 						if err != nil {
-							_, _ = f.Call([]engine.Value{engine.Str(err.Error())})
+							if _, err := f.Call([]engine.Value{engine.Str(err.Error())}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						} else {
-							_, _ = f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(out)})
+							if _, err := f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(out)}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 				}
@@ -218,9 +223,13 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 				if cb != nil && cb.IsFunction() {
 					if f, ok := cb.AsFunction(); ok {
 						if err != nil {
-							_, _ = f.Call([]engine.Value{engine.Str(err.Error())})
+							if _, err := f.Call([]engine.Value{engine.Str(err.Error())}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						} else {
-							_, _ = f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(dk)})
+							if _, err := f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(dk)}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 				}
@@ -274,9 +283,13 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 					defer release()
 					if f, ok := cb.AsFunction(); ok {
 						if err != nil {
-							_, _ = f.Call([]engine.Value{engine.Str(err.Error())})
+							if _, err := f.Call([]engine.Value{engine.Str(err.Error())}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						} else {
-							_, _ = f.Call([]engine.Value{engine.Null(), engine.Number(float64(v))})
+							if _, err := f.Call([]engine.Value{engine.Null(), engine.Number(float64(v))}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 				})
@@ -324,9 +337,13 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 				defer release()
 				if f, ok := cb.AsFunction(); ok {
 					if err != nil {
-						_, _ = f.Call([]engine.Value{engine.Str(err.Error())})
+						if _, err := f.Call([]engine.Value{engine.Str(err.Error())}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					} else {
-						_, _ = f.Call([]engine.Value{engine.Null(), first})
+						if _, err := f.Call([]engine.Value{engine.Null(), first}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			})
@@ -414,9 +431,13 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 				if cb.IsFunction() {
 					if f, ok := cb.AsFunction(); ok {
 						if err != nil {
-							_, _ = f.Call([]engine.Value{engine.Str(err.Error())})
+							if _, err := f.Call([]engine.Value{engine.Str(err.Error())}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						} else {
-							_, _ = f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(out)})
+							if _, err := f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(out)}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 				}
@@ -455,9 +476,13 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 				defer release()
 				if f, ok := cb.AsFunction(); ok {
 					if err != nil {
-						_, _ = f.Call([]engine.Value{engine.Str(err.Error())})
+						if _, err := f.Call([]engine.Value{engine.Str(err.Error())}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					} else {
-						_, _ = f.Call([]engine.Value{engine.Null(), res})
+						if _, err := f.Call([]engine.Value{engine.Null(), res}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			})
@@ -790,7 +815,9 @@ func webCryptoResolve(ctx engine.Context, v engine.Value) (engine.Value, error) 
 	executor := engine.NewFunction("executor", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 0 {
 			if f, ok := args[0].AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{v})
+				if _, err := f.Call([]engine.Value{v}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil
@@ -811,7 +838,9 @@ func webCryptoReject(ctx engine.Context, msg string) (engine.Value, error) {
 	executor := engine.NewFunction("executor", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 1 {
 			if f, ok := args[1].AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.Str(msg)})
+				if _, err := f.Call([]engine.Value{engine.Str(msg)}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil

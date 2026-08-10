@@ -7,6 +7,7 @@ package builtin
 
 import (
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 )
@@ -94,7 +95,9 @@ func promiseRejected(ctx engine.Context, msg string) (engine.Value, error) {
 	executor := engine.NewFunction("executor", func(args []engine.Value) (engine.Value, error) {
 		if len(args) >= 2 {
 			if f, ok := args[1].AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.Str(msg)})
+				if _, err := f.Call([]engine.Value{engine.Str(msg)}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil

@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // bcRegistry 是进程级 BroadcastChannel 注册表（跨实例共享同频道）。
@@ -144,14 +145,18 @@ func deliverBroadcast(state *bcState, msg engine.Value) {
 	// 监听器（addEventListener）。
 	for _, l := range state.listeners {
 		if f, ok := l.AsFunction(); ok {
-			_, _ = f.Call([]engine.Value{ev})
+			if _, err := f.Call([]engine.Value{ev}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 	// onmessage 属性。
 	if o, ok := state.self.AsObject(); ok {
 		if v, err := o.Get("onmessage"); err == nil && v.IsFunction() {
 			if f, ok := v.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{ev})
+				if _, err := f.Call([]engine.Value{ev}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	}

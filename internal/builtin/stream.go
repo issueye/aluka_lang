@@ -88,9 +88,15 @@ func NewStream(ctx engine.Context) (engine.Value, error) {
 		if o, ok := stream.AsObject(); ok {
 			if onFn, err := o.Get("on"); err == nil && onFn.IsFunction() {
 				f, _ := onFn.AsFunction()
-				_, _ = f.Call([]engine.Value{engine.Str("finish"), cb})
-				_, _ = f.Call([]engine.Value{engine.Str("end"), cb})
-				_, _ = f.Call([]engine.Value{engine.Str("error"), cb})
+				if _, err := f.Call([]engine.Value{engine.Str("finish"), cb}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
+				if _, err := f.Call([]engine.Value{engine.Str("end"), cb}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
+				if _, err := f.Call([]engine.Value{engine.Str("error"), cb}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil
@@ -293,8 +299,12 @@ func newReadableStream(ctx engine.Context, args []engine.Value) engine.Value {
 					iterState.started = true
 					if onFn, err := stream.Get("on"); err == nil && onFn.IsFunction() {
 						if f, ok := onFn.AsFunction(); ok {
-							_, _ = f.Call([]engine.Value{engine.Str("data"), onData})
-							_, _ = f.Call([]engine.Value{engine.Str("end"), onEnd})
+							if _, err := f.Call([]engine.Value{engine.Str("data"), onData}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
+							if _, err := f.Call([]engine.Value{engine.Str("end"), onEnd}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 					// 同步已结束状态：push(null) 早于迭代器创建时
@@ -411,7 +421,9 @@ func installWritableMethods(stream engine.Object, state *writableState, args []e
 		// 如果有自定义 write 函数，调用它。
 		if state.writeFn != nil {
 			if f, ok := state.writeFn.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{chunk, engine.Str(""), engine.Undefined()})
+				if _, err := f.Call([]engine.Value{chunk, engine.Str(""), engine.Undefined()}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		} else {
 			// 默认：缓冲数据。
@@ -430,7 +442,9 @@ func installWritableMethods(stream engine.Object, state *writableState, args []e
 				// end(chunk) 形式：先写入
 				if state.writeFn != nil {
 					if f, ok := state.writeFn.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{args[0]})
+						if _, err := f.Call([]engine.Value{args[0]}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				} else {
 					state.buffer = append(state.buffer, args[0])
@@ -489,7 +503,9 @@ func newDuplexStream(ctx engine.Context, args []engine.Value) engine.Value {
 			if ro, ok := stream.AsObject(); ok {
 				if pushFn, err := ro.Get("push"); err == nil && pushFn.IsFunction() {
 					if f, ok := pushFn.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{engine.Null()})
+						if _, err := f.Call([]engine.Value{engine.Null()}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			}
@@ -584,11 +600,15 @@ func makePipeline(ctx engine.Context) engine.Func {
 					f, _ := onFn.AsFunction()
 					cbWrapper := engine.NewFunction("pipelineCb", func(cbArgs []engine.Value) (engine.Value, error) {
 						if cb, ok := callback.AsFunction(); ok {
-							_, _ = cb.Call(nil)
+							if _, err := cb.Call(nil); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 						return engine.Undefined(), nil
 					})
-					_, _ = f.Call([]engine.Value{engine.Str("finish"), cbWrapper})
+					if _, err := f.Call([]engine.Value{engine.Str("finish"), cbWrapper}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -603,7 +623,9 @@ func makePipeline(ctx engine.Context) engine.Func {
 					if err != nil {
 						if callback != nil {
 							if cb, ok := callback.AsFunction(); ok {
-								_, _ = cb.Call([]engine.Value{engine.Str(err.Error())})
+								if _, err := cb.Call([]engine.Value{engine.Str(err.Error())}); err != nil {
+									interpreter.ReportUncaught(nil, err)
+								}
 							}
 						}
 						return engine.Undefined(), err
@@ -644,7 +666,9 @@ func streamPush(stream engine.Value, chunk engine.Value) {
 	if o, ok := stream.AsObject(); ok {
 		if pushFn, err := o.Get("push"); err == nil && pushFn.IsFunction() {
 			f, _ := pushFn.AsFunction()
-			_, _ = f.Call([]engine.Value{chunk})
+			if _, err := f.Call([]engine.Value{chunk}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 }
@@ -678,7 +702,9 @@ func drainToDest(state *streamState, dest engine.Value) {
 			if o, ok := dest.AsObject(); ok {
 				if endFn, err := o.Get("end"); err == nil && endFn.IsFunction() {
 					if f, ok := endFn.AsFunction(); ok {
-						_, _ = f.Call(nil)
+						if _, err := f.Call(nil); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			}
@@ -687,7 +713,9 @@ func drainToDest(state *streamState, dest engine.Value) {
 		if o, ok := dest.AsObject(); ok {
 			if writeFn, err := o.Get("write"); err == nil && writeFn.IsFunction() {
 				f, _ := writeFn.AsFunction()
-				_, _ = f.Call([]engine.Value{chunk})
+				if _, err := f.Call([]engine.Value{chunk}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	}
@@ -710,7 +738,9 @@ func endPipeDest(src engine.Object) {
 		if o, ok := d.AsObject(); ok {
 			if endFn, err := o.Get("end"); err == nil && endFn.IsFunction() {
 				if f, ok := endFn.AsFunction(); ok {
-					_, _ = f.Call(nil)
+					if _, err := f.Call(nil); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -781,7 +811,9 @@ func pushToStream(stream engine.Value, chunk engine.Value) {
 	if o, ok := stream.AsObject(); ok {
 		if p, err := o.Get("push"); err == nil && p.IsFunction() {
 			if f, ok := p.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{chunk})
+				if _, err := f.Call([]engine.Value{chunk}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	}
@@ -800,7 +832,9 @@ func emitEvent(obj engine.Value, event string, args ...engine.Value) {
 		if emitFn, err := o.Get("emit"); err == nil && emitFn.IsFunction() {
 			f, _ := emitFn.AsFunction()
 			allArgs := append([]engine.Value{engine.Str(event)}, args...)
-			_, _ = f.Call(allArgs)
+			if _, err := f.Call(allArgs); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 }

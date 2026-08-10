@@ -12,6 +12,7 @@ package globals
 
 import (
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // EventConfig 配置 Event 全局（当前无可用选项）。
@@ -19,10 +20,10 @@ type EventConfig struct{}
 
 // 各类实例原型（instanceof 支持）。
 var (
-	eventProto         engine.Object
-	eventTargetProto   engine.Object
-	customEventProto   engine.Object
-	messageEventProto  engine.Object
+	eventProto        engine.Object
+	eventTargetProto  engine.Object
+	customEventProto  engine.Object
+	messageEventProto engine.Object
 )
 
 // NewEvent 注册全局 Event / EventTarget / CustomEvent / MessageEvent 构造器。
@@ -167,8 +168,8 @@ type eventTargetState struct {
 
 // eventListener 是监听器包装（函数或 {handleEvent} 对象）。
 type eventListener struct {
-	fn  engine.Value  // 函数监听器
-	obj engine.Object // handleEvent 对象监听器
+	fn   engine.Value  // 函数监听器
+	obj  engine.Object // handleEvent 对象监听器
 	once bool
 }
 
@@ -288,18 +289,24 @@ func sameListener(a, b eventListener) bool {
 	return a.obj != nil && b.obj != nil && a.obj == b.obj
 }
 
-// dispatchToListener 调用监听器（函数或 handleEvent）。
+// dispatchToListener 调用监听器（函数或 handleEvent）。监听器抛错上报为
+// uncaughtException（Node 语义：EventTarget 监听器异常即 uncaughtException）。
+// ctx 传 nil：监听器抛的是 *jsThrow，ReportUncaught 直接透传其 JS 值。
 func dispatchToListener(l eventListener, ev engine.Value) {
 	if l.fn != nil {
 		if f, ok := l.fn.AsFunction(); ok {
-			_, _ = f.Call([]engine.Value{ev})
+			if _, err := f.Call([]engine.Value{ev}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 		return
 	}
 	if l.obj != nil {
 		if h, err := l.obj.Get("handleEvent"); err == nil && h.IsFunction() {
 			if f, ok := h.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{ev})
+				if _, err := f.Call([]engine.Value{ev}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	}

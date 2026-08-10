@@ -5,6 +5,7 @@ package builtin
 // 提供：fork/isPrimary/isMaster/settings/Worker/schedulingPolicy。
 
 import (
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"os"
 	"strconv"
 
@@ -67,7 +68,9 @@ func NewCluster(ctx engine.Context) (engine.Value, error) {
 		// setupPrimary 内部就是 setupMaster（Node 22 别名）。
 		if onFn, err := m.Get("setupMaster"); err == nil && onFn.IsFunction() {
 			if f, ok := onFn.AsFunction(); ok {
-				_, _ = f.Call(args)
+				if _, err := f.Call(args); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil
@@ -131,7 +134,9 @@ func NewCluster(ctx engine.Context) (engine.Value, error) {
 					emitEvent(worker, "exit", engine.IntValue(0), engine.Null())
 					return engine.Undefined(), nil
 				})
-				_, _ = f.Call([]engine.Value{engine.Str("exit"), exitWrapper})
+				if _, err := f.Call([]engine.Value{engine.Str("exit"), exitWrapper}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 				msgWrapper := engine.NewFunction("__workerMsg", func(ca []engine.Value) (engine.Value, error) {
 					if len(ca) > 0 {
 						emitEvent(worker, "message", ca[0])
@@ -139,7 +144,9 @@ func NewCluster(ctx engine.Context) (engine.Value, error) {
 					}
 					return engine.Undefined(), nil
 				})
-				_, _ = f.Call([]engine.Value{engine.Str("message"), msgWrapper})
+				if _, err := f.Call([]engine.Value{engine.Str("message"), msgWrapper}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		_ = worker.Set("send", engine.NewFunction("send", func(args []engine.Value) (engine.Value, error) {
@@ -173,7 +180,9 @@ func NewCluster(ctx engine.Context) (engine.Value, error) {
 				if wo, ok := wv.AsObject(); ok {
 					if dFn, err := wo.Get("destroy"); err == nil && dFn.IsFunction() {
 						if f, ok := dFn.AsFunction(); ok {
-							_, _ = f.Call(nil)
+							if _, err := f.Call(nil); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 				}
@@ -181,7 +190,9 @@ func NewCluster(ctx engine.Context) (engine.Value, error) {
 		}
 		if len(args) > 0 && args[0].IsFunction() {
 			if f, ok := args[0].AsFunction(); ok {
-				_, _ = f.Call(nil)
+				if _, err := f.Call(nil); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil

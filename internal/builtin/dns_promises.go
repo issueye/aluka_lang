@@ -10,6 +10,7 @@ package builtin
 
 import (
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"net"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -317,19 +318,25 @@ func promiseLookup(ctx engine.Context, hostname string, convert func([]string) (
 				defer release()
 				if err != nil || len(addrs) == 0 {
 					if f, ok := reject.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", hostname)})
+						if _, err := f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", hostname)}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 					return
 				}
 				result, cerr := convert(addrs)
 				if cerr != nil {
 					if f, ok := reject.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", hostname)})
+						if _, err := f.Call([]engine.Value{makeDNSError(ctx, "ENOTFOUND", hostname)}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 					return
 				}
 				if f, ok := resolve.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{result})
+					if _, err := f.Call([]engine.Value{result}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			})
 		}()
@@ -360,12 +367,16 @@ func promiseResolve(ctx engine.Context, compute func() (engine.Value, error)) (e
 				defer release()
 				if cerr != nil {
 					if f, ok := reject.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{engine.Str(cerr.Error())})
+						if _, err := f.Call([]engine.Value{engine.Str(cerr.Error())}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 					return
 				}
 				if f, ok := resolve.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{val})
+					if _, err := f.Call([]engine.Value{val}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			})
 		}()
@@ -530,29 +541,29 @@ func portServiceName(port string) string {
 // Node 语义：每个常量是 errno 字符串（如 NODATA → 'ENODATA'）。
 var dnsErrorCodes = map[string]string{
 	"ADDRGETNETWORKPARAMS": "EADDRGETNETWORKPARAMS",
-	"BADFAMILY":           "EBADFAMILY",
-	"BADFLAGS":            "EBADFLAGS",
-	"BADHINTS":            "EBADHINTS",
-	"BADNAME":             "EBADNAME",
-	"BADQUERY":            "EBADQUERY",
-	"BADRESP":             "EBADRESP",
-	"BADSTR":              "EBADSTR",
-	"CANCELLED":           "ECANCELLED",
-	"CONNREFUSED":         "ECONNREFUSED",
-	"DESTRUCTION":         "EDESTRUCTION",
-	"EOF":                 "EOF",
-	"FILE":                "EFILE",
-	"FORMERR":             "EFORMERR",
-	"LOADIPHLPAPI":        "ELOADIPHLPAPI",
-	"NODATA":              "ENODATA",
-	"NOMEM":               "ENOMEM",
-	"NONAME":              "ENONAME",
-	"NOTFOUND":            "ENOTFOUND",
-	"NOTIMP":              "ENOTIMP",
-	"NOTINITIALIZED":      "ENOTINITIALIZED",
-	"REFUSED":             "EREFUSED",
-	"SERVFAIL":            "ESERVFAIL",
-	"TIMEOUT":             "ETIMEOUT",
+	"BADFAMILY":            "EBADFAMILY",
+	"BADFLAGS":             "EBADFLAGS",
+	"BADHINTS":             "EBADHINTS",
+	"BADNAME":              "EBADNAME",
+	"BADQUERY":             "EBADQUERY",
+	"BADRESP":              "EBADRESP",
+	"BADSTR":               "EBADSTR",
+	"CANCELLED":            "ECANCELLED",
+	"CONNREFUSED":          "ECONNREFUSED",
+	"DESTRUCTION":          "EDESTRUCTION",
+	"EOF":                  "EOF",
+	"FILE":                 "EFILE",
+	"FORMERR":              "EFORMERR",
+	"LOADIPHLPAPI":         "ELOADIPHLPAPI",
+	"NODATA":               "ENODATA",
+	"NOMEM":                "ENOMEM",
+	"NONAME":               "ENONAME",
+	"NOTFOUND":             "ENOTFOUND",
+	"NOTIMP":               "ENOTIMP",
+	"NOTINITIALIZED":       "ENOTINITIALIZED",
+	"REFUSED":              "EREFUSED",
+	"SERVFAIL":             "ESERVFAIL",
+	"TIMEOUT":              "ETIMEOUT",
 }
 
 // registerDNSConstants 注册 DNS 错误码常量（Node 语义：字符串 errno）。

@@ -5,6 +5,7 @@ package builtin
 // 经 PostTask 回 JS 线程触发 'data'；退出触发 'exit'。
 
 import (
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"io"
 	"os"
 	"os/exec"
@@ -249,7 +250,9 @@ func execChild(ctx engine.Context, args []engine.Value) {
 					if err != nil {
 						errVal = engine.Str(err.Error())
 					}
-					_, _ = f.Call([]engine.Value{errVal, engine.Str(stdout.String()), engine.Str(stderr.String())})
+					if _, err := f.Call([]engine.Value{errVal, engine.Str(stdout.String()), engine.Str(stderr.String())}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		})
@@ -295,7 +298,9 @@ func execFileChild(ctx engine.Context, args []engine.Value) {
 					if err != nil {
 						errVal = engine.Str(err.Error())
 					}
-					_, _ = f.Call([]engine.Value{errVal, engine.Str(stdout.String()), engine.Str(stderr.String())})
+					if _, err := f.Call([]engine.Value{errVal, engine.Str(stdout.String()), engine.Str(stderr.String())}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		})

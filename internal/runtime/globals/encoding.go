@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // EncodingConfig 配置编码全局（当前无可用选项）。
@@ -104,7 +105,9 @@ func newTextEncoderStream(ctx engine.Context) engine.Value {
 			if c, ok := a[1].AsObject(); ok {
 				if e, err := c.Get("enqueue"); err == nil && e.IsFunction() {
 					if f, ok := e.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{newBufferInstance([]byte(s))})
+						if _, err := f.Call([]engine.Value{newBufferInstance([]byte(s))}); err != nil {
+							interpreter.ReportUncaught(ctx, err)
+						}
 					}
 				}
 			}
@@ -149,7 +152,9 @@ func newTextDecoderStream(ctx engine.Context, args []engine.Value) engine.Value 
 			if c, ok := a[1].AsObject(); ok {
 				if e, err := c.Get("enqueue"); err == nil && e.IsFunction() {
 					if f, ok := e.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{engine.Str(decoded)})
+						if _, err := f.Call([]engine.Value{engine.Str(decoded)}); err != nil {
+							interpreter.ReportUncaught(ctx, err)
+						}
 					}
 				}
 			}
@@ -361,11 +366,11 @@ func utf8DecodeRuneInString(s string) (rune, int) {
 	var r rune
 	n := 0
 	if c >= 0xC2 && c <= 0xDF && len(s) >= 2 {
-		r, n = rune(c&0x1F)<<6 | rune(s[1]&0x3F), 2
+		r, n = rune(c&0x1F)<<6|rune(s[1]&0x3F), 2
 	} else if c >= 0xE0 && c <= 0xEF && len(s) >= 3 {
-		r, n = rune(c&0x0F)<<12 | rune(s[1]&0x3F)<<6 | rune(s[2]&0x3F), 3
+		r, n = rune(c&0x0F)<<12|rune(s[1]&0x3F)<<6|rune(s[2]&0x3F), 3
 	} else if c >= 0xF0 && c <= 0xF4 && len(s) >= 4 {
-		r, n = rune(c&0x07)<<18 | rune(s[1]&0x3F)<<12 | rune(s[2]&0x3F)<<6 | rune(s[3]&0x3F), 4
+		r, n = rune(c&0x07)<<18|rune(s[1]&0x3F)<<12|rune(s[2]&0x3F)<<6|rune(s[3]&0x3F), 4
 	} else {
 		return 0, 0 // 非法首字节
 	}

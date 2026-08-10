@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // MessageConfig 配置 MessageChannel 全局。
@@ -145,7 +146,9 @@ func deliverMessage(state *msgPortState, msg engine.Value) {
 		if o, ok := state.self.AsObject(); ok {
 			if om, err := o.Get("onmessage"); err == nil && om.IsFunction() {
 				if f, ok := om.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{ev})
+					if _, err := f.Call([]engine.Value{ev}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -153,7 +156,9 @@ func deliverMessage(state *msgPortState, msg engine.Value) {
 	// addEventListener 监听器。
 	for _, l := range state.listeners {
 		if f, ok := l.AsFunction(); ok {
-			_, _ = f.Call([]engine.Value{ev})
+			if _, err := f.Call([]engine.Value{ev}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 }

@@ -94,7 +94,9 @@ func NewEvents(ctx engine.Context) (engine.Value, error) {
 		if o, ok := signal.AsObject(); ok {
 			if onFn, err := o.Get("addEventListener"); err == nil && onFn.IsFunction() {
 				if f, ok := onFn.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{engine.Str("abort"), listener})
+					if _, err := f.Call([]engine.Value{engine.Str("abort"), listener}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -136,7 +138,7 @@ func makeStaticEmitterMethod(method string) engine.Func {
 
 // emitterState 是一个 EventEmitter 实例的内部状态。
 type emitterState struct {
-	listeners         map[string][]engine.Value          // string 事件
+	listeners         map[string][]engine.Value              // string 事件
 	symbolListeners   map[*engine.SymbolValue][]engine.Value // Symbol 事件
 	maxListeners      int
 	captureRejections bool
@@ -241,7 +243,9 @@ func warnMaxListeners(event string, count, max int) {
 			if po, ok := procV.AsObject(); ok {
 				if ew, err := po.Get("emitWarning"); err == nil && ew.IsFunction() {
 					if f, ok := ew.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{engine.Str(msg)})
+						if _, err := f.Call([]engine.Value{engine.Str(msg)}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 						return
 					}
 				}
@@ -291,7 +295,9 @@ func newEmitterInstanceOpts(args []engine.Value) engine.Value {
 			var wrapper engine.Value
 			wrapper = engine.NewFunction("onceWrapper", func(callArgs []engine.Value) (engine.Value, error) {
 				if f, ok := original.AsFunction(); ok {
-					_, _ = f.Call(callArgs)
+					if _, err := f.Call(callArgs); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 				state.removeListenerValue(event, wrapper)
 				return engine.Undefined(), nil
@@ -377,7 +383,9 @@ func newEmitterInstanceOpts(args []engine.Value) engine.Value {
 							reason = ca[0]
 						}
 						if f, ok := emitFn.AsFunction(); ok {
-							_, _ = f.Call([]engine.Value{engine.Str("error"), reason})
+							if _, err := f.Call([]engine.Value{engine.Str("error"), reason}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 						return engine.Undefined(), nil
 					})
@@ -455,7 +463,9 @@ func newEmitterInstanceOpts(args []engine.Value) engine.Value {
 			var wrapper engine.Value
 			wrapper = engine.NewFunction("onceWrapper", func(callArgs []engine.Value) (engine.Value, error) {
 				if f, ok := original.AsFunction(); ok {
-					_, _ = f.Call(callArgs)
+					if _, err := f.Call(callArgs); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 				state.removeListenerValue(event, wrapper)
 				return engine.Undefined(), nil
@@ -578,14 +588,18 @@ func eventsOnceModule(args []engine.Value) (engine.Value, error) {
 		resolveCb := engine.NewFunction("onceResolve", func(ca []engine.Value) (engine.Value, error) {
 			argsArr = append([]engine.Value{}, ca...)
 			if f, ok := resolve.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.NewArray(argsArr)})
+				if _, err := f.Call([]engine.Value{engine.NewArray(argsArr)}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 			return engine.Undefined(), nil
 		})
 		errorCb := engine.NewFunction("onceError", func(ca []engine.Value) (engine.Value, error) {
 			if len(ca) > 0 {
 				if f, ok := reject.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{ca[0]})
+					if _, err := f.Call([]engine.Value{ca[0]}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			return engine.Undefined(), nil
@@ -632,7 +646,9 @@ func eventsOnModule(args []engine.Value) (engine.Value, error) {
 				res := engine.NewObject()
 				_ = res.Set("done", engine.Boolean(false))
 				_ = res.Set("value", arr)
-				_, _ = f.Call([]engine.Value{res})
+				if _, err := f.Call([]engine.Value{res}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		} else {
 			queue = append(queue, arr)
@@ -647,7 +663,9 @@ func eventsOnModule(args []engine.Value) (engine.Value, error) {
 			if f, ok := w.AsFunction(); ok {
 				res := engine.NewObject()
 				_ = res.Set("done", engine.Boolean(true))
-				_, _ = f.Call([]engine.Value{res})
+				if _, err := f.Call([]engine.Value{res}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil

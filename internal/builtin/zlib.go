@@ -15,13 +15,14 @@ import (
 	"compress/gzip"
 	gzlib "compress/zlib"
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"hash/crc32"
 	"io"
 	"sync"
 
-	"github.com/andybalholm/brotli"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -192,9 +193,13 @@ func makeZlibAsync(ctx engine.Context, fn func([]byte) ([]byte, error)) engine.F
 				if cb != nil && cb.IsFunction() {
 					if f, ok := cb.AsFunction(); ok {
 						if err != nil {
-							_, _ = f.Call([]engine.Value{engine.Str(err.Error())})
+							if _, err := f.Call([]engine.Value{engine.Str(err.Error())}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						} else {
-							_, _ = f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(out)})
+							if _, err := f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(out)}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 				}
@@ -307,10 +312,10 @@ func brotliDecompressBytes(data []byte) ([]byte, error) {
 // zstdEncoder/zstdDecoder 惰性初始化（复用实例，zstd 允许并发用同一
 // Encoder/Decoder，但 EncodeAll 需持有锁）。
 var (
-	zstdOnce      sync.Once
-	zstdEnc       *zstd.Encoder
-	zstdDec       *zstd.Decoder
-	zstdEncMu     sync.Mutex
+	zstdOnce  sync.Once
+	zstdEnc   *zstd.Encoder
+	zstdDec   *zstd.Decoder
+	zstdEncMu sync.Mutex
 )
 
 func zstdCompressBytes(data []byte) ([]byte, error) {

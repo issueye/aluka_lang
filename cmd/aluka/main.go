@@ -942,7 +942,9 @@ func (c *customReporterHandle) Finish(passed, failed, skipped, todo, cancelled i
 		return
 	}
 	if f, ok := c.endFn.AsFunction(); ok {
-		_, _ = f.Call(nil)
+		if _, err := f.Call(nil); err != nil {
+			interpreter.ReportUncaught(nil, err)
+		}
 	}
 }
 

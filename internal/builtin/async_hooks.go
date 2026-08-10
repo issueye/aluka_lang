@@ -120,7 +120,9 @@ func fireHook(name string, args []engine.Value) {
 			continue
 		}
 		if f, ok := cb.AsFunction(); ok {
-			_, _ = f.Call(args)
+			if _, err := f.Call(args); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 }

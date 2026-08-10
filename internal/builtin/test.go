@@ -136,7 +136,9 @@ func NewTest(ctx engine.Context) (engine.Value, error) {
 		regMu.Unlock()
 		// 同步执行 suite 函数体（其内的 it/describe/beforeEach 注册子项）。
 		if f, ok := fn.AsFunction(); ok {
-			_, _ = f.Call(nil)
+			if _, err := f.Call(nil); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 		regMu.Lock()
 		regStack = regStack[:len(regStack)-1]
@@ -237,56 +239,62 @@ func NewTest(ctx engine.Context) (engine.Value, error) {
 			regStack = append(regStack, suite)
 			regMu.Unlock()
 			if f, ok := fn.AsFunction(); ok {
-				_, _ = f.Call(nil)
+				if _, err := f.Call(nil); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 			regMu.Lock()
 			regStack = regStack[:len(regStack)-1]
 			regMu.Unlock()
 			return engine.Undefined(), nil
 		}))
-			_ = dso.Set("only", engine.NewFunction("only", func(args []engine.Value) (engine.Value, error) {
-				name, fn, opts := parseOptions(args)
-				opts.only = true
-				if !fn.IsFunction() {
-					return engine.Undefined(), fmt.Errorf("%w: describe.only() requires a function", engine.ErrTypeError)
+		_ = dso.Set("only", engine.NewFunction("only", func(args []engine.Value) (engine.Value, error) {
+			name, fn, opts := parseOptions(args)
+			opts.only = true
+			if !fn.IsFunction() {
+				return engine.Undefined(), fmt.Errorf("%w: describe.only() requires a function", engine.ErrTypeError)
+			}
+			suite := &registeredSuite{name: name, only: true}
+			regMu.Lock()
+			cur := regStack[len(regStack)-1]
+			cur.suites = append(cur.suites, suite)
+			cur.children = append(cur.children, suiteChild{isSuite: true, suite: suite})
+			regStack = append(regStack, suite)
+			regMu.Unlock()
+			if f, ok := fn.AsFunction(); ok {
+				if _, err := f.Call(nil); err != nil {
+					interpreter.ReportUncaught(nil, err)
 				}
-				suite := &registeredSuite{name: name, only: true}
-				regMu.Lock()
-				cur := regStack[len(regStack)-1]
-				cur.suites = append(cur.suites, suite)
-				cur.children = append(cur.children, suiteChild{isSuite: true, suite: suite})
-				regStack = append(regStack, suite)
-				regMu.Unlock()
-				if f, ok := fn.AsFunction(); ok {
-					_, _ = f.Call(nil)
+			}
+			regMu.Lock()
+			regStack = regStack[:len(regStack)-1]
+			regMu.Unlock()
+			return engine.Undefined(), nil
+		}))
+		_ = dso.Set("todo", engine.NewFunction("todo", func(args []engine.Value) (engine.Value, error) {
+			name, fn, opts := parseOptions(args)
+			opts.todo = true
+			if !fn.IsFunction() {
+				fn = engine.Undefined() // Node 语义：describe.todo('x') 允许省略 fn
+			}
+			suite := &registeredSuite{name: name, skip: opts.skip, todo: opts.todo, only: opts.only}
+			regMu.Lock()
+			cur := regStack[len(regStack)-1]
+			cur.suites = append(cur.suites, suite)
+			cur.children = append(cur.children, suiteChild{isSuite: true, suite: suite})
+			regStack = append(regStack, suite)
+			regMu.Unlock()
+			if f, ok := fn.AsFunction(); ok {
+				if _, err := f.Call(nil); err != nil {
+					interpreter.ReportUncaught(nil, err)
 				}
-				regMu.Lock()
-				regStack = regStack[:len(regStack)-1]
-				regMu.Unlock()
-				return engine.Undefined(), nil
-			}))
-			_ = dso.Set("todo", engine.NewFunction("todo", func(args []engine.Value) (engine.Value, error) {
-				name, fn, opts := parseOptions(args)
-				opts.todo = true
-				if !fn.IsFunction() {
-					fn = engine.Undefined() // Node 语义：describe.todo('x') 允许省略 fn
-				}
-				suite := &registeredSuite{name: name, skip: opts.skip, todo: opts.todo, only: opts.only}
-				regMu.Lock()
-				cur := regStack[len(regStack)-1]
-				cur.suites = append(cur.suites, suite)
-				cur.children = append(cur.children, suiteChild{isSuite: true, suite: suite})
-				regStack = append(regStack, suite)
-				regMu.Unlock()
-				if f, ok := fn.AsFunction(); ok {
-					_, _ = f.Call(nil)
-				}
-				regMu.Lock()
-				regStack = regStack[:len(regStack)-1]
-				regMu.Unlock()
-				return engine.Undefined(), nil
-			}))
-		}
+			}
+			regMu.Lock()
+			regStack = regStack[:len(regStack)-1]
+			regMu.Unlock()
+			return engine.Undefined(), nil
+		}))
+	}
 
 	// beforeEach(fn) / afterEach(fn) / before(fn) / after(fn)：挂到当前套件。
 	hook := func(key string) engine.Func {
@@ -384,7 +392,7 @@ func NewTest(ctx engine.Context) (engine.Value, error) {
 				_, _ = callEmitterMethod(stream, "emit", []engine.Value{engine.Str("test:start"), data})
 				details := engine.NewObjectFrom(map[string]engine.Value{
 					"duration_ms": engine.IntValue(int(r.Duration.Milliseconds())),
-					"type":         engine.Str("test"),
+					"type":        engine.Str("test"),
 				})
 				d := engine.NewObjectFrom(map[string]engine.Value{
 					"name":    engine.Str(r.Name),
@@ -998,14 +1006,18 @@ func abortTestSignal(sig engine.Value) {
 	_ = o.Set("reason", engine.Str("Test cancelled by parent"))
 	if v, err := o.Get("onabort"); err == nil && v.IsFunction() {
 		if f, ok := v.AsFunction(); ok {
-			_, _ = f.Call(nil)
+			if _, err := f.Call(nil); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 	if d, err := o.Get("dispatchEvent"); err == nil && d.IsFunction() {
 		if f, ok := d.AsFunction(); ok {
 			ev := engine.NewObject()
 			_ = ev.Set("type", engine.Str("abort"))
-			_, _ = f.Call([]engine.Value{ev})
+			if _, err := f.Call([]engine.Value{ev}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 }
@@ -1395,7 +1407,7 @@ type testRunState struct {
 	skipRequested bool // t.skip() 已调用
 	todo          bool // t.todo() 已调用
 	subtests      []*testRunState
-	subtestsRun   int // 已启动执行的子测试数（t.before/t.after 首末判定）
+	subtestsRun   int                       // 已启动执行的子测试数（t.before/t.after 首末判定）
 	subResults    []TestResult              // 子测试执行结果（失败传播给父）
 	cancelled     bool                      // 子测试被取消（父未 await——Node 语义）
 	promise       *interpreter.PromiseValue // t.test 返回的 promise

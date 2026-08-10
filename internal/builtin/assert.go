@@ -292,7 +292,9 @@ func makeAssertPromise(ctx engine.Context, expectReject bool) engine.Func {
 		} else if o, ok := target.AsObject(); ok {
 			if thenFn, err := o.Get("then"); err == nil && thenFn.IsFunction() {
 				if tf, ok := thenFn.AsFunction(); ok {
-					_, _ = tf.Call([]engine.Value{onFulfilled, onRejected})
+					if _, err := tf.Call([]engine.Value{onFulfilled, onRejected}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}

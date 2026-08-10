@@ -8,6 +8,7 @@ package builtin
 import (
 	"bufio"
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"os"
 	"strings"
 
@@ -55,7 +56,9 @@ func NewReadline(ctx engine.Context) (engine.Value, error) {
 				if o, ok := output.AsObject(); ok {
 					if w, err := o.Get("write"); err == nil && w.IsFunction() {
 						if f, ok := w.AsFunction(); ok {
-							_, _ = f.Call([]engine.Value{engine.Str(s)})
+							if _, err := f.Call([]engine.Value{engine.Str(s)}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 							return
 						}
 					}
@@ -85,7 +88,9 @@ func NewReadline(ctx engine.Context) (engine.Value, error) {
 			_ = rl.Set("line", engine.Str(line))
 			if cb != nil {
 				if f, ok := cb.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{engine.Str(line)})
+					if _, err := f.Call([]engine.Value{engine.Str(line)}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			emitEvent(rl, "line", engine.Str(line))

@@ -13,6 +13,7 @@ package builtin
 import (
 	"crypto/tls"
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 )
@@ -64,7 +65,9 @@ func NewHTTPS(ctx engine.Context) (engine.Value, error) {
 		if o, ok := req.AsObject(); ok {
 			if endFn, err := o.Get("end"); err == nil && endFn.IsFunction() {
 				if f, ok := endFn.AsFunction(); ok {
-					_, _ = f.Call(nil)
+					if _, err := f.Call(nil); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}

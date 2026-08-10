@@ -1,6 +1,7 @@
 package globals
 
 import (
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -58,7 +59,9 @@ func EnsurePerformance(ctx engine.Context) (engine.Value, error) {
 					_ = list.Set("getEntriesByName", engine.NewFunction("getEntriesByName", func(a []engine.Value) (engine.Value, error) {
 						return engine.NewArray([]engine.Value{entry}), nil
 					}))
-					_, _ = f.Call([]engine.Value{list})
+					if _, err := f.Call([]engine.Value{list}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}

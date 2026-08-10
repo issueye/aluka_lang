@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/gorilla/websocket"
 )
 
@@ -157,7 +158,9 @@ func wsDispatch(ctx engine.Context, ws engine.Object, event string, data engine.
 			if data != nil && !data.IsUndefined() {
 				_ = ev.Set("data", data)
 			}
-			_, _ = f.Call([]engine.Value{ev})
+			if _, err := f.Call([]engine.Value{ev}); err != nil {
+				interpreter.ReportUncaught(ctx, err)
+			}
 		}
 	}
 	// EventTarget dispatchEvent（addEventListener 监听器）。
@@ -167,7 +170,9 @@ func wsDispatch(ctx engine.Context, ws engine.Object, event string, data engine.
 			if data != nil && !data.IsUndefined() {
 				_ = ev.Set("data", data)
 			}
-			_, _ = f.Call([]engine.Value{ev})
+			if _, err := f.Call([]engine.Value{ev}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 }

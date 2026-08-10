@@ -11,6 +11,7 @@ package globals
 
 import (
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"io"
 	"net/http"
 	"sort"
@@ -79,7 +80,9 @@ func NewFetch(ctx engine.Context, cfg FetchConfig) error {
 						if !hasCT {
 							if sf, err := ho.Get("set"); err == nil && sf.IsFunction() {
 								if sfn, ok := sf.AsFunction(); ok {
-									_, _ = sfn.Call([]engine.Value{engine.Str("Content-Type"), engine.Str("application/json")})
+									if _, err := sfn.Call([]engine.Value{engine.Str("Content-Type"), engine.Str("application/json")}); err != nil {
+										interpreter.ReportUncaught(nil, err)
+									}
 								}
 							}
 						}
@@ -275,7 +278,9 @@ func newHeadersInstance(args []engine.Value) engine.Value {
 		if len(a) > 0 && a[0].IsFunction() {
 			if f, ok := a[0].AsFunction(); ok {
 				for _, p := range state.sortedMerged() {
-					_, _ = f.Call([]engine.Value{engine.Str(p.val), engine.Str(p.key), obj})
+					if _, err := f.Call([]engine.Value{engine.Str(p.val), engine.Str(p.key), obj}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -500,12 +505,16 @@ func buildResponse(ctx engine.Context, args []engine.Value, status int, statusTe
 					if c, ok := a[0].AsObject(); ok {
 						if e, err := c.Get("enqueue"); err == nil && e.IsFunction() {
 							if f, ok := e.AsFunction(); ok {
-								_, _ = f.Call([]engine.Value{NewBufferInstance([]byte(bodyStr))})
+								if _, err := f.Call([]engine.Value{NewBufferInstance([]byte(bodyStr))}); err != nil {
+									interpreter.ReportUncaught(nil, err)
+								}
 							}
 						}
 						if cl, err := c.Get("close"); err == nil && cl.IsFunction() {
 							if f, ok := cl.AsFunction(); ok {
-								_, _ = f.Call(nil)
+								if _, err := f.Call(nil); err != nil {
+									interpreter.ReportUncaught(nil, err)
+								}
 							}
 						}
 					}
@@ -661,7 +670,9 @@ func (b *fetchBodyState) append(chunk []byte) {
 	_ = b.res.Set("_body", engine.Str(string(b.data)))
 	if enqueue, err := b.stream.Get("enqueue"); err == nil && enqueue.IsFunction() {
 		if f, ok := enqueue.AsFunction(); ok {
-			_, _ = f.Call([]engine.Value{NewBufferInstance(chunk)})
+			if _, err := f.Call([]engine.Value{NewBufferInstance(chunk)}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 }
@@ -676,7 +687,9 @@ func (b *fetchBodyState) finish(err error) {
 	}
 	if closeFn, getErr := b.stream.Get("close"); getErr == nil && closeFn.IsFunction() {
 		if f, ok := closeFn.AsFunction(); ok {
-			_, _ = f.Call(nil)
+			if _, err := f.Call(nil); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 	waiters := b.waiters
@@ -982,12 +995,16 @@ func responseBodyStream(ctx engine.Context, bodyStr string) engine.Value {
 				if c, ok := a[0].AsObject(); ok {
 					if e, err := c.Get("enqueue"); err == nil && e.IsFunction() {
 						if f, ok := e.AsFunction(); ok {
-							_, _ = f.Call([]engine.Value{NewBufferInstance([]byte(bodyStr))})
+							if _, err := f.Call([]engine.Value{NewBufferInstance([]byte(bodyStr))}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 					if cl, err := c.Get("close"); err == nil && cl.IsFunction() {
 						if f, ok := cl.AsFunction(); ok {
-							_, _ = f.Call(nil)
+							if _, err := f.Call(nil); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 				}

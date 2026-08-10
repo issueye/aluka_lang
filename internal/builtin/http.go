@@ -16,6 +16,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"io"
 	"net"
 	"net/http"
@@ -55,7 +56,9 @@ func NewHTTP(ctx engine.Context) (engine.Value, error) {
 		if o, ok := req.AsObject(); ok {
 			if endFn, err := o.Get("end"); err == nil && endFn.IsFunction() {
 				if f, ok := endFn.AsFunction(); ok {
-					_, _ = f.Call(nil)
+					if _, err := f.Call(nil); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -150,7 +153,9 @@ func newHTTPServerWithTLS(ctx engine.Context, handler engine.Value, tlsConfig *t
 		}
 		if len(args) > 1 && args[1].IsFunction() {
 			if f, ok := args[1].AsFunction(); ok {
-				_, _ = f.Call(nil)
+				if _, err := f.Call(nil); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return server, nil
@@ -164,7 +169,9 @@ func newHTTPServerWithTLS(ctx engine.Context, handler engine.Value, tlsConfig *t
 	_ = server.Set("getConnections", engine.NewFunction("getConnections", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 0 && args[0].IsFunction() {
 			if f, ok := args[0].AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.Null(), engine.IntValue(0)})
+				if _, err := f.Call([]engine.Value{engine.Null(), engine.IntValue(0)}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return server, nil
@@ -234,7 +241,9 @@ func newHTTPServerWithTLS(ctx engine.Context, handler engine.Value, tlsConfig *t
 			if callback != nil {
 				ctx.PostTask(func() {
 					if f, ok := callback.AsFunction(); ok {
-						_, _ = f.Call(nil)
+						if _, err := f.Call(nil); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				})
 			}
@@ -282,7 +291,9 @@ func newHTTPServerWithTLS(ctx engine.Context, handler engine.Value, tlsConfig *t
 				if callback != nil {
 					ctx.PostTask(func() {
 						if f, ok := callback.AsFunction(); ok {
-							_, _ = f.Call(nil)
+							if _, err := f.Call(nil); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 						if release != nil {
 							release()
@@ -296,7 +307,9 @@ func newHTTPServerWithTLS(ctx engine.Context, handler engine.Value, tlsConfig *t
 			// 从未监听：同步回调并立即释放。
 			if callback != nil {
 				if f, ok := callback.AsFunction(); ok {
-					_, _ = f.Call(nil)
+					if _, err := f.Call(nil); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			if release != nil {
@@ -361,7 +374,9 @@ func (s *httpServerState) handleRequest(w http.ResponseWriter, r *http.Request) 
 		res, resState := newServerResponse(s.ctx, w)
 		resCh <- resState
 		if f, ok := s.handler.AsFunction(); ok {
-			_, _ = f.Call([]engine.Value{req, res})
+			if _, err := f.Call([]engine.Value{req, res}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 		// 驱动已就绪的微任务（async/await 链）；定时器/IO 触发的 res.end
 		// 由事件循环的后续任务自然驱动。
@@ -859,9 +874,9 @@ type clientReqState struct {
 	ended       bool
 	aborted     bool
 	cancel      context.CancelFunc // 中止请求（req.abort）
-	insecureTLS bool              // rejectUnauthorized: false（跳过自签名证书校验）
-	agent       *http.Transport   // options.agent 的连接池（nil 时按 noAgent/全局）
-	noAgent     bool              // agent: false → 每次请求新建连接
+	insecureTLS bool               // rejectUnauthorized: false（跳过自签名证书校验）
+	agent       *http.Transport    // options.agent 的连接池（nil 时按 noAgent/全局）
+	noAgent     bool               // agent: false → 每次请求新建连接
 }
 
 // newClientRequest 创建 ClientRequest 对象（HTTP）。
@@ -1012,13 +1027,17 @@ func newClientRequestProto(ctx engine.Context, args []engine.Value, proto string
 						// 先触发 callback，再触发后续 on('timeout') 监听器。
 						if cb.IsFunction() {
 							if f, ok := cb.AsFunction(); ok {
-								_, _ = f.Call(nil)
+								if _, err := f.Call(nil); err != nil {
+									interpreter.ReportUncaught(nil, err)
+								}
 							}
 						}
 						emitEvent(req, "timeout")
 						return engine.Undefined(), nil
 					})
-					_, _ = sf.Call([]engine.Value{timerCb, engine.Number(float64(timeout))})
+					if _, err := sf.Call([]engine.Value{timerCb, engine.Number(float64(timeout))}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -1084,7 +1103,9 @@ func (s *clientReqState) send() {
 		if err != nil {
 			s.ctx.PostTask(func() {
 				if f, ok := s.callback.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{engine.Undefined(), engine.Str(err.Error())})
+					if _, err := f.Call([]engine.Value{engine.Undefined(), engine.Str(err.Error())}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			})
 			return
@@ -1120,7 +1141,9 @@ func (s *clientReqState) send() {
 					return
 				}
 				if f, ok := s.callback.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{engine.Undefined(), engine.Str(err.Error())})
+					if _, err := f.Call([]engine.Value{engine.Undefined(), engine.Str(err.Error())}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			})
 			return
@@ -1140,7 +1163,9 @@ func (s *clientReqState) send() {
 			// trailer 头（Go 在 body 读完时填充 resp.Trailer）。
 			_ = resMsg.Set("trailers", headersToObj(resp.Trailer))
 			if f, ok := s.callback.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{resMsg})
+				if _, err := f.Call([]engine.Value{resMsg}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 			// 回调注册完监听器后发射响应体事件（'data'/'end'）。
 			emitIncomingData(resMsg, body)

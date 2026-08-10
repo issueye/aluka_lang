@@ -98,7 +98,9 @@ func registerEmitterPrototype(proto engine.Object) {
 			var wrapper engine.Value
 			wrapper = engine.NewFunction("onceWrapper", func(callArgs []engine.Value) (engine.Value, error) {
 				if f, ok := original.AsFunction(); ok {
-					_, _ = f.Call(callArgs)
+					if _, err := f.Call(callArgs); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 				l := protoListeners(st, ev)
 				for i, x := range l {
@@ -284,7 +286,9 @@ func registerEmitterPrototype(proto engine.Object) {
 		var wrapper engine.Value
 		wrapper = engine.NewFunction("onceWrapper", func(callArgs []engine.Value) (engine.Value, error) {
 			if f, ok := original.AsFunction(); ok {
-				_, _ = f.Call(callArgs)
+				if _, err := f.Call(callArgs); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 			l := protoListeners(st, ev)
 			for i, x := range l {

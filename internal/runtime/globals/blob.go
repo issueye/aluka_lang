@@ -8,6 +8,7 @@ package globals
 
 import (
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // BlobConfig 配置 Blob 全局（当前无可用选项）。
@@ -140,13 +141,17 @@ func newBlobInstance(ctx engine.Context, args []engine.Value, typeHint string) e
 						if e, err := c.Get("enqueue"); err == nil && e.IsFunction() {
 							if f, ok := e.AsFunction(); ok {
 								for _, ch := range chunks {
-									_, _ = f.Call([]engine.Value{NewBufferInstance(ch)})
+									if _, err := f.Call([]engine.Value{NewBufferInstance(ch)}); err != nil {
+										interpreter.ReportUncaught(nil, err)
+									}
 								}
 							}
 						}
 						if cl, err := c.Get("close"); err == nil && cl.IsFunction() {
 							if f, ok := cl.AsFunction(); ok {
-								_, _ = f.Call(nil)
+								if _, err := f.Call(nil); err != nil {
+									interpreter.ReportUncaught(nil, err)
+								}
 							}
 						}
 					}

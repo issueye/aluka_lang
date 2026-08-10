@@ -214,7 +214,9 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		// 触发 'exit' 事件（同步，带退出码）。
 		if emitVal, err := proc.Get("emit"); err == nil && emitVal.IsFunction() {
 			if f, ok := emitVal.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.Str("exit"), engine.IntValue(code)})
+				if _, err := f.Call([]engine.Value{engine.Str("exit"), engine.IntValue(code)}); err != nil {
+					interpreter.ReportUncaught(ctx, err)
+				}
 			}
 		}
 		os.Exit(code)
@@ -244,7 +246,9 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		// Minimal contexts without a Node scheduler retain the old fallback.
 		if q, err := ctx.Global().Get("queueMicrotask"); err == nil && q.IsFunction() {
 			if f, ok := q.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{args[0]})
+				if _, err := f.Call([]engine.Value{args[0]}); err != nil {
+					interpreter.ReportUncaught(ctx, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil
@@ -479,7 +483,9 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 						callback := request.callback
 						ctx.PostTask(func() {
 							if f, ok := callback.AsFunction(); ok {
-								_, _ = f.Call(nil)
+								if _, err := f.Call(nil); err != nil {
+									interpreter.ReportUncaught(ctx, err)
+								}
 							}
 						})
 					}
@@ -544,7 +550,9 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 							ctx.PostTask(func() {
 								for _, listener := range listeners {
 									if fn, ok := listener.callback.AsFunction(); ok {
-										_, _ = fn.Call(nil)
+										if _, err := fn.Call(nil); err != nil {
+											interpreter.ReportUncaught(ctx, err)
+										}
 									}
 								}
 							})
@@ -573,7 +581,9 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		invokeWriteCallback := func(callback engine.Value) {
 			if callback != nil && !callback.IsUndefined() {
 				if callbackFn, ok := callback.AsFunction(); ok {
-					_, _ = callbackFn.Call(nil)
+					if _, err := callbackFn.Call(nil); err != nil {
+						interpreter.ReportUncaught(ctx, err)
+					}
 				}
 			}
 		}
@@ -795,12 +805,16 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		})
 		if q, qerr := ctx.Global().Get("queueMicrotask"); qerr == nil && q.IsFunction() {
 			if f, ok := q.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{task})
+				if _, err := f.Call([]engine.Value{task}); err != nil {
+					interpreter.ReportUncaught(ctx, err)
+				}
 				return engine.Undefined(), nil
 			}
 		}
 		// 无微任务队列兜底：同步执行。
-		_, _ = task.Call(nil)
+		if _, err := task.Call(nil); err != nil {
+			interpreter.ReportUncaught(ctx, err)
+		}
 		return engine.Undefined(), nil
 	}))
 
@@ -815,7 +829,9 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 			ctx.PostTask(func() {
 				for _, fn := range listeners[name] {
 					if f, ok := fn.AsFunction(); ok {
-						_, _ = f.Call(nil)
+						if _, err := f.Call(nil); err != nil {
+							interpreter.ReportUncaught(ctx, err)
+						}
 					}
 				}
 			})
@@ -863,7 +879,9 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		var wrapper engine.Value
 		wrapper = engine.NewFunction("onceWrapper", func(ca []engine.Value) (engine.Value, error) {
 			if f, ok := original.AsFunction(); ok {
-				_, _ = f.Call(ca)
+				if _, err := f.Call(ca); err != nil {
+					interpreter.ReportUncaught(ctx, err)
+				}
 			}
 			l := listeners[event]
 			for i, x := range l {

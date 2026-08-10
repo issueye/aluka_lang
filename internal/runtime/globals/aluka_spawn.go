@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // alukaRegisterSpawn 注册进程相关 API。
@@ -162,7 +163,9 @@ func alukaPipeStream(ctx engine.Context, r io.Reader) engine.Value {
 					if c, ok := controller.AsObject(); ok {
 						if e, err := c.Get("enqueue"); err == nil && e.IsFunction() {
 							if f, ok := e.AsFunction(); ok {
-								_, _ = f.Call([]engine.Value{NewBufferInstance(chunk)})
+								if _, err := f.Call([]engine.Value{NewBufferInstance(chunk)}); err != nil {
+									interpreter.ReportUncaught(ctx, err)
+								}
 							}
 						}
 					}
@@ -173,7 +176,9 @@ func alukaPipeStream(ctx engine.Context, r io.Reader) engine.Value {
 					if c, ok := controller.AsObject(); ok {
 						if cl, err := c.Get("close"); err == nil && cl.IsFunction() {
 							if f, ok := cl.AsFunction(); ok {
-								_, _ = f.Call(nil)
+								if _, err := f.Call(nil); err != nil {
+									interpreter.ReportUncaught(ctx, err)
+								}
 							}
 						}
 					}

@@ -6,6 +6,7 @@ package builtin
 
 import (
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"net"
 	"sync"
 
@@ -64,7 +65,9 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 	if messageCb != nil && messageCb.IsFunction() {
 		if onFn, err := sock.Get("on"); err == nil && onFn.IsFunction() {
 			if f, ok := onFn.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.Str("message"), messageCb})
+				if _, err := f.Call([]engine.Value{engine.Str("message"), messageCb}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	}
@@ -118,7 +121,9 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 			emitEvent(sock, "listening")
 			if cb != nil && cb.IsFunction() {
 				if f, ok := cb.AsFunction(); ok {
-					_, _ = f.Call(nil)
+					if _, err := f.Call(nil); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		})
@@ -200,7 +205,9 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 		if err != nil {
 			if cb != nil && cb.IsFunction() {
 				if f, ok := cb.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{engine.Str(err.Error())})
+					if _, err := f.Call([]engine.Value{engine.Str(err.Error())}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			return sock, nil
@@ -209,9 +216,13 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 		if cb != nil && cb.IsFunction() {
 			if f, ok := cb.AsFunction(); ok {
 				if err != nil {
-					_, _ = f.Call([]engine.Value{engine.Str(err.Error())})
+					if _, err := f.Call([]engine.Value{engine.Str(err.Error())}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				} else {
-					_, _ = f.Call([]engine.Value{engine.Null()})
+					if _, err := f.Call([]engine.Value{engine.Null()}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -235,7 +246,9 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 			}
 			if len(args) > 0 && args[0].IsFunction() {
 				if f, ok := args[0].AsFunction(); ok {
-					_, _ = f.Call(nil)
+					if _, err := f.Call(nil); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			emitEvent(sock, "close")
@@ -312,7 +325,9 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 		if err != nil {
 			if cb.IsFunction() {
 				if f, ok := cb.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{makeErrorValue(ctx, err)})
+					if _, err := f.Call([]engine.Value{makeErrorValue(ctx, err)}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			return sock, nil
@@ -322,7 +337,9 @@ func newDgramSocket(ctx engine.Context, netType string, messageCb engine.Value) 
 		state.mu.Unlock()
 		if cb.IsFunction() {
 			if f, ok := cb.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.Null()})
+				if _, err := f.Call([]engine.Value{engine.Null()}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return sock, nil

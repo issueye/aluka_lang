@@ -60,9 +60,15 @@ func makePromiseFinished(ctx engine.Context) engine.Func {
 		if o, ok := stream.AsObject(); ok {
 			if onFn, err := o.Get("on"); err == nil && onFn.IsFunction() {
 				f, _ := onFn.AsFunction()
-				_, _ = f.Call([]engine.Value{engine.Str("finish"), cb})
-				_, _ = f.Call([]engine.Value{engine.Str("end"), cb})
-				_, _ = f.Call([]engine.Value{engine.Str("error"), cb})
+				if _, err := f.Call([]engine.Value{engine.Str("finish"), cb}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
+				if _, err := f.Call([]engine.Value{engine.Str("end"), cb}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
+				if _, err := f.Call([]engine.Value{engine.Str("error"), cb}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return p, nil

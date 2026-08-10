@@ -9,6 +9,7 @@ package builtin
 
 import (
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -133,7 +134,9 @@ func consumeStream(ctx engine.Context, stream engine.Value, convert func([]engin
 			}
 			settled = true
 			if f, ok := resolve.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{convert(chunks)})
+				if _, err := f.Call([]engine.Value{convert(chunks)}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 			return engine.Undefined(), nil
 		})
@@ -147,7 +150,9 @@ func consumeStream(ctx engine.Context, stream engine.Value, convert func([]engin
 				if len(ca) > 0 {
 					msg = ca[0].String()
 				}
-				_, _ = f.Call([]engine.Value{engine.Str(msg)})
+				if _, err := f.Call([]engine.Value{engine.Str(msg)}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 			return engine.Undefined(), nil
 		})

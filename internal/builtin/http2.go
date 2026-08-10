@@ -10,6 +10,7 @@ package builtin
 import (
 	"crypto/tls"
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"io"
 	"net/http"
 	"strings"
@@ -143,11 +144,11 @@ func NewHTTP2(ctx engine.Context) (engine.Value, error) {
 
 // http2ClientState HTTP/2 客户端会话状态。
 type http2ClientState struct {
-	ctx        engine.Context
-	authority  string
-	client     *http.Client
-	mu         sync.Mutex
-	closed     bool
+	ctx       engine.Context
+	authority string
+	client    *http.Client
+	mu        sync.Mutex
+	closed    bool
 }
 
 // newHTTP2ClientSession 构造 ClientHttp2Session。
@@ -162,7 +163,7 @@ func newHTTP2ClientSession(ctx engine.Context, authority string, listener engine
 	// 协商 h2；对 http:// 走 h2c 需特殊 Transport，此处简化仅支持 https）。
 	if isHTTPS {
 		state.client = &http.Client{Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{},
+			TLSClientConfig:   &tls.Config{},
 			ForceAttemptHTTP2: true,
 		}}
 	} else {
@@ -208,7 +209,9 @@ func newHTTP2ClientSession(ctx engine.Context, authority string, listener engine
 					emitEvent(stream, "error", engine.Str(err.Error()))
 					if cb.IsFunction() {
 						if f, ok := cb.AsFunction(); ok {
-							_, _ = f.Call([]engine.Value{engine.Str(err.Error())})
+							if _, err := f.Call([]engine.Value{engine.Str(err.Error())}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 				})
@@ -233,7 +236,9 @@ func newHTTP2ClientSession(ctx engine.Context, authority string, listener engine
 				emitEvent(stream, "end")
 				if cb.IsFunction() {
 					if f, ok := cb.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{hdrObj})
+						if _, err := f.Call([]engine.Value{hdrObj}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			})
@@ -251,7 +256,9 @@ func newHTTP2ClientSession(ctx engine.Context, authority string, listener engine
 		emitEvent(sess, "close")
 		if len(args) > 0 && args[0].IsFunction() {
 			if f, ok := args[0].AsFunction(); ok {
-				_, _ = f.Call(nil)
+				if _, err := f.Call(nil); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return sess, nil
@@ -269,7 +276,9 @@ func newHTTP2ClientSession(ctx engine.Context, authority string, listener engine
 		emitEvent(sess, "connect", sess, engine.Undefined())
 		if listener.IsFunction() {
 			if f, ok := listener.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{sess, engine.Undefined()})
+				if _, err := f.Call([]engine.Value{sess, engine.Undefined()}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	})

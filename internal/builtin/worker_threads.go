@@ -691,7 +691,9 @@ func makeBroadcastChannel(ctx engine.Context, name string) engine.Object {
 		}
 		broadcastRegistry.Unlock()
 		if f, ok := origClose.AsFunction(); ok {
-			_, _ = f.Call(pa)
+			if _, err := f.Call(pa); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 		return engine.Undefined(), nil
 	}))

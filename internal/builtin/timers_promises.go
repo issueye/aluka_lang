@@ -4,6 +4,7 @@ package builtin
 // setTimeout/setImmediate 返回 Promise；setInterval 返回异步迭代器（简化）。
 
 import (
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"sync"
 	"time"
 
@@ -31,7 +32,9 @@ func NewTimersPromises(ctx engine.Context) (engine.Value, error) {
 				ctx.PostTask(func() {
 					defer release()
 					if f, ok := resolve.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{value})
+						if _, err := f.Call([]engine.Value{value}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				})
 			})
@@ -56,7 +59,9 @@ func NewTimersPromises(ctx engine.Context) (engine.Value, error) {
 				ctx.PostTask(func() {
 					defer release()
 					if f, ok := resolve.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{value})
+						if _, err := f.Call([]engine.Value{value}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				})
 			})

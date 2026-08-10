@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // AlukaConfig 配置 Aluka 全局。
@@ -70,7 +71,9 @@ func NewAluka(ctx engine.Context, cfg AlukaConfig) error {
 				ctx.PostTask(func() {
 					defer release()
 					if f, ok := resolve.AsFunction(); ok {
-						_, _ = f.Call(nil)
+						if _, err := f.Call(nil); err != nil {
+							interpreter.ReportUncaught(ctx, err)
+						}
 					}
 				})
 			})
@@ -262,7 +265,9 @@ func alukaServe(ctx engine.Context, args []engine.Value) (engine.Value, error) {
 					ctx.PostTask(func() {
 						release()
 						if f, ok := resolve.AsFunction(); ok {
-							_, _ = f.Call(nil)
+							if _, err := f.Call(nil); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					})
 				}()
@@ -323,7 +328,9 @@ func alukaThen(ctx engine.Context, value engine.Value, cb func(engine.Value)) {
 						}
 						return engine.Undefined(), nil
 					})
-					_, _ = tf.Call([]engine.Value{onRes})
+					if _, err := tf.Call([]engine.Value{onRes}); err != nil {
+						interpreter.ReportUncaught(ctx, err)
+					}
 					return
 				}
 			}
@@ -379,7 +386,10 @@ func emitEventAny(obj engine.Value, event string, args ...engine.Value) {
 		if emitFn, err := o.Get("emit"); err == nil && emitFn.IsFunction() {
 			if f, ok := emitFn.AsFunction(); ok {
 				all := append([]engine.Value{engine.Str(event)}, args...)
-				_, _ = f.Call(all)
+				if _, err := f.Call(all); err != nil {
+					// emitEventAny 无 ctx 参数（emit 内部已上报监听器错误）。
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	}

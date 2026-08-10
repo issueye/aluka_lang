@@ -14,6 +14,7 @@ package builtin
 import (
 	"crypto/tls"
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"net"
 	"sync"
 
@@ -180,7 +181,9 @@ func newTLSServer(ctx engine.Context, listener engine.Value, tlsCfg *tls.Config)
 			ctx.PostTask(func() {
 				if callback != nil {
 					if f, ok := callback.AsFunction(); ok {
-						_, _ = f.Call(nil)
+						if _, err := f.Call(nil); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 				emitEvent(server, "listening")
@@ -201,7 +204,9 @@ func newTLSServer(ctx engine.Context, listener engine.Value, tlsCfg *tls.Config)
 						emitEvent(server, "secureConnection", socket)
 						if listener != nil && listener.IsFunction() {
 							if f, ok := listener.AsFunction(); ok {
-								_, _ = f.Call([]engine.Value{socket})
+								if _, err := f.Call([]engine.Value{socket}); err != nil {
+									interpreter.ReportUncaught(nil, err)
+								}
 							}
 						}
 					})
@@ -234,7 +239,9 @@ func newTLSServer(ctx engine.Context, listener engine.Value, tlsCfg *tls.Config)
 				if callback != nil {
 					ctx.PostTask(func() {
 						if f, ok := callback.AsFunction(); ok {
-							_, _ = f.Call(nil)
+							if _, err := f.Call(nil); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 						if release != nil {
 							release()
@@ -247,7 +254,9 @@ func newTLSServer(ctx engine.Context, listener engine.Value, tlsCfg *tls.Config)
 		} else {
 			if callback != nil {
 				if f, ok := callback.AsFunction(); ok {
-					_, _ = f.Call(nil)
+					if _, err := f.Call(nil); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			if release != nil {
@@ -368,7 +377,9 @@ func tlsConnect(ctx engine.Context, args []engine.Value) engine.Value {
 			}))
 			if connectListener != nil && connectListener.IsFunction() {
 				if f, ok := connectListener.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{socket})
+					if _, err := f.Call([]engine.Value{socket}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			emitEvent(socket, "connect")

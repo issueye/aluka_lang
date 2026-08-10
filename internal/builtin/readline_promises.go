@@ -8,6 +8,7 @@ package builtin
 import (
 	"bufio"
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"os"
 	"strings"
 
@@ -138,7 +139,9 @@ func promiseReadLine(ctx engine.Context, query string, input, output engine.Valu
 			if o, ok := output.AsObject(); ok {
 				if w, err := o.Get("write"); err == nil && w.IsFunction() {
 					if f, ok := w.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{engine.Str(query)})
+						if _, err := f.Call([]engine.Value{engine.Str(query)}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			}
@@ -159,13 +162,17 @@ func promiseReadLine(ctx engine.Context, query string, input, output engine.Valu
 				defer release()
 				if rerr != nil && line == "" {
 					if f, ok := reject.AsFunction(); ok {
-						_, _ = f.Call([]engine.Value{engine.Str("readline/promises: input closed")})
+						if _, err := f.Call([]engine.Value{engine.Str("readline/promises: input closed")}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 					return
 				}
 				line = strings.TrimRight(line, "\r\n")
 				if f, ok := resolve.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{engine.Str(line)})
+					if _, err := f.Call([]engine.Value{engine.Str(line)}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			})
 		}()
@@ -202,7 +209,9 @@ func consumeStreamLine(ctx engine.Context, input engine.Value, resolve, reject e
 		settled = true
 		release()
 		if f, ok := fn.AsFunction(); ok {
-			_, _ = f.Call([]engine.Value{arg})
+			if _, err := f.Call([]engine.Value{arg}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 	dataCb := engine.NewFunction("lineData", func(ca []engine.Value) (engine.Value, error) {
@@ -242,7 +251,9 @@ func promiseResolved(ctx engine.Context, val engine.Value) (engine.Value, error)
 	executor := engine.NewFunction("executor", func(args []engine.Value) (engine.Value, error) {
 		if len(args) >= 1 {
 			if f, ok := args[0].AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{val})
+				if _, err := f.Call([]engine.Value{val}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil

@@ -124,7 +124,9 @@ func NewAbort(ctx engine.Context, cfg AbortConfig) error {
 							abortSignal(signal, reason)
 							return engine.Undefined(), nil
 						})
-						_, _ = f.Call([]engine.Value{engine.Str("abort"), listener})
+						if _, err := f.Call([]engine.Value{engine.Str("abort"), listener}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			}
@@ -188,14 +190,18 @@ func abortSignal(signal engine.Value, reason engine.Value) {
 		// onabort 回调。
 		if v, err := o.Get("onabort"); err == nil && v.IsFunction() {
 			if f, ok := v.AsFunction(); ok {
-				_, _ = f.Call(nil)
+				if _, err := f.Call(nil); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		// 'abort' 事件。
 		if d, err := o.Get("dispatchEvent"); err == nil && d.IsFunction() {
 			if f, ok := d.AsFunction(); ok {
 				ev, _ := newEventInstance([]engine.Value{engine.Str("abort")}).AsObject()
-				_, _ = f.Call([]engine.Value{ev})
+				if _, err := f.Call([]engine.Value{ev}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	}

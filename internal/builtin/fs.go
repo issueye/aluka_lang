@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"io"
 	"io/fs"
 	"os"
@@ -355,9 +356,13 @@ func NewFS(ctx engine.Context) (engine.Value, error) {
 				if f, ok := cb.AsFunction(); ok {
 					dir, err := fsMakeTempDir(prefix)
 					if err != nil {
-						_, _ = f.Call([]engine.Value{makeErrorValue(ctx, err)})
+						if _, err := f.Call([]engine.Value{makeErrorValue(ctx, err)}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					} else {
-						_, _ = f.Call([]engine.Value{engine.Null(), engine.Str(dir)})
+						if _, err := f.Call([]engine.Value{engine.Null(), engine.Str(dir)}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			})
@@ -442,13 +447,17 @@ func NewFS(ctx engine.Context) (engine.Value, error) {
 				}
 				root, excludeFn, withFileTypes, err := globParseOptions(opts)
 				if err != nil {
-					_, _ = f.Call([]engine.Value{makeErrorValue(ctx, err)})
+					if _, err := f.Call([]engine.Value{makeErrorValue(ctx, err)}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 					return
 				}
 				g := newGlobEngine(root, nocase, excludeFn)
 				results := g.globSyncRun(patterns)
 				arr := engine.NewArray(globToResults(g, results, withFileTypes, root))
-				_, _ = f.Call([]engine.Value{engine.Null(), arr})
+				if _, err := f.Call([]engine.Value{engine.Null(), arr}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			})
 		}()
 		return engine.Undefined(), nil
@@ -485,9 +494,13 @@ func NewFS(ctx engine.Context) (engine.Value, error) {
 			ctx.PostTask(func() {
 				if f, ok := cb.AsFunction(); ok {
 					if err := fsCpCopy(src, dest, opts, true); err != nil {
-						_, _ = f.Call([]engine.Value{makeErrorValue(ctx, err)})
+						if _, err := f.Call([]engine.Value{makeErrorValue(ctx, err)}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					} else {
-						_, _ = f.Call([]engine.Value{engine.Null()})
+						if _, err := f.Call([]engine.Value{engine.Null()}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			})
@@ -711,7 +724,9 @@ func addFSCallbacks(ctx engine.Context, m engine.Object) {
 			ctx.PostTask(func() {
 				defer release()
 				if f, ok2 := cb.AsFunction(); ok2 {
-					_, _ = f.Call([]engine.Value{engine.Boolean(err == nil)})
+					if _, err := f.Call([]engine.Value{engine.Boolean(err == nil)}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			})
 		}()
@@ -889,11 +904,13 @@ func addFSStreamsAndWatch(ctx engine.Context, m engine.Object) {
 						if fn, err := instance.Get("emit"); err == nil && fn.IsFunction() {
 							if f, ok := fn.AsFunction(); ok {
 								// emit 首参为事件名，其余传给监听器 (eventType, filename)。
-								_, _ = f.Call([]engine.Value{
+								if _, err := f.Call([]engine.Value{
 									engine.Str("change"),
 									engine.Str(eventType),
 									engine.Str(filepath.Base(ev.Name)),
-								})
+								}); err != nil {
+									interpreter.ReportUncaught(nil, err)
+								}
 							}
 						}
 					})
@@ -907,7 +924,9 @@ func addFSStreamsAndWatch(ctx engine.Context, m engine.Object) {
 					ctx.PostTask(func() {
 						if fn, err := instance.Get("emit"); err == nil && fn.IsFunction() {
 							if f, ok := fn.AsFunction(); ok {
-								_, _ = f.Call([]engine.Value{engine.Str("error"), engine.Str(werr.Error())})
+								if _, err := f.Call([]engine.Value{engine.Str("error"), engine.Str(werr.Error())}); err != nil {
+									interpreter.ReportUncaught(nil, err)
+								}
 							}
 						}
 					})
@@ -932,7 +951,9 @@ func addFSStreamsAndWatch(ctx engine.Context, m engine.Object) {
 		if listener.IsFunction() {
 			if fn, err := instance.Get("on"); err == nil && fn.IsFunction() {
 				if f, ok := fn.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{engine.Str("change"), listener})
+					if _, err := f.Call([]engine.Value{engine.Str("change"), listener}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -1178,9 +1199,13 @@ func fsAsync(ctx engine.Context, op func() (engine.Value, error), cb engine.Valu
 			}
 			f, _ := cb.AsFunction()
 			if err != nil {
-				_, _ = f.Call([]engine.Value{fsErrorToJS(ctx, err)})
+				if _, err := f.Call([]engine.Value{fsErrorToJS(ctx, err)}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			} else {
-				_, _ = f.Call([]engine.Value{engine.Null(), val})
+				if _, err := f.Call([]engine.Value{engine.Null(), val}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		})
 	}()
@@ -1220,7 +1245,9 @@ func newEmitterLike() engine.Object {
 		for i := 0; i < n; i++ {
 			fv, _ := la.Get(strconv.Itoa(i))
 			if f, ok := fv.AsFunction(); ok {
-				_, _ = f.Call(args[1:])
+				if _, err := f.Call(args[1:]); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Boolean(n > 0), nil
@@ -1259,7 +1286,9 @@ func emitOn(obj engine.Object, event string, args ...engine.Value) {
 	if fn, err := obj.Get("emit"); err == nil && fn.IsFunction() {
 		if f, ok := fn.AsFunction(); ok {
 			callArgs := append([]engine.Value{engine.Str(event)}, args...)
-			_, _ = f.Call(callArgs)
+			if _, err := f.Call(callArgs); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 }

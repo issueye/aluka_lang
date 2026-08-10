@@ -12,6 +12,7 @@ package builtin
 
 import (
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"net"
 	"strings"
 	"sync"
@@ -87,9 +88,9 @@ func NewNet(ctx engine.Context) (engine.Value, error) {
 // blockListState 保存 BlockList 的规则。
 type blockListState struct {
 	mu     sync.Mutex
-	ipSet  map[string]bool          // 精确 IP
-	subnet []blockSubnet            // 子网（cidr）
-	ranges []blockRange             // 地址区间
+	ipSet  map[string]bool // 精确 IP
+	subnet []blockSubnet   // 子网（cidr）
+	ranges []blockRange    // 地址区间
 }
 
 type blockSubnet struct {
@@ -315,7 +316,9 @@ func newNetServer(ctx engine.Context, listener engine.Value) engine.Value {
 				_ = server.Set("listening", engine.Boolean(true))
 				if callback != nil {
 					if f, ok := callback.AsFunction(); ok {
-						_, _ = f.Call(nil)
+						if _, err := f.Call(nil); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 				emitEvent(server, "listening")
@@ -358,7 +361,9 @@ func newNetServer(ctx engine.Context, listener engine.Value) engine.Value {
 					ctx.PostTask(func() {
 						emitEvent(server, "close")
 						if f, ok := callback.AsFunction(); ok {
-							_, _ = f.Call(nil)
+							if _, err := f.Call(nil); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 						if release != nil {
 							release()
@@ -376,7 +381,9 @@ func newNetServer(ctx engine.Context, listener engine.Value) engine.Value {
 		} else {
 			if callback != nil {
 				if f, ok := callback.AsFunction(); ok {
-					_, _ = f.Call(nil)
+					if _, err := f.Call(nil); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			if release != nil {
@@ -406,7 +413,9 @@ func newNetServer(ctx engine.Context, listener engine.Value) engine.Value {
 	_ = server.Set("getConnections", engine.NewFunction("getConnections", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 0 && args[0].IsFunction() {
 			if f, ok := args[0].AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.Null(), engine.IntValue(0)})
+				if _, err := f.Call([]engine.Value{engine.Null(), engine.IntValue(0)}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return server, nil
@@ -446,7 +455,9 @@ func handleNetConn(ctx engine.Context, conn net.Conn, server engine.Value, liste
 		emitEvent(server, "connection", socket)
 		if listener != nil && listener.IsFunction() {
 			if f, ok := listener.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{socket})
+				if _, err := f.Call([]engine.Value{socket}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	})
@@ -496,7 +507,11 @@ func newNetSocket(ctx engine.Context, conn net.Conn) (engine.Value, *netSocketSt
 		if writeCb != nil && writeCb.IsFunction() {
 			if f, ok := writeCb.AsFunction(); ok {
 				// Node 语义：write 回调在数据提交到 OS 后异步触发。
-				ctx.PostTask(func() { _, _ = f.Call(nil) })
+				ctx.PostTask(func() {
+					if _, err := f.Call(nil); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
+				})
 			}
 		}
 		return engine.Boolean(err == nil), err
@@ -565,13 +580,17 @@ func newNetSocket(ctx engine.Context, conn net.Conn) (engine.Value, *netSocketSt
 						if len(callArgs) > 0 {
 							if wf, err := dest.Get("write"); err == nil && wf.IsFunction() {
 								if w, ok := wf.AsFunction(); ok {
-									_, _ = w.Call([]engine.Value{callArgs[0]})
+									if _, err := w.Call([]engine.Value{callArgs[0]}); err != nil {
+										interpreter.ReportUncaught(nil, err)
+									}
 								}
 							}
 						}
 						return engine.Undefined(), nil
 					})
-					_, _ = f.Call([]engine.Value{engine.Str("data"), pipeFn})
+					if _, err := f.Call([]engine.Value{engine.Str("data"), pipeFn}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -714,7 +733,9 @@ func newNetSocketClient(ctx engine.Context, args []engine.Value) engine.Value {
 			setAddrProps(socket.(engine.Object), conn)
 			if connectListener != nil {
 				if f, ok := connectListener.AsFunction(); ok {
-					_, _ = f.Call([]engine.Value{socket})
+					if _, err := f.Call([]engine.Value{socket}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			emitEvent(socket, "connect")

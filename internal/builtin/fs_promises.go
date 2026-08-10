@@ -7,6 +7,7 @@ package builtin
 
 import (
 	"fmt"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"io"
 	"os"
 	"path/filepath"
@@ -248,7 +249,9 @@ func fsPromise(ctx engine.Context, args []engine.Value, op func() (engine.Value,
 // callBuiltinResolve 调用 Promise resolve/reject 函数。
 func callBuiltinResolve(fn engine.Value, v engine.Value) {
 	if f, ok := fn.AsFunction(); ok {
-		_, _ = f.Call([]engine.Value{v})
+		if _, err := f.Call([]engine.Value{v}); err != nil {
+			interpreter.ReportUncaught(nil, err)
+		}
 	}
 }
 

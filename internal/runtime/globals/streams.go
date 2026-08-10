@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // StreamConfig 配置 Streams 全局（当前无可用选项）。
@@ -27,13 +28,13 @@ type StreamConfig struct{}
 
 // 流相关的原型对象（instanceof 支持）。
 var (
-	rsStreamProto             engine.Object
-	wsStreamProto             engine.Object
-	tsStreamProto             engine.Object
-	rsDefaultReaderProto      engine.Object
-	wsDefaultWriterProto      engine.Object
-	byteLengthQueuingProto    engine.Object
-	countQueuingProto         engine.Object
+	rsStreamProto          engine.Object
+	wsStreamProto          engine.Object
+	tsStreamProto          engine.Object
+	rsDefaultReaderProto   engine.Object
+	wsDefaultWriterProto   engine.Object
+	byteLengthQueuingProto engine.Object
+	countQueuingProto      engine.Object
 )
 
 // NewStream 注册全局 ReadableStream / WritableStream / TransformStream 以及
@@ -213,7 +214,9 @@ func newReadableStream(ctx engine.Context, args []engine.Value) (engine.Value, e
 	// 调用 start 回调（同步）。
 	if state.startFn != nil {
 		if f, ok := state.startFn.AsFunction(); ok {
-			_, _ = f.Call([]engine.Value{controller})
+			if _, err := f.Call([]engine.Value{controller}); err != nil {
+				interpreter.ReportUncaught(nil, err)
+			}
 		}
 	}
 
@@ -241,7 +244,9 @@ func newReadableStream(ctx engine.Context, args []engine.Value) (engine.Value, e
 		state.close()
 		if state.cancelFn != nil {
 			if f, ok := state.cancelFn.AsFunction(); ok {
-				_, _ = f.Call(nil)
+				if _, err := f.Call(nil); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return promiseResolveValue(ctx, engine.Undefined())
@@ -299,7 +304,9 @@ func newReadableStream(ctx engine.Context, args []engine.Value) (engine.Value, e
 				if o, ok := dest.AsObject(); ok {
 					if w, err := o.Get("write"); err == nil && w.IsFunction() {
 						if f, ok := w.AsFunction(); ok {
-							_, _ = f.Call([]engine.Value{v.value})
+							if _, err := f.Call([]engine.Value{v.value}); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 				}
@@ -308,7 +315,9 @@ func newReadableStream(ctx engine.Context, args []engine.Value) (engine.Value, e
 			if o, ok := dest.AsObject(); ok {
 				if c, err := o.Get("close"); err == nil && c.IsFunction() {
 					if f, ok := c.AsFunction(); ok {
-						_, _ = f.Call(nil)
+						if _, err := f.Call(nil); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			}
@@ -420,7 +429,9 @@ func (s *rsState) readSync() rsChunk {
 		// 简化：pipeTo 场景数据已预填。
 		if s.pullFn != nil {
 			if f, ok := s.pullFn.AsFunction(); ok {
-				_, _ = f.Call(nil)
+				if _, err := f.Call(nil); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		// 避免忙等：让出。
@@ -507,7 +518,9 @@ func newWritableStream(ctx engine.Context, args []engine.Value) engine.Value {
 			}
 			if handler != nil {
 				if f, ok := handler.AsFunction(); ok {
-					_, _ = f.Call(wa)
+					if _, err := f.Call(wa); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			return promiseResolveValue(ctx, engine.Undefined())
@@ -522,7 +535,9 @@ func newWritableStream(ctx engine.Context, args []engine.Value) engine.Value {
 				}
 				if handler != nil {
 					if f, ok := handler.AsFunction(); ok {
-						_, _ = f.Call(nil)
+						if _, err := f.Call(nil); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			}
@@ -538,7 +553,9 @@ func newWritableStream(ctx engine.Context, args []engine.Value) engine.Value {
 		}
 		if handler != nil {
 			if f, ok := handler.AsFunction(); ok {
-				_, _ = f.Call(wa)
+				if _, err := f.Call(wa); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil
@@ -552,7 +569,9 @@ func newWritableStream(ctx engine.Context, args []engine.Value) engine.Value {
 			}
 			if handler != nil {
 				if f, ok := handler.AsFunction(); ok {
-					_, _ = f.Call(nil)
+					if _, err := f.Call(nil); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -601,44 +620,56 @@ func newTransformStream(ctx engine.Context, args []engine.Value) engine.Value {
 	if wo, ok := writable.AsObject(); ok {
 		if so, err := wo.Get("_setWriteOverride"); err == nil && so.IsFunction() {
 			if f, ok := so.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.NewFunction("tsWrite", func(wa []engine.Value) (engine.Value, error) {
+				if _, err := f.Call([]engine.Value{engine.NewFunction("tsWrite", func(wa []engine.Value) (engine.Value, error) {
 					if len(wa) > 0 {
 						if transformFn != nil && transformFn.IsFunction() {
 							// 构造 transform controller（enqueue/close）。
 							tc := engine.NewObject()
 							_ = tc.Set("enqueue", enqueueFn)
 							if f2, ok := transformFn.AsFunction(); ok {
-								_, _ = f2.Call([]engine.Value{wa[0], tc})
+								if _, err := f2.Call([]engine.Value{wa[0], tc}); err != nil {
+									interpreter.ReportUncaught(nil, err)
+								}
 							}
 						} else if enqueueFn != nil && enqueueFn.IsFunction() {
 							if f2, ok := enqueueFn.AsFunction(); ok {
-								_, _ = f2.Call([]engine.Value{wa[0]})
+								if _, err := f2.Call([]engine.Value{wa[0]}); err != nil {
+									interpreter.ReportUncaught(nil, err)
+								}
 							}
 						}
 					}
 					return engine.Undefined(), nil
-				})})
+				})}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		// 注入关闭处理函数：writable 关闭时同时关闭 readable（P1-1）。
 		if co, err := wo.Get("_setCloseOverride"); err == nil && co.IsFunction() {
 			if f, ok := co.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.NewFunction("tsClose", func(a []engine.Value) (engine.Value, error) {
+				if _, err := f.Call([]engine.Value{engine.NewFunction("tsClose", func(a []engine.Value) (engine.Value, error) {
 					// 经 readable 的公开 close 方法触发关闭。
 					if ro, ok := rs.AsObject(); ok {
 						if cl, err := ro.Get("close"); err == nil && cl.IsFunction() {
 							if f2, ok := cl.AsFunction(); ok {
-								_, _ = f2.Call(nil)
+								if _, err := f2.Call(nil); err != nil {
+									interpreter.ReportUncaught(nil, err)
+								}
 							}
 						}
 					}
 					if flushFn != nil {
 						if f2, ok := flushFn.AsFunction(); ok {
-							_, _ = f2.Call(nil)
+							if _, err := f2.Call(nil); err != nil {
+								interpreter.ReportUncaught(nil, err)
+							}
 						}
 					}
 					return engine.Undefined(), nil
-				})})
+				})}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	}
@@ -694,12 +725,16 @@ func newCompressionStream(ctx engine.Context, args []engine.Value, compress bool
 		}
 		if enqueueFn != nil && enqueueFn.IsFunction() {
 			if f, ok := enqueueFn.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{NewBufferInstance(out)})
+				if _, err := f.Call([]engine.Value{NewBufferInstance(out)}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		if closeFn != nil && closeFn.IsFunction() {
 			if f, ok := closeFn.AsFunction(); ok {
-				_, _ = f.Call(nil)
+				if _, err := f.Call(nil); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	}
@@ -707,18 +742,22 @@ func newCompressionStream(ctx engine.Context, args []engine.Value, compress bool
 	if wo, ok := writable.AsObject(); ok {
 		if so, err := wo.Get("_setWriteOverride"); err == nil && so.IsFunction() {
 			if f, ok := so.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.NewFunction("csWrite", func(wa []engine.Value) (engine.Value, error) {
+				if _, err := f.Call([]engine.Value{engine.NewFunction("csWrite", func(wa []engine.Value) (engine.Value, error) {
 					writeImpl(wa)
 					return engine.Undefined(), nil
-				})})
+				})}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		if co, err := wo.Get("_setCloseOverride"); err == nil && co.IsFunction() {
 			if f, ok := co.AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.NewFunction("csClose", func(a []engine.Value) (engine.Value, error) {
+				if _, err := f.Call([]engine.Value{engine.NewFunction("csClose", func(a []engine.Value) (engine.Value, error) {
 					closeImpl()
 					return engine.Undefined(), nil
-				})})
+				})}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 	}
@@ -745,7 +784,9 @@ func promiseResolveValue(ctx engine.Context, v engine.Value) (engine.Value, erro
 	return newPromise(ctx, engine.NewFunction("executor", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 0 {
 			if f, ok := args[0].AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{v})
+				if _, err := f.Call([]engine.Value{v}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil
@@ -757,7 +798,9 @@ func promiseRejectValue(ctx engine.Context, msg string) (engine.Value, error) {
 	return newPromise(ctx, engine.NewFunction("executor", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 1 {
 			if f, ok := args[1].AsFunction(); ok {
-				_, _ = f.Call([]engine.Value{engine.Str(msg)})
+				if _, err := f.Call([]engine.Value{engine.Str(msg)}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 			}
 		}
 		return engine.Undefined(), nil
@@ -775,13 +818,17 @@ func doneResult() engine.Value {
 // callResolve 调用 Promise resolve 函数。
 func callResolve(resolve engine.Value, v engine.Value) {
 	if f, ok := resolve.AsFunction(); ok {
-		_, _ = f.Call([]engine.Value{v})
+		if _, err := f.Call([]engine.Value{v}); err != nil {
+			interpreter.ReportUncaught(nil, err)
+		}
 	}
 }
 
 // callReject 调用 Promise reject 函数。
 func callReject(reject engine.Value, msg string) {
 	if f, ok := reject.AsFunction(); ok {
-		_, _ = f.Call([]engine.Value{engine.Str(msg)})
+		if _, err := f.Call([]engine.Value{engine.Str(msg)}); err != nil {
+			interpreter.ReportUncaught(nil, err)
+		}
 	}
 }

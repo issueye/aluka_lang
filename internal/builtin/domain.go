@@ -43,17 +43,17 @@ type domainActiveState struct {
 
 // domainEmitter 是 domain 实例的内部 EventEmitter 状态。
 type domainEmitter struct {
-	listeners   map[string][]engine.Value
+	listeners    map[string][]engine.Value
 	maxListeners int
 }
 
 // domainInstance 封装一个 Domain 实例的全部状态与方法。
 type domainInstance struct {
-	ctx    engine.Context
-	self   engine.Value // 实例对象
-	em     *domainEmitter
-	st     *domainActiveState
-	module engine.Object // 模块导出对象（更新 active 用）
+	ctx     engine.Context
+	self    engine.Value // 实例对象
+	em      *domainEmitter
+	st      *domainActiveState
+	module  engine.Object // 模块导出对象（更新 active 用）
 	members []engine.Value
 	// emitter -> 转发监听器（domain.add 注册的内部 'error' 转发）。
 	forwarders map[engine.Value]engine.Value
@@ -262,7 +262,9 @@ func (d *domainInstance) add(ee engine.Value) {
 			if old, ok2 := v.AsObject(); ok2 && old != o {
 				if rm, err3 := old.Get("remove"); err3 == nil && rm.IsFunction() {
 					if f, ok3 := rm.AsFunction(); ok3 {
-						_, _ = f.Call([]engine.Value{ee})
+						if _, err := f.Call([]engine.Value{ee}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			}
@@ -292,7 +294,9 @@ func (d *domainInstance) add(ee engine.Value) {
 					// "Unhandled 'error' event" 语义）。
 					return d.emitError(er)
 				})
-				_, _ = f.Call([]engine.Value{engine.Str("error"), forwarder})
+				if _, err := f.Call([]engine.Value{engine.Str("error"), forwarder}); err != nil {
+					interpreter.ReportUncaught(nil, err)
+				}
 				d.forwarders[ee] = forwarder
 			}
 		}
@@ -316,7 +320,9 @@ func (d *domainInstance) remove(ee engine.Value) {
 		if o, ok2 := ee.AsObject(); ok2 {
 			if offV, err := o.Get("removeListener"); err == nil && offV.IsFunction() {
 				if f, ok3 := offV.AsFunction(); ok3 {
-					_, _ = f.Call([]engine.Value{engine.Str("error"), fwd})
+					if _, err := f.Call([]engine.Value{engine.Str("error"), fwd}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 		}
@@ -416,7 +422,9 @@ func registerDomainEmitter(obj engine.Object, d *domainInstance) {
 			var wrapper engine.Value
 			wrapper = engine.NewFunction("onceWrapper", func(callArgs []engine.Value) (engine.Value, error) {
 				if f, ok := original.AsFunction(); ok {
-					_, _ = f.Call(callArgs)
+					if _, err := f.Call(callArgs); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 				ls := d.em.listeners[event]
 				for i, x := range ls {
