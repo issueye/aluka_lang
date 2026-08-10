@@ -14,7 +14,10 @@ import (
 // 本文件实现字节码磁盘缓存（1C.14）。缓存位于源文件所在目录向上查找的
 // node_modules/.aluka/cache/ 下（需求文档 3.3.3），以缓存键命名。
 //
-// 缓存键 = sha256(源文件绝对路径 + mtime + size + 格式版本) 的十六进制。
+// 缓存键 = sha256(源文件绝对路径 + mtime + size + 格式版本 + 编译形态) 的
+// 十六进制。编译形态（kind）区分 ESM/CJS：同一 typeless .js 在 CJS 编译
+// 失败后会按 ESM 重新编译，两种形态的模块函数签名不同（8 参 vs 6 参），
+// 缓存必须隔离，否则二次运行时 CJS 入口会命中 ESM 字节码导致参数错位。
 // 失效策略：源文件 mtime/size 变化即失效；格式版本不匹配也失效。
 
 // bcCacheDirName 是缓存目录名（相对 node_modules）。
@@ -25,22 +28,52 @@ type bytecodeCache struct {
 	disabled bool // true 时禁用缓存（对应 --no-cache）
 }
 
-// cacheKey 计算缓存键：基于源文件路径、mtime、size、字节码格式版本。
-func (bc *bytecodeCache) cacheKey(absPath string, info os.FileInfo) string {
+// cacheKey 计算缓存键：基于源文件路径、mtime、size、字节码格式版本与
+// 编译形态（kind："esm"/"cjs"）。
+func (bc *bytecodeCache) cacheKey(absPath string, info os.FileInfo, kind string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s|%d|%d|%d", absPath, info.ModTime().UnixNano(), info.Size(), bytecode.FormatVersion)
+	fmt.Fprintf(h, "%s|%d|%d|%d|%s", absPath, info.ModTime().UnixNano(), info.Size(), bytecode.FormatVersion, kind)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// cacheDir 沿目录树向上查找 node_modules 目录，返回 .aluka/cache 路径。
-// 若找不到 node_modules，回退到用户主目录下的 ~/.aluka/cache。
+// cacheDir 沿目录树向上查找缓存的存放目录：优先使用"最近的 node_modules
+// 目录"下的 .aluka/cache（真实 node_modules，非仅含 .aluka 的自动生成目录），
+// 其次使用"自身就是 node_modules 目录"的祖先（源文件位于某个 npm 包内）。
+// 找不到任何 node_modules 时回退到源文件所在目录（与早期行为一致，测试依赖）。
 func (bc *bytecodeCache) cacheDir(srcPath string) string {
 	dir := filepath.Dir(srcPath)
 	for {
-		candidate := filepath.Join(dir, "node_modules", bcCacheDirName)
-		// 返回最近的 node_modules/.aluka/cache（无论是否存在，加载时创建）。
-		return candidate
+		// 自身是 node_modules（源文件位于 npm 包内）。
+		if filepath.Base(dir) == "node_modules" {
+			return filepath.Join(dir, bcCacheDirName)
+		}
+		// 子目录是真实的 node_modules（排除缓存清理时残留的仅 .aluka 目录）。
+		nm := filepath.Join(dir, "node_modules")
+		if info, err := os.Stat(nm); err == nil && info.IsDir() && hasRealEntries(nm) {
+			return filepath.Join(nm, bcCacheDirName)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break // 到达文件系统根
+		}
+		dir = parent
 	}
+	return filepath.Join(filepath.Dir(srcPath), "node_modules", bcCacheDirName)
+}
+
+// hasRealEntries 判断 node_modules 目录是否含 .aluka 之外的条目（避免把
+// 缓存自动生成的 node_modules 误当作真实依赖目录）。
+func hasRealEntries(nm string) bool {
+	entries, err := os.ReadDir(nm)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.Name() != ".aluka" {
+			return true
+		}
+	}
+	return false
 }
 
 // load 从磁盘读取缓存的字节码 Module。未命中返回 (nil, nil)。
@@ -91,15 +124,17 @@ func (bc *bytecodeCache) cacheFilePath(srcPath, key string) string {
 }
 
 // compileOrLoad 尝试从缓存加载字节码；未命中则调用 compile 闭包编译并写盘。
+// kind 标识编译形态（"esm"/"cjs"），参与缓存键——同一源文件两种形态的
+// 模块函数签名不同，必须隔离。
 // compile 闭包封装了具体的编译逻辑（CJS 直接编译源码；ESM 先 AST 转换再编译），
 // 使缓存逻辑与编译方式解耦。
-func (bc *bytecodeCache) compileOrLoad(absPath string, compile func() (*bytecode.Module, error)) (*bytecode.Module, error) {
+func (bc *bytecodeCache) compileOrLoad(absPath, kind string, compile func() (*bytecode.Module, error)) (*bytecode.Module, error) {
 	info, err := os.Stat(absPath)
 	if err != nil {
 		// 无法 stat 文件，退化为直接编译（不缓存）。
 		return compile()
 	}
-	key := bc.cacheKey(absPath, info)
+	key := bc.cacheKey(absPath, info, kind)
 	if mod, err := bc.load(absPath, key); err == nil && mod != nil {
 		return mod, nil
 	}

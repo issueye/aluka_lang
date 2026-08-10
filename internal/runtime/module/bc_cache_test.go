@@ -137,6 +137,26 @@ func TestBytecodeCacheESM(t *testing.T) {
 	}
 }
 
+// TestBytecodeCacheESMvsCJS: typeless .js 含 import 时，CJS 编译失败回退 ESM。
+// 缓存键必须区分两种编译形态（ESM 8 参 / CJS 6 参包装函数），否则二次运行
+// CJS 入口会命中 ESM 字节码，按 6 参执行导致 __importReq undefined 崩溃。
+func TestBytecodeCacheESMvsCJS(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.js":  `import { add } from "./util.cjs"; globalThis.__r = add(2, 3);`,
+		"util.cjs": `module.exports.add = function(a, b) { return a + b; };`,
+	})
+	env.run(t, "main.js")
+	if got := env.globalGet("__r"); got != "5" {
+		t.Fatalf("first run: got %q, want 5", got)
+	}
+	// 二次运行（新 Loader）应命中 ESM 缓存并正常执行，不得报 undefined is not a function。
+	env2 := newTestEnvRaw(t, env.dir)
+	env2.run(t, "main.js")
+	if got := env2.globalGet("__r"); got != "5" {
+		t.Fatalf("second run (cached): got %q, want 5", got)
+	}
+}
+
 // --- 辅助：从已有目录构造 env（不重新创建文件） -------------------------
 
 func newTestEnvRaw(t *testing.T, dir string) *testEnv {

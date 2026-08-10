@@ -56,7 +56,7 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 
 	// 包装源码为模块函数（P0-1），保持行号与缓存键稳定（包装为固定前缀/后缀）。
 	wrapped := WrapCJSSource(string(src))
-	mod, err := l.bcCache.compileOrLoad(absPath, func() (*bytecode.Module, error) {
+	mod, err := l.bcCache.compileOrLoad(absPath, "cjs", func() (*bytecode.Module, error) {
 		return vm.Compile(wrapped, absPath)
 	})
 	if err != nil {
