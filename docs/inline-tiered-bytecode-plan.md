@@ -112,14 +112,28 @@ run() 内层循环每迭代固定开销（调查确认）：
 
 | 里程碑 | 内容 | 预期 | 状态 |
 |--------|------|------|------|
-| I-1 | 可内联判定 + FuncTemplate.Inlinable（无行为变化）| 字节码标记可验证 | ⬜ |
-| I-2 | const 绑定单表达式箭头函数调用点展开 | closures 类 **-20~40%** | ⬜ |
-| T-1 | L1 分派瘦身（T-1a~d）| 综合 **-5~10%** | ⬜ |
-| T-2 | superinstruction（OpIncLocal 等）| 循环类 **-10~20%** | ⬜ |
+| I-1 | 可内联判定 + FuncTemplate.Inlinable（无行为变化）| 字节码标记可验证 | ✅ 52fe876 |
+| I-2 | const 绑定单表达式箭头函数调用点展开 | closures 类 -20~40% | ✅ 3e66138（收益有限，见下）|
+| T-1 | L1 分派瘦身（T-1a~d）| 综合 -5~10% | 🔶 T-1c 完成；T-1b 回退；T-1a/d 待评估 |
+| T-2 | superinstruction（OpIncLocal 等）| 循环类 -10~20% | ⬜ |
 | I-3 / T-3 | 内联扩展 / 迭代化 | — | ⬜ 后续 |
 
-**实施顺序**：I-1（安全标记）→ I-2（核心收益）→ T-1（低风险分派瘦身）→ T-2（superinstruction）。
-每步独立提交 + 基准 + 全量测试。
+**实测结果与调整**：
+- **I-2**：行为正确（22 包全绿 + 字节码断言 OpCall 被展开替换），但基准仅
+  inline-arrow 174ms/1M vs closure-call 177ms——收益有限。原因：fastCallClosure
+  已高度优化（单次调用 ~175ns），内联体指令（StoreLocal×2 + 体指令）与调用路径
+  指令数相近，而**每指令解释成本（~20ns）主导**。内联价值在后续 T-2
+  （superinstruction 合并内联体指令）与寄存器分配放大。
+- **T-1b**（operand 单次 `binary.BigEndian.Uint32`）：实测更慢——x86 BSWAP 不如
+  编译器优化的手动移位解包，**已回退**。
+- **T-1c**（监控/OOM 开关缓存到 VM 字段）：完成，默认热路径零原子 load。
+- **T-1a/d**（帧指针 dirty-flag 缓存 + v.local 用缓存帧）：pprof 显示收益来自
+  cur()/local()（~8%），但帧指针缓存在 ~25 个递归指令后的刷新易错，风险高——
+  待迭代化改造（T-3）时一并处理更安全。
+- **pprof 关键发现**：循环基准（`s+=i`）剩余热点是 **装箱**（`engine.Number`
+  cum 18% + convT64 15.5% + mallocgcTiny 10%）与 binAdd/isBigInt——engine.Value
+  接口设计的固有成本，非分派问题。**值类型化栈**（把数字直接存栈，避免 interface
+  装箱）是后续最大收益点，改动大（§6 长期方向）。
 
 ## 5. 验证与验收
 
