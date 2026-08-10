@@ -572,7 +572,10 @@ func (interp *Interpreter) setupPromise() {
 		cb := args[0]
 		interp.enqueueMicrotask(func() {
 			callable, _ := asCallable(cb)
-			_, _ = callable.callWith(engine.Undefined(), nil)
+			if _, err := callable.callWith(engine.Undefined(), nil); err != nil {
+				// Node 语义：queueMicrotask 回调抛出 → uncaughtException。
+				reportUncaught(interp, err)
+			}
 		})
 		return engine.Undefined(), nil
 	})

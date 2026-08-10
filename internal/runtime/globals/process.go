@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // ProcessConfig 配置 process 全局对象。
@@ -233,7 +234,10 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 			callback, _ := args[0].AsFunction()
 			callbackArgs := append([]engine.Value(nil), args[1:]...)
 			scheduler.EnqueueNextTick(func() {
-				_, _ = callback.Call(callbackArgs)
+				if _, err := callback.Call(callbackArgs); err != nil {
+					// Node 语义：nextTick 回调抛出 → uncaughtException。
+					interpreter.ReportUncaught(ctx, err)
+				}
 			})
 			return engine.Undefined(), nil
 		}
@@ -406,7 +410,8 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 							for _, cb := range callbacks {
 								if f, ok := cb.AsFunction(); ok {
 									if _, callErr := f.Call([]engine.Value{chunk}); callErr != nil {
-										fmt.Fprintf(os.Stderr, "Uncaught stdin data listener error: %v\n", callErr)
+										// stdin 监听器抛出 → uncaughtException。
+										interpreter.ReportUncaught(ctx, callErr)
 									}
 								}
 							}
@@ -430,13 +435,17 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 							if readErr != io.EOF {
 								for _, cb := range errorCallbacks {
 									if f, ok := cb.AsFunction(); ok {
-										_, _ = f.Call([]engine.Value{engine.Str(readErr.Error())})
+										if _, callErr := f.Call([]engine.Value{engine.Str(readErr.Error())}); callErr != nil {
+											interpreter.ReportUncaught(ctx, callErr)
+										}
 									}
 								}
 							}
 							for _, cb := range endCallbacks {
 								if f, ok := cb.AsFunction(); ok {
-									_, _ = f.Call(nil)
+									if _, callErr := f.Call(nil); callErr != nil {
+										interpreter.ReportUncaught(ctx, callErr)
+									}
 								}
 							}
 						})
@@ -890,7 +899,7 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 	// off() 是 removeListener() 的 Node 别名。保持同一函数值也让
 	// removeListener/off 的行为和监听器身份比较完全一致。
 	_ = proc.Set("off", removeListener)
-	_ = proc.Set("emit", engine.NewFunction("emit", func(args []engine.Value) (engine.Value, error) {
+	emitFn := engine.NewFunction("emit", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Boolean(false), nil
 		}
@@ -898,11 +907,27 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		fns := listeners[event]
 		for _, fn := range fns {
 			if f, ok := fn.AsFunction(); ok {
-				_, _ = f.Call(args[1:])
+				if _, err := f.Call(args[1:]); err != nil {
+					// Node 语义：事件监听器抛出 → uncaughtException。
+					interpreter.ReportUncaught(ctx, err)
+				}
 			}
 		}
 		return engine.Boolean(len(fns) > 0), nil
-	}))
+	})
+	_ = proc.Set("emit", emitFn)
+
+	// 注册未捕获异常处理器（Node 'uncaughtException' 语义）：有监听器则
+	// 派发给它们（pi 等应用借此打印错误并退出）；无监听器则打印到 stderr
+	// （与 unhandledRejection 的兜底一致，不退出进程）。
+	interpreter.UncaughtExceptionHandler = func(reason engine.Value) {
+		if handled, err := emitFn.Call([]engine.Value{engine.Str("uncaughtException"), reason}); err == nil {
+			if b, ok := handled.Bool(); ok && b {
+				return // 已有监听器消费
+			}
+		}
+		interpreter.PrintUncaught(reason)
+	}
 
 	// removeAllListeners([event])：移除某事件全部监听器（Node 语义）。
 	_ = proc.Set("removeAllListeners", engine.NewFunction("removeAllListeners", func(args []engine.Value) (engine.Value, error) {

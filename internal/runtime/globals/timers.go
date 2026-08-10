@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // TimerConfig 是定时器注册配置。
@@ -120,7 +121,10 @@ func (s *timerState) schedule(args []engine.Value, interval bool, forcedDelay ..
 	run := func() {
 		ctx.PostTask(func() {
 			if f, ok := cb.AsFunction(); ok {
-				_, _ = f.Call(extraArgs)
+				if _, err := f.Call(extraArgs); err != nil {
+					// Node 语义：回调抛出且无上层捕获 → uncaughtException。
+					interpreter.ReportUncaught(ctx, err)
+				}
 			}
 		})
 	}
