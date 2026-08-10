@@ -36,6 +36,10 @@ type VM struct {
 	coverEnabled bool
 	coverMu      sync.Mutex
 	coverLines   map[string]map[int]bool // 源文件 → 已执行行集合
+
+	// callCountEnabled 是监控调用计数的缓存开关（NewVM 时从 engine 读取）。
+	// 热路径每次函数调用读取普通布尔字段，避免 engine.BumpCalls 的原子 load。
+	callCountEnabled bool
 }
 
 // EnableCoverage 启用行级覆盖率统计。
@@ -95,7 +99,15 @@ func NewVM() (*VM, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &VM{interp: interp}, nil
+	return &VM{interp: interp, callCountEnabled: engine.MetricsEnabled()}, nil
+}
+
+// bumpCall 计数一次函数调用。监控关闭（默认）时是普通布尔判断，零原子开销；
+// 监控开启需在 VM 创建前启动（CLI --monitor 在创建 VM 前解析）。
+func (v *VM) bumpCall() {
+	if v.callCountEnabled {
+		engine.BumpCalls()
+	}
 }
 
 // Interp returns the backing interpreter (for RegisterFunc / Global access).
@@ -215,8 +227,10 @@ func (v *VM) runModule(mod *bytecode.Module) (engine.Value, error) {
 	for i := 0; i < main.NumLocals; i++ {
 		v.stack = append(v.stack, engine.Undefined())
 	}
-	// Fresh frames slice — never mutate savedFrames.
-	v.frames = []vmFrame{{tmpl: main, base: 0}}
+	// Fresh frames slice — never mutate savedFrames. Preallocate capacity so
+	// hot-path call frames (fastCallClosure/callClosure append) rarely grow.
+	v.frames = make([]vmFrame, 1, 128)
+	v.frames[0] = vmFrame{tmpl: main, base: 0}
 	result, err := v.run()
 
 	if isTopLevel {
@@ -249,7 +263,11 @@ func (v *VM) cur() *vmFrame {
 // === Stack helpers ========================================================
 
 func (v *VM) push(val engine.Value) {
-	v.ensureStack(1)
+	// 容量不足时才走 ensureStack（扩容并重绑 upvalue 槽指针）；容量足够时
+	// 只做一次 len/cap 比较，省去 ensureStack 的函数调用。
+	if len(v.stack) == cap(v.stack) {
+		v.ensureStack(1)
+	}
 	v.stack = append(v.stack, val)
 }
 
@@ -1170,6 +1188,12 @@ func (v *VM) doCall(numArgs int, thisVal engine.Value) (engine.Value, error) {
 	// Stack: ... callee arg0 arg1 ... argN-1
 	argStart := len(v.stack) - numArgs
 	callee := v.stack[argStart-1]
+	// 快速路径：简单字节码闭包调用（无 generator/async/varargs/arguments、
+	// 同模块、实参不超过形参）→ 参数原地布置为新帧参数槽，跳过中间 args
+	// slice 的分配与二次拷贝。
+	if cl, ok := callee.(*vmClosure); ok && v.canFastCall(cl, numArgs) {
+		return v.fastCallClosure(cl, thisVal, numArgs, argStart)
+	}
 	// Keep args slice (without callee).
 	args := make([]engine.Value, numArgs)
 	copy(args, v.stack[argStart:argStart+numArgs])
@@ -1178,27 +1202,98 @@ func (v *VM) doCall(numArgs int, thisVal engine.Value) (engine.Value, error) {
 	return v.invoke(callee, thisVal, args, false)
 }
 
+// canFastCall 判断字节码闭包是否可走快速调用路径（fastCallClosure）：
+// 非 generator/async（这些在 callClosure 前部已分支返回 Promise/生成器）、
+// 与当前模块一致（跳过 module 切换）、非 varargs、不创建 arguments 对象
+// （O-5：未引用 arguments）、实参不超过形参（多余实参需要弹栈丢弃）。
+func (v *VM) canFastCall(cl *vmClosure, numArgs int) bool {
+	tmpl := cl.tmpl
+	if tmpl.IsGenerator || tmpl.IsAsync || tmpl.IsVarArgs {
+		return false
+	}
+	if tmpl.ArgumentsSlot >= 0 && !tmpl.NoArgumentsObject {
+		return false
+	}
+	if cl.module != v.module || numArgs > tmpl.NumParams {
+		return false
+	}
+	return true
+}
+
+// fastCallClosure 是 doCall 的快速路径：参数已经在 v.stack 上（栈布局
+// `… callee arg0…argN-1`），把 callee 槽改写为 this 后参数即成为新帧的
+// 参数槽（零拷贝），只补齐剩余局部变量的 undefined。跳过了 doCall 的
+// args slice 分配、callClosure 的 module 保存/恢复与参数二次拷贝。
+// 调用方保证满足 canFastCall 的全部条件。
+func (v *VM) fastCallClosure(cl *vmClosure, thisVal engine.Value, numArgs, argStart int) (engine.Value, error) {
+	v.bumpCall()
+	tmpl := cl.tmpl
+	// 异步上下文恢复：仅当事件循环外（无 JS 帧）调用 JS 闭包时，恢复该闭包
+	// 创建时捕获的异步上下文（与 callClosure 一致；同步 JS 调用帧存在，跳过）。
+	var savedAsyncCtx interface{}
+	if len(v.frames) == 0 && AsyncContextRestore != nil {
+		savedAsyncCtx = AsyncContextCapture()
+		if cl.asyncCtx != nil {
+			AsyncContextRestore(cl.asyncCtx)
+		}
+		defer func() {
+			if AsyncContextRestore != nil {
+				AsyncContextRestore(savedAsyncCtx)
+			}
+		}()
+	}
+
+	// callee 槽改写为 this（slot 0）；参数 arg0..argN-1 已在
+	// [frameBase+1, frameBase+1+numArgs)，零拷贝。
+	frameBase := argStart - 1
+	v.stack[frameBase] = thisVal
+	// 补齐未传形参与局部变量为 undefined（追加在参数之后）。
+	if extra := tmpl.NumLocals - 1 - numArgs; extra > 0 {
+		v.reserveUndefined(extra)
+	}
+
+	frame := vmFrame{tmpl: tmpl, base: frameBase, upvalues: cl.upvalues}
+	v.frames = append(v.frames, frame)
+	result, err := v.run()
+	if err != nil {
+		// Uncaught exception: run() does NOT pop the frame on error.
+		v.closeUpvalues(frameBase)
+		v.stack = v.stack[:frameBase]
+		v.frames = v.frames[:len(v.frames)-1]
+		return result, err
+	}
+	// run() 在正常返回时经 doReturn 弹帧并截栈。
+	return result, nil
+}
+
 // doCallMethod handles obj.method(args) where the method name is a const index.
 // Stack: ... receiver arg0 ... argN-1
 func (v *VM) doCallMethod(numArgs, nameIdx, pc int) (engine.Value, error) {
 	argStart := len(v.stack) - numArgs
 	receiver := v.stack[argStart-1]
-	args := make([]engine.Value, numArgs)
-	copy(args, v.stack[argStart:argStart+numArgs])
-	// Pop receiver + args.
-	v.stack = v.stack[:argStart-1]
 
 	name := v.cur().tmpl.Constants[nameIdx].String()
 	// 方法调用内联缓存快速路径（O1-C4）：per-PC 槽命中（隐藏类 own
 	// 方法、槽值未变）→ 直接 invoke，跳过属性解析链。
-	if fn, hit := v.ic.CallCached(pc, receiver, name); hit {
-		return v.invoke(fn, receiver, args, false)
+	var fn engine.Value
+	if cached, hit := v.ic.CallCached(pc, receiver, name); hit {
+		fn = cached
+	} else {
+		var err error
+		fn, err = v.getProperty(receiver, name)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		v.ic.CallPut(pc, receiver, name, fn)
 	}
-	fn, err := v.getProperty(receiver, name)
-	if err != nil {
-		return engine.Undefined(), err
+	// 快速路径：字节码闭包方法 → 参数原地布置（复用 fastCallClosure）。
+	if cl, ok := fn.(*vmClosure); ok && v.canFastCall(cl, numArgs) {
+		return v.fastCallClosure(cl, receiver, numArgs, argStart)
 	}
-	v.ic.CallPut(pc, receiver, name, fn)
+	// Keep args slice (without callee), pop receiver + args.
+	args := make([]engine.Value, numArgs)
+	copy(args, v.stack[argStart:argStart+numArgs])
+	v.stack = v.stack[:argStart-1]
 	return v.invoke(fn, receiver, args, false)
 }
 
@@ -1511,7 +1606,7 @@ func (v *VM) callClosureThis(cl *vmClosure, thisVal engine.Value, args []engine.
 // object for constructors. The callee and args must already be popped from
 // the stack before calling invoke; the result is returned (not pushed).
 func (v *VM) invoke(callee engine.Value, thisVal engine.Value, args []engine.Value, asNew bool) (engine.Value, error) {
-	engine.BumpCalls() // 监控：函数调用计数（gated）
+	v.bumpCall() // 监控：函数调用计数（gated）
 	// Bytecode closure: set up a new frame.
 	if cl, ok := callee.(*vmClosure); ok {
 		return v.callClosure(cl, thisVal, args, asNew)
@@ -1696,11 +1791,14 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 // caller's OpCall handler pushes it).
 func (v *VM) doReturn(retVal engine.Value) engine.Value {
 	frame := v.cur()
-	// Close ALL open upvalues pointing into this frame's slots (locals +
-	// operands). Using frame.base as the threshold ensures closures that
-	// captured this frame's locals get a stable copy before the stack is
-	// truncated; otherwise the upvalue would hold a dangling pointer.
-	v.closeUpvalues(frame.base)
+	// 无开 upvalue 的普通函数（绝大多数）跳过 closeUpvalues 调用。
+	if len(frame.openUpvalues) > 0 {
+		// Close ALL open upvalues pointing into this frame's slots (locals +
+		// operands). Using frame.base as the threshold ensures closures that
+		// captured this frame's locals get a stable copy before the stack is
+		// truncated; otherwise the upvalue would hold a dangling pointer.
+		v.closeUpvalues(frame.base)
+	}
 	// Truncate stack to the frame's base (removes locals + operands).
 	v.stack = v.stack[:frame.base]
 	// Pop the frame.
