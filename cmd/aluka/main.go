@@ -395,6 +395,12 @@ func runModule(path string, vm, disableCache bool) error {
 	loader.SetNoCache(disableCache)
 	builtin.RegisterAll(loader)
 	_ = builtin.InstallGetBuiltinModule(ctx, loader)
+
+	// 启动期注册阶段（全局对象 + 25+ 内置模块）产生大量中间分配，Go runtime
+	// 回收后并不立即归还 OS。在执行用户代码前主动释放一次，把启动 RSS 峰值
+	// 压下来（开销：一次 STW GC + FreeOSMemory，仅此处调用）。
+	engine.FreeOSMemory()
+
 	if err := loader.Run(path); err != nil {
 		return err
 	}
@@ -1303,6 +1309,9 @@ func execute(code string, filename string, vm bool) error {
 	if err := globals.NewAluka(ctx, globals.AlukaConfig{}); err != nil {
 		return fmt.Errorf("register Aluka: %w", err)
 	}
+
+	// 启动期注册阶段产生大量中间分配，执行前归还一次 OS 内存（同 runModule）。
+	engine.FreeOSMemory()
 
 	// 执行
 	result, err := ctx.Eval(code, filename)

@@ -22,9 +22,10 @@ import (
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
-// x509CertMap 实例对象 → 解析后的证书（checkIssued 取用；Go 侧引用
-// 不受 aluka GC 影响，对象存活期间条目有效）。
-var x509CertMap = map[engine.Object]*x509.Certificate{}
+// x509CertMap 实例对象 → 解析后的证书（checkIssued 取用）。
+// 用 WeakMap 以 JS 对象为弱引用 key：对象被 GC 回收后条目自动失效，
+// 不再阻止回收也不残留（旧实现用强引用 map 会双重泄漏）。
+var x509CertMap = engine.NewWeakMap[*x509.Certificate]()
 
 // x509OIDShortNames DN 属性 OID → 短名（Node 的 subject/issuer 输出格式）。
 var x509OIDShortNames = map[string]string{
@@ -117,7 +118,7 @@ func x509TimeStr(t time.Time) string {
 // x509CertToValue 构造 X509Certificate 实例对象。
 func x509CertToValue(cert *x509.Certificate, der []byte) engine.Value {
 	obj := engine.NewObject()
-	x509CertMap[obj] = cert
+	x509CertMap.Set(obj, cert)
 	subj := x509NameString(cert.Subject.Names)
 	issuer := x509NameString(cert.Issuer.Names)
 	serial := strings.ToUpper(hex.EncodeToString(cert.SerialNumber.Bytes()))
@@ -368,7 +369,7 @@ func x509PublicKeysEqual(a, b interface{}) bool {
 // x509CertArg 从 X509Certificate 实例取 *x509.Certificate。
 func x509CertArg(v engine.Value) (*x509.Certificate, bool) {
 	if o, ok := v.AsObject(); ok {
-		if cert, ok := x509CertMap[o]; ok {
+		if cert, ok := x509CertMap.Get(o); ok {
 			return cert, true
 		}
 	}

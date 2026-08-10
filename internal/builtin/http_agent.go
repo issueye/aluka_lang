@@ -15,7 +15,9 @@ import (
 )
 
 // httpAgentTransports Agent 实例 → Transport（连接池）。
-var httpAgentTransports = map[engine.Object]*http.Transport{}
+// 用 WeakMap：Agent 对象被 GC 回收后 Transport 条目自动失效，
+// 连接池随之可回收（旧实现强引用 key 阻止回收且条目永不清理）。
+var httpAgentTransports = engine.NewWeakMap[*http.Transport]()
 
 // httpGlobalTransport 全局共享 Transport（Node 默认 globalAgent 的
 // keepAlive 语义：连接跨请求复用）。
@@ -67,7 +69,7 @@ func registerHttpAgent(ctx engine.Context, m engine.Object) {
 			tr.DisableKeepAlives = true
 		}
 		agent := engine.NewObject()
-		httpAgentTransports[agent] = tr
+		httpAgentTransports.Set(agent, tr)
 		_ = agent.Set("keepAlive", engine.Boolean(keepAlive))
 		_ = agent.Set("keepAliveMsecs", engine.Number(keepAliveMsecs))
 		// maxSockets 默认 Infinity（Node 语义）。
@@ -103,7 +105,7 @@ func registerHttpAgent(ctx engine.Context, m engine.Object) {
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     60 * time.Second,
 	}
-	httpAgentTransports[ga] = tr
+	httpAgentTransports.Set(ga, tr)
 	_ = ga.Set("keepAlive", engine.Boolean(true))
 	_ = ga.Set("keepAliveMsecs", engine.Number(1000))
 	_ = ga.Set("maxFreeSockets", engine.Number(256))
@@ -127,7 +129,7 @@ func resolveAgentTransport(agentVal engine.Value) (tr *http.Transport, noReuse b
 		return nil, true // agent:false → 每次新建
 	}
 	if ao, ok := agentVal.AsObject(); ok {
-		if t, ok := httpAgentTransports[ao]; ok {
+		if t, ok := httpAgentTransports.Get(ao); ok {
 			return t, false
 		}
 	}

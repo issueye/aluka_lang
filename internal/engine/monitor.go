@@ -226,15 +226,15 @@ func ReadRuntimeSnapshot() RuntimeSnapshot {
 		PauseTotal:   time.Duration(ms.PauseTotalNs),
 		Goroutines:   runtime.NumGoroutine(),
 	}
-	jsHeapGlobal.mu.Lock()
-	snap.ObjectsAlloc = jsHeapGlobal.alloc
+	snap.ObjectsAlloc = allocCount.Load()
 	live := int64(0)
+	jsHeapGlobal.mu.Lock()
 	for w := range jsHeapGlobal.objects {
 		if w.Value() != nil {
 			live++
 		}
 	}
-	snap.ObjectsLive = live
 	jsHeapGlobal.mu.Unlock()
+	snap.ObjectsLive = live
 	return snap
 }
