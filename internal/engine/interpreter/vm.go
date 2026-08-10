@@ -40,6 +40,12 @@ type VM struct {
 	// callCountEnabled 是监控调用计数的缓存开关（NewVM 时从 engine 读取）。
 	// 热路径每次函数调用读取普通布尔字段，避免 engine.BumpCalls 的原子 load。
 	callCountEnabled bool
+
+	// insnsEnabled / oomEnabled 是 run() 主循环监控开关缓存：默认（无监控、
+	// 未设 --max-memory）热路径零原子 load。内存上限需在 VM 创建前设置
+	// （CLI --max-memory 在创建 VM 前解析）。
+	insnsEnabled bool
+	oomEnabled   bool
 }
 
 // EnableCoverage 启用行级覆盖率统计。
@@ -99,7 +105,7 @@ func NewVM() (*VM, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &VM{interp: interp, callCountEnabled: engine.MetricsEnabled()}, nil
+	return &VM{interp: interp, callCountEnabled: engine.MetricsEnabled(), insnsEnabled: engine.MetricsEnabled(), oomEnabled: engine.MemoryLimitBytes() != 0}, nil
 }
 
 // bumpCall 计数一次函数调用。监控关闭（默认）时是普通布尔判断，零原子开销；
@@ -354,8 +360,9 @@ func (v *VM) run() (engine.Value, error) {
 				// Ran off the end without OpReturn — treat as undefined return.
 				return v.doReturn(engine.Undefined()), nil
 			}
-			// O2-D2：Decode 内联展开（去掉函数调用与 `pc+3 < len(code)` 边界
-			// 检查——pc 是定长指令起始，上述 `pc >= len(code)` 已保证合法）。
+			// 指令解码：op = 高 8 位，operand = 低 24 位。手动解包（编译器可
+			// 合并边界检查与字节读；实测 binary.BigEndian.Uint32 在 x86 上
+			// 需 BSWAP，反而不如移位解包）。
 			op := bytecode.Opcode(code[pc])
 			operand := uint32(code[pc+1])<<16 | uint32(code[pc+2])<<8 | uint32(code[pc+3])
 			frame.pc = pc + bytecode.InstrSize
@@ -376,10 +383,11 @@ func (v *VM) run() (engine.Value, error) {
 
 			// 监控：指令计数（gated）+ OOM 安全点（--max-memory 超限抛
 			// 可捕获的 JS RangeError，V8 同款 "JavaScript heap out of memory"）。
-			if engine.MetricsEnabled() {
+			// 开关缓存到 VM 字段（NewVM 时读取），默认热路径零原子 load。
+			if v.insnsEnabled {
 				engine.BumpInsns()
 			}
-			if engine.OOMTriggered() {
+			if v.oomEnabled && engine.OOMTriggered() {
 				// 一次性消费：抛 RangeError 前清除，使 catch 可运行。
 				engine.ConsumeOOM()
 				return v.handleThrow(v.interp.goErrorToJSValue(engine.OOMError()))
