@@ -132,6 +132,8 @@ Number 边界值（`NaN`、`+0/-0`、`±Infinity`、除零、位运算截断、`
 | R2 硬停止条件：Native Frame 无 Go 指针（reflect 递归验证全部字段为数值/数值数组类型，GC 不扫描生成代码帧） | `TestFrameIsPointerFree`（`frame_pointer_free_test.go`） | 全部平台 |
 | R2 CI 门禁就绪度（YAML 解析、gate 测试名与正则交叉核对、Linux amd64 测试包编译） | ci.yml `jit-linux` 13 step 验证记录（follow-up §7.4） | linux amd64（待 runner） |
 | R2-4 本地 extended soak（`ALUKA_JIT_SOAK=1 -count=20` = 6400 轮，nativeCompiled=43200/evictions=11200 累计，RX 逐轮回基线） | `TestAutoJITSoakLifecycleGCAndLRU`（Windows 实机证据；Linux 侧待 runner） | windows amd64 实机 |
+| R2 soak 延长证据：`ALUKA_JIT_SOAK=1 -count=200`（64,000 轮，累计 nativeCompiled=432,000 / evictions=112,000 / backgroundQueued=32,000，RX 逐轮回基线） | `TestAutoJITSoakLifecycleGCAndLRU`（Windows 实机，88s；与 6,400 轮合并共 70,400 轮） | windows amd64 实机 |
+| R2 fuzz 长期运行：`FuzzVerifyProgram -fuzztime=10m` 实跑 5m54s / 31,676,488 execs 零失败（被环境停止而非测试失败） | `FuzzVerifyProgram`（jit 包；其余 4 个 target 短跑证据见 R1-7 记录） | 全部平台 |
 
 **未覆盖（明确依赖外部环境，不记入矩阵）**：Linux 实机 W^X/maps 检查、长期 GC/抢占 soak、
 race 构建。`go test -race` 在本机因 Windows TSan 影子内存分配失败（error code 87）不可执行；

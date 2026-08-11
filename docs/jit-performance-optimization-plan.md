@@ -932,6 +932,13 @@ nativeCompiled=2160/tracesCompiled=640/evictions=560/backgroundQueued=160，RX �
 release soak 待真实 CI 环境执行。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、
 不改变性能快照口径。
 
+v2.25 追加 R2 soak/fuzz 延长运行证据（Windows 实机）：`ALUKA_JIT_SOAK=1 -count=200`
+（64,000 轮）88s 全过，累计 nativeCompiled=432,000 / evictions=112,000 /
+backgroundQueued=32,000，RX 逐轮回基线；与 v2.24 的 6,400 轮合并为 70,400 轮连续 soak。
+`FuzzVerifyProgram -fuzztime=10m` 实跑 5m54s / 31,676,488 execs（90k/s）零失败零 panic
+（被后台环境停止，非测试失败；480k 轮 soak 与 10 分钟 fuzz 目标同因环境 kill 无输出，记录为
+限制）。Linux 实机、30-60 分钟 nightly、≥8 小时 release soak 与 R2-1 仍需真实 CI 环境。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见
