@@ -927,7 +927,7 @@ v2.24 推进 R2 剩余项目（Windows 实机证据；Linux runner 待 CI）。�
 extended soak：`ALUKA_JIT_SOAK=1 -count=20`（6400 轮）全过——每批 320 轮
 nativeCompiled=2160/tracesCompiled=640/evictions=560/backgroundQueued=160，RX 逐轮回基线，
 累计 80 次 GC/批；证据仅限 Windows 实机。③ 硬停止条件审计：新增 `TestFrameIsPointerFree`
-（reflect 递归证明 `jitnative.Frame` 无 Go 指针槽位，GC 不扫描生成代码帧）。④ 环境确认：
+（reflect 递归证明 `jitnative.Frame` ABI 无 Go 指针槽位；该结论仅覆盖 Frame 结构本身，不延伸到整个 JIT 调用栈的扫描行为）。④ 环境确认：
 本机无 WSL/Docker/Linux runner，R2-1 真实 Linux CI 记录、30-60 分钟 nightly soak 与 ≥8 小时
 release soak 待真实 CI 环境执行。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、
 不改变性能快照口径。
@@ -953,8 +953,16 @@ closureCall-1M 的 Auto 未命中特化（auto 401ms/206ms，vsOff≈1.0x，历�
 3.05ms（vsOff 56x）、callOverhead 3.34ms、propAccess 7.62ms、propSet 7.85ms、methodCall
 4.78ms；11 项合计 auto 813.55ms（off 2618ms，约 3.2x），mixed auto 270.75ms（off 504ms，
 约 1.9x）；Node 对照合计 63.97ms → auto/Node 约 12.7x，mixed 约 2.7x（本机后台负载环境，
-R0-5 已记录 A-B 19.1% 级波动，与历史快照 12.0x/2.2x 同量级）。该轮未改默认 `--jit=off`、
-未扩大 Native ABI 与 W^X 生命周期。
+R0-5 已记录 A-B 19.1% 级波动，与历史快照 12.0x/2.2x 同量级）。审查整改：快照在包含修复的
+干净提交（`62034e7`，含 1b45f1f）上重新生成，归档记录 `commit=62034e7`、`generated` 时间戳
+晚于修复提交、`jitStats=true`（每 script/tier 含完整统计行，perf-compare auto 记录
+`arrayPushSites=2`、`closureUpvalueSites=1`、`tracesCompiled=7`、`nativeTracesCompiled=4`、
+`guardFailures=0`，特化命中证据入档）；复测中位数 arrayPush 71.75ms / closureCall 3.07ms /
+callOverhead 2.88ms / 11 项合计 814.41ms / mixed 285.98ms。**数据性质声明**：36 个
+case/tier 组合中 13 个相对 MAD 超过 5%（closureCall quick 22.6%、callOverhead auto 22.2%、
+arrayPush auto 20.1% 等，本机后台负载所致），此快照仅作诊断证据，不作验收级冻结——验收须在
+安静/固定电源环境连续两轮中位数偏差 ≤5%（R0 §5.3 门禁）后另行冻结。该轮未改默认
+`--jit=off`、未扩大 Native ABI 与 W^X 生命周期。
 
 ## 17. 下一轮优先级
 

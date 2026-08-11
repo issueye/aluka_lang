@@ -42,10 +42,6 @@ function f(iters) {
   return s;
 }
 `)
-	for _, f := range []*bytecode.FuncTemplate{} {
-		_ = f
-	}
-	t.Logf("function %q locals=%d len(code)=%d", fn.Name, fn.NumLocals, len(fn.Code))
 	code := fn.Code
 	found := false
 	for pc := 0; pc+bytecode.InstrSize <= len(code); pc += bytecode.InstrSize {

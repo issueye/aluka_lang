@@ -6,9 +6,10 @@ import (
 )
 
 // TestFrameIsPointerFree audits the R2 hard-stop condition "Go pointers must
-// never enter the Native Frame": every Frame field must be a numeric type, so
-// the Go type system guarantees the struct has no pointer slots and the GC
-// never scans generated-code frames.
+// never enter the Native Frame ABI": every Frame field must be a numeric type,
+// so the Go type system guarantees the Frame struct has no Go pointer slots.
+// (This proves the ABI struct itself is pointer-free; it does not by itself
+// prove that no other generated-code state on the JIT call stack is scanned.)
 func TestFrameIsPointerFree(t *testing.T) {
 	typ := reflect.TypeOf(Frame{})
 	if typ.NumField() == 0 {
