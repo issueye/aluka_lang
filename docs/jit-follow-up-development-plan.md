@@ -193,9 +193,9 @@ LocalSlots, StackDepth, StackValues, PendingException}`。`PendingException`（`
 表示 Go 指针/engine.Value），Auto 稳定回退 Quick。verifier 对 map 强制：exitID 必须落在
 `traceExitDepths` 内（缺失/越界/负 ID 一律拒绝，即使栈为空）；同一 exit 在可达路径上的栈深必须
 一致（歧义/预置冲突拒绝）；栈深 ≤8 槽（非法深拒绝）；exception exit 必须带栈顶异常值（栈下溢
-拒绝）且 exception map 覆盖所有 exit（截断 map 拒绝）。`CompileTraceWithGuards` 在 Verify 后
+拒绝）且 exception map 与 deopt map 一一对应（截断/扩展 map 均拒绝）。`CompileTraceWithGuards` 在 Verify 后
 拒绝不可达 exit。`TestVerifyRejectsInvalidDeoptMaps` 覆盖 7 类非法 map，
-`TestVerifyRejectsInvalidExceptionMaps` 覆盖截断 exception map 与异常值缺失，
+`TestVerifyRejectsInvalidExceptionMaps` 覆盖截断/扩展 exception map 与异常值缺失，
 `TestExceptionExitCompilesAndExecutes`/`TestNativeRejectsExceptionExit`/`TestSameDeoptExitPendingException`
 覆盖编译、执行、Native 拒绝与 `SameDeoptExit` 比较。
 
@@ -225,7 +225,7 @@ nightly 无差分；所有语义出口具备 verifier 可证明的恢复映射�
 | 2026-08-11 | verifier deopt map 拒绝（R1-4 前置） | 收紧 `OpTraceExit` 校验：缺失/越界/负 exitID 一律拒绝（原仅栈非空时拒绝）；`TestVerifyRejectsInvalidDeoptMaps` 覆盖缺失/越界/负 ID/歧义深度（同一 exit 两条路径不同栈深）四类，并修正 `TestNativePropertyWriteVerifyRestoresQuickResultOnMismatch` 补合法 deopt map；`jit_bridge.go` 增加 trace IR dump（`JIT dump tier=trace`），使失败产物含 trace 级 IR |
 | 2026-08-11 | R1-3 ✅ 异常差分 | `jitdiff` 新增 5 个 Kind（BigIntDivZero/GetterSetterThrow/OOM/Cancel/Safepoint）+ `RunHook`（OOMBytes/TriggerOOM/CancelAfter/CancelErr），生成器 Version 1→2；差分夹具显式启用 `InterpreterSafepoints`，使解释循环回边与 JIT budget yield 共用回调，同时不改变默认嵌入行为；取消保持独立 `Error`，不再伪装为 OOM；固定用例扩至 17 个，异常均进入同一 catch 路径并保留逐步事件日志，延迟中断验证已提交迭代无重复/遗漏；差分发现并修复 BigInt `/` lexer 与 BigInt `++/--` 问题，审核另修复 JIT `--` 曾错误降低为 `1-x`；`TestUpdateExpressionAcrossJITTiers` 锁定三 tier 前后缀语义；PR 1,000 例与 nightly 100,000 例（5 seed）均零差分 |
 | 2026-08-11 | R1-4 进行中：deopt map 加固 | `DeoptExit{ID, ResumePC, LocalSlots, StackDepth, StackValues}` 的现有恢复映射增加 verifier 拒绝规则（§6.3）；`TestVerifyRejectsInvalidDeoptMaps` 覆盖 7 类非法 map，`TestDeoptExitMapIntegrity` 审计对齐 ResumePC、去重 local 槽、合法栈深；固定用例 -17 验证属性写 guard 失败前无部分写入 |
-| 2026-08-11 | R1-4 ✅ pending exception 正式恢复映射 | `DeoptExit` 增加 `PendingException engine.Value`（nil = 无）；trace 编译 `OpThrow` 为 exception exit（throw 位置直接放 `OpTraceExit`，不新增 IR opcode），Quick 执行器把栈顶原始 JS 值移入 `PendingException` 并丢弃其余操作数栈，VM 恢复经 `*jsThrow` 以原始值进入 `handleThrow`/catch-finally；Native 编译拒绝 exception exit（`lowerNativeInputsForMode` 检查），Auto 稳定回退 Quick；`SameDeoptExit` 比较 pending exception（Number 按位含 NaN、字符串按值、对象按 identity）；verifier 拒绝截断 exception map 与异常值缺失。测试：jit 包 `TestExceptionExitCompilesAndExecutes`/`TestNativeRejectsExceptionExit`/`TestVerifyRejectsInvalidExceptionMaps`/`TestSameDeoptExitPendingException`；interpreter 包 8 个 `TestDeoptExceptionExit*`（数字/字符串/对象 identity/非空栈丢弃/finally 重抛/嵌套 catch/guard 失败/Auto 回退/deopt stats）；jitdiff 固定用例 -18 与 artifact 保存/重放测试 |
+| 2026-08-11 | R1-4 ✅ pending exception 正式恢复映射 | `DeoptExit` 增加 `PendingException engine.Value`（nil = 无）；trace 编译 `OpThrow` 为 exception exit（throw 位置直接放 `OpTraceExit`，不新增 IR opcode），Quick 执行器把栈顶原始 JS 值移入 `PendingException` 并丢弃其余操作数栈，VM 恢复经 `*jsThrow` 以原始值进入 `handleThrow`/catch-finally；Native 编译拒绝 exception exit（`lowerNativeInputsForMode` 检查），Auto 稳定回退 Quick；`SameDeoptExit` 比较 pending exception（Number 按位含 NaN、字符串按值、对象按 identity）；verifier 拒绝截断/扩展 exception map 与异常值缺失。测试：jit 包 `TestExceptionExitCompilesAndExecutes`/`TestNativeRejectsExceptionExit`/`TestVerifyRejectsInvalidExceptionMaps`/`TestSameDeoptExitPendingException`；interpreter 包 8 个 `TestDeoptExceptionExit*`（数字/字符串/对象 identity/非空栈丢弃/finally 重抛/嵌套 catch/guard 失败/Auto 回退/deopt stats）；jitdiff 固定用例 -18 与 artifact 保存/重放测试 |
 
 R1-1/R1-2/R1-3/R1-4/R1-8 已完成。R1-5（副作用两阶段提交协议）、R1-6（随机 guard
 失效）、R1-7（fuzz 入口）未在本轮完成；当前 Windows 已通过计划规定的 JIT race 子集和 jitdiff race，
@@ -469,13 +469,13 @@ go test -race ./internal/engine/jit/... ./internal/engine/interpreter -count=1
 
 1. R0-1 至 R0-4：先建立结果和覆盖证据；
 2. R1-1、R1-2、R1-8：建立可复现生成式差分；
-3. R1-4 至 R1-6：补 pending exception、副作用和完整 deopt；
+3. R1-5 至 R1-6：补副作用提交协议与随机 guard 失效；
 4. 并行完成 R2 Linux CI、W^X 和短/长 soak；
 5. 在差分框架保护下实施 R3 原始值与控制流覆盖；
 6. 逐条实施 R4 热点，每条都通过六类必要证据；
 7. R5 统一调优阈值、预算和优化 pass；
 8. 完成 R6 最终检查表后，单独变更默认 auto。
 
-下一次开发应推进 R1-4 至 R1-7（补齐 pending exception 状态与 verifier、完成副作用提交协议、
-随机 guard 失效、fuzz 入口），复用 jitdiff 框架的事件日志与失败产物机制；R0 里程碑的稳定性验收
+下一次开发应推进 R1-5 至 R1-7（完成副作用提交协议、随机 guard 失效与 fuzz 入口），复用
+jitdiff 框架的事件日志、pending exception 状态与失败产物机制；R0 里程碑的稳定性验收
 （安静环境复核）可并行推进，R1/R2 的任何工作不得以 R0 验收未过为由扩大支持面。

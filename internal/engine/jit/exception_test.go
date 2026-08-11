@@ -122,7 +122,16 @@ func TestVerifyRejectsInvalidExceptionMaps(t *testing.T) {
 			code:   []Instr{{Op: OpConst, Value: 1}, {Op: OpTraceExit, Operand: 0}},
 			depths: []uint8{^uint8(0)},
 			excMap: []bool{},
-			want:   "no exception map",
+			want:   "exception map size",
+		},
+		{
+			// Extended exception map: unused entries are also malformed; every
+			// exception-state entry must correspond to one deopt exit.
+			name:   "extended exception map",
+			code:   []Instr{{Op: OpConst, Value: 1}, {Op: OpTraceExit, Operand: 0}},
+			depths: []uint8{^uint8(0)},
+			excMap: []bool{false, true},
+			want:   "exception map size",
 		},
 		{
 			// Exception exit with no thrown value on the stack.

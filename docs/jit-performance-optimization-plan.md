@@ -804,7 +804,7 @@ IR opcode，避免被普通跳转 fixup 误判），Quick 执行器把栈顶原�
 try/catch/finally 状态机（catch 参数获得原始值，finally 重抛与外层 catch 不丢失不重复）；Native
 编译在 `lowerNativeInputsForMode` 拒绝含 exception exit 的程序（机器码无法表示 Go 指针/engine.Value），
 Auto 稳定回退 Quick；`SameDeoptExit` 比较 pending exception（Number 按位含 NaN、字符串按值、对象
-identity）；verifier 拒绝截断 exception map 与异常值缺失；IR dump 标注 `(exception)`。测试：
+identity）；verifier 拒绝截断/扩展 exception map 与异常值缺失；IR dump 标注 `(exception)`。测试：
 jit 包 4 个（编译/执行/Native 拒绝/verifier 拒绝/SameDeoptExit 10 子用例）、interpreter 包 8 个
 场景（数字/字符串/对象 identity 抛错、finally 重抛、嵌套 catch、guard 失败进 catch、Auto 回退、
 deopt stats 记录 exception exit）、jitdiff 固定用例 -18 与 artifact 保存/重放。PR 1,000 例与

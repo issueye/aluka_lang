@@ -1,10 +1,8 @@
 package interpreter
 
 import (
-	"fmt"
 	"testing"
 
-	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/jit"
 )
 
@@ -306,6 +304,4 @@ globalThis.E1 = k8(100);
 	if !found {
 		t.Fatalf("no deopt recorded for the exception exit: %+v", stats)
 	}
-	_ = fmt.Sprint
-	_ = engine.Undefined
 }

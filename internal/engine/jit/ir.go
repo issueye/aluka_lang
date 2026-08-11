@@ -414,6 +414,9 @@ func (p *Program) Verify() error {
 	if len(p.Code) == 0 {
 		return fmt.Errorf("jit: empty program")
 	}
+	if p.traceExceptionExits != nil && len(p.traceExceptionExits) != len(p.traceExitDepths) {
+		return fmt.Errorf("jit: exception map size %d != deopt map size %d", len(p.traceExceptionExits), len(p.traceExitDepths))
+	}
 	depthAt := make([]int, len(p.Code))
 	for i := range depthAt {
 		depthAt[i] = -1
@@ -476,9 +479,6 @@ func (p *Program) Verify() error {
 			// exits). A truncated map is a missing exception-state mapping.
 			isException := false
 			if p.traceExceptionExits != nil {
-				if exitID >= len(p.traceExceptionExits) {
-					return fmt.Errorf("jit: trace exit %d has no exception map", exitID)
-				}
 				isException = p.traceExceptionExits[exitID]
 			}
 			// An exception exit carries the thrown value on the stack top,
