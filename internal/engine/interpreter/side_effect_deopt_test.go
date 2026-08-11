@@ -207,3 +207,30 @@ globalThis.OK = N > 0 && R === N * (N + 1) / 2;
 		"ERR": "Error:cancel-upvalue",
 	}, 1, func() jit.Safepoint { return cancelAfter(5, "cancel-upvalue") }, true, true)
 }
+
+func TestTraceMethodGuardDoesNotProbeProxy(t *testing.T) {
+	source := `
+let GETS = 0;
+function READ() { return this.v; }
+const TARGET = { v: 2, get: READ };
+const P = new Proxy(TARGET, {
+  get(target, key) { GETS++; return target[key]; }
+});
+function kM(o, n) {
+  let total = 0;
+  for (let i = 0; i < n; i++) total += o.get();
+  return total;
+}
+globalThis.RESULT = kM(P, 8);
+globalThis.GET_COUNT = GETS;
+`
+	want := map[string]string{"RESULT": "16", "GET_COUNT": "16"}
+	for _, mode := range []jit.Mode{jit.Off, jit.Quick, jit.Auto} {
+		values, _ := runSideEffectTier(t, mode, source, []string{"RESULT", "GET_COUNT"}, 0, nil)
+		for name, expected := range want {
+			if values[name] != expected {
+				t.Fatalf("mode=%s %s=%q, want %q; JIT guard probing must not invoke Proxy traps", mode, name, values[name], expected)
+			}
+		}
+	}
+}

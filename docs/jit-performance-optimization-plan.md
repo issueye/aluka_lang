@@ -833,6 +833,13 @@ trace 真实执行）；jitdiff 固定用例扩至 23 个（-19 调用 guard 失
 该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、不改变任何性能快照口径；
 store-after-validate 分歧在单线程语义下不可达，回滚是协议的结构性保证而非可达路径。
 
+R1-5 审核补强：原实现曾把逐项 validate/store 交错执行，第二项验证失败会留下第一项写入；现已
+改为 Quick、Native commit 和 Native verify restore 三条路径统一 validate-all 后 store-all，并用
+两属性后项失效回归锁定。verifier 进一步拒绝伪造 deopt map 后走函数返回，防止绕过提交点。
+Native Verify 的 Quick 预执行不再调用嵌入 safepoint，避免同一切片双轮询。方法 guard profiling、
+Quick 和 Native 统一使用不走 accessor/原型/Proxy 的普通对象 own data property 读取；不安全
+receiver 明确回退 Tier 0，Proxy trap 计数在 off/quick/auto 精确一致。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见

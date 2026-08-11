@@ -6,6 +6,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
+	jitnative "github.com/aluka-lang/aluka/internal/engine/jit/native"
 )
 
 // sideEffectTraceTemplate builds a property-write loop:
@@ -123,6 +124,91 @@ func TestVerifyRejectsSideEffectsWithoutTraceProtocol(t *testing.T) {
 	}
 	if err := valid.Verify(); err != nil {
 		t.Fatalf("valid side-effecting trace rejected: %v", err)
+	}
+
+	// A non-nil deopt map alone does not make a program a trace. A reachable
+	// function return would bypass the trace executor's commit protocol.
+	returning := &Program{
+		NumLocals: 1, Code: []Instr{
+			{Op: OpConst, Value: 1}, {Op: OpLoadLocal, Operand: 0},
+			{Op: OpSetProp, Name: "x"}, {Op: OpReturnUndef},
+		},
+		traceExitDepths: []uint8{0},
+	}
+	if err := returning.Verify(); err == nil || !strings.Contains(err.Error(), "trace program reaches function return") {
+		t.Fatalf("Verify = %v, want trace return rejection", err)
+	}
+}
+
+func TestNativeCommitValidatesAllWritesBeforeMutation(t *testing.T) {
+	first := engine.NewObject()
+	second := engine.NewObject()
+	if err := first.Set("a", engine.Number(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Set("b", engine.Number(2)); err != nil {
+		t.Fatal(err)
+	}
+
+	var firstGuard, secondGuard propertyGuard
+	if _, ok := firstGuard.loadNumber(first, "a"); !ok {
+		t.Fatal("failed to prepare first property guard")
+	}
+	if _, ok := secondGuard.loadNumber(second, "b"); !ok {
+		t.Fatal("failed to prepare second property guard")
+	}
+	trace := &TraceProgram{program: &Program{nativePlan: &nativeInputPlan{properties: []nativePropertyInput{
+		{sourceLocal: 0, frameLocal: 2, name: "a", write: true, guard: firstGuard},
+		{sourceLocal: 1, frameLocal: 3, name: "b", write: true, guard: secondGuard},
+	}}}}
+	frame := &jitnative.Frame{Status: 1<<2 | 1<<3}
+	frame.Locals[2], frame.Locals[3] = 10, 20
+
+	// Invalidate the second prepared write. Validation must reject the entire
+	// batch before the first property is changed.
+	if err := second.Set("b", engine.Str("poison")); err != nil {
+		t.Fatal(err)
+	}
+	committed, err := trace.commitNativeTraceFrame(
+		[]engine.Value{first, second}, []engine.Value{first, second}, frame)
+	if err != nil || committed {
+		t.Fatalf("committed=%t err=%v, want clean validation failure", committed, err)
+	}
+	value, err := first.Get("a")
+	if err != nil || value != engine.Number(1) {
+		t.Fatalf("first property = %v (err %v), want original value 1", value, err)
+	}
+}
+
+func TestNativeRestoreValidatesAllPropertiesBeforeMutation(t *testing.T) {
+	first := engine.NewObject()
+	second := engine.NewObject()
+	if err := first.Set("a", engine.Number(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Set("b", engine.Number(2)); err != nil {
+		t.Fatal(err)
+	}
+	var firstGuard, secondGuard propertyGuard
+	if _, ok := firstGuard.loadNumber(first, "a"); !ok {
+		t.Fatal("failed to prepare first property guard")
+	}
+	if _, ok := secondGuard.loadNumber(second, "b"); !ok {
+		t.Fatal("failed to prepare second property guard")
+	}
+	snapshots := []nativePropertySnapshot{
+		{object: first, name: "a", guard: &firstGuard, original: 1, expected: 10},
+		{object: second, name: "b", guard: &secondGuard, original: 2, expected: 20},
+	}
+	if err := second.Set("b", engine.Str("poison")); err != nil {
+		t.Fatal(err)
+	}
+	if restoreNativePropertyValues(snapshots, true) {
+		t.Fatal("restore succeeded with an invalid second property")
+	}
+	value, err := first.Get("a")
+	if err != nil || value != engine.Number(1) {
+		t.Fatalf("first property = %v (err %v), want original value 1", value, err)
 	}
 }
 

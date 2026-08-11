@@ -98,13 +98,8 @@ func (t *TraceProgram) ExecuteNativeBudgetDetailedWithSafepoint(locals []engine.
 		}
 		matched := locals[guard.sourceLocal] == guard.target
 		if guard.method != "" {
-			object, ok := locals[guard.sourceLocal].(engine.Object)
-			if !ok {
-				matched = false
-			} else {
-				method, err := object.Get(guard.method)
-				matched = err == nil && method == guard.target
-			}
+			method, ok := engine.OwnDataProperty(locals[guard.sourceLocal], guard.method)
+			matched = ok && method == guard.target
 		}
 		if !matched {
 			return DeoptExit{}, GuardFailed, 0, nil
@@ -222,7 +217,11 @@ func (t *TraceProgram) ExecuteNativeBudgetVerifiedWithSafepoint(locals []engine.
 	var expectedErr error
 	for {
 		expectedExit, expectedReason, expectedErr = verificationTrace.ExecuteBudgetDetailedWithSafepoint(
-			expectedLocals, budget, poll)
+			// Verification runs against the real objects and is rolled back
+			// before Native execution. Do not expose that speculative pass to
+			// the embedding safepoint callback: doing so would double-poll and
+			// could observe cancellation or external state twice.
+			expectedLocals, budget, nil)
 		if expectedReason != Yielded || expectedErr != nil {
 			break
 		}
@@ -307,19 +306,22 @@ func captureNativePropertyValues(snapshots []nativePropertySnapshot, expected bo
 // restore is never observable.
 func restoreNativePropertyValues(snapshots []nativePropertySnapshot, expected bool) bool {
 	current := make([]float64, len(snapshots))
+	for i := range snapshots {
+		number, ok := snapshots[i].guard.loadNumber(snapshots[i].object, snapshots[i].name)
+		if !ok {
+			return false
+		}
+		current[i] = number
+	}
 	var restored []int
 	for i := range snapshots {
 		value := snapshots[i].original
 		if expected {
 			value = snapshots[i].expected
 		}
-		number, ok := snapshots[i].guard.loadNumber(snapshots[i].object, snapshots[i].name)
-		if !ok {
-			return false
-		}
-		current[i] = number
 		if !snapshots[i].guard.storeNumber(snapshots[i].object, snapshots[i].name, value) {
-			for _, j := range restored {
+			for k := len(restored) - 1; k >= 0; k-- {
+				j := restored[k]
 				_ = snapshots[j].guard.storeNumber(snapshots[j].object, snapshots[j].name, current[j])
 			}
 			return false
@@ -381,7 +383,6 @@ func sameTraceValues(a, b []engine.Value) bool {
 func (t *TraceProgram) commitNativeTraceFrame(locals []engine.Value, propertyObjects []engine.Value, frame *jitnative.Frame) (bool, error) {
 	plan := t.program.nativePlan
 	originals := make([]float64, len(plan.properties))
-	var stored []int
 	for i := range plan.properties {
 		input := &plan.properties[i]
 		if input.write && frame.Status&(uint64(1)<<input.frameLocal) != 0 {
@@ -390,8 +391,15 @@ func (t *TraceProgram) commitNativeTraceFrame(locals []engine.Value, propertyObj
 				return false, nil
 			}
 			originals[i] = number
+		}
+	}
+	var stored []int
+	for i := range plan.properties {
+		input := &plan.properties[i]
+		if input.write && frame.Status&(uint64(1)<<input.frameLocal) != 0 {
 			if !input.guard.storeNumber(propertyObjects[i], input.name, frame.Locals[input.frameLocal]) {
-				for _, j := range stored {
+				for k := len(stored) - 1; k >= 0; k-- {
+					j := stored[k]
 					rollback := &plan.properties[j]
 					_ = rollback.guard.storeNumber(propertyObjects[j], rollback.name, originals[j])
 				}

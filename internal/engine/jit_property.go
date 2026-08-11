@@ -1,5 +1,28 @@
 package engine
 
+// OwnDataProperty returns an own data property from a plain object without
+// walking the prototype chain or invoking accessors, Proxy traps, or other
+// user code. JIT identity guards use this primitive so speculative profiling
+// and failed guards remain unobservable.
+func OwnDataProperty(value Value, key string) (Value, bool) {
+	obj, isObject := value.(*objectValue)
+	if !isObject || obj.shape == nil || obj.deleted != nil && obj.deleted[key] {
+		return nil, false
+	}
+	idx, exists := obj.shape.lookup(key)
+	if !exists || idx < 0 || idx >= len(obj.slots) {
+		return nil, false
+	}
+	property := obj.slots[idx]
+	if property == nil {
+		return nil, false
+	}
+	if _, isAccessor := property.(*AccessorValue); isAccessor {
+		return nil, false
+	}
+	return property, true
+}
+
 // NumericOwnProperty returns a Number-valued own data property without
 // invoking accessors or walking the prototype chain. It is the only property
 // primitive exposed to the portable JIT tier; callers must guard the returned

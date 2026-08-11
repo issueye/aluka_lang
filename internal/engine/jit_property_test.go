@@ -2,6 +2,31 @@ package engine
 
 import "testing"
 
+func TestOwnDataProperty(t *testing.T) {
+	proto := NewObject()
+	if err := proto.Set("inherited", Number(1)); err != nil {
+		t.Fatal(err)
+	}
+	obj := NewObject()
+	SetProto(obj, proto)
+	if err := obj.Set("own", Str("value")); err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := OwnDataProperty(obj, "own"); !ok || value != Str("value") {
+		t.Fatalf("own property = %v, %t", value, ok)
+	}
+	if _, ok := OwnDataProperty(obj, "inherited"); ok {
+		t.Fatal("prototype property accepted as own data property")
+	}
+	SetAccessor(obj, "accessor", Undefined(), Undefined())
+	if _, ok := OwnDataProperty(obj, "accessor"); ok {
+		t.Fatal("accessor accepted as own data property")
+	}
+	if _, ok := OwnDataProperty(NewArray(nil), "length"); ok {
+		t.Fatal("non-plain object accepted as own data property")
+	}
+}
+
 func TestNumericOwnProperty(t *testing.T) {
 	obj := NewObject()
 	if err := obj.Set("x", Number(3.5)); err != nil {

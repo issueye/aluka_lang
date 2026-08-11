@@ -425,6 +425,8 @@ func (p *Program) Verify() error {
 	work := []int{0}
 	maxDepth := 0
 	reachableReturn := false
+	reachableFunctionReturn := false
+	reachableTraceExit := false
 	for len(work) > 0 {
 		i := work[len(work)-1]
 		work = work[:len(work)-1]
@@ -487,9 +489,12 @@ func (p *Program) Verify() error {
 		case OpReturn:
 			need, delta = 1, -1
 			reachableReturn = true
+			reachableFunctionReturn = true
 		case OpReturnUndef:
 			reachableReturn = true
+			reachableFunctionReturn = true
 		case OpTraceExit:
+			reachableTraceExit = true
 			exitID := int(in.Operand)
 			// A trace exit must reference an entry in the deopt map. Missing,
 			// out-of-range or negative exit IDs are malformed IR and must be
@@ -578,6 +583,14 @@ func (p *Program) Verify() error {
 	}
 	if !reachableReturn {
 		return fmt.Errorf("jit: no reachable return")
+	}
+	if p.traceExitDepths != nil {
+		if reachableFunctionReturn {
+			return fmt.Errorf("jit: trace program reaches function return outside the side-effect commit protocol")
+		}
+		if !reachableTraceExit {
+			return fmt.Errorf("jit: trace program has no reachable deopt exit")
+		}
 	}
 	p.MaxStack = maxDepth
 	return nil

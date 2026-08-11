@@ -384,6 +384,35 @@ func TestNativePropertyWriteVerifyRestoresQuickResultOnMismatch(t *testing.T) {
 	}
 }
 
+func TestNativePropertyWriteVerifyDoesNotDoublePollSafepoint(t *testing.T) {
+	trace, err := CompileTrace(sideEffectTraceTemplate(), 0, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trace.CompileNative(); err != nil {
+		t.Fatal(err)
+	}
+	defer trace.Close()
+
+	obj := engine.NewObject()
+	if err := obj.Set("x", engine.Number(0)); err != nil {
+		t.Fatal(err)
+	}
+	locals := []engine.Value{
+		engine.Undefined(), engine.Number(0), engine.Number(3), obj, engine.Number(0),
+	}
+	polls := 0
+	exit, reason, yields, checked, matched, err := trace.ExecuteNativeBudgetVerifiedWithSafepoint(
+		locals, 1, func() error { polls++; return nil })
+	if err != nil || reason != Executed || !checked || !matched || exit.ResumePC != 68 || yields == 0 {
+		t.Fatalf("exit=%+v reason=%v yields=%d checked=%t matched=%t err=%v",
+			exit, reason, yields, checked, matched, err)
+	}
+	if polls != int(yields) {
+		t.Fatalf("safepoint polls = %d, native yields = %d; verification must not invoke embedding callbacks", polls, yields)
+	}
+}
+
 func randomNumericExpression(rng *rand.Rand, depth int) []Instr {
 	if depth == 0 {
 		switch rng.Intn(3) {

@@ -449,7 +449,9 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 	// commit is never observable even on a defensive failure.
 	commitSideEffects := func() bool {
 		originals := make([]float64, len(propertyStates))
-		var stored []int
+		// Phase 1 must complete for the whole batch before any externally
+		// visible mutation. Otherwise a later invalid property could leave an
+		// earlier property committed while locals remain uncommitted.
 		for i := range propertyStates {
 			state := &propertyStates[i]
 			if !state.dirty {
@@ -460,8 +462,16 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 				return false
 			}
 			originals[i] = number
+		}
+		var stored []int
+		for i := range propertyStates {
+			state := &propertyStates[i]
+			if !state.dirty {
+				continue
+			}
 			if !state.guard.storeNumber(state.object, state.name, state.value) {
-				for _, j := range stored {
+				for k := len(stored) - 1; k >= 0; k-- {
+					j := stored[k]
 					rollback := &propertyStates[j]
 					_ = rollback.guard.storeNumber(rollback.object, rollback.name, originals[j])
 				}
@@ -538,8 +548,8 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 				return DeoptExit{}, GuardFailed, nil
 			}
 			method := t.program.traceMethodGuards[in.Operand]
-			methodValue, err := objects[receiver.ref].(engine.Object).Get(method.method)
-			if err != nil || methodValue != method.target {
+			methodValue, ok := engine.OwnDataProperty(objects[receiver.ref], method.method)
+			if !ok || methodValue != method.target {
 				return DeoptExit{}, GuardFailed, nil
 			}
 			objectValue := objects[receiver.ref]

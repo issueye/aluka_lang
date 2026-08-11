@@ -166,13 +166,14 @@ guard 失败被记录、Auto 不产生 verify 失败）。审计后矩阵不存�
 | verifier 拒绝非法 exception map（截断/扩展 map、异常值缺失/栈下溢） | `TestVerifyRejectsInvalidExceptionMaps`（jit 包，4 子用例） |
 | 异常恢复链路（dirty locals 前缀提交、catch 后继续、finally 重抛、嵌套 catch、guard 失败、deopt stats） | interpreter 包 `TestDeoptExceptionExit*`（8 个场景，off/quick/auto 三 tier 一致） |
 | jitdiff exception exit 差分与 artifact 保存/重放 | 固定用例 -18（`TestEventLogFixedCases`）、`TestArtifactRoundTripExceptionExit`（jitdiff） |
-| R1-5 副作用两阶段提交协议（prepare/validate/commit；validate-all → 快照原值 → store-all → 失败回滚；提交点只有语义 exit 与预算 yield） | jit 包 `TestTraceCommitProtocolAppliesWritesExactlyOnce`（跨 3 个 budget slice 提交恰一次、恢复 PC 精确）、`TestTraceGuardFailureAfterCommittedSliceNoPartialWrite`（已提交 slice 后 guard 失败零写入、locals 停在最后提交点） |
-| verifier 拒绝副作用协议违规（`OpSetProp`/`OpGuardNoopCall`/`OpGuardMethodGet` 出现在非 trace 程序；trace guard 索引越界） | jit 包 `TestVerifyRejectsSideEffectsWithoutTraceProtocol`（5 类拒绝 + 合法对照） |
-| Native 属性写回协议（validate/store/回滚；store 失败走干净 Yielded 而非错误回退；verify 路径快照恢复可回滚） | `TestAutoJITNativePropertyWriteTrace`、`TestNativePropertyWriteVerifyRestoresQuickResultOnMismatch`（既有）+ R1-5 `commitNativeTraceFrame`/`restoreNativePropertyValues` 结构性加固（文档 §6.3 记录） |
+| R1-5 副作用两阶段提交协议（prepare/validate/commit；validate-all + 原值快照 → store-all → 失败回滚；提交点只有语义 exit 与预算 yield） | jit 包 `TestTraceCommitProtocolAppliesWritesExactlyOnce`（跨 3 个 budget slice 提交恰一次、恢复 PC 精确）、`TestTraceGuardFailureAfterCommittedSliceNoPartialWrite`（已提交 slice 后 guard 失败零写入、locals 停在最后提交点） |
+| verifier 拒绝副作用协议违规（`OpSetProp`/`OpGuardNoopCall`/`OpGuardMethodGet` 出现在非 trace 程序；trace guard 索引越界；伪造 deopt map 后走函数返回） | jit 包 `TestVerifyRejectsSideEffectsWithoutTraceProtocol`（6 类拒绝 + 合法对照） |
+| Native 属性写回协议（全量 validate 后 store/回滚；store 失败走干净 Yielded；verify 快照恢复原子且不重复 safepoint 回调） | `TestAutoJITNativePropertyWriteTrace`、`TestNativePropertyWriteVerifyRestoresQuickResultOnMismatch`、`TestNativeCommitValidatesAllWritesBeforeMutation`、`TestNativeRestoreValidatesAllPropertiesBeforeMutation`、amd64 `TestNativePropertyWriteVerifyDoesNotDoublePollSafepoint` |
 | 属性写提交先于异常（deferred 写先 commit，再把原始值移入 PendingException） | interpreter 包 `TestDeoptPropertyWriteCommitBeforeException`（catch 读到 o.a=2）、jitdiff 固定用例 -22（属性写 + throw + finally） |
 | 调用 guard 失败无部分写（noop callee 换成延迟抛错者；guard 在调用前失效；Tier 0 重放后用户调用抛错进同一 catch） | interpreter 包 `TestDeoptCallGuardFailureNoPartialWrite`、jitdiff 固定用例 -19（事件日志含抛错与提交前缀） |
 | 数组 append 中断不重复、不漏写（每 chunk 原子；取消后 `A.length === A[A.length-1]+1` 不变量） | interpreter 包 `TestDeoptArrayPushInterruptNoDuplicateNoLoss`、jitdiff 固定用例 -20 |
 | upvalue 写原子性（upvalue 与 sum 同 chunk 写回；中断后 `sum === N(N+1)/2` 不变量） | interpreter 包 `TestDeoptUpvalueWriteAtomicOnInterrupt`、jitdiff 固定用例 -21 |
+| 方法 guard 不执行用户代码（仅接受普通对象 own data method；accessor/原型/Proxy 明确回退） | engine 包 `TestOwnDataProperty`、interpreter 包 `TestTraceMethodGuardDoesNotProbeProxy`（off/quick/auto trap 次数精确一致） |
 | 属性写 + OOM 中断（已提交前缀完整；`count === last + 1` 不变量进入同一 catch） | jitdiff 固定用例 -23（`TestEventLogFixedCases`） |
 | R1-5 artifact 保存/重放（call guard 失败 + 属性写用例） | `TestArtifactRoundTripSideEffect`（jitdiff，-19 合成 mismatch 经 SaveArtifact/LoadArtifact/Replay） |
 
