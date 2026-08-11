@@ -280,4 +280,19 @@ type Stats struct {
 	QueueDenied        uint64 // background queue admissions denied by the queue limit
 	QueueDepth         uint64 // pending background jobs at snapshot (jitPending)
 	QueueDepthMax      uint64 // maximum pending background jobs observed
+	// R5-7 aggregate observability (derived in VM.JITStats; kept additive so
+	// existing consumers compile and print unchanged). Executions is the total
+	// post-compile execution volume (quick + native, completions + budget
+	// yields) used as the denominator for guard/deopt rates; Deopts is the
+	// total semantic-exit deopt count (DeoptExits carries the per-exit detail
+	// when Stats is enabled); CompileBenefit is Executions per compiled site
+	// (Compiled+TracesCompiled; native installs are a subset of those counts,
+	// not separate sites), i.e. the observed execution payoff of one
+	// compilation; NativeHotEvictions counts evictions that had to drop a hot
+	// unit because no cold unit could free the bytes (R5-5 heat protection
+	// observability).
+	Executions         uint64
+	Deopts             uint64
+	CompileBenefit     uint64
+	NativeHotEvictions uint64
 }

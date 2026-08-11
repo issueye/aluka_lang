@@ -53,3 +53,22 @@ func TestFormatJITStatsIncludesGuardDisableCounters(t *testing.T) {
 		}
 	}
 }
+
+// TestFormatJITStatsIncludesR5Aggregates verifies the R5-7 derived rates
+// (guard/deopt/eviction) and aggregate counters are printed by --jit-stats.
+func TestFormatJITStatsIncludesR5Aggregates(t *testing.T) {
+	text := formatJITStatsSummary(jit.Stats{
+		Mode: jit.Auto, Compiled: 5, CompileNanos: 1000, Executed: 100,
+		GuardFailures: 10, Deopts: 2, NativeCompiled: 5, NativeEvictions: 1,
+		CompileBenefit: 20, Executions: 100,
+	})
+	for _, want := range []string{
+		"executions=100", "deopts=2", "compileBenefit=20", "hotEvictions=0",
+		"guardRate=9.09%", "deoptRate=2.00%", "evictionRate=20.00%",
+		"compileCostPerSiteNanos=200",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stats output missing %q: %s", want, text)
+		}
+	}
+}

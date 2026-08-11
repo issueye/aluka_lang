@@ -35,12 +35,18 @@ func defaultJITConfig() jit.Config {
 }
 
 type quickJITState struct {
-	calls               uint32
-	backedges           uint32
-	program             *jit.Program
-	rejected            bool
-	reason              string
-	nativeUsed          uint64
+	calls      uint32
+	backedges  uint32
+	program    *jit.Program
+	rejected   bool
+	reason     string
+	nativeUsed uint64
+	// nativeHits is the R5-5 heat factor: every native execution (and the
+	// install touch) advances it. LRU eviction weights recency (nativeUsed
+	// clock) with heat: cold units (nativeHits < jitHotHeatThreshold) are
+	// evicted before hot ones, and within the same heat class the
+	// least-recently-used unit goes first.
+	nativeHits          uint64
 	callKind            quickCallKind
 	callee              *vmClosure
 	baseProgram         *jit.Program
@@ -93,11 +99,13 @@ type quickTraceKey struct {
 }
 
 type quickTraceState struct {
-	backedges           uint32
-	program             *jit.TraceProgram
-	rejected            bool
-	reason              string
-	nativeUsed          uint64
+	backedges  uint32
+	program    *jit.TraceProgram
+	rejected   bool
+	reason     string
+	nativeUsed uint64
+	// nativeHits: R5-5 heat factor, see quickJITState.nativeHits.
+	nativeHits          uint64
 	arrayPush           *arrayPushTraceState
 	closureIncrement    *closureIncrementTraceState
 	arrayIndex          *arrayIndexTraceState
@@ -109,6 +117,14 @@ type quickTraceState struct {
 }
 
 const jitGuardFailureLimit = 2
+
+// jitHotHeatThreshold is the R5-5 heat boundary for LRU eviction: a native
+// unit is "hot" once it has been touched this many times (install counts as
+// one touch, every native execution adds one). Cold units are evicted before
+// hot ones; among units of the same heat class the least-recently-used
+// (smallest nativeUsed clock) unit is evicted, so recency ordering is
+// preserved inside each class.
+const jitHotHeatThreshold = 4
 
 type arrayPushTraceState struct {
 	receiverLocal int
@@ -288,6 +304,20 @@ func (v *VM) JITStats() jit.Stats {
 			return a.ExitID < b.ExitID
 		})
 	}
+	// R5-7 derived aggregates. Executions is the total post-compile execution
+	// volume (quick + native, completions + budget yields) that serves as the
+	// denominator for guard and deopt rates; CompileBenefit is Executions per
+	// compiled site, i.e. how much compiled code is used per unit of compile
+	// cost. Compiled and TracesCompiled count every successful site compile
+	// (native installs are a subset counted again by NativeCompiled /
+	// NativeTracesCompiled), so the unique site count is their sum.
+	stats.Executions = stats.Executed + stats.NativeExecuted +
+		stats.TracesExecuted + stats.NativeTracesExecuted +
+		stats.TraceYields + stats.NativeYields + stats.NativeTraceYields
+	compiledSites := stats.Compiled + stats.TracesCompiled
+	if compiledSites != 0 {
+		stats.CompileBenefit = stats.Executions / compiledSites
+	}
 	return stats
 }
 
@@ -305,6 +335,9 @@ func (v *VM) recordTraceDeopt(key quickTraceKey, exit jit.DeoptExit) {
 	if !v.jitConfig.Stats {
 		return
 	}
+	// R5-7 aggregate deopt counter; the per-exit detail map below stays the
+	// source of truth for DeoptExits when Stats is enabled.
+	v.jitStats.Deopts++
 	if v.jitDeopts == nil {
 		v.jitDeopts = make(map[jitDeoptKey]uint64)
 	}
@@ -1235,24 +1268,17 @@ func (v *VM) reserveNativeCode(size uint64, excludedState *quickJITState, exclud
 		return fmt.Errorf("jit: native code size %d exceeds cache budget %d", size, limit)
 	}
 	for v.jitNativeBytes+size > limit {
-		var victimState *quickJITState
-		var victimTrace *quickTraceState
-		victimUsed := ^uint64(0)
-		for _, candidate := range v.jitStates {
-			if candidate == excludedState || !jitStateHasNative(candidate) {
-				continue
-			}
-			if candidate.nativeUsed < victimUsed {
-				victimState, victimTrace, victimUsed = candidate, nil, candidate.nativeUsed
-			}
-		}
-		for _, candidate := range v.jitTraces {
-			if candidate == excludedTrace || candidate == nil || candidate.program == nil || !candidate.program.HasNative() {
-				continue
-			}
-			if candidate.nativeUsed < victimUsed {
-				victimState, victimTrace, victimUsed = nil, candidate, candidate.nativeUsed
-			}
+		// R5-5 weighted LRU: prefer cold victims (heat below the threshold)
+		// over hot ones; only when every installed unit is hot is a hot unit
+		// evicted (then by recency). Recency keeps its ordering role inside
+		// each heat class, so the historical clock semantics remain intact
+		// for cold units and the heat factor is observable via
+		// NativeHotEvictions.
+		victimState, victimTrace := v.lruVictim(excludedState, excludedTrace, true)
+		hotVictim := false
+		if victimState == nil && victimTrace == nil {
+			victimState, victimTrace = v.lruVictim(excludedState, excludedTrace, false)
+			hotVictim = true
 		}
 		if victimState == nil && victimTrace == nil {
 			return fmt.Errorf("jit: native code cache cannot free %d bytes", size)
@@ -1264,10 +1290,48 @@ func (v *VM) reserveNativeCode(size uint64, excludedState *quickJITState, exclud
 		}
 		if v.jitConfig.Stats {
 			v.jitStats.NativeEvictions++
+			if hotVictim {
+				v.jitStats.NativeHotEvictions++
+			}
 		}
 	}
 	v.jitNativeBytes += size
 	return nil
+}
+
+// lruVictim returns the least-recently-used native unit (quickJITState or
+// quickTraceState) whose native code is installed, excluding the unit being
+// installed. With coldOnly the search is restricted to cold units (nativeHits
+// below jitHotHeatThreshold); the caller falls back to coldOnly=false when no
+// cold victim can free the requested bytes — which implies every installed
+// unit is hot, so the chosen victim is a hot one.
+func (v *VM) lruVictim(excludedState *quickJITState, excludedTrace *quickTraceState, coldOnly bool) (*quickJITState, *quickTraceState) {
+	var victimState *quickJITState
+	var victimTrace *quickTraceState
+	victimUsed := ^uint64(0)
+	for _, candidate := range v.jitStates {
+		if candidate == excludedState || !jitStateHasNative(candidate) {
+			continue
+		}
+		if coldOnly && candidate.nativeHits >= jitHotHeatThreshold {
+			continue
+		}
+		if candidate.nativeUsed < victimUsed {
+			victimState, victimTrace, victimUsed = candidate, nil, candidate.nativeUsed
+		}
+	}
+	for _, candidate := range v.jitTraces {
+		if candidate == excludedTrace || candidate == nil || candidate.program == nil || !candidate.program.HasNative() {
+			continue
+		}
+		if coldOnly && candidate.nativeHits >= jitHotHeatThreshold {
+			continue
+		}
+		if candidate.nativeUsed < victimUsed {
+			victimState, victimTrace, victimUsed = nil, candidate, candidate.nativeUsed
+		}
+	}
+	return victimState, victimTrace
 }
 
 func (v *VM) touchNative(state *quickJITState) {
@@ -1276,6 +1340,9 @@ func (v *VM) touchNative(state *quickJITState) {
 		v.jitNativeClock = 1
 	}
 	state.nativeUsed = v.jitNativeClock
+	// R5-5: every native execution (and the install touch) advances the heat
+	// factor that weights LRU eviction.
+	state.nativeHits++
 }
 
 func (v *VM) touchNativeTrace(state *quickTraceState) {
@@ -1284,6 +1351,7 @@ func (v *VM) touchNativeTrace(state *quickTraceState) {
 		v.jitNativeClock = 1
 	}
 	state.nativeUsed = v.jitNativeClock
+	state.nativeHits++
 }
 
 func (v *VM) dropNative(state *quickJITState) {

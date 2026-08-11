@@ -101,8 +101,8 @@ R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，�
 | R1 | 全部条目完成 | R1-1/R1-2/R1-3/R1-4/R1-5/R1-6/R1-7/R1-8 已落地（2026-08-11）：生成式差分框架（PR 1,000 例 + nightly 100,000 例无差分）、值域组合、异常差分（BigInt 除零/getter-setter/回调/OOM/取消/中断）、deopt 状态模型（含 pending exception 正式恢复映射与 verifier 拒绝）、副作用 prepare/validate/commit 两阶段提交协议、随机 guard 失效（8 类 mutation，warmup-mutation-post 调度入 artifact，第三 shape/target 降级与 RX 释放断言）、fuzz 入口（verifier/trace compiler/deopt-exception/Native lowering/artifact replay 五个 Go fuzz target，seed corpus 确定性可复现，fuzz 运行无 panic/hang/RX 泄漏）、失败产物与单命令重放 |
 | R2 | 部分完成 | Linux 后端和 CI job 已写入，尚无 Linux runner 成功记录和长期 soak |
 | R3 | 全部条目完成 | R3-1/R3-2/R3-4/R3-5/R3-6/R3-7 已落地（2026-08-12）：Symbol truthiness/nullish 与严格相等建模、String 拼接与关系比较、BigInt 算术/位运算/比较（异常 guard 回退 Tier 0 一致）、ternary/switch/嵌套短路控制流（OpConstString 常量池）、编译期候选过滤与结构化拒绝缓存；R3-3（宽松相等）待 R4 批次；差分发现并修复 Tier 0 `~` BigInt 语义 |
-| R4 | 完成 | R4-1..R4-8 全部落地（2026-08-11/12，见 §6.5 实施记录）：调用约定扩展（0-4 参数、Boolean 返回、多调用点、局部转发内联）、闭包扩展（多 numeric upvalue、只读捕获、非逃逸闭包）、属性 PIC 2-4 shape 自适应上限、未命中成本削减、packed Number 数组索引读写、map/filter/reduce 数值纯度路径、Native opcode 逐项评估（% 与位运算 Native 化、** 保留 Quick）、side-exit 成本削减（同 frame 按 backedge 阻止已失败版本重试） |
-| R5 | 部分完成 | 已有预算、LRU 和后台编译，缺优化 pass 与数据驱动阈值校准 |
+| R4 | 完成 | R4-1..R4-8 全部落地（2026-08-12，见 §6.5 实施记录）：调用约定扩展（0-4 参数、Boolean 返回、多调用点、局部转发内联）、闭包扩展（多 numeric upvalue、只读捕获、非逃逸闭包）、属性 PIC 2-4 shape 自适应上限、未命中成本削减、packed Number 数组索引读写、map/filter/reduce 数值纯度路径、Native opcode 逐项评估（% 与位运算 Native 化、** 保留 Quick）、side-exit 成本削减（同 frame 按 backedge 阻止已失败版本重试） |
+| R5 | 全部条目完成 | R5-1..R5-7 已落地（2026-08-12，见 §10.4 实施记录）：IR 优化 pass（常量折叠/冗余 store-load 消除/不可达块删除，OptimizeIR 开关差分验证）、保守 LICM 范围（const-only 循环不变量折叠）、自适应编译阈值（boost/cool 反馈模型）、编译预算（时间/队列/并发上限，风暴下解释执行可前进）、LRU 热度权重与两路 PIC 合计计费、TraceBudget 联合校准（默认 65536 数据驱动保持）与取消/OOM 响应上界、`--jit-stats` 聚合观测（guard/deopt/eviction 率与晋级降级判据） |
 | R6 | 未开始 | 默认仍为 off，尚未满足默认 auto 检查表 |
 
 “部分完成”只描述启动基线，不代表通过该里程碑；每个里程碑仍以对应章节的完整完成条件为准。
@@ -322,6 +322,7 @@ R2-2/R2-6/R2-7 的 Linux 实机门禁已写入 ci.yml `jit-linux`（W^X deep ver
 | 2026-08-12 | R3 第一批（R3-1/2/4/5/6/7）| 三个子代理独立 worktree 并行实施后由主 Agent 集成：① R3-1/R3-2（`aae830a`）——quickSymbol opaque 建模（truthy 恒真/nullish 恒假），严格相等按 Symbol 指针 identity，Native 入口 guard 拒绝 Symbol 后 Auto 稳定 Quick；② R3-4/R3-5（`91ba74d`）——`quick_ops.go` 自包含 helper（`engine.ConcatStrings`/`strings.Compare`/math/big），String `+` 与关系比较、BigInt 算术/位运算/比较在 Quick 内执行，除零/负移位/混型等异常显式 guard 回退 Tier 0 且消息逐字一致；③ R3-6/R3-7（`7db39ac`）——ternary/switch/嵌套短路 lowering（含 OpConstString 字符串常量池）、编译器尾随 return_undef 不可达修剪、`RejectLeafReason`/`RejectTraceReason` 候选过滤与按 (template, backedge) 的结构化拒绝缓存（`RejectionCacheHits` 统计）。集成冲突解决：jitdiff Kind/生成器/固定用例三方合并（-32..-50 重编号）；**集成差分发现并修复 inlineCallTarget 未合并 callee 字符串常量池的 panic**（内联 OpConstString 越界解引用，`TestInlineCalleeStringConstantMergesPool`/`TestBindCallTargetRejectsStringConstantCallee` 回归）；**Tier 0 `~` BigInt 语义修复**（VM 与 AST 解释器均返回 -x-1 而非 ToInt32 数字，`TestBitwiseNotBigInt` 回归）。PR 1,000 例零差分（stringOps 41/bigIntArith 27/bigIntBitwise 43/bigIntCompare 29/ternary 42/switch 34/shortCircuit 43 Quick 命中）；nightly 100,000 例复核中。该轮未改默认 `--jit=off`、未扩大 Native ABI；R3-3 与 R4 批次待下一轮 || 2026-08-12 | R4-1/R4-2（r4-callclosure 独立 worktree 实施）| **R4-1 调用特化扩展**：审计确认 0-8 参数数值叶子/返回 Boolean 叶子/多调用点在 Quick+Native 已可执行，缺口在"callee 经局部变量转发"（`let target = callee; ...; target(a,b)` 编译为 OpPushSelf→OpStoreLocal→OpLoadLocal 往返）：`inlineCallTarget` 改为 selfLocals/selfStores 前向跟踪 + 每调用点参数区**反向栈深游走**定位 callee 源（含算术表达式实参、0 参数调用、DUP 实参），非 self 源（参数/重赋值局部/嵌套调用/arity 不符）一律拒绝内联走既有 callTarget 递归路径；死代码安全约束（selfLocal 的每个 load 必须是调用点 callee 源，否则拒绝）。**R4-2 闭包特化扩展**：`matchIncrementUpvalueClosure` 泛化为 `matchNumericUpvalueClosure`——解析闭包字节码为 closurePlan（表达式栈机语法：upvalue/Number 常量原子 + 二元 ADD/SUB/MUL/DIV/MOD/POW + `a++`/`a--` 前缀/后缀单表达式形态），支持 2+ 个 numeric upvalue 顺序读写（`() => { a++; b += a; return b; }`）、只读捕获（`() => a + b`，无写回）、帧内非逃逸闭包（`() => ++acc`，open upvalue 别名检查逐 upvalue 完成）；执行器逐迭代求值 float 缓存 + 提交点原子写回，`resultFirst` 区分前缀/后缀返回值时机；identity guard 扩展为逐 upvalue 快照比对。**六类证据**（R4 §9.3）：正向命中（0-4 arity/Boolean/多调用点 CalleeInlined≥1 且 Auto NativeExecuted；多 upvalue/只读/帧内 ClosureUpvalueSites+TracesExecuted）、负向（非数字实参/非函数 upvalue/字符串常量 callee/不同闭包实例/类型变化/别名 upvalue）、第三 target 熔断（多调用点变体 + 连续类型变化 TraceGuardDisabled）、safepoint 中断前缀（调用循环与多 upvalue 三角数不变量、只读无写回）、verify mismatch 注入（jit 包 nativePlan.numberArgs 破坏 + bridge 级 dropNative/rejected 恢复）、专项 benchmark 4 项（bench/matrix_test.go `BenchmarkCalleeInline4Args/Boolean/ClosureMultiUpvalue/ReadOnly`，均断言命中目标 tier）。jitdiff：KindCall/KindClosure 生成器扩展（0 参数 wrapper/4 参数双调用点/Boolean 叶子/多 upvalue/只读/帧内）+ 固定用例 -51..-54；PR 1,000 例零差分（quickHit=481，call 34/closure 22）。gofmt（LF 归一）/vet 通过；`go test -race` 仍受 Windows TSan error code 87 限制。该轮未改默认 `--jit=off`、未扩大 Native ABI、Tier 0 语义只读（仅修正测试期望，未改生产解释器语义） |
 +| 2026-08-12 | R4 第一批（R4-5/R4-6）| 子代理 worktree（分支 r4-array，基线 0142b91）实施：① R4-5 数值数组索引——`jit_bridge.go` 新增 `matchArrayIndexTrace`/`executeArrayIndexTrace`：规范形态 `for (; i < bound; i++) s += a[i]` 按 chunk 批量累加 packed Number，guard 集合 = receiver 是 `*engine.ArrayValue`、index/bound/sum 均为安全整数（非 NaN/Inf、截断、0..2^53-1）、chunk 内元素全为 Number、`index < len(elems)`（length guard：越界经原型链读必回 Tier 0，chunk 按 len 钳制且循环未完成时以 startPC 交还回边而非提前退出）；hole/稀疏/混型/原型索引/Proxy/负数起点一律回退 Tier 0。② R4-6 数组批处理——`matchArrayBatchWriteTrace`/`executeArrayBatchWriteTrace` 覆盖三种规范写形态（`a[i]=i`、`a[j]=i; j++`、`a[j++]=i`，key/value 每迭代步长 1），chunk 经 `engine.ArrayValue.WriteNumberRange`（value.go 新增）批量落盘并**一次性同步 length**，guard 增加 key+count ≤ 2^53 与 bound 不别名 key/sum 的检查；map/filter/reduce 复用并扩展 NativeCallback 数值直接路径（`native_callback.go`）：callback purity 由编译器证明（仅纯箭头单表达式生成 NativeCallback），运行时 guard 证明 pattern 与输入全 Number，map 扩到 + - * / % ** 与恒等、filter 扩到全部严格比较（直接式与 x%K 式）、reduce 扩到 acc OP x / x OP acc(交换) / acc OP K；任一条件不满足回退完整调用，语义不变。两路径均为 Quick-only（机器码 ABI 不接收 Go 数组指针，明确记录不扩 Native ABI）。③ 六类证据（§9.3）：正向命中（`TestJITArrayIndexReadTraceRange`/`TestJITArrayBatchWriteTraceRange`/`TestJITNumericCallbackPurityDifferential` + jitdiff 固定用例 -57/-58/-59 命中断言）；类型/hole/Proxy 负向（`TestJITArrayIndexTraceRejectsUnsafeShapes`/`TestJITArrayBatchWriteTraceRejectsUnsafeShapes`/`TestJITNumericCallbackRejectsImpureShapes` + 生成器负向形态）；类型变化熔断（index 元素变字符串/批量 receiver 换普通对象 → `TraceGuardDisabled`，回调数组混型按调用翻转 hits/falls）；safepoint 中断前缀（index：`s == k(k-1)/2`；batch：`length === last+1`，固定用例 -60）；verify 共存（Auto+Verify `VerifyChecks>0/VerifyFailures==0`，恢复机制本体由 jit 包既有 `TestNativePropertyWriteVerifyRestoresQuickResultOnMismatch` 覆盖）；专项 benchmark（bench/matrix_test.go `BenchmarkArrayIndexRead/BatchWrite/CbNumeric` + Off 对照：index 读 Auto 23ms vs Off 1894ms、batch 写 2.5ms vs 28.5ms 本机抽样）。④ jitdiff 差分：新增 KindArrayIndex/KindArrayBatch/KindArrayCb（KindCount/AllKinds 自动联动），生成器与固定用例 -57..-60；PR 1,000 例零差分（quick 命中 arrayIndex 4/arrayBatch 31，arrayCb 由专项统计断言）。测试：`go test ./internal/engine/jit/... ./internal/engine/interpreter/jitdiff/` 与全量 `./internal/engine/jit/... ./internal/engine/interpreter` 全过；`go vet ./internal/engine/jit/...` 通过；gofmt 干净（仓库 CRLF 检出下以 LF 归一校验）；`-race` 遇 Windows TSan error code 87（已知环境限制，记录不算失败）。本轮未改默认 `--jit=off`、未改 Tier 0 语义；**发现两处既有 Tier 0 语义偏差（未修，仅记录）**：`binAdd`/算术路径忽略 `Float()` 的 ok 标志——`1 + undefined` = 1（ES 应为 NaN）、`"str" * 2` = 0（ES 应为 NaN）；R4-5/6 快路径对这些形态一律 guard 回退，与 Tier 0 保持一致，差分零失配 |
 | 2026-08-11 | R4 第二批（R4-7/R4-8，worktree 分支 r5-opts，基线 6e9e191）| ① R4-7 Native opcode 逐项评估：**实现 %**（`native_emit_amd64.go` `emitModF64`：Go math.Mod 同款 x87 FPREM 部分余数循环，C2 位循环重试 + 六类特殊值前置检查（y==0/NaN、x==±Inf/NaN、y==±Inf、x==±0），经 RDX 传递 frame 指针（x87 内存操作数不接受 REX），[RDX+Budget] 8 字节作 XMM→x87 中转并保存/还原，FSTP ST(0) 平衡 x87 栈；**实现位运算**（& | ^ << >> >>> ~，`emitToInt32`：CVTTSD2SI 快路径 + |x|≥2^63/NaN/Inf 慢路径（abs 掩码、指数-1075 移位取低 32 位、负数 NEG），结果 MOVSXD/CVTSI2SD 回 double；移位计数 & 0x1F，>>/>>> 用 SAR/SHR；右操作数暂存 R8 避开 ToInt32 内部 RAX/RCX/RDX 破坏）；RIP-relative 字面量池在函数末 16 字节对齐收尾（SSE m64/m128 内存操作数要求自然对齐，未对齐读会 #GP）；**拒绝 **（math.Pow 需 libm，x86 无逐位等价指令，内联 F2XM1/exp-log 有 last-ulp 与特例偏差，callout 会改 ABI）——拒绝项保持 Auto 稳定回退（`NativeRejected` 计数 + `RejectionCacheHits`，专项 benchmark 证明 Auto==Quick 无回退成本）。不扩大 Frame/ABI（复用既有字段做指令内 scratch，自包含保存/还原）。② R4-8 side-exit 成本：`frame.jitTraceFailed` 布尔改为 `jitTraceFailedPC`（vm.go）——同 frame 只阻止**失败的那个 backedge** 重试，同 frame 其它循环（不同 backedge）仍可用自己的 trace；五处 guard 失败点统一写入该字段；新增统计 `TraceFrameRetriesBlocked`（同 frame 阻止次数）与 `NativeTraceQuickFallbacks`（native trace 入口 guard 失败后 Quick 复跑次数——R4-3 PIC 学习路径的可观测化，不删该复跑因为 Quick 可能吸收新 shape）。③ 六类证据（§9.3）：正向命中（interpreter/r4_opts_test.go `TestAutoJITNativeModHit/BitwiseHit/ModTraceHit` + jit 包位级 parity 测试 `TestNativeModMatchesQuick/BitwiseMatchesQuick/RandomIRWithModBitwise` 全边值双执行一致）；负向（非 Number 实参 GuardFailures + Tier 0 字符串强转结果一致 `TestAutoJITModBitwiseGuardFallsBack`）；熔断（`TestAutoJITModLeafCircuitBreaker` QuickGuardDisabled；pow 拒绝后 `RejectionCacheHits` 稳定）；safepoint 中断前缀（`TestAutoJITModTraceSafepointPrefix` TraceBudget=3 下 ∑(i%7)=3003 不变量）；verify 共存（Auto+Verify `VerifyChecks>0/VerifyFailures==0`，恢复机制本体由既有 jit 包 mismatch 测试覆盖）；专项 benchmark（bench/r4_opts_test.go 新文件：`BenchmarkR4_7ModLoop` auto 2.2ms vs quick 23.2ms vs off 47.7ms；`BenchmarkR4_7BitwiseLoop` auto 2.75ms vs quick 39.0ms vs off 103.8ms；`BenchmarkR4_7PowStaysQuick` quick 24.7ms vs auto 25.1ms 持平；`BenchmarkR4_8SideExit` auto 6.94ms ≈ quick 6.89ms，均断言目标 tier 统计）。④ jitdiff 差分：新增 KindNativeMod/KindNativeBitwise（ExpectsQuickHit+ExpectsNativeHit，Version 4→5），生成器覆盖全 Number 命中 + 字符串强转/BigInt 混型回退；固定用例 -71（% 特例）/-72（位运算 ToInt32/移位掩码）/-73（TraceBudget=1 + CancelAfter 中断前缀）/-74（** 保持 Quick 断言 NativeExecuted==0）；PR 1,000 例零差分。测试：`go test ./internal/engine/jit/... ./internal/engine/interpreter/jitdiff/` 与全量 `./internal/engine/jit/... ./internal/engine/interpreter` 全过；`go vet ./internal/engine/jit/... ./bench` 通过；gofmt 干净（LF 归一）；`-race` 遇 Windows TSan error code 87（已知环境限制，记录不算失败）。本轮未改默认 `--jit=off`、未扩 Native ABI、Tier 0 语义只读；**发现的既有问题（未修，仅记录）**：Go 本机 `math.Mod` 在 amd64 上是纯 Go 精确 fmod（无 mod_amd64.s），Native FPREM 与其实数余数逐位一致已由 40 程序 × 40 输入随机 IR parity 测试证明 |
++| 2026-08-12 | R5 第一批（R5-5/6/7）| 子代理 worktree（分支 r5-cache，基线 6e9e191）实施：① **R5-5 代码缓存**——LRU 从纯时钟（nativeUsed）改进为"热度×最近性"两级权重：`quickJITState`/`quickTraceState` 新增 `nativeHits` 热度计数（install touch + 每次 native 执行递增），`reserveNativeCode` 先只在冷单元（`nativeHits < jitHotHeatThreshold=4`）内取最久未用者，无冷单元时才在热单元内按 LRU 淘汰（`NativeHotEvictions` 可观测热度保护）；同一热度类内保留原时钟 LRU 语义，既有 soak/1KB 压力测试行为不变（单次执行函数均冷）。**两路 PIC 合计计费审计结论**：callee PIC 的 primary+altProgram 多个 native 版本已按合计字节计入同一 LRU 单元（`reserveNative` 累加、`dropNative` 一并释放并同步 RX、`jitStateHasNative` 合计判定，既有 `TestAutoJITNativeInlinesMonomorphicCallee` 已断言合计字节），新增 `TestJITLRUCombinedPICBillingFreesBothVersions` 证明小预算下一次淘汰同时释放两个 RX 区域且 `live executable bytes == 基线 + jitNativeBytes` 精确同步、淘汰后 Quick 回退结果正确；property PIC 是单 program 内多 shape guard（单 native 版本），不涉及多版本计费。② **R5-6 trace budget 联合校准**——新增 `TestJITCancelResponseBoundedAcrossBudgets`/`TestJITOOMResponseBoundedAcrossBudgets`（budget ∈ {1,64,65536,1<<20} 全过）：取消在第 cancelAfter 个 safepoint poll 即返回（poll 数 ≤ cancelAfter+2 确定性上界），OOM 置位后下一 slice 边界即抛 RangeError；各执行器均在预算片间 poll（native slice 边界/Quick tick/数组 matcher chunk/Tier 0 回边+InterpreterSafepoints），响应上界 = slice 数 × budget 迭代，墙钟断言 (cancelAfter+2)×budget×1µs+5s 全过。校准数据（Windows amd64，`s+=i` 循环 2^24 次）：budget=16 → 单 slice 205ns/77.8M iter/s；1024 → 3.06µs/334M；**65536（默认）→ 127.9µs/512M（97% 峰值吞吐）**；1<<20 → 1.98ms/530M。**结论：默认 TraceBudget=65536 保持不变**（slice 延迟亚毫秒、吞吐近峰值、响应 1-2 slice；数据驱动，无 benchmark 特例）。③ **R5-7 未命中观测**——`jit.Stats` 新增聚合字段（向后兼容追加）：`Executions`（编译后执行总量=quick+native 完成+budget yield）、`Deopts`（trace 语义 exit 总数，与 `DeoptExits` 明细并存）、`CompileBenefit`（Executions÷编译站点数）、`NativeHotEvictions`；`--jit-stats` 增加 `JIT aggregate:` 行输出 guardRate/deoptRate/evictionRate/compileCostPerSiteNanos，读法与晋级/降级判据见 §10.4。测试：新增 `jit_r5_cache_amd64_test.go`（3 个 LRU/PIC/压力测试）+ `jit_r5_budget_test.go`（取消/OOM 响应上界、校准、聚合统计 3 个测试）+ `cmd/aluka` 打印机测试 1 个；`go test ./internal/engine/jit/... ./internal/engine/interpreter/jitdiff/ -run 'JIT|Cache|LRU|Budget|Safepoint|Stats|Evict|Differential|EventLog'` 与全量 `./internal/engine/jit/... ./internal/engine/interpreter` 全过；`go vet ./internal/engine/jit/...` 通过；gofmt 干净（LF 归一校验）；`-race` 仍受 Windows TSan error code 87 限制（已知环境限制，记录不算失败）。本轮未改默认 `--jit=off`、未扩大 Native ABI、Tier 0 语义只读；未发现 production bug；无新增 jitdiff 固定用例（无语义变化；固定用例编号 -101 起约定留给后续批次） |
 
 ## 8. R3：Quick JIT 语义覆盖
 
@@ -418,6 +419,86 @@ R3-3 到 R3-5 若需要共用语义，应把无解释器依赖的纯 helper 下�
 
 **完成条件**：Windows/Linux 各自完成正式 5 次中位数报告；所有硬门禁通过；结果离散度和 JIT
 统计合理；不存在依赖单一专用形态掩盖综合退化的情况。
+
+### 10.4 R5-5/6/7 实施记录与 `--jit-stats` 读法
+
+**R5-5 代码缓存（LRU 权重/热度 + 两路 PIC 合计计费）**
+
+- 淘汰模型：`quickJITState`/`quickTraceState` 新增 `nativeHits` 热度计数
+  （install touch + 每次 native 执行 +1）。`reserveNativeCode` 的淘汰分两
+  轮：先只在冷单元（`nativeHits < jitHotHeatThreshold`，阈值为 4）中取
+  `nativeUsed` 时钟最小者；无冷单元时才在全部单元中按 LRU 取，并累计
+  `NativeHotEvictions`。同一热度类内保留原时钟 LRU 语义，因此既有
+  soak（单次执行函数均为冷单元）行为不变；热度行为由
+  `TestJITLRUHeatProtectsHotUnitOverRecency` 可测：热单元即使最久未用也
+  存活，冷而新的单元先被淘汰；全部为热时淘汰最久未用的热单元。
+- 两路 PIC 合计计费（审计结论）：callee PIC 的 primary + altProgram 两个
+  native 版本本来就计入同一 LRU 单元——`reserveNative` 按各自字节累加
+  `jitNativeBytes`，`dropNative` 一并释放并同步 RX，`jitStateHasNative`
+  合计判定（既有 `TestAutoJITNativeInlinesMonomorphicCallee` 已断言合计
+  字节）；新增 `TestJITLRUCombinedPICBillingFreesBothVersions` 证明小预算
+  下一次淘汰同时释放两个 RX 区域、`live executable bytes == 基线 +
+  jitNativeBytes` 精确同步、淘汰后 Quick 回退结果正确。property PIC 是
+  单 program 内多 shape guard（单 native 版本），不涉及多版本计费。
+- 完成条件验证：`TestJITLRUPressure1KB` 与既有 soak 证明实际字节
+  （`NativeCodeBytes`）始终 ≤ `CodeCacheLimit`，淘汰后 `Close` RX 回基线。
+
+**R5-6 trace budget 联合校准（延迟/吞吐/safepoint 响应）**
+
+- 响应上界结构：所有执行器都在预算片间 poll——native leaf/trace 在 Go
+  侧 slice 边界（`runSafepoint`）、Quick 在 `quickSafepoint.tick()` 每
+  budget 个回边、数组/闭包 matcher 在 chunk 后、Tier 0 在回边
+  （`InterpreterSafepoints` 开启时），OOM 另在每条指令检查。因此取消/OOM
+  响应 = 至多一个当前 slice + 一次 poll，上界 = slice 数 × budget 迭代。
+- 验证（`TestJITCancelResponseBoundedAcrossBudgets` /
+  `TestJITOOMResponseBoundedAcrossBudgets`）：budget ∈ {1, 64, 65536,
+  1<<20} 下 2^22 迭代长循环，取消在第 cancelAfter 个 poll 即返回（poll 数
+  ≤ cancelAfter+2，确定性断言），OOM 置位后下一 slice 边界抛
+  RangeError；墙钟上界 = (cancelAfter+2) × budget × 1µs + 5s 全过。
+- 校准数据（Windows amd64 本机，`s += i` 循环 2^24 次，单次测量）：
+
+  | TraceBudget | 总耗时 | slice 数 | 单 slice 延迟 | 吞吐 |
+  |-------------|--------|----------|---------------|------|
+  | 16 | 215.6ms | 1,048,576 | 205ns | 77.8M iter/s |
+  | 1,024 | 50.2ms | 16,384 | 3.06µs | 334M iter/s |
+  | 65,536（默认）| 32.7ms | 256 | 127.9µs | 512M iter/s |
+  | 1,048,576 | 31.6ms | 16 | 1.98ms | 530M iter/s |
+
+  结论：**默认 TraceBudget=65536 保持不变**——吞吐已达最大预算的 97%，
+  单 slice 延迟亚毫秒，取消/OOM 响应 1-2 个 slice（≈ 0.1-0.3ms 量级）；
+  数据驱动，无 benchmark 特例硬编码。budget 过小（16）时 slice 间 Go 侧
+  开销使吞吐掉到 15%。
+
+**R5-7 未命中观测（`--jit-stats` 聚合指标）**
+
+`jit.Stats` 新增（向后兼容追加字段）：`Executions`（编译后执行总量 =
+quick+native 完成 + budget yield）、`Deopts`（trace 语义 exit 总数，与
+`DeoptExits` 明细并存）、`CompileBenefit`（Executions ÷ 编译站点数）、
+`NativeHotEvictions`（热单元淘汰数）。`--jit-stats` 输出第二行
+`JIT aggregate:`，公式：guardRate = GuardFailures ÷ (Executions +
+GuardFailures)，deoptRate = Deopts ÷ Executions，evictionRate =
+NativeEvictions ÷ (NativeCompiled + NativeTracesCompiled)，
+compileCostPerSiteNanos = 四类编译耗时和 ÷ 编译站点数（唯一站点 =
+Compiled + TracesCompiled；NativeCompiled/NativeTracesCompiled 是其子集，
+不重复计数）。
+
+读法（晋级/降级判据）：
+
+- **是否应继续编译（晋级）**：`compileBenefit` 高（单站点执行量远超编译
+  成本）且 `compileCostPerSiteNanos` 低 → 阈值可保持或降低以更快晋级；
+  反之 `compileBenefit` 低且 `Rejected`/`RejectionCacheHits` 高 → 该形态
+  无编译收益，应提高阈值或接受降级，停止为短命脚本付费。
+- **guard 率**：guardRate 显著升高（如 >10%）说明站点类型不稳定；
+  配合 `QuickGuardDisabled`/`TraceGuardDisabled`/`CalleeGuardDisabled`
+  看是否已熔断——熔断即该站点应降级（保留 Tier 0）。
+- **deopt 率**：deoptRate 升高说明 trace 出口不稳定（类型/值变化频繁），
+  单站点可用 `JIT deopt:` 明细定位（function/backedgePC/exitID/count），
+  高 deopt 站点应降级到 Quick/不编译。
+- **淘汰率**：evictionRate 高说明代码缓存抖动（编译太多、预算太小），
+  应提高 `CodeCacheBytes` 或削减编译量；`NativeHotEvictions` 非零说明缓存
+  已全热、热度保护在生效（此时淘汰不可避免，看预算是否够用）。
+- **预算健康**：`nativeCodeBytes ≤ codeCacheLimit` 是硬不变量（淘汰后 RX
+  已释放，soak/LRU 压力测试持续断言）。
 
 ## 11. R6：产品化与默认 auto
 

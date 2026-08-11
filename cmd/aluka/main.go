@@ -581,8 +581,33 @@ func printJITStats(s jit.Stats) {
 }
 
 func formatJITStatsSummary(s jit.Stats) string {
-	return fmt.Sprintf("JIT stats: mode=%s threshold=%d backedgeThreshold=%d traceBudget=%d codeCacheLimit=%d calls=%d backedges=%d candidates=%d compileNanos=%d compiled=%d rejected=%d executed=%d nativeCompiled=%d nativeCompileNanos=%d nativeRejected=%d nativeExecuted=%d nativeYields=%d nativeCodeBytes=%d nativeEvictions=%d backgroundQueued=%d backgroundCompleted=%d backgroundDiscarded=%d calleeSpecialized=%d calleeInlined=%d calleeExecuted=%d calleeGuardFailures=%d calleePICAdds=%d calleePICHits=%d tracesCompiled=%d traceCompileNanos=%d tracesRejected=%d tracesExecuted=%d traceYields=%d nativeTracesCompiled=%d nativeTraceCompileNanos=%d nativeTracesRejected=%d nativeTracesExecuted=%d nativeTraceYields=%d safepointPolls=%d interruptions=%d noopCallSites=%d methodCallSites=%d arrayPushSites=%d arrayPushYields=%d closureUpvalueSites=%d closureUpvalueYields=%d verifyChecks=%d verifyFailures=%d guardFailures=%d quickGuardDisabled=%d traceGuardDisabled=%d nativeGuardDisabled=%d nativeTraceGuardDisabled=%d calleeGuardDisabled=%d errors=%d lastError=%q lastNativeError=%q\n",
+	line := fmt.Sprintf("JIT stats: mode=%s threshold=%d backedgeThreshold=%d traceBudget=%d codeCacheLimit=%d calls=%d backedges=%d candidates=%d compileNanos=%d compiled=%d rejected=%d executed=%d nativeCompiled=%d nativeCompileNanos=%d nativeRejected=%d nativeExecuted=%d nativeYields=%d nativeCodeBytes=%d nativeEvictions=%d backgroundQueued=%d backgroundCompleted=%d backgroundDiscarded=%d calleeSpecialized=%d calleeInlined=%d calleeExecuted=%d calleeGuardFailures=%d calleePICAdds=%d calleePICHits=%d tracesCompiled=%d traceCompileNanos=%d tracesRejected=%d tracesExecuted=%d traceYields=%d nativeTracesCompiled=%d nativeTraceCompileNanos=%d nativeTracesRejected=%d nativeTracesExecuted=%d nativeTraceYields=%d safepointPolls=%d interruptions=%d noopCallSites=%d methodCallSites=%d arrayPushSites=%d arrayPushYields=%d closureUpvalueSites=%d closureUpvalueYields=%d verifyChecks=%d verifyFailures=%d guardFailures=%d quickGuardDisabled=%d traceGuardDisabled=%d nativeGuardDisabled=%d nativeTraceGuardDisabled=%d calleeGuardDisabled=%d errors=%d lastError=%q lastNativeError=%q\n",
 		s.Mode.String(), s.Threshold, s.BackedgeThreshold, s.TraceBudget, s.CodeCacheLimit, s.Calls, s.Backedges, s.Candidates, s.CompileNanos, s.Compiled, s.Rejected, s.Executed, s.NativeCompiled, s.NativeCompileNanos, s.NativeRejected, s.NativeExecuted, s.NativeYields, s.NativeCodeBytes, s.NativeEvictions, s.BackgroundQueued, s.BackgroundCompleted, s.BackgroundDiscarded, s.CalleeSpecialized, s.CalleeInlined, s.CalleeExecuted, s.CalleeGuardFailures, s.CalleePICAdds, s.CalleePICHits, s.TracesCompiled, s.TraceCompileNanos, s.TracesRejected, s.TracesExecuted, s.TraceYields, s.NativeTracesCompiled, s.NativeTraceCompileNanos, s.NativeTracesRejected, s.NativeTracesExecuted, s.NativeTraceYields, s.SafepointPolls, s.Interruptions, s.NoopCallSites, s.MethodCallSites, s.ArrayPushSites, s.ArrayPushYields, s.ClosureUpvalueSites, s.ClosureUpvalueYields, s.VerifyChecks, s.VerifyFailures, s.GuardFailures, s.QuickGuardDisabled, s.TraceGuardDisabled, s.NativeGuardDisabled, s.NativeTraceGuardDisabled, s.CalleeGuardDisabled, s.Errors, s.LastError, s.LastNativeError)
+	// R5-7 derived rates (percent; integer-safe division by zero).
+	attempts := s.Executions + s.GuardFailures
+	guardRate := float64(0)
+	if attempts != 0 {
+		guardRate = 100 * float64(s.GuardFailures) / float64(attempts)
+	}
+	deoptRate := float64(0)
+	if s.Executions != 0 {
+		deoptRate = 100 * float64(s.Deopts) / float64(s.Executions)
+	}
+	nativeSites := s.NativeCompiled + s.NativeTracesCompiled
+	evictionRate := float64(0)
+	if nativeSites != 0 {
+		evictionRate = 100 * float64(s.NativeEvictions) / float64(nativeSites)
+	}
+	costPerSite := uint64(0)
+	// Unique compiled sites: Compiled/TracesCompiled already include the
+	// sites that later install native code (NativeCompiled is a subset).
+	compiledSites := s.Compiled + s.TracesCompiled
+	if compiledSites != 0 {
+		costPerSite = (s.CompileNanos + s.NativeCompileNanos + s.TraceCompileNanos + s.NativeTraceCompileNanos) / compiledSites
+	}
+	line += fmt.Sprintf("JIT aggregate: executions=%d deopts=%d compileBenefit=%d hotEvictions=%d guardRate=%.2f%% deoptRate=%.2f%% evictionRate=%.2f%% compileCostPerSiteNanos=%d\n",
+		s.Executions, s.Deopts, s.CompileBenefit, s.NativeHotEvictions, guardRate, deoptRate, evictionRate, costPerSite)
+	return line
 }
 
 // cmdTest 实现 `aluka test` 子命令：发现并运行测试文件（node:test）。
