@@ -977,6 +977,22 @@ R3-3 共享 `engine.LooseEquals`/`StringToNumber` helper（对象操作数一律
 集成差分发现并修复 3 个 Tier 0 语义 bug：`looseEquals` String 操作数改用完整 ToNumber（`""==0`、`"0x10"==16` 修复）；`bigintLooseEqual` Boolean 精确 0/1 比较（`7n==true` 修复）；算术 opcode 统一 `jsToNumber`（`1+undefined` NaN、`"str"*2` NaN、`1+null` 1）——三处均带独立回归（`TestTier0LooseEqualitySemantics`/`TestTier0ArithmeticToNumberSemantics`）并更新依赖旧行为的既有测试期望。
 PR 1,000 例与 nightly 100,000 例（5 seed，144s）零差分；全库 26 包通过。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、不改变性能快照口径（性能数据待 R4-7/8 与 R5 后统一复测）。
 
+v2.29 完成 R5 全部条目（R5-1 至 R5-7）与 R4-7/R4-8。四个 worktree 并行实施 + 主 Agent 集成
+（R5-1/2 由主 Agent 直接实施，因子代理通道对长任务连续失败）：
+R5-1 IR 优化 pass（常量折叠含 NaN/-0/±Inf/除零位语义、冗余 store-load 消除、不可达块删除+跳转
+重映射，`OptimizeIR` 开关差分验证优化开/关一致）；R5-2 保守 LICM 范围（const-only 循环不变量
+折叠，局部变量外提留待数据流分析——记录限制）；R5-3 自适应编译阈值（benefit/failure 反馈
+boost/cool 模型，冷启动不增编译、长热点及时晋级）；R5-4 编译预算（时间/队列/并发上限，风暴
+下解释执行可前进、Close 排空，固定用例 -91 三 tier 一致）；R5-5 LRU 热度×最近性两级权重 +
+两路 PIC 合计计费确认（`NativeHotEvictions` 可观测）；R5-6 TraceBudget 联合校准（默认 65536
+数据驱动保持，取消/OOM 响应上界断言）；R5-7 `--jit-stats` 聚合观测（guard/deopt/eviction 率、
+CompileBenefit、晋级降级判据）。R4-7 Native opcode 评估：% 与位运算 Native 化（FPREM/ToInt32
+发射，位级 parity 40×40 双执行一致，相对 Quick 约 10-14x），** 拒绝保持 Quick（libm 依赖无
+逐位等价，Auto 零回退成本）；R4-8 side-exit 成本（`jitTraceFailedPC` 按 backedge 精细化，
+`TraceFrameRetriesBlocked`/`NativeTraceQuickFallbacks` 观测）。PR 1,000 例与 nightly 100,000
+例零差分；全库 26 包通过。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期；
+性能快照待统一复测。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见
