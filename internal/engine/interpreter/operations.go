@@ -72,13 +72,13 @@ func applyBinaryOp(op string, l, r engine.Value) engine.Value {
 	case "!==":
 		return engine.Boolean(!strictEqual(l, r))
 	case "<":
-		return engine.Boolean(compareValues(l, r) < 0)
+		return engine.Boolean(compareBool(l, r, func(c int) bool { return c < 0 }))
 	case "<=":
-		return engine.Boolean(compareValues(l, r) <= 0)
+		return engine.Boolean(compareBool(l, r, func(c int) bool { return c <= 0 }))
 	case ">":
-		return engine.Boolean(compareValues(l, r) > 0)
+		return engine.Boolean(compareBool(l, r, func(c int) bool { return c > 0 }))
 	case ">=":
-		return engine.Boolean(compareValues(l, r) >= 0)
+		return engine.Boolean(compareBool(l, r, func(c int) bool { return c >= 0 }))
 	case "&":
 		ln, _ := l.Float()
 		rn, _ := r.Float()
@@ -234,6 +234,17 @@ func compareValues(l, r engine.Value) int {
 		return 1
 	}
 	return 0
+}
+
+// compareBool applies a relational operator to compareValues with JS NaN
+// semantics: the NaN sentinel (2) makes every relational comparison false
+// (< > <= >=), regardless of which side carries the NaN.
+func compareBool(l, r engine.Value, op func(int) bool) bool {
+	cmp := compareValues(l, r)
+	if cmp == 2 || cmp == -2 {
+		return false
+	}
+	return op(cmp)
 }
 
 // toStr converts a value to its JS string representation.

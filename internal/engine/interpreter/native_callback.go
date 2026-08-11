@@ -320,13 +320,13 @@ func (v *VM) nativeCompare(op bytecode.Opcode, l, r engine.Value) engine.Value {
 	case bytecode.OpStrictNe:
 		return engine.Boolean(!strictEqual(l, r))
 	case bytecode.OpLt:
-		return engine.Boolean(compareValues(l, r) < 0)
+		return engine.Boolean(compareBool(l, r, func(c int) bool { return c < 0 }))
 	case bytecode.OpLe:
-		return engine.Boolean(compareValues(l, r) <= 0)
+		return engine.Boolean(compareBool(l, r, func(c int) bool { return c <= 0 }))
 	case bytecode.OpGt:
-		return engine.Boolean(compareValues(l, r) > 0)
+		return engine.Boolean(compareBool(l, r, func(c int) bool { return c > 0 }))
 	case bytecode.OpGe:
-		return engine.Boolean(compareValues(l, r) >= 0)
+		return engine.Boolean(compareBool(l, r, func(c int) bool { return c >= 0 }))
 	}
 	return engine.Undefined()
 }

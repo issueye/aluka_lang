@@ -761,6 +761,26 @@ A-B 19.1% / B-C 26.8% / C-D 64.2%，根因为本机仅有“平衡”电源方�
 状态下为 +3.9%）。因此 R0-1/R0-5 交付物齐全，但 R0 里程碑验收挂起，默认 `--jit=off` 不变；复核
 须在安静环境与固定电源策略下进行。该条目不改变任何引擎执行语义或覆盖矩阵。
 
+v2.16 落地 R1-1/R1-2/R1-8 生成式差分框架 `internal/engine/interpreter/jitdiff`。固定种子生成 14 种
+用例形态（表达式/分支/循环/严格相等/宽松相等/属性读/属性写/数组 push/闭包/调用/getter/回调抛错/
+Proxy/deopt 前缀），覆盖 R1-2 值域（Number 边界 NaN/±Inf/-0/1e-320/1e308/2^53+、Boolean、
+null/undefined、String、BigInt、Symbol、对象 identity）；Tier 0 为唯一 oracle，逐 (case, tier)
+比较返回值/异常类型/异常消息/事件日志；未支持路径（String/BigInt 算术、非数字宽松相等、Proxy、
+getter/setter、Symbol）明确标为 Tier 0 对照或预期 guard 回退。结构化值域用例逐值执行返回、短路、
+严格比较和热身后 guard 变化；PR 集按 Kind 断言 8 类 Quick 与 5 类 Native 命中。**PR 集 1,000 例与
+nightly 100,000 例（5 seed × 20,000，复核 131s）均零差分通过**；每日 CI job 自动运行 nightly，
+失败时保存 seed/源码/
+逐 tier IR+JIT stats/复现命令到 `bench/results/jitdiff/`，单命令重放
+`go test ./internal/engine/interpreter/jitdiff -run 'TestReplayFailure' -artifact <dir>`。
+**框架发现并修复 2 个 Tier 0 引擎 bug**：① BigInt/NaN 关系比较对 NaN panic 且反向误判
+（顺带发现数字路径 `NaN > 3` 竟为 true 的既有语义错误），统一 `compareBool` NaN 哨兵处理并补
+回归；② parser `skipAngleBraces` 把比较 `<`（如 `1 / v < 0`、`5 < ((x) > (y))`）误当 TS 泛型
+参数吞吃任意源码，修复括号深度平衡，并保留 CallExpr/NewExpr 泛型调用及嵌套函数类型。Artifact 保留
+首次 mismatch 且按记录的 Verify 配置重放；verifier 收紧拒绝缺失/越界/负/歧义 deopt map，并补 trace
+级 IR dump。`go test ./...`、`go vet`、JIT/jitdiff race、`gofmt`、`git diff --check` 均通过；Linux
+实机连续 CI 与长期 soak 仍由 R2 验收。
+该轮未改默认 `--jit=off`、未扩大 Native ABI；引擎修复只影响 Tier 0 正确性，不改变性能快照口径。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见

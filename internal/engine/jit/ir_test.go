@@ -282,6 +282,76 @@ func TestVerifyRejectsLogicalKeepBranchWithMismatchedJoinDepth(t *testing.T) {
 	}
 }
 
+// TestVerifyRejectsInvalidDeoptMaps covers the R1-4 requirement that the
+// verifier rejects missing, ambiguous, out-of-range and invalid deopt maps
+// (trace exits without a valid entry in traceExitDepths).
+func TestVerifyRejectsInvalidDeoptMaps(t *testing.T) {
+	tests := []struct {
+		name   string
+		code   []Instr
+		depths []uint8
+		want   string // substring of the expected error; "" means Verify passes
+	}{
+		{
+			// Missing map: an OpTraceExit with no traceExitDepths at all must
+			// be rejected even though the operand stack is empty.
+			name: "missing deopt map at empty stack",
+			code: []Instr{{Op: OpConst, Value: 1}, {Op: OpPop}, {Op: OpTraceExit}},
+			want: "no deopt map",
+		},
+		{
+			// Out-of-range exit ID (no entry for exit 5).
+			name:   "out of range exit id",
+			code:   []Instr{{Op: OpConst, Value: 1}, {Op: OpPop}, {Op: OpTraceExit, Operand: 5}},
+			depths: []uint8{1},
+			want:   "no deopt map",
+		},
+		{
+			// Negative exit ID encoded in the operand.
+			name:   "negative exit id",
+			code:   []Instr{{Op: OpConst, Value: 1}, {Op: OpPop}, {Op: OpTraceExit, Operand: 0xFFFFFFFF}},
+			depths: []uint8{1},
+			want:   "no deopt map",
+		},
+		{
+			// Ambiguous: the same exit ID is reached at two different stack
+			// depths on reachable paths.
+			name: "ambiguous exit depth",
+			code: []Instr{
+				{Op: OpConst, Value: 1},
+				{Op: OpJumpFalseKeep, Operand: 5}, // fallthrough depth 1; jump depth 2
+				{Op: OpTraceExit, Operand: 0},     // exit 0 at depth 1
+				{Op: OpConst, Value: 9},
+				{Op: OpConst, Value: 9},
+				{Op: OpTraceExit, Operand: 0}, // exit 0 at depth 2 -> mismatch
+			},
+			depths: []uint8{^uint8(0)},
+			want:   "depth mismatch",
+		},
+		{
+			// Valid: one exit reached at a consistent depth.
+			name:   "valid deopt map",
+			code:   []Instr{{Op: OpConst, Value: 1}, {Op: OpTraceExit}},
+			depths: []uint8{^uint8(0)},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Program{Code: tc.code, traceExitDepths: tc.depths}
+			err := p.Verify()
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("Verify = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Verify = %v, want error containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestTraceBudgetYieldsCompletedIterations(t *testing.T) {
 	tmpl := template(
 		emit(bytecode.OpLoadLocal, 1), emit(bytecode.OpLoadLocal, 2),

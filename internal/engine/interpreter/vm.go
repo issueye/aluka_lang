@@ -713,19 +713,19 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpLt:
 				r := v.pop()
 				l := v.pop()
-				v.push(engine.Boolean(compareValues(l, r) < 0))
+				v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c < 0 })))
 			case bytecode.OpLe:
 				r := v.pop()
 				l := v.pop()
-				v.push(engine.Boolean(compareValues(l, r) <= 0))
+				v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c <= 0 })))
 			case bytecode.OpGt:
 				r := v.pop()
 				l := v.pop()
-				v.push(engine.Boolean(compareValues(l, r) > 0))
+				v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c > 0 })))
 			case bytecode.OpGe:
 				r := v.pop()
 				l := v.pop()
-				v.push(engine.Boolean(compareValues(l, r) >= 0))
+				v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c >= 0 })))
 
 			// --- Control flow ---
 			case bytecode.OpJmp:

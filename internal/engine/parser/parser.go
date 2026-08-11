@@ -1879,7 +1879,12 @@ func (p *Parser) parseCallMember() (ast.Expression, error) {
 		// TypeScript: skip generic type arguments before a call, e.g.
 		// `foo<T>(arg)` or `obj.method<T>(arg)`. Backtrack if the `<...>`
 		// isn't followed by `(` (it might be a less-than comparison).
-		p.trySkipTypeArgs()
+		// Only identifiers and member chains can carry type arguments; a
+		// number literal followed by `<` is always a comparison and must
+		// never be mis-skipped.
+		if isGenericCallee(expr) {
+			p.trySkipTypeArgs()
+		}
 		t := p.peek()
 		if t.Type == lexer.TokenPunct && t.Value == "(" {
 			args, err := p.parseArgs()
@@ -1949,6 +1954,17 @@ func (p *Parser) parseCallMember() (ast.Expression, error) {
 			return expr, nil
 		}
 	}
+}
+
+func isGenericCallee(expr ast.Expression) bool {
+	switch expr.(type) {
+	case *ast.Identifier, *ast.MemberExpr, *ast.CallExpr, *ast.NewExpr,
+		*ast.FunctionExpr, *ast.ClassExpr, *ast.ConditionalExpr,
+		*ast.SequenceExpr, *ast.TaggedTemplateExpr, *ast.AwaitExpr,
+		*ast.YieldExpr:
+		return true
+	}
+	return false
 }
 
 func (p *Parser) parseArgs() ([]ast.Expression, error) {
@@ -4293,6 +4309,13 @@ func (p *Parser) skipAngleBraces() error {
 	}
 	p.next() // consume '<'
 	depth := 1
+	// paren tracks parentheses opened inside the generic type arguments
+	// (e.g. function types `<() => void>`). An unbalanced ')' at the top
+	// level of the generic means the '<' was actually a comparison
+	// (`if (1 / v < 0) return ...`), so the skip must fail and let the
+	// caller backtrack instead of swallowing arbitrary source up to the
+	// next '>'.
+	paren := 0
 	for depth > 0 {
 		t := p.peek()
 		if t.Type == lexer.TokenEOF {
@@ -4303,13 +4326,33 @@ func (p *Parser) skipAngleBraces() error {
 			case "<":
 				depth++
 				p.next()
+			case "(":
+				paren++
+				p.next()
+			case ")":
+				if paren == 0 {
+					return p.errorf(t, "unbalanced ')' in generic type")
+				}
+				paren--
+				p.next()
 			case ">":
+				// A '>' inside parentheses is a comparison operator (e.g.
+				// `a < ((b) > (c))`), not a generic closer; only a top-level
+				// '>' closes the type-argument list.
+				if paren > 0 && depth == 1 {
+					p.next()
+					continue
+				}
 				depth--
 				p.next()
 			case ">>":
 				// Consume at most two generic closers. If the current generic
 				// only needs one, preserve the second '>' for the outer JS
 				// expression instead of inventing an extra closer.
+				if paren > 0 && depth == 1 {
+					p.next()
+					continue
+				}
 				if depth >= 2 {
 					depth -= 2
 					p.next()
@@ -4320,6 +4363,10 @@ func (p *Parser) skipAngleBraces() error {
 					}
 				}
 			case ">>>":
+				if paren > 0 && depth == 1 {
+					p.next()
+					continue
+				}
 				if depth >= 3 {
 					depth -= 3
 					p.next()
@@ -4332,11 +4379,19 @@ func (p *Parser) skipAngleBraces() error {
 				}
 			case ">=":
 				// T >= U shouldn't appear in type position; treat as `>` then `=`.
+				if paren > 0 && depth == 1 {
+					p.next()
+					continue
+				}
 				depth--
 				p.tokens[p.pos] = lexer.Token{
 					Type: lexer.TokenPunct, Value: "=", Line: t.Line, Col: t.Col,
 				}
 			case ">>=":
+				if paren > 0 && depth == 1 {
+					p.next()
+					continue
+				}
 				if depth >= 2 {
 					depth -= 2
 					p.tokens[p.pos] = lexer.Token{

@@ -85,6 +85,7 @@ type quickTraceState struct {
 	guardFailures       uint8
 	nativeGuardFailures uint8
 	nativeDisabled      bool
+	dumpedIR            bool
 }
 
 const jitGuardFailureLimit = 2
@@ -1559,6 +1560,10 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 				v.jitStats.TracesCompiled++
 				v.jitStats.NoopCallSites += uint64(program.GuardedNoopCalls())
 				v.jitStats.MethodCallSites += uint64(program.GuardedMethodCalls())
+			}
+			if v.jitConfig.Dump == jit.DumpIR && !state.dumpedIR {
+				fmt.Fprintf(v.jitDumpWriter(), "JIT dump tier=trace\n%s", program.DumpIR())
+				state.dumpedIR = true
 			}
 			if v.jitConfig.Mode == jit.Auto {
 				nativeStart := time.Now()

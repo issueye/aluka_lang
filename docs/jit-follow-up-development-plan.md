@@ -98,7 +98,7 @@ R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，�
 | 里程碑 | 启动状态 | 说明 |
 |--------|----------|------|
 | R0 | 交付物齐备，验收未过 | R0-1 至 R0-5 交付物均已产出（2026-08-11）；但 §5.3 稳定性验收（连续两轮中位数偏差 ≤5%）在本机未通过，需安静/固定电源环境复核后才可宣称 R0 完成 |
-| R1 | 部分完成 | 已有固定种子差分和基本栈恢复，缺通用生成器与完整副作用/异常状态 |
+| R1 | 部分完成 | R1-1/R1-2/R1-8 已落地（2026-08-11）：固定种子生成式差分框架（PR 1,000 例 + nightly 100,000 例无差分）、值域组合、失败产物与单命令重放，并发现修复 2 个 Tier 0 引擎 bug；缺 R1-3 至 R1-7（异常专项、deopt 状态模型、副作用协议、随机失效、fuzz） |
 | R2 | 部分完成 | Linux 后端和 CI job 已写入，尚无 Linux runner 成功记录和长期 soak |
 | R3 | 部分完成 | Number 主路径、短路、nullish、String/BigInt opaque 值和严格相等已落地 |
 | R4 | 部分完成 | 两路 PIC、有限内联、属性、push 和单一 upvalue 模式已落地 |
@@ -162,14 +162,14 @@ R0-5 标记 `✅*` 表示**交付物已产出但 R0 整体验收未通过**：11
 
 | ID | 工作项 | 交付物 | 完成条件 |
 |----|--------|--------|----------|
-| R1-1 | AST/语法生成式差分 | 固定种子表达式、循环、嵌套分支生成器 | Tier 0/Quick/Native 每日不少于 10,000 例无差分 |
-| R1-2 | 值域组合 | `NaN/Inf/-0`、nullish、Boolean、String、BigInt、Symbol、对象 identity | 每种值参与短路、比较、返回和 guard 变化 |
+| R1-1 ✅ | AST/语法生成式差分 | 固定种子表达式、循环、嵌套分支生成器 | Tier 0/Quick/Native 每日不少于 10,000 例无差分 |
+| R1-2 ✅ | 值域组合 | `NaN/Inf/-0`、nullish、Boolean、String、BigInt、Symbol、对象 identity | 每种值参与短路、比较、返回和 guard 变化 |
 | R1-3 | 异常差分 | 除零 BigInt、getter/setter 抛错、回调抛错、OOM、取消 | 异常类型、消息、catch PC 和副作用日志一致 |
 | R1-4 | deopt 状态描述 | locals、operand stack、属性提交、pending exception、resume PC 映射 | verifier 能拒绝缺失、歧义或越界映射 |
 | R1-5 | 副作用提交协议 | prepare/validate/commit 或等价两阶段协议 | 退出后不重复属性写、调用、upvalue 写或数组 append |
 | R1-6 | 随机 guard 失效 | shape、callee、类型、prototype、accessor 在热身后变化 | 第三 shape/target 稳定回退且 RX 正确释放 |
 | R1-7 | fuzz 入口 | IR verifier、trace compiler、deopt decoder fuzz test | 任意输入不 panic、不越界、不发布非法代码 |
-| R1-8 | 差分失败最小化 | 保存 seed、源码、tier、IR、统计和最小复现 | CI 差分可在本机用单条命令复现 |
+| R1-8 ✅ | 差分失败最小化 | 保存 seed、源码、tier、IR、统计和最小复现 | CI 差分可在本机用单条命令复现 |
 
 ### 6.3 deopt 完整状态要求
 
@@ -198,6 +198,21 @@ panic、非法内存访问、重复副作用或不可复现失败均视为未完
 
 **完成条件**：覆盖矩阵中所有已支持 opcode/值类型组合都有 Tier 0 对照；连续 5 次 CI 与一次
 nightly 无差分；所有语义出口具备 verifier 可证明的恢复映射。
+
+### 6.5 实施记录（R1-1 / R1-2 / R1-8）
+
+| 日期 | 条目 | 证据 |
+|------|------|------|
+| 2026-08-11 | R1-1 ✅ 生成式差分框架 `internal/engine/interpreter/jitdiff` | 14 种用例形态（expr/branch/loop/strictEq/looseEq/propRead/propWrite/push/closure/call/getter/callbackThrow/proxy/deoptPrefix），固定种子可复现，Tier 0 为唯一 oracle；**PR 集 1,000 例通过**（quickHit=440 / autoNativeHit=337 / guardFailures=2644），按 Kind 断言 8 类 Quick 与 5 类 Native 命中；**nightly 100,000 例复核通过**（5 seed × 20,000，131s，均零差分），`.github/workflows/ci.yml` 的每日 `jit-differential-nightly` job 自动执行并在失败时上传产物 |
+| 2026-08-11 | R1-2 ✅ 值域组合 | 随机生成器覆盖 Number 边界、Boolean、nullish、String、BigInt、Symbol 和对象 identity；新增结构化 `valueDomainCases`，逐值标记并实际执行 return/shortCircuit/comparison/guardChange，`TestValueDomainOperationCoverage` 对每个值运行 off/quick/auto 并要求全语料真实产生 guard failure；strictEq/looseEq 继续用受控值对覆盖身份语义，未支持路径明确回退 Tier 0 |
+| 2026-08-11 | R1-8 ✅ 失败最小化 | 失败时保存 `case.js`、`meta.json`、`SUMMARY.txt` 与单命令重放；`Params.Verify` 已接入 Auto 执行与重放；Artifact 保留首次 mismatch 的 Result/EvalErr/Stats，仅从重跑补 IR，避免时序故障被重跑覆盖；`TestArtifactRoundTrip` 使用合成 mismatch 验证原始差异落盘，另有 passing-result 拒绝与 Verify 生效测试 |
+| 2026-08-11 | 框架发现并修复 2 个 Tier 0 引擎 bug | ① BigInt/NaN 关系比较：NaN panic、反向误判及数字路径 `NaN > 3` 修复为统一 `compareBool` 哨兵处理。② parser 泛型/比较消歧：括号深度避免吞掉关系表达式，同时恢复 CallExpr/NewExpr 泛型调用与函数类型内部嵌套泛型闭合；新增比较链、调用结果泛型与嵌套函数类型回归。两个修复均不改变默认 `--jit=off` 或 Native ABI |
+| 2026-08-11 | verifier deopt map 拒绝（R1-4 前置） | 收紧 `OpTraceExit` 校验：缺失/越界/负 exitID 一律拒绝（原仅栈非空时拒绝）；`TestVerifyRejectsInvalidDeoptMaps` 覆盖缺失/越界/负 ID/歧义深度（同一 exit 两条路径不同栈深）四类，并修正 `TestNativePropertyWriteVerifyRestoresQuickResultOnMismatch` 补合法 deopt map；`jit_bridge.go` 增加 trace IR dump（`JIT dump tier=trace`），使失败产物含 trace 级 IR |
+
+R1-1/R1-2/R1-8 的边界：R1-3（异常差分专项：除零 BigInt、OOM、取消的显式 catch PC 校验）、R1-4
+（deopt 状态描述的正式模型与 verifier 全量拒绝）、R1-5（副作用两阶段提交协议）、R1-6（随机 guard
+失效）、R1-7（fuzz 入口）未在本轮完成；当前 Windows 已通过计划规定的 JIT race 子集和 jitdiff race，
+但仍不能替代 R2 的 Linux 实机、连续 CI 与长期 soak 门禁。
 
 ## 7. R2：平台和运行时安全门禁
 
@@ -444,5 +459,6 @@ go test -race ./internal/engine/jit/... ./internal/engine/interpreter -count=1
 7. R5 统一调优阈值、预算和优化 pass；
 8. 完成 R6 最终检查表后，单独变更默认 auto。
 
-下一次开发应从 R1-1 的生成式差分框架开始；R0 里程碑的稳定性验收（安静环境复核）可与 R1 并行推进，
-R1/R2 的任何工作不得以 R0 验收未过为由扩大支持面。
+下一次开发应推进 R1-3 至 R1-7（异常专项差分、deopt 状态模型与 verifier 全量拒绝、副作用提交协议、
+随机 guard 失效、fuzz 入口），复用 jitdiff 框架的事件日志与失败产物机制；R0 里程碑的稳定性验收
+（安静环境复核）可并行推进，R1/R2 的任何工作不得以 R0 验收未过为由扩大支持面。

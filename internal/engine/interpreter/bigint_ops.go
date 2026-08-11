@@ -2,6 +2,7 @@ package interpreter
 
 import (
 	"fmt"
+	"math"
 	"math/big"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -85,20 +86,38 @@ func bigintCompare(l, r engine.Value) int {
 	if isBigInt(l) && isBigInt(r) {
 		return asBigInt(l).Cmp(asBigInt(r))
 	}
-	// BigInt 与 Number（混合数值比较，ES 规范允许）
+	// BigInt 与 Number（混合数值比较，ES 规范允许）。
+	// NaN 必须先于求反处理：`NaN < 7n` 若把 NaN 哨兵 2 求反成 -2，
+	// 会误判为“小于”，必须原样返回 2（任何与 NaN 的比较都为 false）。
 	if isBigInt(l) && r.Type() == engine.TypeNumber {
 		rf, _ := r.Float()
+		if math.IsNaN(rf) {
+			return 2
+		}
 		return cmpBigIntFloat(asBigInt(l), rf)
 	}
 	if isBigInt(r) && l.Type() == engine.TypeNumber {
 		lf, _ := l.Float()
+		if math.IsNaN(lf) {
+			return 2
+		}
 		return -cmpBigIntFloat(asBigInt(r), lf)
 	}
 	return 2 // 不可比较（如 BigInt 与 String）
 }
 
-// cmpBigIntFloat 比较 BigInt 与 float64。处理 NaN 返回 2。
+// cmpBigIntFloat 比较 BigInt 与 float64。NaN 不可比（返回 2），
+// ±Infinity 直接按大小返回，避免 big.Float.SetFloat64(NaN) panic。
 func cmpBigIntFloat(bi *big.Int, f float64) int {
+	if math.IsNaN(f) {
+		return 2 // 与 NaN 的任何比较都为 false
+	}
+	if math.IsInf(f, 1) {
+		return -1 // 任何 BigInt 都小于 +Infinity
+	}
+	if math.IsInf(f, -1) {
+		return 1 // 任何 BigInt 都大于 -Infinity
+	}
 	// 用 big.Float 做精确比较。
 	bf := new(big.Float).SetInt(bi)
 	ff := new(big.Float).SetFloat64(f)

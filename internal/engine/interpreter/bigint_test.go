@@ -93,7 +93,7 @@ func TestBigIntCompare(t *testing.T) {
 		// BigInt 与 Number 比较
 		{`5n > 3`, "true"},
 		{`3 < 5n`, "true"},
-		{`5n == 5`, "true"},  // == 宽松相等：BigInt == Number 做数值比较
+		{`5n == 5`, "true"},   // == 宽松相等：BigInt == Number 做数值比较
 		{`5n === 5`, "false"}, // === 不同类型
 		{`5n === 5n`, "true"},
 		{`5n !== 6n`, "true"},
@@ -101,6 +101,23 @@ func TestBigIntCompare(t *testing.T) {
 		{`5n == "5"`, "true"},
 		{`0n == false`, "true"},
 		{`1n == true`, "true"},
+		// BigInt 与 NaN/Infinity 比较：任何与 NaN 的比较都为 false，不得 panic
+		// （回归：cmpBigIntFloat 曾对 NaN 直接 big.Float.SetFloat64 而崩溃，
+		//  且反向比较 `NaN < 7n` 会把 NaN 哨兵求反误判为 true）。
+		{`7n < NaN`, "false"},
+		{`7n > NaN`, "false"},
+		{`7n <= NaN`, "false"},
+		{`7n >= NaN`, "false"},
+		{`NaN < 7n`, "false"},
+		{`NaN > 7n`, "false"},
+		{`NaN <= 7n`, "false"},
+		{`NaN >= 7n`, "false"},
+		{`7n < Infinity`, "true"},
+		{`7n > -Infinity`, "true"},
+		{`7n > Infinity`, "false"},
+		{`7n < -Infinity`, "false"},
+		{`7n == NaN`, "false"},
+		{`NaN == 7n`, "false"},
 	}
 	for _, c := range cases {
 		got := vmEvalStr(t, c.code)
@@ -129,9 +146,9 @@ func TestBigIntPrecision(t *testing.T) {
 
 func TestBigIntMixedTypeError(t *testing.T) {
 	cases := []string{
-		`1n + 1`,   // BigInt + Number
-		`1n * 2`,   // BigInt * Number
-		`1n + "x"`, // BigInt + String（不允许隐式转换）
+		`1n + 1`,    // BigInt + Number
+		`1n * 2`,    // BigInt * Number
+		`1n + "x"`,  // BigInt + String（不允许隐式转换）
 		`1n >>> 1n`, // 无符号右移不支持
 	}
 	for _, code := range cases {

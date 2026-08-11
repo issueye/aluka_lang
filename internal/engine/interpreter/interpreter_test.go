@@ -839,3 +839,29 @@ func TestOptionalChainingMethodCall(t *testing.T) {
 		t.Errorf("o?.greet?.() = %q, want x", got)
 	}
 }
+
+// TestNaNRelationalComparisons is a regression for the Tier 0 comparison
+// sentinel bug: compareValues returns 2 for NaN, and the VM's `>`/`>=` ops
+// treated it as greater-than, making `NaN > 3`, `3 > NaN` and `NaN > NaN`
+// true. JS requires every relational comparison with NaN to be false.
+func TestNaNRelationalComparisons(t *testing.T) {
+	cases := []struct{ code, want string }{
+		{`NaN > 3`, "false"},
+		{`NaN >= 3`, "false"},
+		{`NaN < 3`, "false"},
+		{`NaN <= 3`, "false"},
+		{`3 > NaN`, "false"},
+		{`3 < NaN`, "false"},
+		{`NaN > NaN`, "false"},
+		{`NaN < NaN`, "false"},
+		{`NaN == NaN`, "false"},
+		{`NaN === NaN`, "false"},
+		{`NaN != 3`, "true"},
+		{`!(NaN > 3) && !(NaN <= 3)`, "true"},
+	}
+	for _, c := range cases {
+		if got := vmEvalStr(t, c.code); got != c.want {
+			t.Errorf("Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}

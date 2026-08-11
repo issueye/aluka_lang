@@ -444,11 +444,15 @@ func (p *Program) Verify() error {
 			reachableReturn = true
 		case OpTraceExit:
 			exitID := int(in.Operand)
+			// A trace exit must reference an entry in the deopt map. Missing,
+			// out-of-range or negative exit IDs are malformed IR and must be
+			// rejected even when the operand stack happens to be empty; the
+			// map is only ever populated by CompileTraceWithGuards before
+			// Verify runs.
 			if exitID < 0 || exitID >= len(p.traceExitDepths) {
-				if depth != 0 {
-					return fmt.Errorf("jit: trace exit has stack depth %d at %d", depth, i)
-				}
-			} else if p.traceExitDepths[exitID] == ^uint8(0) {
+				return fmt.Errorf("jit: trace exit %d has no deopt map", exitID)
+			}
+			if p.traceExitDepths[exitID] == ^uint8(0) {
 				if depth > 8 {
 					return fmt.Errorf("jit: trace exit stack is too deep at %d", i)
 				}

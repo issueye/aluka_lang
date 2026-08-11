@@ -135,10 +135,31 @@ race 构建。`go test -race` 在本机因 Windows TSan 影子内存分配失败
 （函数级 `symStrictLeaf` + trace 级 `symStrictTrace`，覆盖 `===` 与 truthiness，断言三模式结果一致、
 guard 失败被记录、Auto 不产生 verify 失败）。审计后矩阵不存在“代码已宣称支持但无测试”的条目。
 
-## 8. 维护约定
+## 8. 生成式差分与 Tier 0 语义覆盖（R1-1/R1-2/R1-8）
+
+| 能力 | 权威测试 |
+|------|----------|
+| 固定种子生成式差分框架（`internal/engine/interpreter/jitdiff`） | `TestDifferentialPRSet`（1,000 例，PR 门禁）、`TestDifferentialNightly`（100,000 例 × 5 seed，`JITDIFF_NIGHTLY=1` 每日门禁）、CI `jit-differential-nightly` |
+| 生成器可复现（同 seed 同源码） | `TestGeneratorDeterminism` |
+| 值域覆盖（Number 边界/Boolean/nullish/String/BigInt/Symbol/对象 identity） | `TestGeneratedCorpusIncludesValueLeaves`（随机语料存在性）、`TestValueDomainOperationCoverage`（逐值结构化覆盖 return/shortCircuit/comparison/guardChange，三 tier 差分） |
+| Quick/Native 命中按 Kind 证明 | `TestDifferentialPRSet` 逐一断言 8 类 Quick 与 5 类 Native 预期命中集合，`SuiteSummary.quickHitsByKind/nativeHitsByKind` 归档分布 |
+| 事件日志确定性用例（属性写/数组 append/upvalue 写/函数调用/getter/setter/回调抛错/try-catch/safepoint yield deopt 前缀/Symbol identity/BigInt TypeError/宽松相等回退） | `TestEventLogFixedCases`（11 个固定用例，逐断言 off 事件日志 + 三 tier 一致） |
+| 失败产物与单命令重放 | `TestArtifactRoundTrip`（原始 mismatch 不被 IR 重跑覆盖）、`TestSaveArtifactRejectsPassingResults`、`TestReplayFailure`（`-artifact` 标志）、`TestRunTierHonorsVerify` |
+| verifier 拒绝非法 deopt map（缺失/越界/负 ID/歧义深度） | `TestVerifyRejectsInvalidDeoptMaps`（jit 包） |
+| 差分发现并修复：Tier 0 BigInt/NaN 关系比较（panic + `NaN > 3` 语义错误） | `TestBigIntCompare`（NaN/Infinity 扩展）、`TestNaNRelationalComparisons` |
+| 差分发现并修复：parser `skipAngleBraces` 把比较 `<` 误当 TS 泛型 | `TestComparisonInsideIfBeforeRelationalExpression`、`TestComparisonWithParenthesizedRightOperand`、`TestGenericFunctionTypeKeepsWorking`、`TestGenericCallResultRuntimeSemantics` |
+| TS 泛型调用/声明（简单/多参/嵌套 `>>`/`>>>`/默认值/extends/嵌套函数类型/对象类型/new/调用结果/方法/箭头/interface/class） | `TestGenericCallArguments`（15 形态，断言类型参数被擦除）、`TestGenericTypeDeclarations`（10 形态） |
+| JS 关系/移位链不误判为泛型（链式 `<` `>`、`>>`、`>>>`、`>=`、`<=`、括号、三目、短路、for/while 控制流） | `TestComparisonChainsParseAsComparisons`（15 形态，断言比较链 AST）、`TestComparisonInControlFlow`（7 形态） |
+| 泛型 vs 比较歧义（`foo < bar > (baz)` 按 TSC 解析为泛型调用；无 `(` 时按比较；`>` 在括号内为比较） | `TestGenericVsComparisonDisambiguation`（6 形态）、`TestGenericAmbiguityRuntimeSemantics`（3 形态，运行时锁定 TSC 兼容语义） |
+| 比较链运行时语义（NaN、-0、布尔强转、链式短路、循环条件） | `TestComparisonChainRuntimeSemantics`（25 例，interpreter 包，对照 Node） |
+| trace 级 IR dump（失败产物含 trace IR） | `TestArtifactRoundTrip`（断言 quick/auto 层 IR 非空） |
+
+## 9. 维护约定
 
 1. 新增任何 JIT 能力（新 opcode、新值类型建模、新 guard/deopt 点、新平台路径）时，必须同步在
    本矩阵对应行补充权威测试引用，否则视为“已宣称但未验证”，R0/R1 验收不通过；
 2. 某能力被降级/删除时，先更新矩阵与计划文档，再改代码；
 3. 差分测试的新增用例只扩大本矩阵行内的值组合，不改变矩阵结构；
-4. 每个开发任务的完成条件里“覆盖矩阵不存在已宣称无测试条目”即指向本文档。
+4. 每个开发任务的完成条件里“覆盖矩阵不存在已宣称无测试条目”即指向本文档；
+5. 生成式框架新增用例形态（新 `Kind`）时，同时更新 `jitdiff` 的 `KindCount`、`FixedCases` 与
+   本文档 §8 对应行；差分发现的 Tier 0 引擎 bug 修复必须附带独立回归测试（不依赖差分框架本身）。

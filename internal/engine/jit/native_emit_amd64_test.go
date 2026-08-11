@@ -332,7 +332,8 @@ func TestNativeTraceExitRestoresExternalOperandStack(t *testing.T) {
 
 func TestNativePropertyWriteVerifyRestoresQuickResultOnMismatch(t *testing.T) {
 	p := &Program{
-		NumLocals: 3,
+		NumLocals:       3,
+		traceExitDepths: []uint8{0}, // exit 0 reached with an empty operand stack
 		Code: []Instr{
 			{Op: OpLoadLocal, Operand: 2},
 			{Op: OpLoadLocal, Operand: 1},

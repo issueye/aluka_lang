@@ -5,6 +5,9 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
 
 jobs:
   # 单元测试 + 覆盖率
@@ -115,6 +118,35 @@ jobs:
           OUT=$(/tmp/aluka --jit=auto --jit-threshold=1 --jit-backedge-threshold=2 -e \
             'function sum(n){let t=0; for(let i=0;i<n;i++) t+=i; return t} console.log(sum(100))' 2>&1)
           test "$OUT" = "4950"
+
+  jit-differential-nightly:
+    name: JIT differential nightly
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Run 100,000-case differential
+        env:
+          JITDIFF_NIGHTLY: "1"
+        run: >-
+          go test ./internal/engine/interpreter/jitdiff
+          -run '^TestDifferentialNightly$' -count=1 -v
+
+      - name: Upload differential failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jitdiff-failure-${{ github.run_id }}
+          path: bench/results/jitdiff/
+          if-no-files-found: ignore
 
   # Lint（仅 ubuntu）
   lint:
