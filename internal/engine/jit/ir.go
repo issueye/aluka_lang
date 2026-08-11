@@ -434,9 +434,34 @@ func (p *Program) Verify() error {
 		switch in.Op {
 		case OpConst, OpLoadLocal, OpPushSelf:
 			delta = 1
-		case OpGetProp, OpGuardNoopCall, OpGuardMethodGet:
+		case OpGetProp:
+			need, delta = 1, 0
+		case OpGuardNoopCall:
+			// Trace-only protocol op: the callee identity guard is part of the
+			// deopt/commit protocol and must reference a recorded call guard.
+			if p.traceExitDepths == nil {
+				return fmt.Errorf("jit: guard_noop_call requires a trace program with deopt exits")
+			}
+			if int(in.Operand) >= len(p.traceCallGuards) {
+				return fmt.Errorf("jit: guard_noop_call references missing call guard %d", in.Operand)
+			}
+			need, delta = 1, 0
+		case OpGuardMethodGet:
+			if p.traceExitDepths == nil {
+				return fmt.Errorf("jit: guard_method_get requires a trace program with deopt exits")
+			}
+			if int(in.Operand) >= len(p.traceMethodGuards) {
+				return fmt.Errorf("jit: guard_method_get references missing method guard %d", in.Operand)
+			}
 			need, delta = 1, 0
 		case OpSetProp:
+			// A property write is an irreversible side effect. It is only
+			// legal in trace programs, whose exits and budget yields commit
+			// deferred writes through the two-phase protocol; a function-level
+			// program has no commit points and must be side-effect free.
+			if p.traceExitDepths == nil {
+				return fmt.Errorf("jit: side effect set_prop requires a trace program with deopt exits")
+			}
 			need, delta = 2, -2
 		case OpStoreLocal, OpPop:
 			need, delta = 1, -1

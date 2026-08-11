@@ -432,21 +432,42 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 		}
 		return -1
 	}
-	commit := func() bool {
+	// commitSideEffects is the R1-5 two-phase commit protocol for the trace's
+	// deferred side effects. It is only called at semantic exits and budget
+	// yields (never between iterations), so a failure discards the whole
+	// slice: neither the properties nor the locals were written yet, and Tier 0
+	// can replay the slice cleanly.
+	//
+	// Phase 1 (validate): every dirty property is re-checked against its
+	// guard. This can only fail if the object was mutated between the write
+	// site and the exit — impossible inside a single trace slice, so the check
+	// is a defensive re-validation of the prepare-time guard.
+	//
+	// Phase 2 (commit): the deferred values are stored, then the dirty locals
+	// are written back. The store loop snapshots the original values first and
+	// rolls back the already-stored properties if a store fails, so a partial
+	// commit is never observable even on a defensive failure.
+	commitSideEffects := func() bool {
+		originals := make([]float64, len(propertyStates))
+		var stored []int
 		for i := range propertyStates {
 			state := &propertyStates[i]
 			if !state.dirty {
 				continue
 			}
-			if _, ok := state.guard.loadNumber(state.object, state.name); !ok {
+			number, ok := state.guard.loadNumber(state.object, state.name)
+			if !ok {
 				return false
 			}
-		}
-		for i := range propertyStates {
-			state := &propertyStates[i]
-			if state.dirty && !state.guard.storeNumber(state.object, state.name, state.value) {
+			originals[i] = number
+			if !state.guard.storeNumber(state.object, state.name, state.value) {
+				for _, j := range stored {
+					rollback := &propertyStates[j]
+					_ = rollback.guard.storeNumber(rollback.object, rollback.name, originals[j])
+				}
 				return false
 			}
+			stored = append(stored, i)
 		}
 		for i, written := range dirty {
 			if written {
@@ -639,7 +660,7 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 			if in.Operand == 0 && budget != 0 {
 				backedges++
 				if backedges >= budget {
-					if !commit() {
+					if !commitSideEffects() {
 						return DeoptExit{}, GuardFailed, nil
 					}
 					if poll != nil {
@@ -684,7 +705,7 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 			if exitID < 0 || exitID >= len(t.exits) {
 				return DeoptExit{}, Malformed, fmt.Errorf("jit: invalid trace exit %d", exitID)
 			}
-			if !commit() {
+			if !commitSideEffects() {
 				return DeoptExit{}, GuardFailed, nil
 			}
 			exit := t.exits[exitID]

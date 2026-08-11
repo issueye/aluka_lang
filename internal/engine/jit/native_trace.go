@@ -301,15 +301,30 @@ func captureNativePropertyValues(snapshots []nativePropertySnapshot, expected bo
 	return true
 }
 
+// restoreNativePropertyValues restores snapshot property values (the verify
+// path). It records the value of each property before restoring it and rolls
+// back the already-restored properties if a later restore fails, so a partial
+// restore is never observable.
 func restoreNativePropertyValues(snapshots []nativePropertySnapshot, expected bool) bool {
+	current := make([]float64, len(snapshots))
+	var restored []int
 	for i := range snapshots {
 		value := snapshots[i].original
 		if expected {
 			value = snapshots[i].expected
 		}
-		if !snapshots[i].guard.storeNumber(snapshots[i].object, snapshots[i].name, value) {
+		number, ok := snapshots[i].guard.loadNumber(snapshots[i].object, snapshots[i].name)
+		if !ok {
 			return false
 		}
+		current[i] = number
+		if !snapshots[i].guard.storeNumber(snapshots[i].object, snapshots[i].name, value) {
+			for _, j := range restored {
+				_ = snapshots[j].guard.storeNumber(snapshots[j].object, snapshots[j].name, current[j])
+			}
+			return false
+		}
+		restored = append(restored, i)
 	}
 	return true
 }
@@ -356,21 +371,33 @@ func sameTraceValues(a, b []engine.Value) bool {
 	return true
 }
 
+// commitNativeTraceFrame applies the R1-5 two-phase commit protocol to a
+// native trace frame at a semantic exit or budget yield. Phase 1 validates
+// every dirty property against its guard; phase 2 stores the frame's deferred
+// values, snapshots the originals first and rolls back already-stored
+// properties if a store fails, so a partial commit is never observable. A
+// failure returns (false, nil): the caller resumes Tier 0 at the loop header
+// with the committed locals and no partial writes, exactly like a yield.
 func (t *TraceProgram) commitNativeTraceFrame(locals []engine.Value, propertyObjects []engine.Value, frame *jitnative.Frame) (bool, error) {
 	plan := t.program.nativePlan
+	originals := make([]float64, len(plan.properties))
+	var stored []int
 	for i := range plan.properties {
 		input := &plan.properties[i]
 		if input.write && frame.Status&(uint64(1)<<input.frameLocal) != 0 {
-			if _, ok := input.guard.loadNumber(propertyObjects[i], input.name); !ok {
+			number, ok := input.guard.loadNumber(propertyObjects[i], input.name)
+			if !ok {
 				return false, nil
 			}
-		}
-	}
-	for i := range plan.properties {
-		input := &plan.properties[i]
-		if input.write && frame.Status&(uint64(1)<<input.frameLocal) != 0 &&
-			!input.guard.storeNumber(propertyObjects[i], input.name, frame.Locals[input.frameLocal]) {
-			return false, fmt.Errorf("jit: native property writeback failed")
+			originals[i] = number
+			if !input.guard.storeNumber(propertyObjects[i], input.name, frame.Locals[input.frameLocal]) {
+				for _, j := range stored {
+					rollback := &plan.properties[j]
+					_ = rollback.guard.storeNumber(propertyObjects[j], rollback.name, originals[j])
+				}
+				return false, nil
+			}
+			stored = append(stored, i)
 		}
 	}
 	for slot, written := range t.written {

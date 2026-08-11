@@ -98,7 +98,7 @@ R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，�
 | 里程碑 | 启动状态 | 说明 |
 |--------|----------|------|
 | R0 | 交付物齐备，验收未过 | R0-1 至 R0-5 交付物均已产出（2026-08-11）；但 §5.3 稳定性验收（连续两轮中位数偏差 ≤5%）在本机未通过，需安静/固定电源环境复核后才可宣称 R0 完成 |
-| R1 | 部分完成 | R1-1/R1-2/R1-3/R1-4/R1-8 已落地（2026-08-11）：生成式差分框架（PR 1,000 例 + nightly 100,000 例无差分）、值域组合、异常差分（BigInt 除零/getter-setter/回调/OOM/取消/中断）、deopt 状态模型（含 pending exception 正式恢复映射与 verifier 拒绝）、失败产物与单命令重放；缺 R1-5 至 R1-7 |
+| R1 | 部分完成 | R1-1/R1-2/R1-3/R1-4/R1-5/R1-8 已落地（2026-08-11）：生成式差分框架（PR 1,000 例 + nightly 100,000 例无差分）、值域组合、异常差分（BigInt 除零/getter-setter/回调/OOM/取消/中断）、deopt 状态模型（含 pending exception 正式恢复映射与 verifier 拒绝）、副作用 prepare/validate/commit 两阶段提交协议（属性写/数组 append/upvalue 写/调用，含 verifier 拒绝与中断原子性）、失败产物与单命令重放；缺 R1-6 至 R1-7 |
 | R2 | 部分完成 | Linux 后端和 CI job 已写入，尚无 Linux runner 成功记录和长期 soak |
 | R3 | 部分完成 | Number 主路径、短路、nullish、String/BigInt opaque 值和严格相等已落地 |
 | R4 | 部分完成 | 两路 PIC、有限内联、属性、push 和单一 upvalue 模式已落地 |
@@ -166,6 +166,7 @@ R0-5 标记 `✅*` 表示**交付物已产出但 R0 整体验收未通过**：11
 | R1-2 ✅ | 值域组合 | `NaN/Inf/-0`、nullish、Boolean、String、BigInt、Symbol、对象 identity | 每种值参与短路、比较、返回和 guard 变化 |
 | R1-3 ✅ | 异常差分 | 除零 BigInt、getter/setter 抛错、回调抛错、OOM、取消 | 异常类型、消息、catch PC 和副作用日志一致 |
 | R1-4 ✅ | deopt 状态描述 | locals、operand stack、属性提交、pending exception、resume PC 映射 | verifier 能拒绝缺失、歧义或越界映射；pending exception 进入 `DeoptExit` 并经 Quick/VM 恢复链路实际使用 |
+| R1-5 ✅ | 副作用提交协议 | 属性写、数组 append、upvalue 写、用户调用在 guard/deopt/异常/OOM/取消/safepoint 中断附近严格“只发生一次” | prepare/validate/commit 两阶段协议；verifier 显式拒绝非法副作用状态；固定回归与 jitdiff 事件日志证明无重复、无遗漏、无部分提交 |
 | R1-5 | 副作用提交协议 | prepare/validate/commit 或等价两阶段协议 | 退出后不重复属性写、调用、upvalue 写或数组 append |
 | R1-6 | 随机 guard 失效 | shape、callee、类型、prototype、accessor 在热身后变化 | 第三 shape/target 稳定回退且 RX 正确释放 |
 | R1-7 | fuzz 入口 | IR verifier、trace compiler、deopt decoder fuzz test | 任意输入不 panic、不越界、不发布非法代码 |
@@ -199,6 +200,26 @@ LocalSlots, StackDepth, StackValues, PendingException}`。`PendingException`（`
 `TestExceptionExitCompilesAndExecutes`/`TestNativeRejectsExceptionExit`/`TestSameDeoptExitPendingException`
 覆盖编译、执行、Native 拒绝与 `SameDeoptExit` 比较。
 
+**R1-5 副作用提交协议（2026-08-11 完成）**：trace 内的每类副作用按
+prepare（guard + 记录延迟状态）→ validate（提交点重查全部 guard）→ commit（快照原值、
+统一写回、失败回滚）两阶段提交执行，提交点只有语义 exit（`OpTraceExit`，含 exception exit）
+与预算回边 yield：
+
+| 副作用 | prepare | validate/commit | 失败语义 |
+|--------|---------|-----------------|----------|
+| 属性写（`OpSetProp`） | 写点 guard（object 类型 + Number + shape/slot PIC）后记录到 `propertyStates`，不写对象 | 提交点 validate-all（`loadNumber` 重查）→ store-all（`storeNumber`，先快照原值，中途失败回滚已 store 的）→ dirty locals 写回 | guard 失败丢弃整 slice（无任何写）；Tier 0 从已提交 locals 干净重放 |
+| 数组 append（push 特化） | Go 入口 guard（receiver 类型/push identity/有限非负 index/bound） | `AppendNumberRange` 一次扩容+填充+length 同步（原子） | 每 chunk 完整提交；中断保留已提交 chunk |
+| upvalue 写（closure 特化） | callee/upvalue identity、别名拒绝、Number 类型 | 标量循环后一次性写回 upvalue + sum + index local（原子） | 同上 |
+| 用户调用 | 仅 guarded noop（callee identity guard）；guard 失败发生在调用前 | 调用本身不进入 trace | Tier 0 执行真实调用（含抛错路径） |
+| 异常（exception exit） | — | 先 commit 全部 deferred 写，再把栈顶原始值移入 `PendingException` | `*jsThrow` → `handleThrow` → catch/finally |
+
+不变量：commit 前退出（guard 失败/validate 失败）⇒ 零副作用，Tier 0 安全重放；commit 后
+恢复点（ResumePC/startPC）不会重复执行已提交副作用；回滚分支是结构性防御（单线程下
+validate 与 store 之间无交错点，store-after-validate 分歧不可达），保证“不暴露部分提交状态”
+不依赖运行时偶然行为。Native 机器码只在入口 Go 侧 guard 后写无指针 Frame，
+`commitNativeTraceFrame` 复用同一 validate/store/回滚协议，store 失败返回 (false, nil)
+走干净 Yielded 路径而非错误回退（错误回退会让 Quick 在部分写之上重放）。
+
 ### 6.4 验收命令
 
 ```powershell
@@ -226,8 +247,9 @@ nightly 无差分；所有语义出口具备 verifier 可证明的恢复映射�
 | 2026-08-11 | R1-3 ✅ 异常差分 | `jitdiff` 新增 5 个 Kind（BigIntDivZero/GetterSetterThrow/OOM/Cancel/Safepoint）+ `RunHook`（OOMBytes/TriggerOOM/CancelAfter/CancelErr），生成器 Version 1→2；差分夹具显式启用 `InterpreterSafepoints`，使解释循环回边与 JIT budget yield 共用回调，同时不改变默认嵌入行为；取消保持独立 `Error`，不再伪装为 OOM；固定用例扩至 17 个，异常均进入同一 catch 路径并保留逐步事件日志，延迟中断验证已提交迭代无重复/遗漏；差分发现并修复 BigInt `/` lexer 与 BigInt `++/--` 问题，审核另修复 JIT `--` 曾错误降低为 `1-x`；`TestUpdateExpressionAcrossJITTiers` 锁定三 tier 前后缀语义；PR 1,000 例与 nightly 100,000 例（5 seed）均零差分 |
 | 2026-08-11 | R1-4 进行中：deopt map 加固 | `DeoptExit{ID, ResumePC, LocalSlots, StackDepth, StackValues}` 的现有恢复映射增加 verifier 拒绝规则（§6.3）；`TestVerifyRejectsInvalidDeoptMaps` 覆盖 7 类非法 map，`TestDeoptExitMapIntegrity` 审计对齐 ResumePC、去重 local 槽、合法栈深；固定用例 -17 验证属性写 guard 失败前无部分写入 |
 | 2026-08-11 | R1-4 ✅ pending exception 正式恢复映射 | `DeoptExit` 增加 `PendingException engine.Value`（nil = 无）；trace 编译 `OpThrow` 为 exception exit（throw 位置直接放 `OpTraceExit`，不新增 IR opcode），Quick 执行器把栈顶原始 JS 值移入 `PendingException` 并丢弃其余操作数栈，VM 恢复经 `*jsThrow` 以原始值进入 `handleThrow`/catch-finally；Native 编译拒绝 exception exit（`lowerNativeInputsForMode` 检查），Auto 稳定回退 Quick；`SameDeoptExit` 比较 pending exception（Number 按位含 NaN、字符串按值、对象按 identity）；verifier 拒绝截断/扩展 exception map 与异常值缺失。测试：jit 包 `TestExceptionExitCompilesAndExecutes`/`TestNativeRejectsExceptionExit`/`TestVerifyRejectsInvalidExceptionMaps`/`TestSameDeoptExitPendingException`；interpreter 包 8 个 `TestDeoptExceptionExit*`（数字/字符串/对象 identity/非空栈丢弃/finally 重抛/嵌套 catch/guard 失败/Auto 回退/deopt stats）；jitdiff 固定用例 -18 与 artifact 保存/重放测试 |
+| 2026-08-11 | R1-5 ✅ 副作用两阶段提交协议 | 审计确认 trace 内已有延迟提交骨架（属性写/数组 append/upvalue 写/guarded noop 调用），本轮将其形式化为 prepare/validate/commit 并补齐防御性原子性与 verifier：① Quick trace `commitSideEffects` 两阶段化——validate 全部 dirty 属性后快照原值、统一 store、中途失败回滚已 store 的（部分提交结构性不可能，Tier 0 重放始终从干净状态开始）；② Native `commitNativeTraceFrame` 同一协议，store 失败从 Malformed 错误改为回滚 + (false, nil)，走干净 Yielded/重放路径，避免 Quick 在部分写之上重放；③ verify 路径 `restoreNativePropertyValues` 恢复前记录当前值，失败回滚已恢复项；④ verifier 拒绝 `OpSetProp`/`OpGuardNoopCall`/`OpGuardMethodGet` 出现在非 trace 程序（副作用与协议操作必须携带 deopt/commit map）与 trace guard 索引越界（`traceCallGuards`/`traceMethodGuards`）。测试：jit 包 `TestVerifyRejectsSideEffectsWithoutTraceProtocol`（5 类拒绝 + 合法对照）、`TestTraceCommitProtocolAppliesWritesExactlyOnce`（跨 3 个 budget slice 提交恰一次、loop 条件 exit 恢复 PC 精确）、`TestTraceGuardFailureAfterCommittedSliceNoPartialWrite`（poll 观察已提交值后把属性投毒为非 Number → 下一 slice 写 guard 失败零写入、locals 停在最后提交点）；interpreter 包 4 个 `TestDeopt*`（属性写后循环内 throw → catch 读到 o.a=2 证明提交先于异常、noop callee 换成延迟抛错者后 identity guard 失败无部分写且用户调用抛错进同一 catch、push 循环中断后 `A.length === A[A.length-1]+1` 不变量、upvalue+sum 中断后 `sum === N(N+1)/2` 原子写回不变量，均 off/quick/auto 一致且断言 trace 真实执行/产出 yield）；jitdiff 固定用例扩至 23 个（-19 调用 guard 失败+属性写前缀、-20 push+取消、-21 upvalue+取消、-22 属性写+throw+finally、-23 属性写+OOM，事件日志不变量证明无重复/无遗漏/无部分提交）与 `TestArtifactRoundTripSideEffect`（-19 合成 mismatch 经 SaveArtifact/LoadArtifact/Replay 单命令重放）。PR 1,000 例与 nightly 100,000 例（5 seed）零差分。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期；store-after-validate 分歧在单线程语义下不可达，回滚是协议的结构性保证而非可达路径 |
 
-R1-1/R1-2/R1-3/R1-4/R1-8 已完成。R1-5（副作用两阶段提交协议）、R1-6（随机 guard
+R1-1/R1-2/R1-3/R1-4/R1-5/R1-8 已完成。R1-6（随机 guard
 失效）、R1-7（fuzz 入口）未在本轮完成；当前 Windows 已通过计划规定的 JIT race 子集和 jitdiff race，
 但仍不能替代 R2 的 Linux 实机、连续 CI 与长期 soak 门禁。
 
@@ -476,6 +498,6 @@ go test -race ./internal/engine/jit/... ./internal/engine/interpreter -count=1
 7. R5 统一调优阈值、预算和优化 pass；
 8. 完成 R6 最终检查表后，单独变更默认 auto。
 
-下一次开发应推进 R1-5 至 R1-7（完成副作用提交协议、随机 guard 失效与 fuzz 入口），复用
+下一次开发应推进 R1-6 至 R1-7（随机 guard 失效与 fuzz 入口），复用
 jitdiff 框架的事件日志、pending exception 状态与失败产物机制；R0 里程碑的稳定性验收
 （安静环境复核）可并行推进，R1/R2 的任何工作不得以 R0 验收未过为由扩大支持面。

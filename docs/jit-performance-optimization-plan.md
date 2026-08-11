@@ -413,10 +413,10 @@ J0-1 热点计数与 VM-local 状态
 | 里程碑 | 当前状态 | 已落地内容 | 仍缺内容 |
 |--------|----------|------------|----------|
 | J0 | 完成 | VM-local 调用/回边热点、拒绝缓存、generation、结构化候选拒绝原因、CLI 统计；冷函数只保留轻量计数，达到阈值后才提升为完整 state | 持续校准真实负载阈值 |
-| J1 | 基本完成 | 类型化 IR、CFG/栈校验、Number 算术/幂/比较/跳转、逻辑非、数值一元加、`&&/||/??` 短路、`!=/!==` 与 32 位位运算 lowering、Go executor、guard 回退、自递归、可恢复 trace 预算；Quick trace 支持多出口 `exitID/resumePC`、最多 8 槽的已建模操作数栈恢复，并只提交运行期实际写入的局部变量；String/BigInt 可作为 opaque Quick 值参与 truthiness、nullish、Return、严格相等和栈恢复；固定种子 Tier 0/Tier 1/Tier 2 集成差分和 try/catch 返回验证 | 更广语法生成式差分、String/BigInt 算术、关系比较或宽松相等，以及更多副作用状态的完整 deopt map |
+| J1 | 基本完成 | 类型化 IR、CFG/栈校验、Number 算术/幂/比较/跳转、逻辑非、数值一元加、`&&/||/??` 短路、`!=/!==` 与 32 位位运算 lowering、Go executor、guard 回退、自递归、可恢复 trace 预算；Quick trace 支持多出口 `exitID/resumePC`、最多 8 槽的已建模操作数栈恢复，并只提交运行期实际写入的局部变量；String/BigInt 可作为 opaque Quick 值参与 truthiness、nullish、Return、严格相等和栈恢复；固定种子 Tier 0/Tier 1/Tier 2 集成差分和 try/catch 返回验证；R1-5 副作用 prepare/validate/commit 两阶段提交协议（属性写/数组 append/upvalue 写/调用 guard 失败/异常/OOM/取消/中断附近无重复、无遗漏、无部分提交，verifier 显式拒绝非法副作用状态） | 更广语法生成式差分、String/BigInt 算术、关系比较或宽松相等 |
 | J2-S | amd64 原型完成 | 固定 trampoline、无 Go 指针 Frame、RW -> RX W^X、释放与 GC 压力测试；Windows 线性 kernel 约 `2.3ns/op`；Linux `mmap/mprotect` 后端已接入；非法指令由子进程崩溃测试隔离；新增跨平台 RX 区域生命周期计数与归零门禁 | Linux 运行时 CI、更多抢占/竞态门禁 |
 | J2 | 数值子集完成 | Number 参数/常量/局部变量、四则运算、`DUP/SWAP/NEG`、比较分支和数值循环的 amd64 native；Native trace 支持多个 `exitID`、预算恢复、最多 8 个 Number 操作数栈 spill 和 dirty-local 精确写回；函数与 trace 共用每 VM LRU RX 代码缓存；可输出真实 x86 Intel 反汇编 | 更广语法和控制流的生成式 Tier 0/Tier 1/Tier 2 差分 |
-| J3 | 基本完成 | 两路 callee PIC 均可 Native、有限叶子 IR 内联、guarded direct Quick call、两路 own Number property PIC；Quick/Native trace 支持已有 own data Number 属性写，属性值在语义出口或预算 yield 后由 Go 安全写回；新增严格 `Array.prototype.push` 数值范围批量 trace 与 numeric-upvalue closure trace；第三 shape/target/类型变化稳定关闭 Native 并保留 Quick，跨 local 对象别名回退 | 更多调用约定、数组/闭包/方法覆盖、带异常和更广副作用状态的精确 deopt |
+| J3 | 基本完成 | 两路 callee PIC 均可 Native、有限叶子 IR 内联、guarded direct Quick call、两路 own Number property PIC；Quick/Native trace 支持已有 own data Number 属性写，属性值在语义出口或预算 yield 后由 Go 安全写回；新增严格 `Array.prototype.push` 数值范围批量 trace 与 numeric-upvalue closure trace；第三 shape/target/类型变化稳定关闭 Native 并保留 Quick，跨 local 对象别名回退 | 更多调用约定、数组/闭包/方法覆盖 |
 | J4 | 部分完成 | 冷函数延迟分配、结构化诊断、`--jit-dump`、冷启动基准；大于等于 128 条 IR 的 Native 后台编译；Quick/Native 函数、自递归和 trace 共用预算 safepoint，支持 OOM 与嵌入方取消；短命 VM 和待安装后台代码的 RX 释放压力门禁；Windows mixed `2.2x Node`、11 项合计 `12.0x Node` | Linux 实机运行、默认 auto、长时间 RX/GC/抢占 soak 和跨平台综合门禁 |
 
 已接入的开发期开关：
@@ -811,6 +811,27 @@ deopt stats 记录 exception exit）、jitdiff 固定用例 -18 与 artifact 保
 nightly 100,000 例（5 seed，154.7s）零差分。该轮未改默认 `--jit=off`、未扩大 Native ABI 与
 W^X 生命周期；exception exit 仅由 trace 内 `OpThrow` 触发，`if (cond) throw` 的 throw 块在
 backedge 后仍走普通 guard 回退路径（文档说明）。
+
+v2.19 完成 R1-5 副作用两阶段提交协议，把 trace 内的延迟提交骨架形式化为
+prepare/validate/commit 并补齐结构性原子性与 verifier 拒绝。审计确认的既有顺序保持不变：
+属性写（`OpSetProp`）在写点 guard 后记录到延迟状态，只在语义 exit（含 exception exit）与预算
+回边 yield 提交；数组 push 特化每 chunk 一次原子 `AppendNumberRange`；numeric-upvalue closure
+特化在 chunk 末尾一次性写回 upvalue + sum + index local；guarded noop 调用在调用前做 callee
+identity guard，用户调用本身从不进入 trace。本轮改动：① Quick trace `commitSideEffects`
+validate-all → 快照原值 → store-all，中途失败回滚已 store 属性，部分提交结构性不可能；
+② Native `commitNativeTraceFrame` 同一协议，store 失败从 Malformed 错误改为回滚 + (false, nil)，
+走干净 Yielded/重放路径（避免 Quick 在部分写之上重放）；③ verify 路径
+`restoreNativePropertyValues` 记录恢复前当前值，失败回滚已恢复项；④ verifier 拒绝
+`OpSetProp`/`OpGuardNoopCall`/`OpGuardMethodGet` 出现在非 trace 程序，并拒绝 trace guard 索引
+越界（`traceCallGuards`/`traceMethodGuards`）。测试：jit 包 3 个（verifier 5 类拒绝 + 合法对照、
+跨 3 个 budget slice 提交恰一次、已提交 slice 后 guard 失败零写入）；interpreter 包 4 个
+`TestDeopt*` 场景（提交先于异常、调用 guard 失败无部分写 + 调用抛错进 catch、push 中断
+`A.length === A[A.length-1]+1`、upvalue 中断 `sum === N(N+1)/2`，均 off/quick/auto 一致且断言
+trace 真实执行）；jitdiff 固定用例扩至 23 个（-19 调用 guard 失败 + 属性写前缀、-20 push + 取消、
+-21 upvalue + 取消、-22 属性写 + throw + finally、-23 属性写 + OOM）与
+`TestArtifactRoundTripSideEffect` 重放。PR 1,000 例与 nightly 100,000 例（5 seed）零差分。
+该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、不改变任何性能快照口径；
+store-after-validate 分歧在单线程语义下不可达，回滚是协议的结构性保证而非可达路径。
 
 ## 17. 下一轮优先级
 

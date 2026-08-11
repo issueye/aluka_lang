@@ -218,6 +218,105 @@ LOG("post", SV(O.a));
 try { LOG("call", "ky"); LOG("return", SV(ky(100))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 `,
 		},
+		{
+			// R1-5: after warmup the noop callee is replaced by a
+			// late-throwing callee. The second invocation enters the trace
+			// (the throw is delayed past the first backedge), the callee
+			// identity guard fires before the call, the pending property
+			// write of that iteration is discarded (no partial write), Tier 0
+			// replays the iteration, and the user call throws into the same
+			// catch. The warmup prefix is committed exactly once.
+			ID: -19, Kind: KindCall, Seed: 119, Params: params,
+			Expected: "call:kY1\nreturn:n:4\ncall:kY2\nthrow:Error:call-boom\npost:n:1",
+			Body: `function NOOP() {}
+let THROW_COUNT = 0;
+function LATE_THROWER() { THROW_COUNT++; if (THROW_COUNT >= 2) throw new Error("call-boom"); }
+function kY(n, o, cb) { for (let i = 0; i < n; i++) { o.a = i; cb(); } return o.a; }
+const O = { a: -1 };
+try { LOG("call", "kY1"); LOG("return", SV(kY(5, O, NOOP))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kY2"); LOG("return", SV(kY(3, O, LATE_THROWER))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(O.a));
+`,
+		},
+		{
+			// R1-5: an embedding cancellation interrupts a push loop mid-JIT.
+			// Every committed chunk must land exactly once: the invariant
+			// A.length === A[A.length-1] + 1 proves consecutive elements with
+			// no duplicate append and no lost append, in every tier.
+			ID: -20, Kind: KindPush, Seed: 120, Params: safepointParams,
+			Hook:     &RunHook{CancelAfter: 7, CancelErr: "cancel-append"},
+			Expected: "call:kA\nthrow:Error:cancel-append\npost:b:true",
+			Body: `function kA(arr, n) { for (let i = 0; i < n; i++) arr.push(i); return arr.length; }
+const A = [];
+try { LOG("call", "kA"); LOG("return", SV(kA(A, 1000000))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(A.length > 0 && A.length === A[A.length - 1] + 1));
+`,
+		},
+		{
+			// R1-5: an embedding cancellation interrupts a numeric-upvalue
+			// closure loop. The upvalue and the sum are written back
+			// atomically per committed chunk, so sum === N*(N+1)/2 (every
+			// committed iteration contributed exactly once) must hold after
+			// the interruption in every tier.
+			ID: -21, Kind: KindClosure, Seed: 121, Params: safepointParams,
+			Hook:     &RunHook{CancelAfter: 7, CancelErr: "cancel-upvalue"},
+			Expected: "throw:Error:cancel-upvalue\npost:b:true",
+			Body: `let N = 0;
+const INC = () => ++N;
+function kR(n, fn) {
+  let sum = 0;
+  try {
+    for (let i = 0; i < n; i++) { sum += fn(); }
+  } catch (e) { LOG("throw", e.name + ":" + e.message); }
+  return sum;
+}
+const S1 = kR(1000000, INC);
+LOG("post", SV(N > 0 && S1 === N * (N + 1) / 2));
+`,
+		},
+		{
+			// R1-5: a property write followed by an in-trace throw. The
+			// two-phase commit runs before the pending exception reaches the
+			// catch, so the catch observes the committed write (o.a = 2),
+			// the finally block runs, and the returned value proves the
+			// commit-before-throw ordering in every tier.
+			ID: -22, Kind: KindLoop, Seed: 122, Params: params,
+			Expected: "call:kF\ncatch:number:200\nfinally:n:1\nreturn:n:2\npost:n:2",
+			Body: `function kF(n, o) {
+  let f = 0;
+  try {
+    for (let i = 0; i < n; i++) {
+      o.a = i;
+      if (i < 2) { f += 1; continue; }
+      throw i * 100;
+    }
+  } catch (e) {
+    LOG("catch", typeof e + ":" + e);
+  } finally {
+    f = 1;
+    LOG("finally", SV(f));
+  }
+  return o.a;
+}
+const O = { a: -1 };
+try { LOG("call", "kF"); LOG("return", SV(kF(100, O))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(O.a));
+`,
+		},
+		{
+			// R1-5: OOM interrupts a property-write loop after committed
+			// chunks. The invariant count === last + 1 proves the committed
+			// prefix is complete (no duplicated or lost write) when the OOM
+			// unwinds into the same catch in every tier.
+			ID: -23, Kind: KindPropWrite, Seed: 123, Params: params,
+			Hook:     &RunHook{OOMBytes: 1 << 40, TriggerOOM: 1},
+			Expected: "call:kO2\nthrow:RangeError:JavaScript heap out of memory (limit 1099511627776 bytes)\npost:b:true",
+			Body: `function kO2(n, o) { for (let i = 0; i < n; i++) { o.last = i; o.count = o.count + 1; } return o.last; }
+const O2 = { last: -1, count: 0 };
+try { LOG("call", "kO2"); LOG("return", SV(kO2(1000000, O2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(O2.count > 0 && O2.count === O2.last + 1));
+`,
+		},
 	}
 }
 

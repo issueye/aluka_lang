@@ -302,6 +302,57 @@ func TestArtifactRoundTripExceptionExit(t *testing.T) {
 	}
 }
 
+// TestArtifactRoundTripSideEffect proves the R1-5 side-effect fixed cases flow
+// through the existing failure-artifact and single-command replay machinery:
+// a synthetic mismatch on the call-guard + property-write case (-19) saves a
+// faithful artifact (source, hook config) whose replay reproduces the exact
+// expected event log in every tier.
+func TestArtifactRoundTripSideEffect(t *testing.T) {
+	var c *Case
+	for _, candidate := range FixedCases() {
+		if candidate.ID == -19 {
+			c = candidate
+			break
+		}
+	}
+	if c == nil {
+		t.Fatal("side-effect fixed case -19 not found")
+	}
+	c.applySource()
+	results, err := RunCase(c, c.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Result != c.Expected {
+		t.Fatalf("off result:\n%s\nwant:\n%s", results[0].Result, c.Expected)
+	}
+	dir := t.TempDir()
+	results[1].Result = results[1].Result + "\nsynthetic-mismatch"
+	art, err := SaveArtifact(dir, &Mismatch{Case: c, Results: results}, c.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadArtifact(art.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Source, "THROWER") || !strings.Contains(loaded.Source, "o.a = i") {
+		t.Fatalf("artifact source lost the side-effect scenario: %q", loaded.Source)
+	}
+	results2, reproduced, err := loaded.Replay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reproduced {
+		t.Fatalf("side-effect case reported as reproduced mismatch: %+v", results2)
+	}
+	for _, res := range results2 {
+		if res.Result != c.Expected {
+			t.Fatalf("replay tier %s result:\n%s\nwant:\n%s", res.Tier, res.Result, c.Expected)
+		}
+	}
+}
+
 func TestSaveArtifactRejectsPassingResults(t *testing.T) {
 	c := FixedCases()[0]
 	c.applySource()
