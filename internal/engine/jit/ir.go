@@ -89,13 +89,13 @@ func (op Op) String() string {
 }
 
 type Program struct {
-	NumParams         int
-	NumLocals         int
-	MaxStack          int
-	SelfUpvalue       int
-	Code              []Instr
-	nativeCode        *jitnative.Code
-	propertyGuards    []propertyGuard
+	NumParams      int
+	NumLocals      int
+	MaxStack       int
+	SelfUpvalue    int
+	Code           []Instr
+	nativeCode     *jitnative.Code
+	propertyGuards []propertyGuard
 	// stringConsts is the per-program string constant pool. OpConstString
 	// operands index it; the executors place the values at the front of the
 	// object buffer so quickValue refs resolve through the same objects slice
@@ -170,6 +170,13 @@ func (p *Program) BindCallTarget(target *Program) (bool, error) {
 	if _, nested := target.RequiresSelf(); nested {
 		return false, fmt.Errorf("jit: nested specialized calls are unsupported")
 	}
+	// A specialized (non-inlined) callee executes recursively against the
+	// caller's object buffer, which only carries the caller's string
+	// constants. Reject callees with their own constant pool instead of
+	// running OpConstString against misaligned refs.
+	if len(target.stringConsts) != 0 {
+		return false, fmt.Errorf("jit: callee string constants unsupported in specialized calls")
+	}
 	if p.inlineCallTarget(target) {
 		return true, nil
 	}
@@ -190,6 +197,10 @@ func (p *Program) inlineCallTarget(target *Program) bool {
 		case OpConst, OpAdd, OpSub, OpMul, OpDiv, OpMod, OpPow, OpNeg, OpNot, OpBitNot, OpUnaryPlus,
 			OpEq, OpNe, OpStrictEq, OpStrictNe, OpBitAnd, OpBitOr, OpBitXor, OpShl, OpShr, OpUShr,
 			OpLt, OpLe, OpGt, OpGe, OpPop, OpDup, OpSwap, OpGetProp:
+		case OpConstString:
+			if int(in.Operand) >= len(target.stringConsts) {
+				return false
+			}
 		case OpLoadLocal:
 			if in.Operand == 0 || int(in.Operand) > target.NumParams {
 				return false
@@ -237,9 +248,13 @@ func (p *Program) inlineCallTarget(target *Program) bool {
 		for arg := target.NumParams - 1; arg >= 0; arg-- {
 			code = append(code, Instr{Op: OpStoreLocal, Operand: uint32(base + arg)})
 		}
+		constBase := len(p.stringConsts)
 		for _, targetInstr := range target.Code[:len(target.Code)-1] {
 			if targetInstr.Op == OpLoadLocal {
 				targetInstr.Operand = uint32(base + int(targetInstr.Operand) - 1)
+			}
+			if targetInstr.Op == OpConstString {
+				targetInstr.Operand = uint32(constBase + int(targetInstr.Operand))
 			}
 			code = append(code, targetInstr)
 		}
@@ -250,12 +265,13 @@ func (p *Program) inlineCallTarget(target *Program) bool {
 		}
 		code[fixup.index].Operand = uint32(oldToNew[fixup.oldTarget])
 	}
-	oldCode, oldLocals, oldGuards := p.Code, p.NumLocals, p.propertyGuards
+	oldCode, oldLocals, oldGuards, oldConsts := p.Code, p.NumLocals, p.propertyGuards, p.stringConsts
 	p.Code = code
 	p.NumLocals += target.NumParams
+	p.stringConsts = append(p.stringConsts, target.stringConsts...)
 	p.propertyGuards = make([]propertyGuard, len(code))
 	if err := p.Verify(); err != nil {
-		p.Code, p.NumLocals, p.propertyGuards = oldCode, oldLocals, oldGuards
+		p.Code, p.NumLocals, p.propertyGuards, p.stringConsts = oldCode, oldLocals, oldGuards, oldConsts
 		return false
 	}
 	return true

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 	"sync"
@@ -1159,6 +1160,9 @@ func (interp *Interpreter) evalUnary(e *ast.UnaryExpr, scope *Scope) (engine.Val
 	case "+":
 		return engine.Number(jsToNumber(arg)), nil
 	case "~":
+		if bi, ok := engine.BigIntValue(arg); ok {
+			return engine.BigInt(new(big.Int).Not(bi)), nil
+		}
 		n := toInt32(arg)
 		return engine.Number(float64(^n)), nil
 	case "typeof":

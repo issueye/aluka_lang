@@ -10,6 +10,7 @@ package interpreter
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"sync"
 	"time"
@@ -699,7 +700,15 @@ func (v *VM) run() (engine.Value, error) {
 				b, _ := v.pop().Bool()
 				v.push(engine.Boolean(!b))
 			case bytecode.OpBitNot:
-				n, _ := v.pop().Float()
+				value := v.pop()
+				if bi, ok := engine.BigIntValue(value); ok {
+					// `~x` on BigInt is the two's-complement bitwise NOT
+					// (-x-1); the generic ToInt32 path would silently turn
+					// BigInts into Numbers.
+					v.push(engine.BigInt(new(big.Int).Not(bi)))
+					break
+				}
+				n, _ := value.Float()
 				v.push(engine.Number(float64(^jsToInt32(n))))
 			case bytecode.OpTypeof:
 				v.push(engine.Str(v.pop().Type().String()))
