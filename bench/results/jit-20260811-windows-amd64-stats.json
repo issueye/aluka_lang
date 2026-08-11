@@ -1,0 +1,751 @@
+{
+  "schemaVersion": "1",
+  "generated": "2026-08-11T02:03:23.2610615Z",
+  "commit": "fbe9b5e",
+  "platform": "windows/amd64",
+  "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+  "goVersion": "go1.25.10",
+  "alukaVersion": "aluka 0.1.0-dev",
+  "config": {
+    "binary": "E:\\codes\\go_projects\\aluka_lang\\aluka_lang\\bin\\aluka.exe",
+    "scripts": [
+      "tests/benchmark/perf-compare.js",
+      "tests/benchmark/mixed.js"
+    ],
+    "tiers": [
+      "off",
+      "quick",
+      "auto"
+    ],
+    "reps": 1,
+    "rotate": true,
+    "timeout": "2m0s",
+    "jitStats": true
+  },
+  "cases": {
+    "arrayMap-100x10K": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 18.6
+            }
+          ],
+          "medianMs": 18.6,
+          "minMs": 18.6,
+          "maxMs": 18.6,
+          "meanMs": 18.6,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 16.26
+            }
+          ],
+          "medianMs": 16.26,
+          "minMs": 16.26,
+          "maxMs": 16.26,
+          "meanMs": 16.26,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 22.21
+            }
+          ],
+          "medianMs": 22.21,
+          "minMs": 22.21,
+          "maxMs": 22.21,
+          "meanMs": 22.21,
+          "madPct": 0
+        }
+      }
+    },
+    "arrayPush-1M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 79.04
+            }
+          ],
+          "medianMs": 79.04,
+          "minMs": 79.04,
+          "maxMs": 79.04,
+          "meanMs": 79.04,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 568.68
+            }
+          ],
+          "medianMs": 568.68,
+          "minMs": 568.68,
+          "maxMs": 568.68,
+          "meanMs": 568.68,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 92.93
+            }
+          ],
+          "medianMs": 92.93,
+          "minMs": 92.93,
+          "maxMs": 92.93,
+          "meanMs": 92.93,
+          "madPct": 0
+        }
+      }
+    },
+    "callOverhead-1M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 4.9
+            }
+          ],
+          "medianMs": 4.9,
+          "minMs": 4.9,
+          "maxMs": 4.9,
+          "meanMs": 4.9,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 235.92
+            }
+          ],
+          "medianMs": 235.92,
+          "minMs": 235.92,
+          "maxMs": 235.92,
+          "meanMs": 235.92,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 51.74
+            }
+          ],
+          "medianMs": 51.74,
+          "minMs": 51.74,
+          "maxMs": 51.74,
+          "meanMs": 51.74,
+          "madPct": 0
+        }
+      }
+    },
+    "closureCall-1M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 6.86
+            }
+          ],
+          "medianMs": 6.86,
+          "minMs": 6.86,
+          "maxMs": 6.86,
+          "meanMs": 6.86,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 313.16
+            }
+          ],
+          "medianMs": 313.16,
+          "minMs": 313.16,
+          "maxMs": 313.16,
+          "meanMs": 313.16,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 3.39
+            }
+          ],
+          "medianMs": 3.39,
+          "minMs": 3.39,
+          "maxMs": 3.39,
+          "meanMs": 3.39,
+          "madPct": 0
+        }
+      }
+    },
+    "fib25": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 22.72
+            }
+          ],
+          "medianMs": 22.72,
+          "minMs": 22.72,
+          "maxMs": 22.72,
+          "meanMs": 22.72,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 33.75
+            }
+          ],
+          "medianMs": 33.75,
+          "minMs": 33.75,
+          "maxMs": 33.75,
+          "meanMs": 33.75,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 22.21
+            }
+          ],
+          "medianMs": 22.21,
+          "minMs": 22.21,
+          "maxMs": 22.21,
+          "meanMs": 22.21,
+          "madPct": 0
+        }
+      }
+    },
+    "fib30": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 258.59
+            }
+          ],
+          "medianMs": 258.59,
+          "minMs": 258.59,
+          "maxMs": 258.59,
+          "meanMs": 258.59,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 403.93
+            }
+          ],
+          "medianMs": 403.93,
+          "minMs": 403.93,
+          "maxMs": 403.93,
+          "meanMs": 403.93,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 242.51
+            }
+          ],
+          "medianMs": 242.51,
+          "minMs": 242.51,
+          "maxMs": 242.51,
+          "meanMs": 242.51,
+          "madPct": 0
+        }
+      }
+    },
+    "gcPressure-500K": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 464.76
+            }
+          ],
+          "medianMs": 464.76,
+          "minMs": 464.76,
+          "maxMs": 464.76,
+          "meanMs": 464.76,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 427.95
+            }
+          ],
+          "medianMs": 427.95,
+          "minMs": 427.95,
+          "maxMs": 427.95,
+          "meanMs": 427.95,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 445.47
+            }
+          ],
+          "medianMs": 445.47,
+          "minMs": 445.47,
+          "maxMs": 445.47,
+          "meanMs": 445.47,
+          "madPct": 0
+        }
+      }
+    },
+    "methodCall-1M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 5.05
+            }
+          ],
+          "medianMs": 5.05,
+          "minMs": 5.05,
+          "maxMs": 5.05,
+          "meanMs": 5.05,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 233.58
+            }
+          ],
+          "medianMs": 233.58,
+          "minMs": 233.58,
+          "maxMs": 233.58,
+          "meanMs": 233.58,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 54.48
+            }
+          ],
+          "medianMs": 54.48,
+          "minMs": 54.48,
+          "maxMs": 54.48,
+          "meanMs": 54.48,
+          "madPct": 0
+        }
+      }
+    },
+    "mixed.js": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 297.5658
+            }
+          ],
+          "medianMs": 297.5658,
+          "minMs": 297.5658,
+          "maxMs": 297.5658,
+          "meanMs": 297.5658,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 562.7304
+            }
+          ],
+          "medianMs": 562.7304,
+          "minMs": 562.7304,
+          "maxMs": 562.7304,
+          "meanMs": 562.7304,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 270.0463
+            }
+          ],
+          "medianMs": 270.0463,
+          "minMs": 270.0463,
+          "maxMs": 270.0463,
+          "meanMs": 270.0463,
+          "madPct": 0
+        }
+      }
+    },
+    "propAccess-3M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 9.25
+            }
+          ],
+          "medianMs": 9.25,
+          "minMs": 9.25,
+          "maxMs": 9.25,
+          "meanMs": 9.25,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 663.07
+            }
+          ],
+          "medianMs": 663.07,
+          "minMs": 663.07,
+          "maxMs": 663.07,
+          "meanMs": 663.07,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 224.41
+            }
+          ],
+          "medianMs": 224.41,
+          "minMs": 224.41,
+          "maxMs": 224.41,
+          "meanMs": 224.41,
+          "madPct": 0
+        }
+      }
+    },
+    "propSet-3M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 6.8
+            }
+          ],
+          "medianMs": 6.8,
+          "minMs": 6.8,
+          "maxMs": 6.8,
+          "meanMs": 6.8,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 549.81
+            }
+          ],
+          "medianMs": 549.81,
+          "minMs": 549.81,
+          "maxMs": 549.81,
+          "meanMs": 549.81,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 125.57
+            }
+          ],
+          "medianMs": 125.57,
+          "minMs": 125.57,
+          "maxMs": 125.57,
+          "meanMs": 125.57,
+          "madPct": 0
+        }
+      }
+    },
+    "strConcat-100K": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 42.2
+            }
+          ],
+          "medianMs": 42.2,
+          "minMs": 42.2,
+          "maxMs": 42.2,
+          "meanMs": 42.2,
+          "madPct": 0
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 53.54
+            }
+          ],
+          "medianMs": 53.54,
+          "minMs": 53.54,
+          "maxMs": 53.54,
+          "meanMs": 53.54,
+          "madPct": 0
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 54.55
+            }
+          ],
+          "medianMs": 54.55,
+          "minMs": 54.55,
+          "maxMs": 54.55,
+          "meanMs": 54.55,
+          "madPct": 0
+        }
+      }
+    }
+  },
+  "summary": {
+    "cases": {
+      "arrayMap-100x10K": {
+        "tier": {
+          "auto": {
+            "medianMs": 18.6,
+            "vsOff": 0.8741935483870968
+          },
+          "off": {
+            "medianMs": 16.26,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 22.21,
+            "vsOff": 0.7321026564610537
+          }
+        }
+      },
+      "arrayPush-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 79.04,
+            "vsOff": 7.194838056680161
+          },
+          "off": {
+            "medianMs": 568.68,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 92.93,
+            "vsOff": 6.119444743355213
+          }
+        }
+      },
+      "callOverhead-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 4.9,
+            "vsOff": 48.1469387755102
+          },
+          "off": {
+            "medianMs": 235.92,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 51.74,
+            "vsOff": 4.5597216853498255
+          }
+        }
+      },
+      "closureCall-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 6.86,
+            "vsOff": 45.650145772594755
+          },
+          "off": {
+            "medianMs": 313.16,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 3.39,
+            "vsOff": 92.37758112094396
+          }
+        }
+      },
+      "fib25": {
+        "tier": {
+          "auto": {
+            "medianMs": 22.72,
+            "vsOff": 1.4854753521126762
+          },
+          "off": {
+            "medianMs": 33.75,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 22.21,
+            "vsOff": 1.519585772174696
+          }
+        }
+      },
+      "fib30": {
+        "tier": {
+          "auto": {
+            "medianMs": 258.59,
+            "vsOff": 1.5620480296995245
+          },
+          "off": {
+            "medianMs": 403.93,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 242.51,
+            "vsOff": 1.6656220362046927
+          }
+        }
+      },
+      "gcPressure-500K": {
+        "tier": {
+          "auto": {
+            "medianMs": 464.76,
+            "vsOff": 0.9207978311386522
+          },
+          "off": {
+            "medianMs": 427.95,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 445.47,
+            "vsOff": 0.960670752239208
+          }
+        }
+      },
+      "methodCall-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 5.05,
+            "vsOff": 46.25346534653466
+          },
+          "off": {
+            "medianMs": 233.58,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 54.48,
+            "vsOff": 4.287444933920705
+          }
+        }
+      },
+      "mixed.js": {
+        "tier": {
+          "auto": {
+            "medianMs": 297.5658,
+            "vsOff": 1.8911124867172235
+          },
+          "off": {
+            "medianMs": 562.7304,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 270.0463,
+            "vsOff": 2.0838293285262566
+          }
+        }
+      },
+      "propAccess-3M": {
+        "tier": {
+          "auto": {
+            "medianMs": 9.25,
+            "vsOff": 71.68324324324325
+          },
+          "off": {
+            "medianMs": 663.07,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 224.41,
+            "vsOff": 2.954725725235061
+          }
+        }
+      },
+      "propSet-3M": {
+        "tier": {
+          "auto": {
+            "medianMs": 6.8,
+            "vsOff": 80.85441176470587
+          },
+          "off": {
+            "medianMs": 549.81,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 125.57,
+            "vsOff": 4.378513976268216
+          }
+        }
+      },
+      "strConcat-100K": {
+        "tier": {
+          "auto": {
+            "medianMs": 42.2,
+            "vsOff": 1.2687203791469193
+          },
+          "off": {
+            "medianMs": 53.54,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 54.55,
+            "vsOff": 0.9814848762603117
+          }
+        }
+      }
+    }
+  },
+  "jitStats": {
+    "tests/benchmark/mixed.js": {
+      "auto": "JIT stats: mode=auto threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=1012 backedges=10000 candidates=2 compileNanos=0 compiled=1 rejected=1 executed=12 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=0 nativeExecuted=0 nativeYields=0 nativeCodeBytes=0 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=4 traceCompileNanos=0 tracesRejected=2 tracesExecuted=4 traceYields=19 nativeTracesCompiled=0 nativeTraceCompileNanos=0 nativeTracesRejected=1 nativeTracesExecuted=0 nativeTraceYields=0 safepointPolls=19 interruptions=0 noopCallSites=0 methodCallSites=0 arrayPushSites=3 arrayPushYields=4 closureUpvalueSites=0 closureUpvalueYields=0 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError=\"jit: trace non-number constant\" lastNativeError=\"jit: native limits exceeded\"",
+      "off": "JIT stats: mode=off threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=0 backedges=0 candidates=0 compileNanos=0 compiled=0 rejected=0 executed=0 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=0 nativeExecuted=0 nativeYields=0 nativeCodeBytes=0 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=0 traceCompileNanos=0 tracesRejected=0 tracesExecuted=0 traceYields=0 nativeTracesCompiled=0 nativeTraceCompileNanos=0 nativeTracesRejected=0 nativeTracesExecuted=0 nativeTraceYields=0 safepointPolls=0 interruptions=0 noopCallSites=0 methodCallSites=0 arrayPushSites=0 arrayPushYields=0 closureUpvalueSites=0 closureUpvalueYields=0 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError=\"\" lastNativeError=\"\"",
+      "quick": "JIT stats: mode=quick threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=1012 backedges=10000 candidates=2 compileNanos=0 compiled=1 rejected=1 executed=12 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=0 nativeExecuted=0 nativeYields=0 nativeCodeBytes=0 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=4 traceCompileNanos=0 tracesRejected=2 tracesExecuted=4 traceYields=19 nativeTracesCompiled=0 nativeTraceCompileNanos=0 nativeTracesRejected=0 nativeTracesExecuted=0 nativeTraceYields=0 safepointPolls=19 interruptions=0 noopCallSites=0 methodCallSites=0 arrayPushSites=3 arrayPushYields=4 closureUpvalueSites=0 closureUpvalueYields=0 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError=\"jit: trace non-number constant\" lastNativeError=\"\""
+    },
+    "tests/benchmark/perf-compare.js": {
+      "auto": "JIT stats: mode=auto threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=13040 backedges=90000 candidates=13 compileNanos=0 compiled=2 rejected=11 executed=9018 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=1 nativeExecuted=0 nativeYields=0 nativeCodeBytes=715 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=7 traceCompileNanos=0 tracesRejected=2 tracesExecuted=3 traceYields=30 nativeTracesCompiled=4 nativeTraceCompileNanos=0 nativeTracesRejected=0 nativeTracesExecuted=4 nativeTraceYields=120 safepointPolls=192 interruptions=0 noopCallSites=1 methodCallSites=1 arrayPushSites=2 arrayPushYields=15 closureUpvalueSites=1 closureUpvalueYields=15 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError=\"jit: trace non-number constant\" lastNativeError=\"jit: native unsupported IR opcode 29\"",
+      "off": "JIT stats: mode=off threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=0 backedges=0 candidates=0 compileNanos=0 compiled=0 rejected=0 executed=0 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=0 nativeExecuted=0 nativeYields=0 nativeCodeBytes=0 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=0 traceCompileNanos=0 tracesRejected=0 tracesExecuted=0 traceYields=0 nativeTracesCompiled=0 nativeTraceCompileNanos=0 nativeTracesRejected=0 nativeTracesExecuted=0 nativeTraceYields=0 safepointPolls=0 interruptions=0 noopCallSites=0 methodCallSites=0 arrayPushSites=0 arrayPushYields=0 closureUpvalueSites=0 closureUpvalueYields=0 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError=\"\" lastNativeError=\"\"",
+      "quick": "JIT stats: mode=quick threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=13055 backedges=90000 candidates=13 compileNanos=524800 compiled=2 rejected=11 executed=9033 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=0 nativeExecuted=0 nativeYields=0 nativeCodeBytes=0 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=7 traceCompileNanos=0 tracesRejected=2 tracesExecuted=7 traceYields=150 nativeTracesCompiled=0 nativeTraceCompileNanos=0 nativeTracesRejected=0 nativeTracesExecuted=0 nativeTraceYields=0 safepointPolls=192 interruptions=0 noopCallSites=1 methodCallSites=1 arrayPushSites=2 arrayPushYields=15 closureUpvalueSites=1 closureUpvalueYields=15 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError=\"jit: trace non-number constant\" lastNativeError=\"\""
+    }
+  }
+}

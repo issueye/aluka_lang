@@ -1,0 +1,24 @@
+jitbench: aluka JIT three-tier benchmark
+  generated=2026-08-11T02:03:16Z  commit=fbe9b5e
+  platform=windows/amd64  cpu=Intel64 Family 6 Model 186 Stepping 2, GenuineIntel  go=go1.25.10  aluka=aluka 0.1.0-dev
+  binary=E:\codes\go_projects\aluka_lang\aluka_lang\bin\aluka.exe
+  scripts=[tests/benchmark/jit-special.js]
+  tiers=[off quick auto]  reps=5  rotate=true  timeout=2m0s
+
+jitCalleeInline-1M
+  off    median=  226.97ms  min=  206.71  max=  236.35  mean=  223.31  mad=4.1%  samples=[236.35 217.47 229.03 226.97 206.71]
+  quick  median=  232.11ms  vsOff= 0.98x  min=  225.19  max=  285.03  mean=  242.90  mad=3.0%  samples=[285.03 228.13 232.11 244.05 225.19]
+  auto   median=  198.48ms  vsOff= 1.14x  min=  190.55  max=  225.86  mean=  202.60  mad=2.4%  samples=[203.15 225.86 190.55 198.48 194.94]
+jitExternalProps-3M
+  off    median=  674.94ms  min=  644.41  max=  807.65  mean=  698.03  mad=2.0%  samples=[807.65 674.78 644.41 674.94 688.37]
+  quick  median=  250.93ms  vsOff= 2.69x  min=  237.07  max=  265.63  mean=  253.26  mad=5.4%  samples=[265.63 237.07 248.17 250.93 264.51]
+  auto   median=    8.97ms  vsOff=75.24x  min=    8.28  max=    9.37  mean=    8.88  mad=3.0%  samples=[8.97 8.28 9.37 8.70 9.06]
+jitNumericLoop-3M
+  off    median=  417.63ms  min=  396.56  max=  448.81  mean=  419.09  mad=1.0%  samples=[448.81 396.56 417.63 413.35 419.08]
+  quick  median=  108.18ms  vsOff= 3.86x  min=  104.28  max=  155.40  mean=  116.50  mad=1.7%  samples=[108.31 106.35 155.40 108.18 104.28]
+  auto   median=    7.56ms  vsOff=55.24x  min=    7.30  max=    7.98  mean=    7.56  mad=2.5%  samples=[7.59 7.56 7.37 7.98 7.30]
+jitPropWrite-3M
+  off    median=  403.42ms  min=  386.57  max=  615.46  mean=  444.21  mad=2.7%  samples=[615.46 403.42 386.57 401.12 414.46]
+  quick  median=  126.38ms  vsOff= 3.19x  min=  121.64  max=  130.74  mean=  126.15  mad=1.5%  samples=[121.64 127.52 124.48 126.38 130.74]
+  auto   median=    7.85ms  vsOff=51.39x  min=    7.19  max=    7.95  mean=    7.67  mad=1.3%  samples=[7.19 7.95 7.85 7.88 7.46]
+jitbench: wrote bench/results/jit-20260811-windows-amd64-special.json

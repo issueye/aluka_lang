@@ -1,0 +1,458 @@
+{
+  "schemaVersion": "1",
+  "generated": "2026-08-11T02:03:16.2106877Z",
+  "commit": "fbe9b5e",
+  "platform": "windows/amd64",
+  "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+  "goVersion": "go1.25.10",
+  "alukaVersion": "aluka 0.1.0-dev",
+  "config": {
+    "binary": "E:\\codes\\go_projects\\aluka_lang\\aluka_lang\\bin\\aluka.exe",
+    "scripts": [
+      "tests/benchmark/jit-special.js"
+    ],
+    "tiers": [
+      "off",
+      "quick",
+      "auto"
+    ],
+    "reps": 5,
+    "rotate": true,
+    "timeout": "2m0s",
+    "jitStats": false
+  },
+  "cases": {
+    "jitCalleeInline-1M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 203.15
+            },
+            {
+              "round": 1,
+              "ms": 225.86
+            },
+            {
+              "round": 2,
+              "ms": 190.55
+            },
+            {
+              "round": 3,
+              "ms": 198.48
+            },
+            {
+              "round": 4,
+              "ms": 194.94
+            }
+          ],
+          "medianMs": 198.48,
+          "minMs": 190.55,
+          "maxMs": 225.86,
+          "meanMs": 202.596,
+          "madPct": 2.3528819024586944
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 236.35
+            },
+            {
+              "round": 1,
+              "ms": 217.47
+            },
+            {
+              "round": 2,
+              "ms": 229.03
+            },
+            {
+              "round": 3,
+              "ms": 226.97
+            },
+            {
+              "round": 4,
+              "ms": 206.71
+            }
+          ],
+          "medianMs": 226.97,
+          "minMs": 206.71,
+          "maxMs": 236.35,
+          "meanMs": 223.30599999999998,
+          "madPct": 4.132704762743973
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 285.03
+            },
+            {
+              "round": 1,
+              "ms": 228.13
+            },
+            {
+              "round": 2,
+              "ms": 232.11
+            },
+            {
+              "round": 3,
+              "ms": 244.05
+            },
+            {
+              "round": 4,
+              "ms": 225.19
+            }
+          ],
+          "medianMs": 232.11,
+          "minMs": 225.19,
+          "maxMs": 285.03,
+          "meanMs": 242.902,
+          "madPct": 2.981345051915047
+        }
+      }
+    },
+    "jitExternalProps-3M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 8.97
+            },
+            {
+              "round": 1,
+              "ms": 8.28
+            },
+            {
+              "round": 2,
+              "ms": 9.37
+            },
+            {
+              "round": 3,
+              "ms": 8.7
+            },
+            {
+              "round": 4,
+              "ms": 9.06
+            }
+          ],
+          "medianMs": 8.97,
+          "minMs": 8.28,
+          "maxMs": 9.37,
+          "meanMs": 8.876,
+          "madPct": 3.0100334448160684
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 807.65
+            },
+            {
+              "round": 1,
+              "ms": 674.78
+            },
+            {
+              "round": 2,
+              "ms": 644.41
+            },
+            {
+              "round": 3,
+              "ms": 674.94
+            },
+            {
+              "round": 4,
+              "ms": 688.37
+            }
+          ],
+          "medianMs": 674.94,
+          "minMs": 644.41,
+          "maxMs": 807.65,
+          "meanMs": 698.03,
+          "madPct": 1.9898065013186281
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 265.63
+            },
+            {
+              "round": 1,
+              "ms": 237.07
+            },
+            {
+              "round": 2,
+              "ms": 248.17
+            },
+            {
+              "round": 3,
+              "ms": 250.93
+            },
+            {
+              "round": 4,
+              "ms": 264.51
+            }
+          ],
+          "medianMs": 250.93,
+          "minMs": 237.07,
+          "maxMs": 265.63,
+          "meanMs": 253.262,
+          "madPct": 5.4118678515920715
+        }
+      }
+    },
+    "jitNumericLoop-3M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 7.59
+            },
+            {
+              "round": 1,
+              "ms": 7.56
+            },
+            {
+              "round": 2,
+              "ms": 7.37
+            },
+            {
+              "round": 3,
+              "ms": 7.98
+            },
+            {
+              "round": 4,
+              "ms": 7.3
+            }
+          ],
+          "medianMs": 7.56,
+          "minMs": 7.3,
+          "maxMs": 7.98,
+          "meanMs": 7.56,
+          "madPct": 2.513227513227507
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 448.81
+            },
+            {
+              "round": 1,
+              "ms": 396.56
+            },
+            {
+              "round": 2,
+              "ms": 417.63
+            },
+            {
+              "round": 3,
+              "ms": 413.35
+            },
+            {
+              "round": 4,
+              "ms": 419.08
+            }
+          ],
+          "medianMs": 417.63,
+          "minMs": 396.56,
+          "maxMs": 448.81,
+          "meanMs": 419.08599999999996,
+          "madPct": 1.0248305916720477
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 108.31
+            },
+            {
+              "round": 1,
+              "ms": 106.35
+            },
+            {
+              "round": 2,
+              "ms": 155.4
+            },
+            {
+              "round": 3,
+              "ms": 108.18
+            },
+            {
+              "round": 4,
+              "ms": 104.28
+            }
+          ],
+          "medianMs": 108.18,
+          "minMs": 104.28,
+          "maxMs": 155.4,
+          "meanMs": 116.50399999999999,
+          "madPct": 1.6916250693289077
+        }
+      }
+    },
+    "jitPropWrite-3M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 7.19
+            },
+            {
+              "round": 1,
+              "ms": 7.95
+            },
+            {
+              "round": 2,
+              "ms": 7.85
+            },
+            {
+              "round": 3,
+              "ms": 7.88
+            },
+            {
+              "round": 4,
+              "ms": 7.46
+            }
+          ],
+          "medianMs": 7.85,
+          "minMs": 7.19,
+          "maxMs": 7.95,
+          "meanMs": 7.6659999999999995,
+          "madPct": 1.2738853503184782
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 615.46
+            },
+            {
+              "round": 1,
+              "ms": 403.42
+            },
+            {
+              "round": 2,
+              "ms": 386.57
+            },
+            {
+              "round": 3,
+              "ms": 401.12
+            },
+            {
+              "round": 4,
+              "ms": 414.46
+            }
+          ],
+          "medianMs": 403.42,
+          "minMs": 386.57,
+          "maxMs": 615.46,
+          "meanMs": 444.206,
+          "madPct": 2.73660205245153
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 121.64
+            },
+            {
+              "round": 1,
+              "ms": 127.52
+            },
+            {
+              "round": 2,
+              "ms": 124.48
+            },
+            {
+              "round": 3,
+              "ms": 126.38
+            },
+            {
+              "round": 4,
+              "ms": 130.74
+            }
+          ],
+          "medianMs": 126.38,
+          "minMs": 121.64,
+          "maxMs": 130.74,
+          "meanMs": 126.152,
+          "madPct": 1.5034024370944703
+        }
+      }
+    }
+  },
+  "summary": {
+    "cases": {
+      "jitCalleeInline-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 198.48,
+            "vsOff": 1.143540910923015
+          },
+          "off": {
+            "medianMs": 226.97,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 232.11,
+            "vsOff": 0.9778553272155442
+          }
+        }
+      },
+      "jitExternalProps-3M": {
+        "tier": {
+          "auto": {
+            "medianMs": 8.97,
+            "vsOff": 75.24414715719064
+          },
+          "off": {
+            "medianMs": 674.94,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 250.93,
+            "vsOff": 2.689754114693341
+          }
+        }
+      },
+      "jitNumericLoop-3M": {
+        "tier": {
+          "auto": {
+            "medianMs": 7.56,
+            "vsOff": 55.242063492063494
+          },
+          "off": {
+            "medianMs": 417.63,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 108.18,
+            "vsOff": 3.8605102606766497
+          }
+        }
+      },
+      "jitPropWrite-3M": {
+        "tier": {
+          "auto": {
+            "medianMs": 7.85,
+            "vsOff": 51.39108280254778
+          },
+          "off": {
+            "medianMs": 403.42,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 126.38,
+            "vsOff": 3.192119006171863
+          }
+        }
+      }
+    }
+  }
+}

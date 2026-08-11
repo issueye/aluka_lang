@@ -1093,6 +1093,90 @@ func TestJITStrictEqualityReferenceTraceDifferential(t *testing.T) {
 	}
 }
 
+// TestJITSymbolValuesGuardBackToTier0 verifies the v2.11 boundary claim:
+// Symbol values are not modeled by Quick/Native, so strict equality and
+// truthiness with Symbol operands must guard back to Tier 0 before any JIT
+// side effect, preserving the interpreter's Symbol identity semantics. The
+// coverage matrix (R0-3) treats this test as the authoritative evidence for
+// the "Symbol → Tier 0" row.
+func TestJITSymbolValuesGuardBackToTier0(t *testing.T) {
+	source := `
+		const symA = Symbol("a");
+		const symB = Symbol("b");
+		function symStrictTrace(a, b, n) {
+			const traceOnlyMarker = {};
+			let total = 0;
+			for (let i = 0; i < n; i++) {
+				if (a === b) total += 1;
+				if (a) total += 2;
+			}
+			return total;
+		}
+		function symStrictLeaf(a, b) {
+			if (a === b) { return 1; }
+			if (a) { return 2; }
+			return 0;
+		}
+		globalThis.symTraceSame = symStrictTrace(symA, symA, 12);
+		globalThis.symTraceDiff = symStrictTrace(symA, symB, 12);
+		globalThis.symLeafSame = symStrictLeaf(symA, symA);
+		globalThis.symLeafDiff = symStrictLeaf(symA, symB);
+	`
+	run := func(mode jit.Mode) ([]engine.Value, jit.Stats) {
+		t.Helper()
+		vm, err := NewVM()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer vm.Close()
+		vm.ConfigureJIT(jit.Config{
+			Mode: mode, Threshold: 1, BackedgeThreshold: 2,
+			TraceBudget: 3, Verify: mode == jit.Auto, Stats: true,
+		})
+		if _, err := vm.Eval(source, "jit-symbol-guard.js"); err != nil {
+			t.Fatal(err)
+		}
+		names := []string{"symTraceSame", "symTraceDiff", "symLeafSame", "symLeafDiff"}
+		values := make([]engine.Value, len(names))
+		for i, name := range names {
+			value, err := vm.Global().Get(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			values[i] = value
+		}
+		return values, vm.JITStats()
+	}
+
+	want := map[string]string{
+		"symTraceSame": "36", // (=== + truthy) × 12
+		"symTraceDiff": "24", // truthy only × 12
+		"symLeafSame":  "1",  // a === b wins first branch
+		"symLeafDiff":  "2",  // truthy wins second branch
+	}
+	baseline, _ := run(jit.Off)
+	quick, quickStats := run(jit.Quick)
+	auto, autoStats := run(jit.Auto)
+	names := []string{"symTraceSame", "symTraceDiff", "symLeafSame", "symLeafDiff"}
+	for i, name := range names {
+		if got := baseline[i].String(); got != want[name] {
+			t.Fatalf("%s = %s, want %s", name, got, want[name])
+		}
+		if !sameJITValue(baseline[i], quick[i]) || !sameJITValue(baseline[i], auto[i]) {
+			t.Fatalf("%s off=%v quick=%v auto=%v", name, baseline[i], quick[i], auto[i])
+		}
+	}
+	if quickStats.Compiled+quickStats.TracesCompiled == 0 || quickStats.GuardFailures == 0 {
+		t.Fatalf("quick did not attempt and guard Symbol values: %+v", quickStats)
+	}
+	if autoStats.Compiled+autoStats.TracesCompiled == 0 || autoStats.GuardFailures == 0 {
+		t.Fatalf("auto did not attempt and guard Symbol values: %+v", autoStats)
+	}
+	if autoStats.VerifyFailures != 0 {
+		t.Fatalf("auto verify must never run on guarded Symbol paths: %+v", autoStats)
+	}
+}
+
 func TestJITTraceTiersGeneratedDifferential(t *testing.T) {
 	type input struct {
 		start string

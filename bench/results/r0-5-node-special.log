@@ -1,0 +1,4 @@
+jitNumericLoop-3M: 4.79
+jitCalleeInline-1M: 2.19
+jitExternalProps-3M: 2.82
+jitPropWrite-3M: 3.49

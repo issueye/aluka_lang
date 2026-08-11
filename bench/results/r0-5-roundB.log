@@ -1,0 +1,56 @@
+jitbench: aluka JIT three-tier benchmark
+  generated=2026-08-11T02:03:01Z  commit=fbe9b5e
+  platform=windows/amd64  cpu=Intel64 Family 6 Model 186 Stepping 2, GenuineIntel  go=go1.25.10  aluka=aluka 0.1.0-dev
+  binary=E:\codes\go_projects\aluka_lang\aluka_lang\bin\aluka.exe
+  scripts=[tests/benchmark/perf-compare.js tests/benchmark/mixed.js]
+  tiers=[off quick auto]  reps=5  rotate=true  timeout=2m0s
+
+arrayMap-100x10K
+  off    median=   22.12ms  min=   18.61  max=   24.31  mean=   21.86  mad=5.4%  samples=[18.61 24.31 22.12 20.93 23.31]
+  quick  median=   20.68ms  vsOff= 1.07x  min=   16.30  max=   25.70  mean=   20.17  mad=19.1%  samples=[21.44 20.68 16.30 25.70 16.72]
+  auto   median=   18.72ms  vsOff= 1.18x  min=   17.67  max=   44.97  mean=   23.66  mad=3.4%  samples=[18.08 17.67 18.72 44.97 18.88]
+arrayPush-1M
+  off    median=  421.66ms  min=  399.02  max=  547.46  mean=  446.79  mad=5.4%  samples=[454.16 411.65 399.02 547.46 421.66]
+  quick  median=   89.59ms  vsOff= 4.71x  min=   83.36  max=  101.72  mean=   90.67  mad=2.4%  samples=[101.72 87.48 89.59 91.18 83.36]
+  auto   median=   85.20ms  vsOff= 4.95x  min=   73.10  max=  175.52  mean=  100.71  mad=4.8%  samples=[88.60 85.20 81.13 175.52 73.10]
+callOverhead-1M
+  off    median=  185.15ms  min=  174.04  max=  265.30  mean=  198.82  mad=2.3%  samples=[265.30 180.91 174.04 188.70 185.15]
+  quick  median=   51.23ms  vsOff= 3.61x  min=   50.22  max=   59.14  mean=   52.67  mad=1.8%  samples=[50.22 50.64 51.23 59.14 52.14]
+  auto   median=    4.22ms  vsOff=43.87x  min=    2.92  max=    5.61  mean=    4.15  mad=28.7%  samples=[5.01 3.01 4.22 5.61 2.92]
+closureCall-1M
+  off    median=  213.97ms  min=  209.32  max=  261.24  mean=  226.96  mad=2.2%  samples=[213.97 213.44 261.24 236.83 209.32]
+  quick  median=    2.76ms  vsOff=77.53x  min=    1.68  max=    4.37  mean=    2.80  mad=17.0%  samples=[4.37 2.76 2.29 1.68 2.88]
+  auto   median=    2.58ms  vsOff=82.93x  min=    2.21  max=    3.55  mean=    2.78  mad=14.3%  samples=[2.21 2.55 3.03 2.58 3.55]
+fib25
+  off    median=   34.88ms  min=   33.86  max=   39.05  mean=   35.50  mad=0.7%  samples=[35.04 33.86 34.65 34.88 39.05]
+  quick  median=   24.50ms  vsOff= 1.42x  min=   22.16  max=   27.02  mean=   24.43  mad=9.4%  samples=[24.50 22.20 22.16 26.26 27.02]
+  auto   median=   23.20ms  vsOff= 1.50x  min=   21.25  max=   38.07  mean=   25.57  mad=6.2%  samples=[23.20 21.25 23.55 38.07 21.76]
+fib30
+  off    median=  430.96ms  min=  397.91  max=  451.77  mean=  426.37  mad=3.4%  samples=[430.96 434.89 397.91 416.33 451.77]
+  quick  median=  262.55ms  vsOff= 1.64x  min=  236.49  max=  286.78  mean=  259.87  mad=9.1%  samples=[274.93 262.55 236.49 238.62 286.78]
+  auto   median=  285.72ms  vsOff= 1.51x  min=  233.39  max=  362.78  mean=  290.14  mad=10.1%  samples=[233.39 285.72 256.95 311.88 362.78]
+gcPressure-500K
+  off    median=  446.67ms  min=  407.40  max=  456.54  mean=  434.56  mad=2.2%  samples=[449.48 407.40 412.69 456.54 446.67]
+  quick  median=  467.17ms  vsOff= 0.96x  min=  425.75  max=  574.01  mean=  482.14  mad=3.1%  samples=[425.75 461.91 481.87 574.01 467.17]
+  auto   median=  450.02ms  vsOff= 0.99x  min=  420.80  max=  524.39  mean=  462.09  mad=6.5%  samples=[524.39 420.80 450.02 482.75 432.48]
+methodCall-1M
+  off    median=  201.42ms  min=  197.83  max=  202.52  mean=  200.53  mad=0.5%  samples=[201.75 199.12 197.83 201.42 202.52]
+  quick  median=   56.01ms  vsOff= 3.60x  min=   53.00  max=   59.58  mean=   55.84  mad=3.7%  samples=[56.01 56.65 53.00 59.58 53.95]
+  auto   median=    4.62ms  vsOff=43.60x  min=    4.03  max=    5.51  mean=    4.58  mad=11.9%  samples=[4.66 5.51 4.03 4.62 4.07]
+mixed.js
+  off    median=  546.93ms  min=  537.52  max=  592.54  mean=  558.26  mad=1.7%  samples=[592.54 546.68 546.93 567.65 537.52]
+  quick  median=  294.81ms  vsOff= 1.86x  min=  269.57  max=  306.76  mean=  291.78  mad=4.1%  samples=[282.17 269.57 306.76 294.81 305.59]
+  auto   median=  293.19ms  vsOff= 1.87x  min=  272.23  max=  309.75  mean=  295.22  mad=5.4%  samples=[309.75 272.23 308.92 292.02 293.19]
+propAccess-3M
+  off    median=  662.62ms  min=  640.71  max=  710.52  mean=  670.45  mad=3.3%  samples=[662.62 652.06 710.52 640.71 686.33]
+  quick  median=  227.76ms  vsOff= 2.91x  min=  222.41  max=  241.31  mean=  230.44  mad=2.3%  samples=[227.76 225.98 222.41 234.75 241.31]
+  auto   median=    9.79ms  vsOff=67.68x  min=    7.83  max=   19.13  mean=   11.07  mad=10.8%  samples=[9.79 9.86 7.83 8.73 19.13]
+propSet-3M
+  off    median=  412.25ms  min=  403.22  max=  590.59  mean=  446.59  mad=1.9%  samples=[590.59 403.22 407.02 419.89 412.25]
+  quick  median=  126.22ms  vsOff= 3.27x  min=  124.36  max=  135.55  mean=  128.29  mad=1.5%  samples=[126.22 129.72 125.59 124.36 135.55]
+  auto   median=    7.13ms  vsOff=57.82x  min=    7.05  max=   13.67  mean=    8.96  mad=1.1%  samples=[7.13 7.13 9.80 7.05 13.67]
+strConcat-100K
+  off    median=   45.07ms  min=   38.13  max=   49.12  mean=   44.15  mad=3.9%  samples=[49.12 43.33 45.12 38.13 45.07]
+  quick  median=   43.10ms  vsOff= 1.05x  min=   39.98  max=   69.84  mean=   47.55  mad=5.0%  samples=[43.91 40.93 39.98 43.10 69.84]
+  auto   median=   40.75ms  vsOff= 1.11x  min=   39.46  max=   71.39  mean=   47.44  mad=3.2%  samples=[40.75 45.65 39.46 71.39 39.94]
+jitbench: wrote bench/results/jit-20260811-windows-amd64-r0b.json

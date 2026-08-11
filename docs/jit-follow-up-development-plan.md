@@ -97,7 +97,7 @@ R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，�
 
 | 里程碑 | 启动状态 | 说明 |
 |--------|----------|------|
-| R0 | 部分完成 | 已有 Windows 快照和冷启动 benchmark，缺统一结果格式与覆盖矩阵 |
+| R0 | 交付物齐备，验收未过 | R0-1 至 R0-5 交付物均已产出（2026-08-11）；但 §5.3 稳定性验收（连续两轮中位数偏差 ≤5%）在本机未通过，需安静/固定电源环境复核后才可宣称 R0 完成 |
 | R1 | 部分完成 | 已有固定种子差分和基本栈恢复，缺通用生成器与完整副作用/异常状态 |
 | R2 | 部分完成 | Linux 后端和 CI job 已写入，尚无 Linux runner 成功记录和长期 soak |
 | R3 | 部分完成 | Number 主路径、短路、nullish、String/BigInt opaque 值和严格相等已落地 |
@@ -117,11 +117,11 @@ R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，�
 
 | ID | 工作项 | 交付物 | 完成条件 |
 |----|--------|--------|----------|
-| R0-1 | 固化环境信息 | Go/Node/OS/CPU/commit/电源策略记录 | 每份结果可追溯到同一源码和二进制 |
-| R0-2 | 统一三 tier 基准入口 | off/quick/auto 一次构建、顺序轮换执行脚本 | 自动输出原始样本、中位数和离散度 |
-| R0-3 | 建立正确性覆盖矩阵 | opcode、值类型、函数/trace、Quick/Native、deopt 测试表 | 每个现有能力都有至少一个权威测试 |
-| R0-4 | 建立结果归档格式 | `bench/results/jit-<date>-<platform>.json` 及摘要 | 结果包含参数、版本、统计和失败原因 |
-| R0-5 | 冻结当前快照 | Windows 正式 5 次中位数报告 | 11 项、mixed、冷启动和专项基准齐全 |
+| R0-1 ✅ | 固化环境信息 | Go/Node/OS/CPU/commit/电源策略记录 | 每份结果可追溯到同一源码和二进制 |
+| R0-2 ✅ | 统一三 tier 基准入口 | off/quick/auto 一次构建、顺序轮换执行脚本 | 自动输出原始样本、中位数和离散度 |
+| R0-3 ✅ | 建立正确性覆盖矩阵 | opcode、值类型、函数/trace、Quick/Native、deopt 测试表 | 每个现有能力都有至少一个权威测试 |
+| R0-4 ✅ | 建立结果归档格式 | `bench/results/jit-<date>-<platform>.json` 及摘要 | 结果包含参数、版本、统计和失败原因 |
+| R0-5 ✅* | 冻结当前快照 | Windows 正式 5 次中位数报告 | 11 项、mixed、冷启动和专项基准齐全 |
 
 ### 5.3 验收
 
@@ -133,6 +133,24 @@ go test ./bench -run '^$' -bench 'JITColdStart' -benchtime=50x -count=5
 
 **完成条件**：相同源码连续两轮基准的中位数偏差不超过 5%，全部结果具备环境和 JIT 统计，
 覆盖矩阵不存在“代码已宣称支持但无测试”的条目。
+
+### 5.4 实施记录
+
+| 日期 | 条目 | 证据 |
+|------|------|------|
+| 2026-08-11 | R0-2 ✅ 统一三 tier 基准入口 `bench/cmd/jitbench` | 14 个单元测试（输出解析、统计、轮换、聚合、失败记录）；Windows 实机 `-reps 3` 轮换顺序为 off/quick/auto → quick/auto/off → auto/off/quick，逐 (case, tier) 输出原始样本、中位数、min/max、均值与相对 MAD；`go test ./... -count=1`、`go vet`（含 `./bench`）、`git diff --check` 通过；冷启动 `JITColdStart` 50x5 中位数 off 2.353ms / auto 2.447ms（auto 回退约 3.9%，低于 5% 门禁）；`go test -race` 在本机因 Windows TSan 无法分配影子内存（error code 87，基线同样失败）而不可执行，需由 R2 Linux CI 覆盖 |
+| 2026-08-11 | R0-4 ✅ 结果归档格式 `bench/results/jit-<date>-<platform>.json` | `schemaVersion: "1"` 契约由 `validateReport` 强制：参数（config）、版本/环境（platform/cpu/goVersion/alukaVersion/commit）、统计（cases + summary，含逐 tier 中位数与 `vsOff` 加速比）、失败原因（failures，缺失样本必须有失败记录解释）；归档写盘前校验，`-out` 指向目录时按 `jit-<YYYYMMDD>-<goos>-<goarch>.json` 命名；新增 8 个单元测试（摘要计算、15 条校验规则、写读 round-trip、命名约定）及构建目录回归测试，累计 23 个通过；实机生成 `bench/results/jit-20260811-windows-amd64.json` 并通过 round-trip 校验 |
+| 2026-08-11 | R0-3 ✅ 正确性覆盖矩阵 `docs/jit-coverage-matrix.md` | 覆盖 45 个 IR opcode（按 Quick 函数 / Quick trace / Native 列），7 类值（Number/Boolean/nullish/Object/String/BigInt/Symbol），函数/trace/Native 生命周期、guard/deopt、平台与可执行内存；每个能力行标注权威测试引用，全部引用逐一核对存在且通过；审计发现唯一缺口——v2.11 宣称 Symbol 值 guard 回 Tier 0 但无测试——新增 `TestJITSymbolValuesGuardBackToTier0`（函数 + trace 覆盖 `===` 与 truthiness，断言三模式结果一致、guard 失败被记录、Auto 无 verify 失败），审计后不存在“已宣称支持但无测试”条目 |
+| 2026-08-11 | R0-1 ✅ 环境固化 | 记录于 `docs/performance-report-r0-5.md` §1：OS Windows 10.0.26200.8875、CPU 13th Gen i5-13420H（笔记本）、Go 1.25.10、Node 22.23.1、commit `fbe9b5e`、二进制 SHA-256 `43c4ba83…`、电源方案“平衡”（本机唯一）、交流电 100%；全部 4 轮与专项均复用同一二进制，原始样本存于 `bench/results/` 归档 |
+| 2026-08-11 | R0-5 ✅* 冻结快照 `docs/performance-report-r0-5.md` | 11 项 5 次中位数（Auto 合计 949.71ms，13.8x Node；off 3140.23ms）、mixed 墙钟（Auto 295.29ms，2.6x Node）、冷启动 50x5（off 2.858ms / auto 3.946ms，+38.1%）、专项 4 项（numeric loop 7.56ms / callee inline 198.48ms / external props 8.97ms / prop write 7.85ms，均 5 次中位数）与 JIT stats 齐全；**R0 §5.3 稳定性门禁（连续两轮中位数偏差 ≤5%）未通过**：A-B 19.1% / B-C 26.8% / C-D 64.2%，根因为本机仅有“平衡”电源方案 + 后台负载（ChatGPT/ToDesk/webview2/ZCode），已如实记录，待安静/固定电源环境复核 |
+
+R0-4 边界：归档名按日按平台（同日重跑会覆盖同名文件，需要保留历史时用 `-out` 指定完整路径）。
+R0-3 边界：矩阵只声明现有能力，未落地项（生成式差分、String/BigInt 算术、宽松相等、Native spill 等）
+进入矩阵的时机见矩阵 §8 维护约定；Linux 实机/长期 soak/race 由 R2 承担，不记入矩阵。
+R0-5 标记 `✅*` 表示**交付物已产出但 R0 整体验收未通过**：11 项、mixed、冷启动与专项数据齐全，
+但 §5.3 稳定性门禁（连续两轮中位数偏差 ≤5%）在本机（平衡电源 + 后台负载）实测未过
+（A-B 19.1% / B-C 26.8% / C-D 64.2%）。在安静环境、固定电源策略下复核通过前，不得宣称 R0 完成，
+默认 `--jit=off` 维持不变。
 
 ## 6. R1：正确性与 deopt 闭环
 
@@ -426,5 +444,5 @@ go test -race ./internal/engine/jit/... ./internal/engine/interpreter -count=1
 7. R5 统一调优阈值、预算和优化 pass；
 8. 完成 R6 最终检查表后，单独变更默认 auto。
 
-下一次开发应从 R0-2 的统一基准结果格式和 R1-1 的生成式差分框架开始；它们会成为后续所有
-语法、deopt、平台和性能工作的共同验收基础。
+下一次开发应从 R1-1 的生成式差分框架开始；R0 里程碑的稳定性验收（安静环境复核）可与 R1 并行推进，
+R1/R2 的任何工作不得以 R0 验收未过为由扩大支持面。

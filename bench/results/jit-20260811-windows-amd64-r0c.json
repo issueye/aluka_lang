@@ -1,0 +1,1315 @@
+{
+  "schemaVersion": "1",
+  "generated": "2026-08-11T02:05:43.973598Z",
+  "commit": "fbe9b5e",
+  "platform": "windows/amd64",
+  "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+  "goVersion": "go1.25.10",
+  "alukaVersion": "aluka 0.1.0-dev",
+  "config": {
+    "binary": "E:\\codes\\go_projects\\aluka_lang\\aluka_lang\\bin\\aluka.exe",
+    "scripts": [
+      "tests/benchmark/perf-compare.js",
+      "tests/benchmark/mixed.js"
+    ],
+    "tiers": [
+      "off",
+      "quick",
+      "auto"
+    ],
+    "reps": 5,
+    "rotate": true,
+    "timeout": "2m0s",
+    "jitStats": false
+  },
+  "cases": {
+    "arrayMap-100x10K": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 24.72
+            },
+            {
+              "round": 1,
+              "ms": 19.5
+            },
+            {
+              "round": 2,
+              "ms": 17.14
+            },
+            {
+              "round": 3,
+              "ms": 18.59
+            },
+            {
+              "round": 4,
+              "ms": 18.6
+            }
+          ],
+          "medianMs": 18.6,
+          "minMs": 17.14,
+          "maxMs": 24.72,
+          "meanMs": 19.71,
+          "madPct": 4.838709677419347
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 31.3
+            },
+            {
+              "round": 1,
+              "ms": 16.44
+            },
+            {
+              "round": 2,
+              "ms": 20
+            },
+            {
+              "round": 3,
+              "ms": 20.91
+            },
+            {
+              "round": 4,
+              "ms": 27.74
+            }
+          ],
+          "medianMs": 20.91,
+          "minMs": 16.44,
+          "maxMs": 31.3,
+          "meanMs": 23.278,
+          "madPct": 21.37733142037302
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 18.87
+            },
+            {
+              "round": 1,
+              "ms": 18.47
+            },
+            {
+              "round": 2,
+              "ms": 17.96
+            },
+            {
+              "round": 3,
+              "ms": 15.4
+            },
+            {
+              "round": 4,
+              "ms": 31.15
+            }
+          ],
+          "medianMs": 18.47,
+          "minMs": 15.4,
+          "maxMs": 31.15,
+          "meanMs": 20.369999999999997,
+          "madPct": 2.7612344342176396
+        }
+      }
+    },
+    "arrayPush-1M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 97.64
+            },
+            {
+              "round": 1,
+              "ms": 82.35
+            },
+            {
+              "round": 2,
+              "ms": 81.77
+            },
+            {
+              "round": 3,
+              "ms": 84.4
+            },
+            {
+              "round": 4,
+              "ms": 98.59
+            }
+          ],
+          "medianMs": 84.4,
+          "minMs": 81.77,
+          "maxMs": 98.59,
+          "meanMs": 88.95,
+          "madPct": 3.116113744075841
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 766.73
+            },
+            {
+              "round": 1,
+              "ms": 531.78
+            },
+            {
+              "round": 2,
+              "ms": 427.13
+            },
+            {
+              "round": 3,
+              "ms": 431.12
+            },
+            {
+              "round": 4,
+              "ms": 397.52
+            }
+          ],
+          "medianMs": 431.12,
+          "minMs": 397.52,
+          "maxMs": 766.73,
+          "meanMs": 510.85599999999994,
+          "madPct": 7.7936537390981675
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 89.59
+            },
+            {
+              "round": 1,
+              "ms": 106.86
+            },
+            {
+              "round": 2,
+              "ms": 73.79
+            },
+            {
+              "round": 3,
+              "ms": 77.23
+            },
+            {
+              "round": 4,
+              "ms": 113.04
+            }
+          ],
+          "medianMs": 89.59,
+          "minMs": 73.79,
+          "maxMs": 113.04,
+          "meanMs": 92.102,
+          "madPct": 17.635896863489226
+        }
+      }
+    },
+    "callOverhead-1M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 2.79
+            },
+            {
+              "round": 1,
+              "ms": 3.09
+            },
+            {
+              "round": 2,
+              "ms": 2.74
+            },
+            {
+              "round": 3,
+              "ms": 3.14
+            },
+            {
+              "round": 4,
+              "ms": 4.17
+            }
+          ],
+          "medianMs": 3.09,
+          "minMs": 2.74,
+          "maxMs": 4.17,
+          "meanMs": 3.1860000000000004,
+          "madPct": 9.708737864077664
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 294.76
+            },
+            {
+              "round": 1,
+              "ms": 215.15
+            },
+            {
+              "round": 2,
+              "ms": 302.77
+            },
+            {
+              "round": 3,
+              "ms": 177.21
+            },
+            {
+              "round": 4,
+              "ms": 189.26
+            }
+          ],
+          "medianMs": 215.15,
+          "minMs": 177.21,
+          "maxMs": 302.77,
+          "meanMs": 235.83,
+          "madPct": 17.634208691610503
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 50.83
+            },
+            {
+              "round": 1,
+              "ms": 49.84
+            },
+            {
+              "round": 2,
+              "ms": 49.95
+            },
+            {
+              "round": 3,
+              "ms": 63.09
+            },
+            {
+              "round": 4,
+              "ms": 62.58
+            }
+          ],
+          "medianMs": 50.83,
+          "minMs": 49.84,
+          "maxMs": 63.09,
+          "meanMs": 55.258,
+          "madPct": 1.9476686995868482
+        }
+      }
+    },
+    "closureCall-1M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 4.64
+            },
+            {
+              "round": 1,
+              "ms": 3.11
+            },
+            {
+              "round": 2,
+              "ms": 3.77
+            },
+            {
+              "round": 3,
+              "ms": 2.75
+            },
+            {
+              "round": 4,
+              "ms": 2.69
+            }
+          ],
+          "medianMs": 3.11,
+          "minMs": 2.69,
+          "maxMs": 4.64,
+          "meanMs": 3.3920000000000003,
+          "madPct": 13.5048231511254
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 350.56
+            },
+            {
+              "round": 1,
+              "ms": 326.07
+            },
+            {
+              "round": 2,
+              "ms": 253.96
+            },
+            {
+              "round": 3,
+              "ms": 214.2
+            },
+            {
+              "round": 4,
+              "ms": 215.65
+            }
+          ],
+          "medianMs": 253.96,
+          "minMs": 214.2,
+          "maxMs": 350.56,
+          "meanMs": 272.088,
+          "madPct": 15.656008820286665
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 2.94
+            },
+            {
+              "round": 1,
+              "ms": 3.38
+            },
+            {
+              "round": 2,
+              "ms": 3.04
+            },
+            {
+              "round": 3,
+              "ms": 4.11
+            },
+            {
+              "round": 4,
+              "ms": 2.63
+            }
+          ],
+          "medianMs": 3.04,
+          "minMs": 2.63,
+          "maxMs": 4.11,
+          "meanMs": 3.2199999999999998,
+          "madPct": 11.184210526315784
+        }
+      }
+    },
+    "fib25": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 20.46
+            },
+            {
+              "round": 1,
+              "ms": 23.39
+            },
+            {
+              "round": 2,
+              "ms": 22.37
+            },
+            {
+              "round": 3,
+              "ms": 37.32
+            },
+            {
+              "round": 4,
+              "ms": 22.15
+            }
+          ],
+          "medianMs": 22.37,
+          "minMs": 20.46,
+          "maxMs": 37.32,
+          "meanMs": 25.137999999999998,
+          "madPct": 4.55967814036656
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 35.76
+            },
+            {
+              "round": 1,
+              "ms": 33.89
+            },
+            {
+              "round": 2,
+              "ms": 36.04
+            },
+            {
+              "round": 3,
+              "ms": 33.29
+            },
+            {
+              "round": 4,
+              "ms": 35.51
+            }
+          ],
+          "medianMs": 35.51,
+          "minMs": 33.29,
+          "maxMs": 36.04,
+          "meanMs": 34.897999999999996,
+          "madPct": 1.492537313432839
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 19.93
+            },
+            {
+              "round": 1,
+              "ms": 22.28
+            },
+            {
+              "round": 2,
+              "ms": 24.02
+            },
+            {
+              "round": 3,
+              "ms": 30.18
+            },
+            {
+              "round": 4,
+              "ms": 21.47
+            }
+          ],
+          "medianMs": 22.28,
+          "minMs": 19.93,
+          "maxMs": 30.18,
+          "meanMs": 23.576,
+          "madPct": 7.809694793536797
+        }
+      }
+    },
+    "fib30": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 257.53
+            },
+            {
+              "round": 1,
+              "ms": 272.93
+            },
+            {
+              "round": 2,
+              "ms": 323.06
+            },
+            {
+              "round": 3,
+              "ms": 318.95
+            },
+            {
+              "round": 4,
+              "ms": 276.45
+            }
+          ],
+          "medianMs": 276.45,
+          "minMs": 257.53,
+          "maxMs": 323.06,
+          "meanMs": 289.784,
+          "madPct": 6.843913908482553
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 385.78
+            },
+            {
+              "round": 1,
+              "ms": 409.37
+            },
+            {
+              "round": 2,
+              "ms": 459.56
+            },
+            {
+              "round": 3,
+              "ms": 418.56
+            },
+            {
+              "round": 4,
+              "ms": 412.48
+            }
+          ],
+          "medianMs": 412.48,
+          "minMs": 385.78,
+          "maxMs": 459.56,
+          "meanMs": 417.15,
+          "madPct": 1.474010861132657
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 252.02
+            },
+            {
+              "round": 1,
+              "ms": 249.46
+            },
+            {
+              "round": 2,
+              "ms": 248.84
+            },
+            {
+              "round": 3,
+              "ms": 264.78
+            },
+            {
+              "round": 4,
+              "ms": 292.86
+            }
+          ],
+          "medianMs": 252.02,
+          "minMs": 248.84,
+          "maxMs": 292.86,
+          "meanMs": 261.592,
+          "madPct": 1.2618046186810596
+        }
+      }
+    },
+    "gcPressure-500K": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 408.27
+            },
+            {
+              "round": 1,
+              "ms": 452.69
+            },
+            {
+              "round": 2,
+              "ms": 478.35
+            },
+            {
+              "round": 3,
+              "ms": 468.37
+            },
+            {
+              "round": 4,
+              "ms": 449.57
+            }
+          ],
+          "medianMs": 452.69,
+          "minMs": 408.27,
+          "maxMs": 478.35,
+          "meanMs": 451.45,
+          "madPct": 3.4637389825266753
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 502.06
+            },
+            {
+              "round": 1,
+              "ms": 444.72
+            },
+            {
+              "round": 2,
+              "ms": 520.69
+            },
+            {
+              "round": 3,
+              "ms": 475.81
+            },
+            {
+              "round": 4,
+              "ms": 445.68
+            }
+          ],
+          "medianMs": 475.81,
+          "minMs": 444.72,
+          "maxMs": 520.69,
+          "meanMs": 477.79200000000003,
+          "madPct": 6.332359555284671
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 417.13
+            },
+            {
+              "round": 1,
+              "ms": 461.92
+            },
+            {
+              "round": 2,
+              "ms": 452.04
+            },
+            {
+              "round": 3,
+              "ms": 451.21
+            },
+            {
+              "round": 4,
+              "ms": 445.64
+            }
+          ],
+          "medianMs": 451.21,
+          "minMs": 417.13,
+          "maxMs": 461.92,
+          "meanMs": 445.588,
+          "madPct": 1.2344584561512364
+        }
+      }
+    },
+    "methodCall-1M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 4.06
+            },
+            {
+              "round": 1,
+              "ms": 5.08
+            },
+            {
+              "round": 2,
+              "ms": 4.58
+            },
+            {
+              "round": 3,
+              "ms": 5.38
+            },
+            {
+              "round": 4,
+              "ms": 4.7
+            }
+          ],
+          "medianMs": 4.7,
+          "minMs": 4.06,
+          "maxMs": 5.38,
+          "meanMs": 4.76,
+          "madPct": 8.08510638297872
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 245.27
+            },
+            {
+              "round": 1,
+              "ms": 276.36
+            },
+            {
+              "round": 2,
+              "ms": 281.94
+            },
+            {
+              "round": 3,
+              "ms": 216.26
+            },
+            {
+              "round": 4,
+              "ms": 238.78
+            }
+          ],
+          "medianMs": 245.27,
+          "minMs": 216.26,
+          "maxMs": 281.94,
+          "meanMs": 251.72199999999998,
+          "madPct": 11.827781628409516
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 51.87
+            },
+            {
+              "round": 1,
+              "ms": 53.88
+            },
+            {
+              "round": 2,
+              "ms": 56.07
+            },
+            {
+              "round": 3,
+              "ms": 56.57
+            },
+            {
+              "round": 4,
+              "ms": 54.26
+            }
+          ],
+          "medianMs": 54.26,
+          "minMs": 51.87,
+          "maxMs": 56.57,
+          "meanMs": 54.529999999999994,
+          "madPct": 3.33579063767048
+        }
+      }
+    },
+    "mixed.js": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 289.7089
+            },
+            {
+              "round": 1,
+              "ms": 277.1707
+            },
+            {
+              "round": 2,
+              "ms": 300.8701
+            },
+            {
+              "round": 3,
+              "ms": 308.8645
+            },
+            {
+              "round": 4,
+              "ms": 345.8028
+            }
+          ],
+          "medianMs": 300.8701,
+          "minMs": 277.1707,
+          "maxMs": 345.8028,
+          "meanMs": 304.48339999999996,
+          "madPct": 3.709640805118206
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 517.1242
+            },
+            {
+              "round": 1,
+              "ms": 542.6615
+            },
+            {
+              "round": 2,
+              "ms": 532.2038
+            },
+            {
+              "round": 3,
+              "ms": 609.6427
+            },
+            {
+              "round": 4,
+              "ms": 586.3734
+            }
+          ],
+          "medianMs": 542.6615,
+          "minMs": 517.1242,
+          "maxMs": 609.6427,
+          "meanMs": 557.60112,
+          "madPct": 4.705935468058831
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 270.6476
+            },
+            {
+              "round": 1,
+              "ms": 286.3428
+            },
+            {
+              "round": 2,
+              "ms": 298.5619
+            },
+            {
+              "round": 3,
+              "ms": 291.6379
+            },
+            {
+              "round": 4,
+              "ms": 278.0954
+            }
+          ],
+          "medianMs": 286.3428,
+          "minMs": 270.6476,
+          "maxMs": 298.5619,
+          "meanMs": 285.05712,
+          "madPct": 2.8802540172129443
+        }
+      }
+    },
+    "propAccess-3M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 10.16
+            },
+            {
+              "round": 1,
+              "ms": 9.05
+            },
+            {
+              "round": 2,
+              "ms": 8.98
+            },
+            {
+              "round": 3,
+              "ms": 7.97
+            },
+            {
+              "round": 4,
+              "ms": 9.8
+            }
+          ],
+          "medianMs": 9.05,
+          "minMs": 7.97,
+          "maxMs": 10.16,
+          "meanMs": 9.192000000000002,
+          "madPct": 8.287292817679557
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 692.2
+            },
+            {
+              "round": 1,
+              "ms": 878.78
+            },
+            {
+              "round": 2,
+              "ms": 780.32
+            },
+            {
+              "round": 3,
+              "ms": 710.93
+            },
+            {
+              "round": 4,
+              "ms": 682.2
+            }
+          ],
+          "medianMs": 710.93,
+          "minMs": 682.2,
+          "maxMs": 878.78,
+          "meanMs": 748.8860000000001,
+          "madPct": 4.041185489429326
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 228.8
+            },
+            {
+              "round": 1,
+              "ms": 238.01
+            },
+            {
+              "round": 2,
+              "ms": 230.82
+            },
+            {
+              "round": 3,
+              "ms": 255.93
+            },
+            {
+              "round": 4,
+              "ms": 233.31
+            }
+          ],
+          "medianMs": 233.31,
+          "minMs": 228.8,
+          "maxMs": 255.93,
+          "meanMs": 237.37399999999997,
+          "madPct": 1.933050447901929
+        }
+      }
+    },
+    "propSet-3M": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 8.24
+            },
+            {
+              "round": 1,
+              "ms": 7.13
+            },
+            {
+              "round": 2,
+              "ms": 7.68
+            },
+            {
+              "round": 3,
+              "ms": 6.6
+            },
+            {
+              "round": 4,
+              "ms": 6.62
+            }
+          ],
+          "medianMs": 7.13,
+          "minMs": 6.6,
+          "maxMs": 8.24,
+          "meanMs": 7.254,
+          "madPct": 7.4333800841514766
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 546.41
+            },
+            {
+              "round": 1,
+              "ms": 821.83
+            },
+            {
+              "round": 2,
+              "ms": 458.78
+            },
+            {
+              "round": 3,
+              "ms": 403.25
+            },
+            {
+              "round": 4,
+              "ms": 419.05
+            }
+          ],
+          "medianMs": 458.78,
+          "minMs": 403.25,
+          "maxMs": 821.83,
+          "meanMs": 529.864,
+          "madPct": 12.103840620776838
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 128.38
+            },
+            {
+              "round": 1,
+              "ms": 156.62
+            },
+            {
+              "round": 2,
+              "ms": 154.17
+            },
+            {
+              "round": 3,
+              "ms": 138.88
+            },
+            {
+              "round": 4,
+              "ms": 133.07
+            }
+          ],
+          "medianMs": 138.88,
+          "minMs": 128.38,
+          "maxMs": 156.62,
+          "meanMs": 142.224,
+          "madPct": 7.560483870967742
+        }
+      }
+    },
+    "strConcat-100K": {
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 40.2
+            },
+            {
+              "round": 1,
+              "ms": 40.89
+            },
+            {
+              "round": 2,
+              "ms": 40.65
+            },
+            {
+              "round": 3,
+              "ms": 42.97
+            },
+            {
+              "round": 4,
+              "ms": 42.44
+            }
+          ],
+          "medianMs": 40.89,
+          "minMs": 40.2,
+          "maxMs": 42.97,
+          "meanMs": 41.43,
+          "madPct": 1.687454145267786
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 57.77
+            },
+            {
+              "round": 1,
+              "ms": 47.4
+            },
+            {
+              "round": 2,
+              "ms": 47.43
+            },
+            {
+              "round": 3,
+              "ms": 44.58
+            },
+            {
+              "round": 4,
+              "ms": 43.1
+            }
+          ],
+          "medianMs": 47.4,
+          "minMs": 43.1,
+          "maxMs": 57.77,
+          "meanMs": 48.056,
+          "madPct": 5.9493670886075956
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 51.93
+            },
+            {
+              "round": 1,
+              "ms": 55.84
+            },
+            {
+              "round": 2,
+              "ms": 44.03
+            },
+            {
+              "round": 3,
+              "ms": 42.12
+            },
+            {
+              "round": 4,
+              "ms": 42.37
+            }
+          ],
+          "medianMs": 44.03,
+          "minMs": 42.12,
+          "maxMs": 55.84,
+          "meanMs": 47.258,
+          "madPct": 4.337951396774935
+        }
+      }
+    }
+  },
+  "summary": {
+    "cases": {
+      "arrayMap-100x10K": {
+        "tier": {
+          "auto": {
+            "medianMs": 18.6,
+            "vsOff": 1.1241935483870966
+          },
+          "off": {
+            "medianMs": 20.91,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 18.47,
+            "vsOff": 1.1321061180292367
+          }
+        }
+      },
+      "arrayPush-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 84.4,
+            "vsOff": 5.108056872037914
+          },
+          "off": {
+            "medianMs": 431.12,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 89.59,
+            "vsOff": 4.812144212523719
+          }
+        }
+      },
+      "callOverhead-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 3.09,
+            "vsOff": 69.62783171521036
+          },
+          "off": {
+            "medianMs": 215.15,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 50.83,
+            "vsOff": 4.232736572890026
+          }
+        }
+      },
+      "closureCall-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 3.11,
+            "vsOff": 81.65916398713827
+          },
+          "off": {
+            "medianMs": 253.96,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 3.04,
+            "vsOff": 83.53947368421053
+          }
+        }
+      },
+      "fib25": {
+        "tier": {
+          "auto": {
+            "medianMs": 22.37,
+            "vsOff": 1.5873938310236924
+          },
+          "off": {
+            "medianMs": 35.51,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 22.28,
+            "vsOff": 1.5938061041292637
+          }
+        }
+      },
+      "fib30": {
+        "tier": {
+          "auto": {
+            "medianMs": 276.45,
+            "vsOff": 1.4920600470247785
+          },
+          "off": {
+            "medianMs": 412.48,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 252.02,
+            "vsOff": 1.6366955003571144
+          }
+        }
+      },
+      "gcPressure-500K": {
+        "tier": {
+          "auto": {
+            "medianMs": 452.69,
+            "vsOff": 1.0510724778546026
+          },
+          "off": {
+            "medianMs": 475.81,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 451.21,
+            "vsOff": 1.0545200682608986
+          }
+        }
+      },
+      "methodCall-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 4.7,
+            "vsOff": 52.185106382978724
+          },
+          "off": {
+            "medianMs": 245.27,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 54.26,
+            "vsOff": 4.520272760781423
+          }
+        }
+      },
+      "mixed.js": {
+        "tier": {
+          "auto": {
+            "medianMs": 300.8701,
+            "vsOff": 1.8036405079800222
+          },
+          "off": {
+            "medianMs": 542.6615,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 286.3428,
+            "vsOff": 1.8951463071535237
+          }
+        }
+      },
+      "propAccess-3M": {
+        "tier": {
+          "auto": {
+            "medianMs": 9.05,
+            "vsOff": 78.55580110497236
+          },
+          "off": {
+            "medianMs": 710.93,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 233.31,
+            "vsOff": 3.0471475719000467
+          }
+        }
+      },
+      "propSet-3M": {
+        "tier": {
+          "auto": {
+            "medianMs": 7.13,
+            "vsOff": 64.34502103786816
+          },
+          "off": {
+            "medianMs": 458.78,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 138.88,
+            "vsOff": 3.3034274193548385
+          }
+        }
+      },
+      "strConcat-100K": {
+        "tier": {
+          "auto": {
+            "medianMs": 40.89,
+            "vsOff": 1.1592076302274394
+          },
+          "off": {
+            "medianMs": 47.4,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 44.03,
+            "vsOff": 1.076538723597547
+          }
+        }
+      }
+    }
+  }
+}

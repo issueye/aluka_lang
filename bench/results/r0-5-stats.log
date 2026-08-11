@@ -1,0 +1,64 @@
+jitbench: aluka JIT three-tier benchmark
+  generated=2026-08-11T02:03:23Z  commit=fbe9b5e
+  platform=windows/amd64  cpu=Intel64 Family 6 Model 186 Stepping 2, GenuineIntel  go=go1.25.10  aluka=aluka 0.1.0-dev
+  binary=E:\codes\go_projects\aluka_lang\aluka_lang\bin\aluka.exe
+  scripts=[tests/benchmark/perf-compare.js tests/benchmark/mixed.js]
+  tiers=[off quick auto]  reps=1  rotate=true  timeout=2m0s
+
+arrayMap-100x10K
+  off    median=   16.26ms  min=   16.26  max=   16.26  mean=   16.26  mad=0.0%  samples=[16.26]
+  quick  median=   22.21ms  vsOff= 0.73x  min=   22.21  max=   22.21  mean=   22.21  mad=0.0%  samples=[22.21]
+  auto   median=   18.60ms  vsOff= 0.87x  min=   18.60  max=   18.60  mean=   18.60  mad=0.0%  samples=[18.60]
+arrayPush-1M
+  off    median=  568.68ms  min=  568.68  max=  568.68  mean=  568.68  mad=0.0%  samples=[568.68]
+  quick  median=   92.93ms  vsOff= 6.12x  min=   92.93  max=   92.93  mean=   92.93  mad=0.0%  samples=[92.93]
+  auto   median=   79.04ms  vsOff= 7.19x  min=   79.04  max=   79.04  mean=   79.04  mad=0.0%  samples=[79.04]
+callOverhead-1M
+  off    median=  235.92ms  min=  235.92  max=  235.92  mean=  235.92  mad=0.0%  samples=[235.92]
+  quick  median=   51.74ms  vsOff= 4.56x  min=   51.74  max=   51.74  mean=   51.74  mad=0.0%  samples=[51.74]
+  auto   median=    4.90ms  vsOff=48.15x  min=    4.90  max=    4.90  mean=    4.90  mad=0.0%  samples=[4.90]
+closureCall-1M
+  off    median=  313.16ms  min=  313.16  max=  313.16  mean=  313.16  mad=0.0%  samples=[313.16]
+  quick  median=    3.39ms  vsOff=92.38x  min=    3.39  max=    3.39  mean=    3.39  mad=0.0%  samples=[3.39]
+  auto   median=    6.86ms  vsOff=45.65x  min=    6.86  max=    6.86  mean=    6.86  mad=0.0%  samples=[6.86]
+fib25
+  off    median=   33.75ms  min=   33.75  max=   33.75  mean=   33.75  mad=0.0%  samples=[33.75]
+  quick  median=   22.21ms  vsOff= 1.52x  min=   22.21  max=   22.21  mean=   22.21  mad=0.0%  samples=[22.21]
+  auto   median=   22.72ms  vsOff= 1.49x  min=   22.72  max=   22.72  mean=   22.72  mad=0.0%  samples=[22.72]
+fib30
+  off    median=  403.93ms  min=  403.93  max=  403.93  mean=  403.93  mad=0.0%  samples=[403.93]
+  quick  median=  242.51ms  vsOff= 1.67x  min=  242.51  max=  242.51  mean=  242.51  mad=0.0%  samples=[242.51]
+  auto   median=  258.59ms  vsOff= 1.56x  min=  258.59  max=  258.59  mean=  258.59  mad=0.0%  samples=[258.59]
+gcPressure-500K
+  off    median=  427.95ms  min=  427.95  max=  427.95  mean=  427.95  mad=0.0%  samples=[427.95]
+  quick  median=  445.47ms  vsOff= 0.96x  min=  445.47  max=  445.47  mean=  445.47  mad=0.0%  samples=[445.47]
+  auto   median=  464.76ms  vsOff= 0.92x  min=  464.76  max=  464.76  mean=  464.76  mad=0.0%  samples=[464.76]
+methodCall-1M
+  off    median=  233.58ms  min=  233.58  max=  233.58  mean=  233.58  mad=0.0%  samples=[233.58]
+  quick  median=   54.48ms  vsOff= 4.29x  min=   54.48  max=   54.48  mean=   54.48  mad=0.0%  samples=[54.48]
+  auto   median=    5.05ms  vsOff=46.25x  min=    5.05  max=    5.05  mean=    5.05  mad=0.0%  samples=[5.05]
+mixed.js
+  off    median=  562.73ms  min=  562.73  max=  562.73  mean=  562.73  mad=0.0%  samples=[562.73]
+  quick  median=  270.05ms  vsOff= 2.08x  min=  270.05  max=  270.05  mean=  270.05  mad=0.0%  samples=[270.05]
+  auto   median=  297.57ms  vsOff= 1.89x  min=  297.57  max=  297.57  mean=  297.57  mad=0.0%  samples=[297.57]
+propAccess-3M
+  off    median=  663.07ms  min=  663.07  max=  663.07  mean=  663.07  mad=0.0%  samples=[663.07]
+  quick  median=  224.41ms  vsOff= 2.95x  min=  224.41  max=  224.41  mean=  224.41  mad=0.0%  samples=[224.41]
+  auto   median=    9.25ms  vsOff=71.68x  min=    9.25  max=    9.25  mean=    9.25  mad=0.0%  samples=[9.25]
+propSet-3M
+  off    median=  549.81ms  min=  549.81  max=  549.81  mean=  549.81  mad=0.0%  samples=[549.81]
+  quick  median=  125.57ms  vsOff= 4.38x  min=  125.57  max=  125.57  mean=  125.57  mad=0.0%  samples=[125.57]
+  auto   median=    6.80ms  vsOff=80.85x  min=    6.80  max=    6.80  mean=    6.80  mad=0.0%  samples=[6.80]
+strConcat-100K
+  off    median=   53.54ms  min=   53.54  max=   53.54  mean=   53.54  mad=0.0%  samples=[53.54]
+  quick  median=   54.55ms  vsOff= 0.98x  min=   54.55  max=   54.55  mean=   54.55  mad=0.0%  samples=[54.55]
+  auto   median=   42.20ms  vsOff= 1.27x  min=   42.20  max=   42.20  mean=   42.20  mad=0.0%  samples=[42.20]
+
+JIT stats (per script/tier):
+  tests/benchmark/mixed.js [auto]: JIT stats: mode=auto threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=1012 backedges=10000 candidates=2 compileNanos=0 compiled=1 rejected=1 executed=12 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=0 nativeExecuted=0 nativeYields=0 nativeCodeBytes=0 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=4 traceCompileNanos=0 tracesRejected=2 tracesExecuted=4 traceYields=19 nativeTracesCompiled=0 nativeTraceCompileNanos=0 nativeTracesRejected=1 nativeTracesExecuted=0 nativeTraceYields=0 safepointPolls=19 interruptions=0 noopCallSites=0 methodCallSites=0 arrayPushSites=3 arrayPushYields=4 closureUpvalueSites=0 closureUpvalueYields=0 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError="jit: trace non-number constant" lastNativeError="jit: native limits exceeded"
+  tests/benchmark/mixed.js [off]: JIT stats: mode=off threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=0 backedges=0 candidates=0 compileNanos=0 compiled=0 rejected=0 executed=0 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=0 nativeExecuted=0 nativeYields=0 nativeCodeBytes=0 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=0 traceCompileNanos=0 tracesRejected=0 tracesExecuted=0 traceYields=0 nativeTracesCompiled=0 nativeTraceCompileNanos=0 nativeTracesRejected=0 nativeTracesExecuted=0 nativeTraceYields=0 safepointPolls=0 interruptions=0 noopCallSites=0 methodCallSites=0 arrayPushSites=0 arrayPushYields=0 closureUpvalueSites=0 closureUpvalueYields=0 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError="" lastNativeError=""
+  tests/benchmark/mixed.js [quick]: JIT stats: mode=quick threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=1012 backedges=10000 candidates=2 compileNanos=0 compiled=1 rejected=1 executed=12 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=0 nativeExecuted=0 nativeYields=0 nativeCodeBytes=0 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=4 traceCompileNanos=0 tracesRejected=2 tracesExecuted=4 traceYields=19 nativeTracesCompiled=0 nativeTraceCompileNanos=0 nativeTracesRejected=0 nativeTracesExecuted=0 nativeTraceYields=0 safepointPolls=19 interruptions=0 noopCallSites=0 methodCallSites=0 arrayPushSites=3 arrayPushYields=4 closureUpvalueSites=0 closureUpvalueYields=0 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError="jit: trace non-number constant" lastNativeError=""
+  tests/benchmark/perf-compare.js [off]: JIT stats: mode=off threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=0 backedges=0 candidates=0 compileNanos=0 compiled=0 rejected=0 executed=0 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=0 nativeExecuted=0 nativeYields=0 nativeCodeBytes=0 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=0 traceCompileNanos=0 tracesRejected=0 tracesExecuted=0 traceYields=0 nativeTracesCompiled=0 nativeTraceCompileNanos=0 nativeTracesRejected=0 nativeTracesExecuted=0 nativeTraceYields=0 safepointPolls=0 interruptions=0 noopCallSites=0 methodCallSites=0 arrayPushSites=0 arrayPushYields=0 closureUpvalueSites=0 closureUpvalueYields=0 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError="" lastNativeError=""
+  tests/benchmark/perf-compare.js [quick]: JIT stats: mode=quick threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=13055 backedges=90000 candidates=13 compileNanos=524800 compiled=2 rejected=11 executed=9033 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=0 nativeExecuted=0 nativeYields=0 nativeCodeBytes=0 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=7 traceCompileNanos=0 tracesRejected=2 tracesExecuted=7 traceYields=150 nativeTracesCompiled=0 nativeTraceCompileNanos=0 nativeTracesRejected=0 nativeTracesExecuted=0 nativeTraceYields=0 safepointPolls=192 interruptions=0 noopCallSites=1 methodCallSites=1 arrayPushSites=2 arrayPushYields=15 closureUpvalueSites=1 closureUpvalueYields=15 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError="jit: trace non-number constant" lastNativeError=""
+  tests/benchmark/perf-compare.js [auto]: JIT stats: mode=auto threshold=1000 backedgeThreshold=10000 traceBudget=65536 codeCacheLimit=4194304 calls=13040 backedges=90000 candidates=13 compileNanos=0 compiled=2 rejected=11 executed=9018 nativeCompiled=0 nativeCompileNanos=0 nativeRejected=1 nativeExecuted=0 nativeYields=0 nativeCodeBytes=715 nativeEvictions=0 backgroundQueued=0 backgroundCompleted=0 backgroundDiscarded=0 calleeSpecialized=0 calleeInlined=0 calleeExecuted=0 calleeGuardFailures=0 calleePICAdds=0 calleePICHits=0 tracesCompiled=7 traceCompileNanos=0 tracesRejected=2 tracesExecuted=3 traceYields=30 nativeTracesCompiled=4 nativeTraceCompileNanos=0 nativeTracesRejected=0 nativeTracesExecuted=4 nativeTraceYields=120 safepointPolls=192 interruptions=0 noopCallSites=1 methodCallSites=1 arrayPushSites=2 arrayPushYields=15 closureUpvalueSites=1 closureUpvalueYields=15 verifyChecks=0 verifyFailures=0 guardFailures=0 quickGuardDisabled=0 traceGuardDisabled=0 nativeGuardDisabled=0 nativeTraceGuardDisabled=0 calleeGuardDisabled=0 errors=0 lastError="jit: trace non-number constant" lastNativeError="jit: native unsupported IR opcode 29"
+jitbench: wrote bench/results/jit-20260811-windows-amd64-stats.json

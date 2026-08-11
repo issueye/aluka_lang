@@ -712,6 +712,55 @@ String、BigInt、Boolean、nullish 和相同/不同对象；Native 连续 guard
 其余调用稳定使用 Quick，结果与 Tier 0 一致且 Native 双执行无差异。String/BigInt 算术、关系
 比较、宽松相等和 Native spill 仍不在本轮范围。
 
+v2.12 落地 R0-2 统一三 tier 基准入口。新增 `bench/cmd/jitbench` Go 命令：CLI 缺失或 `-rebuild`
+时只构建一次，按轮次轮换 off/quick/auto 的执行顺序（避免温度和频率偏置），运行
+`tests/benchmark/perf-compare.js`（逐 case `name: ms` 行）与 `tests/benchmark/mixed.js`
+（无行输出时按进程墙钟计样），自动输出每个 (case, tier) 的原始样本、中位数、min/max、均值与
+相对 MAD 离散度，并可经 `-out` 写入 `bench/results/jit-<date>-<platform>.json` 结果归档
+（参数、commit/平台/Go/aluka 版本、统计、失败原因；该落盘只是测量记录，R0-4 的 schema 校验
+与归档契约仍是独立任务）。Windows amd64 实机 `-reps 3` 验证：轮换顺序
+off/quick/auto → quick/auto/off → auto/off/quick；propAccess-3M 中位数 off 659ms / quick 243ms /
+auto 8ms，mixed 墙钟 off 553ms / quick 284ms / auto 278ms，与 v1.6 快照一致；冷启动
+`JITColdStart` 50x5 中位数 off 2.353ms / auto 2.447ms（auto 回退约 3.9%，低于 5% 门禁）。
+新增 14 个单元测试覆盖输出解析（含 JIT stats/IC stats/裸数字噪声过滤）、统计计算、轮换顺序、
+聚合、墙钟模式与失败记录；`go test ./... -count=1`、`go vet`（含 `./bench`）、`git diff --check`
+通过。`go test -race` 在本机因 Windows TSan 无法分配影子内存（error code 87，基线同样失败）
+不可执行，race 门禁交由 R2 Linux CI 覆盖。该条目不改变任何引擎代码、默认 `--jit=off` 门禁或
+性能快照。
+
+v2.13 落地 R0-4 结果归档格式。`bench/cmd/jitbench` 的 `-out` 从测量落盘升级为带版本契约的归档：
+新增 `schemaVersion: "1"`、`summary` 摘要（每 (case, tier) 的中位数与 `vsOff` 相对 off 加速比，
+off 恒为 1）、`validateReport` 校验器（强制参数/版本/统计/失败原因字段；每个 (case, tier) 要么有
+等于 reps 的原始样本、要么有对应的失败记录解释缺失；摘要必须覆盖全部 case；失败记录必须完整且
+round 在界内）。写盘前必过校验，`-out` 指向目录时按 `jit-<YYYYMMDD>-<goos>-<goarch>.json`
+命名。新增 8 个单元测试（摘要、15 条校验规则、JSON 写读 round-trip、命名约定），jitbench 包共
+22 个测试通过；实机生成 `bench/results/jit-20260811-windows-amd64.json`（schemaVersion 1、
+summary 含 vsOff、config/版本/失败字段齐全）并 round-trip 校验通过。`go test ./... -count=1`、
+`go vet`（含 `./bench`）、`gofmt`、`git diff --check` 均通过；race 门禁同 v2.12，仍受 Windows
+TSan 环境限制，交由 R2 Linux CI。归档按日按平台命名，同日重跑覆盖同名文件；Node 对照与 5 次
+中位数正式报告仍是 R0-5/R5 的独立交付。该条目不改变任何引擎代码、默认 `--jit=off` 门禁或性能快照。
+
+v2.14 落地 R0-3 正确性覆盖矩阵。新增 `docs/jit-coverage-matrix.md`：按 45 个 IR opcode（Quick 函数 /
+Quick trace / Native 三列）、7 类值（Number/Boolean/nullish/Object/String/BigInt/Symbol）、函数/trace/
+Native 生命周期、guard/deopt、平台与可执行内存建立能力→权威测试映射，每个能力行标注测试引用；
+新增 `TestJITSymbolValuesGuardBackToTier0` 补齐审计发现的唯一缺口（v2.11 宣称 Symbol 值 guard 回
+Tier 0 但无测试）：函数级与 trace 级同时覆盖 `===` 与 truthiness 的 Symbol 输入，断言三模式结果一致
+（identity 语义）、guard 失败被记录、Auto 不产生 verify 失败。矩阵全部测试引用逐一核对存在且通过，
+审计后不存在“代码已宣称支持但无测试”的条目。该条目不改变任何引擎执行语义、默认 `--jit=off` 门禁
+或性能快照；`go test ./... -count=1`、`go vet`、`gofmt`、`git diff --check` 均通过。
+
+v2.15 落地 R0-1 环境固化与 R0-5 冻结快照。新增 `tests/benchmark/jit-special.js`（J2/J3 专项形态：
+数值循环、单态 callee 内联、外部对象属性累加、own 属性写，输出 `name: ms` 供 jitbench 采集）与
+`docs/performance-report-r0-5.md`（同时承载 R0-1 环境记录）。同一二进制（SHA-256
+`43c4ba83…`）完成 4 轮 ×5 次采集：11 项 Auto 合计 `949.71ms`（13.8x Node）、off `3140.23ms`；
+mixed 墙钟 Auto `295.29ms`（2.6x Node）；专项 numeric loop `7.56ms` / callee inline `198.48ms` /
+external props `8.97ms` / prop write `7.85ms`（均 5 次中位数），与 J2/J3 快照同量级；冷启动 50x5
+off `2.858ms` / auto `3.946ms`。**诚实结论：R0 §5.3 稳定性验收未通过**——连续轮对中位数最大偏差
+A-B 19.1% / B-C 26.8% / C-D 64.2%，根因为本机仅有“平衡”电源方案（无高性能方案）+ 采集期间后台
+负载（ChatGPT/ToDesk/webview2/ZCode）；冷启动 auto 相对 off +38.1% 同样判为环境离群（R0-2 安静
+状态下为 +3.9%）。因此 R0-1/R0-5 交付物齐全，但 R0 里程碑验收挂起，默认 `--jit=off` 不变；复核
+须在安静环境与固定电源策略下进行。该条目不改变任何引擎执行语义或覆盖矩阵。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见

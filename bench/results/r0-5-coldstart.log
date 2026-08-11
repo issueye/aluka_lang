@@ -1,0 +1,16 @@
+goos: windows
+goarch: amd64
+pkg: github.com/aluka-lang/aluka/bench
+cpu: 13th Gen Intel(R) Core(TM) i5-13420H
+BenchmarkJITColdStart/off-12         	      50	   2748668 ns/op	 2614141 B/op	   22416 allocs/op
+BenchmarkJITColdStart/off-12         	      50	   2800928 ns/op	 2613657 B/op	   22415 allocs/op
+BenchmarkJITColdStart/off-12         	      50	   2987970 ns/op	 2613617 B/op	   22415 allocs/op
+BenchmarkJITColdStart/off-12         	      50	   4179006 ns/op	 2613709 B/op	   22415 allocs/op
+BenchmarkJITColdStart/off-12         	      50	   2858182 ns/op	 2613667 B/op	   22415 allocs/op
+BenchmarkJITColdStart/auto-12        	      50	   3329302 ns/op	 2632581 B/op	   22429 allocs/op
+BenchmarkJITColdStart/auto-12        	      50	   3945876 ns/op	 2632643 B/op	   22429 allocs/op
+BenchmarkJITColdStart/auto-12        	      50	   5824230 ns/op	 2632376 B/op	   22428 allocs/op
+BenchmarkJITColdStart/auto-12        	      50	   5608132 ns/op	 2632495 B/op	   22428 allocs/op
+BenchmarkJITColdStart/auto-12        	      50	   3738488 ns/op	 2632613 B/op	   22430 allocs/op
+PASS
+ok  	github.com/aluka-lang/aluka/bench	1.985s
