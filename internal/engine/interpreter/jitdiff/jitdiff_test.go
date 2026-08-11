@@ -535,6 +535,52 @@ func TestPrimitiveOpsFixedCasesHitQuick(t *testing.T) {
 	}
 }
 
+// TestLooseEqFixedCasesHitQuick proves the R3-3 fixed cases are not Tier 0
+// sleight of hand: -51 (leaf ==/!= over primitives) must compile and execute
+// in Quick with zero guard failures, and -52 (traced loop kernel) must
+// compile traces, execute them, and produce real guard failures on the object
+// operand pairs that fall back to Tier 0.
+func TestLooseEqFixedCasesHitQuick(t *testing.T) {
+	for _, c := range FixedCases() {
+		if c.Kind != KindLooseEq {
+			continue
+		}
+		c.applySource()
+		t.Run(fmt.Sprintf("%02d", -c.ID), func(t *testing.T) {
+			results, err := RunCase(c, c.Params)
+			if err != nil {
+				if mismatch, ok := err.(*Mismatch); ok {
+					t.Fatalf("cross-tier mismatch: %v", mismatch)
+				}
+				t.Fatalf("infrastructure error: %v", err)
+			}
+			if results[0].Result != c.Expected {
+				t.Fatalf("off event log:\n%s\nwant:\n%s", results[0].Result, c.Expected)
+			}
+			quick := results[1].Stats
+			switch c.ID {
+			case -51:
+				// All-primitive leaf: compiled + executed, no guard failure.
+				if quick.Compiled == 0 || quick.Executed == 0 {
+					t.Fatalf("case %d did not compile+execute in Quick: %+v", c.ID, quick)
+				}
+				if quick.GuardFailures != 0 {
+					t.Fatalf("case %d has unexpected guard failures (all pairs are primitives): %+v", c.ID, quick)
+				}
+			case -52:
+				// Traced loop kernel: traces compiled+executed, and the object
+				// pairs produced real guard failures that fell back to Tier 0.
+				if quick.TracesCompiled == 0 || quick.TracesExecuted == 0 {
+					t.Fatalf("case %d did not compile+execute traces in Quick: %+v", c.ID, quick)
+				}
+				if quick.GuardFailures == 0 {
+					t.Fatalf("case %d produced no guard failure (object operand fallback missing): %+v", c.ID, quick)
+				}
+			}
+		})
+	}
+}
+
 // TestReplayFailure replays a saved artifact directory with a single command:
 //
 //	go test ./internal/engine/interpreter/jitdiff -run 'TestReplayFailure' -artifact <dir> -count=1

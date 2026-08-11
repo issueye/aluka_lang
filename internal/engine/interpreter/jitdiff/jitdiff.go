@@ -21,12 +21,19 @@
 // proves that fallback produces identical observable behavior instead of
 // misreporting such cases as JIT mismatches. R3-4/R3-5 added same-type String
 // and BigInt operations (concat, relational comparison, BigInt arithmetic and
-// bitwise) which Quick executes natively; the primitive-op kinds cover both
-// the Quick hits and the mixed-type/exception fallbacks. BigInt unary `~` is
-// intentionally absent from the generators: Tier 0's OpBitNot does not
+// bitwise) which Quick executes natively; R3-3 made == / != execute in Quick
+// for the whole primitive domain (Number/String/BigInt/Boolean/null/
+// undefined/Symbol) through the shared engine.LooseEquals helper, while
+// object operands still guard back to Tier 0. The primitive-op kinds cover
+// both the Quick hits and the mixed-type/exception fallbacks. BigInt unary
+// `~` is intentionally absent from the generators: Tier 0's OpBitNot does not
 // dispatch BigInt (recorded Tier 0 bug), while Quick computes the correct
 // ES result, so differential coverage of `~` on BigInt waits for the Tier 0
-// fix.
+// fix. The same holds for the loose-equality pairs where Tier 0's looseEquals
+// disagrees with JS ("" / whitespace-only / 0x/0o strings vs Number or
+// Boolean, and BigInt outside {0n, 1n} vs true): those pairs are neither
+// generated nor fixed until Tier 0 is fixed, and the JIT additionally guards
+// them at runtime.
 package jitdiff
 
 import (
@@ -179,7 +186,7 @@ func (k Kind) String() string {
 // asserts via per-case stats instead of a blanket execution count.
 func (k Kind) ExpectsQuickHit() bool {
 	switch k {
-	case KindBranch, KindLoop, KindStrictEq, KindPropRead, KindPropWrite,
+	case KindBranch, KindLoop, KindStrictEq, KindLooseEq, KindPropRead, KindPropWrite,
 		KindPush, KindClosure, KindCall, KindStringOps, KindBigIntArith,
 		KindBigIntBitwise, KindBigIntCompare,
 		KindTernary, KindSwitch, KindShortCircuit:

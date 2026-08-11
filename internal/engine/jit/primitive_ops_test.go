@@ -1,6 +1,7 @@
 package jit
 
 import (
+	"math"
 	"math/big"
 	"strings"
 	"testing"
@@ -562,5 +563,187 @@ func TestTraceStringGuardFallsBack(t *testing.T) {
 	_, reason, err := trace.ExecuteBudgetDetailed(locals, 0)
 	if err != nil || reason != GuardFailed {
 		t.Fatalf("reason=%v err=%v, want GuardFailed", reason, err)
+	}
+}
+
+// TestExecuteLooseEquality is the R3-3 Quick integration gate: `==` / `!=` on
+// primitive operands (Number/String/BigInt/Boolean/null/undefined/Symbol)
+// executes inside Quick with JS semantics; object operands and the recorded
+// Tier 0 divergence pairs ("" vs Number/Boolean, BigInt!=0n vs true) guard
+// back to Tier 0.
+func TestExecuteLooseEquality(t *testing.T) {
+	symA := engine.NewSymbol("k")
+	symB := engine.NewSymbol("k")
+	objA := engine.NewObject()
+	objB := engine.NewObject()
+	cases := []struct {
+		name        string
+		op          bytecode.Opcode
+		left, right engine.Value
+		want        bool
+		executes    bool // true: Quick computes the result; false: GuardFailed
+	}{
+		{name: "num-num-eq", op: bytecode.OpEq, left: engine.Number(1), right: engine.Number(1), want: true, executes: true},
+		{name: "num-num-ne", op: bytecode.OpNe, left: engine.Number(1), right: engine.Number(2), want: true, executes: true},
+		{name: "nan-nan", op: bytecode.OpEq, left: engine.Number(math.NaN()), right: engine.Number(math.NaN()), want: false, executes: true},
+		{name: "zero-negzero", op: bytecode.OpEq, left: engine.Number(0), right: engine.Number(-0), want: true, executes: true},
+		{name: "str-str-eq", op: bytecode.OpEq, left: engine.Str("a"), right: engine.Str("a"), want: true, executes: true},
+		{name: "str-str-ne", op: bytecode.OpNe, left: engine.Str("a"), right: engine.Str("b"), want: true, executes: true},
+		{name: "str-num-eq", op: bytecode.OpEq, left: engine.Str("2"), right: engine.Number(2), want: true, executes: true},
+		{name: "str-num-ne", op: bytecode.OpNe, left: engine.Str("2"), right: engine.Number(2), want: false, executes: true},
+		{name: "str-num-fail", op: bytecode.OpEq, left: engine.Str("a"), right: engine.Number(1), want: false, executes: true},
+		{name: "str-ropes-eq", op: bytecode.OpEq, left: engine.ConcatStrings(engine.Str("a"), engine.Str("b")), right: engine.Str("ab"), want: true, executes: true},
+		{name: "num-bool-eq", op: bytecode.OpEq, left: engine.Number(1), right: engine.Boolean(true), want: true, executes: true},
+		{name: "str-bool-eq", op: bytecode.OpEq, left: engine.Str("1"), right: engine.Boolean(true), want: true, executes: true},
+		{name: "null-undef", op: bytecode.OpEq, left: engine.Null(), right: engine.Undefined(), want: true, executes: true},
+		{name: "null-num", op: bytecode.OpEq, left: engine.Null(), right: engine.Number(0), want: false, executes: true},
+		{name: "undef-undef", op: bytecode.OpEq, left: engine.Undefined(), right: engine.Undefined(), want: true, executes: true},
+		{name: "bigint-bigint", op: bytecode.OpEq, left: engine.BigIntFromInt(7), right: engine.BigIntFromInt(7), want: true, executes: true},
+		{name: "bigint-num", op: bytecode.OpEq, left: engine.BigIntFromInt(7), right: engine.Number(7), want: true, executes: true},
+		{name: "bigint-num-ne", op: bytecode.OpNe, left: engine.BigIntFromInt(7), right: engine.Number(7), want: false, executes: true},
+		{name: "bigint-str", op: bytecode.OpEq, left: engine.BigIntFromInt(7), right: engine.Str("7"), want: true, executes: true},
+		{name: "bigint-str-fail", op: bytecode.OpEq, left: engine.BigIntFromInt(7), right: engine.Str("7.0"), want: false, executes: true},
+		{name: "bigint-nan", op: bytecode.OpEq, left: engine.BigIntFromInt(7), right: engine.Number(math.NaN()), want: false, executes: true},
+		{name: "bigint-bool", op: bytecode.OpEq, left: engine.BigIntFromInt(1), right: engine.Boolean(true), want: true, executes: true},
+		{name: "sym-sym", op: bytecode.OpEq, left: symA, right: symA, want: true, executes: true},
+		{name: "sym-sym-other", op: bytecode.OpEq, left: symA, right: symB, want: false, executes: true},
+		{name: "sym-sym-ne", op: bytecode.OpNe, left: symA, right: symB, want: true, executes: true},
+		{name: "sym-num", op: bytecode.OpEq, left: symA, right: engine.Number(7), want: false, executes: true},
+		{name: "sym-str", op: bytecode.OpEq, left: symA, right: engine.Str("a"), want: false, executes: true},
+		{name: "sym-null", op: bytecode.OpEq, left: symA, right: engine.Null(), want: false, executes: true},
+		{name: "sym-undef", op: bytecode.OpEq, left: symA, right: engine.Undefined(), want: false, executes: true},
+		{name: "sym-bool", op: bytecode.OpEq, left: symA, right: engine.Boolean(true), want: false, executes: true},
+		{name: "sym-bigint", op: bytecode.OpEq, left: symA, right: engine.BigIntFromInt(7), want: false, executes: true},
+		// Object operands always guard back to Tier 0 (identity semantics).
+		{name: "obj-obj", op: bytecode.OpEq, left: objA, right: objA, executes: false},
+		{name: "obj-obj-other", op: bytecode.OpEq, left: objA, right: objB, executes: false},
+		{name: "obj-num", op: bytecode.OpEq, left: objA, right: engine.Number(1), executes: false},
+		{name: "num-obj", op: bytecode.OpNe, left: engine.Number(1), right: objA, executes: false},
+		{name: "obj-str", op: bytecode.OpEq, left: objA, right: engine.Str("a"), executes: false},
+		// Recorded Tier 0 divergences guard back: "" / hex / octal strings vs
+		// Number or Boolean, and BigInt != 0n vs true. Tier 0's own buggy
+		// answer then wins, keeping the tiers bit-identical.
+		{name: "empty-str-num", op: bytecode.OpEq, left: engine.Str(""), right: engine.Number(0), executes: false},
+		{name: "num-empty-str", op: bytecode.OpEq, left: engine.Number(0), right: engine.Str(""), executes: false},
+		{name: "hex-str-num", op: bytecode.OpEq, left: engine.Str("0x10"), right: engine.Number(16), executes: false},
+		{name: "octal-str-num", op: bytecode.OpEq, left: engine.Str("0o10"), right: engine.Number(8), executes: false},
+		{name: "empty-str-bool", op: bytecode.OpEq, left: engine.Str(""), right: engine.Boolean(false), executes: false},
+		{name: "bool-empty-str", op: bytecode.OpEq, left: engine.Boolean(false), right: engine.Str(""), executes: false},
+		{name: "bigint-true", op: bytecode.OpEq, left: engine.BigIntFromInt(7), right: engine.Boolean(true), executes: false},
+		{name: "true-bigint-ne", op: bytecode.OpNe, left: engine.Boolean(true), right: engine.BigIntFromInt(7), executes: false},
+		// BigInt == 0n vs true stays executable (Tier 0 agrees with JS here).
+		{name: "bigint-zero-true", op: bytecode.OpEq, left: engine.BigIntZero(), right: engine.Boolean(true), want: false, executes: true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, reason, err := executeBinary(t, tt.op, tt.left, tt.right)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.executes {
+				if reason != Executed {
+					t.Fatalf("reason=%v, want Executed", reason)
+				}
+				v, _ := got.Bool()
+				if v != tt.want {
+					t.Fatalf("got=%v want=%v", v, tt.want)
+				}
+			} else if reason != GuardFailed {
+				t.Fatalf("reason=%v, want GuardFailed (Tier 0 owns this pair)", reason)
+			}
+		})
+	}
+}
+
+// looseEqLoopTemplate is a trace-compilable loop that counts loose-equality
+// hits:
+//
+//	for (i = 0; i < n; i++) { if (a == b) acc++; }
+//	return acc;
+//
+// locals: 0=this 1=a 2=b 3=acc 4=i 5=n. Layout: pc0 LoadLocal4, pc4 LoadLocal5,
+// pc8 Lt, pc12 JmpFalsePop 68, pc16 LoadLocal1, pc20 LoadLocal2, pc24 Eq,
+// pc28 JmpFalsePop 48, pc32 LoadLocal3, pc36 PushInt1, pc40 Add,
+// pc44 StoreLocal3, pc48 LoadLocal4, pc52 PushInt1, pc56 Add, pc60 StoreLocal4,
+// pc64 Jmp backedge, pc68 LoadLocal3, pc72 Return.
+func looseEqLoopTemplate() *bytecode.FuncTemplate {
+	return &bytecode.FuncTemplate{
+		NumParams: 2, NumLocals: 6, ArgumentsSlot: 6, NoArgumentsObject: true,
+		Code: flatCode(
+			emit(bytecode.OpLoadLocal, 4),
+			emit(bytecode.OpLoadLocal, 5),
+			emit(bytecode.OpLt, 0),
+			emit(bytecode.OpJmpFalsePop, 52), // pc12 -> target 68 (exit loop)
+			emit(bytecode.OpLoadLocal, 1),
+			emit(bytecode.OpLoadLocal, 2),
+			emit(bytecode.OpEq, 0),
+			emit(bytecode.OpJmpFalsePop, 16), // pc28 -> target 48 (i++ block)
+			emit(bytecode.OpLoadLocal, 3),
+			emit(bytecode.OpPushInt, 1),
+			emit(bytecode.OpAdd, 0),
+			emit(bytecode.OpStoreLocal, 3),
+			emit(bytecode.OpLoadLocal, 4),
+			emit(bytecode.OpPushInt, 1),
+			emit(bytecode.OpAdd, 0),
+			emit(bytecode.OpStoreLocal, 4),
+			emit(bytecode.OpJmp, (1<<24)-68), // pc64 -> target 0 (backedge)
+			emit(bytecode.OpLoadLocal, 3),
+			emit(bytecode.OpReturn, 0),
+		),
+	}
+}
+
+// TestTraceLooseEquality executes traces whose loop bodies compare primitives
+// with `==` inside the trace executor: same-type Strings, BigInt vs Number,
+// and Number vs String, plus the object-operand and "" vs Number guard
+// fallbacks (the whole slice aborts with GuardFailed).
+func TestTraceLooseEquality(t *testing.T) {
+	tmpl := looseEqLoopTemplate()
+	trace, err := CompileTrace(tmpl, 0, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer trace.Close()
+	for _, tt := range []struct {
+		name      string
+		a, b      engine.Value
+		wantAcc   string
+		guardFail bool
+	}{
+		{name: "str-str", a: engine.Str("a"), b: engine.Str("a"), wantAcc: "3"},
+		{name: "str-str-miss", a: engine.Str("a"), b: engine.Str("b"), wantAcc: "0"},
+		{name: "bigint-num", a: engine.BigIntFromInt(7), b: engine.Number(7), wantAcc: "3"},
+		{name: "bigint-str", a: engine.BigIntFromInt(7), b: engine.Str("7"), wantAcc: "3"},
+		{name: "str-num", a: engine.Str("2"), b: engine.Number(2), wantAcc: "3"},
+		{name: "null-undef", a: engine.Null(), b: engine.Undefined(), wantAcc: "3"},
+		{name: "nan-nan", a: engine.Number(math.NaN()), b: engine.Number(math.NaN()), wantAcc: "0"},
+		{name: "obj", a: engine.NewObject(), b: engine.NewObject(), guardFail: true},
+		{name: "empty-str-num", a: engine.Str(""), b: engine.Number(0), guardFail: true},
+		{name: "bigint-true", a: engine.BigIntFromInt(7), b: engine.Boolean(true), guardFail: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			locals := []engine.Value{
+				engine.Undefined(), tt.a, tt.b, engine.Number(0), engine.Number(0), engine.Number(3),
+			}
+			exit, reason, err := trace.ExecuteBudgetDetailed(locals, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.guardFail {
+				if reason != GuardFailed {
+					t.Fatalf("reason=%v, want GuardFailed", reason)
+				}
+				return
+			}
+			if reason != Executed || exit.ResumePC != 68 {
+				t.Fatalf("exit=%+v reason=%v, want Executed at pc 68", exit, reason)
+			}
+			if got := locals[3].String(); got != tt.wantAcc {
+				t.Fatalf("committed acc=%v, want %s", got, tt.wantAcc)
+			}
+			if locals[4].String() != "3" {
+				t.Fatalf("committed i=%v, want 3", locals[4])
+			}
+		})
 	}
 }

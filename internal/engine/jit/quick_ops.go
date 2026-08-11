@@ -1,7 +1,9 @@
 package jit
 
 import (
+	"math"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -191,6 +193,105 @@ func quickRelational(cmp int, op Op) bool {
 		return cmp > 0
 	case OpGe:
 		return cmp >= 0
+	}
+	return false
+}
+
+// quickLooseEqual implements R3-3 JS `==` / `!=` on the primitive quickValue
+// domain (Number, String, BigInt, Boolean, null, undefined, Symbol) through
+// the shared engine.LooseEquals helper. Object / self / invalid operands
+// always guard-fail: object identity and every object coercion stay in Tier 0
+// (the JIT never copies ToPrimitive).
+//
+// Known Tier 0 divergence guard: the interpreter's looseEquals (a) parses
+// String operands with Value.Float() (strconv.ParseFloat), which rejects ""
+// and 0x/0o-prefixed strings that the engine's ToNumber rules accept, and
+// (b) computes BigInt vs Boolean with the formula (l==0n) != b, which is wrong
+// for BigInt outside {0n, 1n} with b == true (7n == true must be false).
+// Until those Tier 0 bugs are fixed (recorded in the R3-3 report), the exact
+// diverging pairs guard-fail so Tier 0 computes the identical observable
+// result and the differential suite stays zero-diff.
+func quickLooseEqual(l, r quickValue, values []engine.Value) (bool, bool) {
+	if l.kind == quickInvalid || r.kind == quickInvalid ||
+		l.kind == quickSelf || r.kind == quickSelf ||
+		l.kind == quickObject || r.kind == quickObject {
+		return false, false
+	}
+	if tier0LooseEqDiverges(l, r, values) {
+		return false, false
+	}
+	lv, lok := quickToEngineValue(l, values)
+	rv, rok := quickToEngineValue(r, values)
+	if !lok || !rok {
+		return false, false
+	}
+	return engine.LooseEquals(lv, rv), true
+}
+
+// quickToEngineValue converts a primitive quickValue back to its engine.Value
+// form for the shared equality helper. Object/self values are not converted
+// (callers guard them away first).
+func quickToEngineValue(v quickValue, values []engine.Value) (engine.Value, bool) {
+	switch v.kind {
+	case quickUndefined:
+		return engine.Undefined(), true
+	case quickNull:
+		return engine.Null(), true
+	case quickNumber:
+		return engine.Number(v.num), true
+	case quickBoolean:
+		return engine.Boolean(v.b), true
+	case quickString, quickBigInt, quickSymbol:
+		if int(v.ref) >= len(values) || values[v.ref] == nil {
+			return nil, false
+		}
+		return values[v.ref], true
+	default:
+		return nil, false
+	}
+}
+
+// tier0LooseEqDiverges reports the exact operand pairs where the shared
+// helper's JS-correct result differs from Tier 0's looseEquals (see
+// quickLooseEqual). It must stay in sync with the interpreter so the
+// differential suite remains zero-diff until the Tier 0 bugs are fixed.
+func tier0LooseEqDiverges(l, r quickValue, values []engine.Value) bool {
+	// (a) String vs Number/Boolean: Tier 0 parses the String with
+	// Value.Float() (ParseFloat after TrimSpace); the helper uses the engine
+	// ToNumber rules. Results disagree exactly when the ToNumber parse
+	// succeeds but ParseFloat fails: "" and whitespace-only strings (-> 0)
+	// and 0x/0X/0o/0O-prefixed strings.
+	for _, pair := range [2][2]quickValue{{l, r}, {r, l}} {
+		str, other := pair[0], pair[1]
+		if str.kind != quickString || (other.kind != quickNumber && other.kind != quickBoolean) {
+			continue
+		}
+		if int(str.ref) >= len(values) || values[str.ref] == nil {
+			continue
+		}
+		s := values[str.ref].String()
+		if _, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+			continue // Tier 0's parse succeeds with the same numeric value
+		}
+		return !math.IsNaN(engine.StringToNumber(s))
+	}
+	// (b) BigInt vs Boolean true with a BigInt outside {0n, 1n}: Tier 0's
+	// formula (l==0n) != b answers true, JS answers false (ToNumber(true)==1;
+	// for 1n vs true both tiers agree, so the guard is exactly the divergent
+	// set BigInt != 0n && BigInt != 1n && b == true).
+	for _, pair := range [2][2]quickValue{{l, r}, {r, l}} {
+		bi, b := pair[0], pair[1]
+		if bi.kind != quickBigInt || b.kind != quickBoolean || !b.b {
+			continue
+		}
+		if int(bi.ref) >= len(values) || values[bi.ref] == nil {
+			continue
+		}
+		value, ok := engine.BigIntValue(values[bi.ref])
+		if !ok || value == nil {
+			continue
+		}
+		return value.Sign() != 0 && value.Cmp(big.NewInt(1)) != 0
 	}
 	return false
 }

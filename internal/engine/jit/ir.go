@@ -967,16 +967,18 @@ func (p *Program) executeQuick(thisVal quickValue, args []quickValue, objects *[
 			push(n)
 		case OpEq, OpNe:
 			r, l := pop(), pop()
-			if !l.isNumber() || !r.isNumber() {
+			// R3-3: == / != on primitives execute here per JS semantics via
+			// the shared helper; object operands (and the recorded Tier 0
+			// string-parse / BigInt-Boolean divergences) guard-fail so Tier 0
+			// computes the identical result.
+			equal, ok := quickLooseEqual(l, r, objects[:*objectCount])
+			if !ok {
 				return quickValue{}, GuardFailed, nil
 			}
-			var b bool
-			if in.Op == OpEq {
-				b = l.num == r.num
-			} else {
-				b = l.num != r.num
+			if in.Op == OpNe {
+				equal = !equal
 			}
-			push(booleanValue(b))
+			push(booleanValue(equal))
 		case OpLt, OpLe, OpGt, OpGe:
 			r, l := pop(), pop()
 			var b bool

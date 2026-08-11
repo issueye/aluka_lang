@@ -335,17 +335,30 @@ func (g *Generator) genStrictEqCase(id int, seed int64) *Case {
 	return g.build(id, KindStrictEq, seed, b.String())
 }
 
-// genLooseEqCase exercises == / !=, which the JIT only handles for Number
-// operands; all other combinations must guard back to Tier 0.
+// genLooseEqCase exercises == across the primitive value domain, which R3-3
+// executes in Quick: Number/String/BigInt/Boolean/null/undefined/Symbol
+// pairs with JS semantics, plus object pairs (and Symbol-vs-primitive) that
+// must guard back to Tier 0. Pairs that diverge from Tier 0's looseEquals are
+// deliberately absent: "" / whitespace-only / 0x/0o strings vs Number or
+// Boolean, and BigInt outside {0n, 1n} vs true (recorded Tier 0 bugs, see the
+// package doc); the JIT also guards those inputs at runtime until Tier 0 is
+// fixed.
 func (g *Generator) genLooseEqCase(id int, seed int64) *Case {
 	rng := rand.New(rand.NewSource(seed ^ 0xE5))
 	fn := callID(id)
 	var b strings.Builder
 	fmt.Fprintf(&b, "function %s(a, b) { return a == b; }\n", fn)
 	pairs := [][2]string{
-		{"1", "1"}, {"1", `"1"`}, {"0", `""`}, {"null", "undefined"},
-		{"true", "1"}, {`"a"`, `"a"`}, {"7n", "7"}, {"NaN", "NaN"},
-		{"0", "-0"}, {"1", "2"}, {`"a"`, `"b"`}, {"7n", "7n"},
+		{"1", "1"}, {"1", `"1"`}, {"0", `"0"`}, {"null", "undefined"},
+		{"null", "0"}, {"undefined", "0"}, {"true", "1"}, {"false", "0"},
+		{`"a"`, `"a"`}, {`"a"`, `"b"`}, {"7n", "7"}, {"7n", `"7"`},
+		{"7n", "7n"}, {"7n", "8n"}, {"8n", "8"}, {"NaN", "NaN"},
+		{"0", "-0"}, {"Infinity", "Infinity"}, {"1", "2"},
+		{`"2"`, "2"}, {`"a"`, "1"}, {"true", "2"}, {"1n", "true"},
+		{"SYM1", "SYM1"}, {"SYM1", "SYM2"}, {"SYM1", "7"}, {"SYM1", `"a"`},
+		{"SYM1", "null"}, {"SYM1", "undefined"}, {"SYM1", "true"}, {"SYM1", "7n"},
+		// Object operands must guard back to Tier 0 (identity semantics).
+		{"OBJ_A", "OBJ_A"}, {"OBJ_A", "OBJ_B"}, {"OBJ_A", "1"}, {"OBJ_A", "null"},
 	}
 	start := rng.Intn(len(pairs))
 	for i := 0; i < 4; i++ {

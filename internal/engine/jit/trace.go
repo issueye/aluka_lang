@@ -709,16 +709,17 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 			push(n)
 		case OpEq, OpNe:
 			r, l := pop(), pop()
-			if !l.isNumber() || !r.isNumber() {
+			// R3-3: primitives compare per JS semantics through the shared
+			// helper; object operands (and the recorded Tier 0 divergences)
+			// guard-fail the whole slice so Tier 0 replays it.
+			equal, ok := quickLooseEqual(l, r, objects[:objectCount])
+			if !ok {
 				return DeoptExit{}, GuardFailed, nil
 			}
-			var b bool
-			if in.Op == OpEq {
-				b = l.num == r.num
-			} else {
-				b = l.num != r.num
+			if in.Op == OpNe {
+				equal = !equal
 			}
-			push(booleanValue(b))
+			push(booleanValue(equal))
 		case OpLt, OpLe, OpGt, OpGe:
 			r, l := pop(), pop()
 			var b bool

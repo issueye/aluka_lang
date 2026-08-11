@@ -628,6 +628,63 @@ try { LOG("call", "kM1"); LOG("return", SV(kM(0, 2, 3))); } catch (e) { LOG("thr
 try { LOG("call", "kM2"); LOG("return", SV(kM(1, 0, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 `,
 		},
+		{
+			// R3-3: loose equality across the primitive domain executes in
+			// Quick (== and != kernels): null/undefined, String/Number
+			// coercion, Boolean coercion, BigInt across types, NaN, signed
+			// zero, Symbol identity and Symbol-vs-primitive (always false).
+			ID: -51, Kind: KindLooseEq, Seed: 151, Params: params,
+			Expected: "call:kE1\nreturn:b:true\ncall:kE2\nreturn:b:false\ncall:kE3\nreturn:b:true\ncall:kE4\nreturn:b:false\ncall:kE5\nreturn:b:true\ncall:kE6\nreturn:b:true\ncall:kE7\nreturn:b:true\ncall:kE8\nreturn:b:false\ncall:kE9\nreturn:b:true\ncall:kE10\nreturn:b:true\ncall:kE11\nreturn:b:false\ncall:kE12\nreturn:b:false\ncall:kE13\nreturn:b:false\ncall:kN1\nreturn:b:false\ncall:kN2\nreturn:b:false\ncall:kN3\nreturn:b:false\ncall:kN4\nreturn:b:true",
+			Body: `function kE(a, b) { return a == b; }
+function kN(a, b) { return a != b; }
+try { LOG("call", "kE1"); LOG("return", SV(kE(null, undefined))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE2"); LOG("return", SV(kE(null, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE3"); LOG("return", SV(kE("2", 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE4"); LOG("return", SV(kE("a", 1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE5"); LOG("return", SV(kE(true, 1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE6"); LOG("return", SV(kE(7n, 7))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE7"); LOG("return", SV(kE(7n, "7"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE8"); LOG("return", SV(kE(NaN, NaN))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE9"); LOG("return", SV(kE(0, -0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE10"); LOG("return", SV(kE(SYM1, SYM1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE11"); LOG("return", SV(kE(SYM1, SYM2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE12"); LOG("return", SV(kE(SYM1, 7))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kE13"); LOG("return", SV(kE(SYM1, null))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kN1"); LOG("return", SV(kN(1, "1"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kN2"); LOG("return", SV(kN(7n, 7))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kN3"); LOG("return", SV(kN(SYM1, SYM1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kN4"); LOG("return", SV(kN(NaN, NaN))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-3: a traced loop kernel with == and != on primitives (the
+			// trace-only marker keeps it out of the leaf tier), plus object
+			// operand pairs whose guard-fallback must produce Tier 0's
+			// identity results identically in every tier.
+			ID: -52, Kind: KindLooseEq, Seed: 152, Params: params,
+			Expected: "call:kT1\nreturn:n:4\ncall:kT2\nreturn:n:3\ncall:kT3\nreturn:n:6\ncall:kT4\nreturn:n:4\ncall:kT5\nreturn:n:6\ncall:kT6\nreturn:n:3\ncall:kT7\nreturn:n:2\ncall:kT8\nreturn:n:4\ncall:kT9\nreturn:n:5\ncall:kT10\nreturn:n:6\ncall:kT11\nreturn:n:2",
+			Body: `function kT(a, b, n) {
+  const traceOnlyMarker = {};
+  let r = 0;
+  for (let i = 0; i < n; i++) {
+    if (a == b) r += 1;
+    if (a != b) r += 2;
+  }
+  return r;
+}
+try { LOG("call", "kT1"); LOG("return", SV(kT("2", 2, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT2"); LOG("return", SV(kT(7n, 7, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT3"); LOG("return", SV(kT("a", 1, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT4"); LOG("return", SV(kT(NaN, NaN, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT5"); LOG("return", SV(kT(OBJ_A, OBJ_B, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT6"); LOG("return", SV(kT(OBJ_A, OBJ_A, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT7"); LOG("return", SV(kT(SYM1, SYM1, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT8"); LOG("return", SV(kT(SYM1, SYM2, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT9"); LOG("return", SV(kT(null, undefined, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT10"); LOG("return", SV(kT(null, 0, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT11"); LOG("return", SV(kT("", "", 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
 	}
 }
 
