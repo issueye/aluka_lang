@@ -15,11 +15,18 @@
 // generator with the recorded seed.
 //
 // The generator only emits semantics the engine implements. Unsupported JIT
-// paths (String/BigInt arithmetic, loose equality on non-numbers, Proxy,
-// getters/setters, throwing callbacks, Symbol values) are deliberately
-// generated so the JIT must guard back to Tier 0; the differential
-// comparison then proves that fallback produces identical observable
-// behavior instead of misreporting such cases as JIT mismatches.
+// paths (loose equality on non-numbers, Proxy, getters/setters, throwing
+// callbacks, Symbol values, mixed-type arithmetic) are deliberately generated
+// so the JIT must guard back to Tier 0; the differential comparison then
+// proves that fallback produces identical observable behavior instead of
+// misreporting such cases as JIT mismatches. R3-4/R3-5 added same-type String
+// and BigInt operations (concat, relational comparison, BigInt arithmetic and
+// bitwise) which Quick executes natively; the primitive-op kinds cover both
+// the Quick hits and the mixed-type/exception fallbacks. BigInt unary `~` is
+// intentionally absent from the generators: Tier 0's OpBitNot does not
+// dispatch BigInt (recorded Tier 0 bug), while Quick computes the correct
+// ES result, so differential coverage of `~` on BigInt waits for the Tier 0
+// fix.
 package jitdiff
 
 import (
@@ -31,7 +38,7 @@ import (
 // generated source shapes, the value domain, the event log format or the
 // comparison change; the value is recorded in every failure artifact so a
 // reproduction stays tied to the exact generator that produced the mismatch.
-const Version = "2"
+const Version = "3"
 
 // Params controls generation and execution. It is part of the failure
 // artifact; changing it changes reproducibility, and changes that alter
@@ -88,6 +95,14 @@ const (
 	// call boundary (shape / value type / callee / method / accessor /
 	// prototype / array receiver / closure upvalue), then post-mutation calls.
 	KindGuardMutation
+	// R3-4 / R3-5 primitive operation differential kinds: same-type String
+	// and BigInt operations execute in Quick; mixed-type and exception shapes
+	// fall back to Tier 0.
+	KindStringOps    // String `+` concat and `< <= > >=`
+	KindBigIntArith  // BigInt + - * / % and unary -
+	KindBigIntBitwise // BigInt & | ^ << >> >>> (no unary ~, see package doc)
+	KindBigIntCompare // BigInt < <= > >= === !==
+	kindEnd
 )
 
 func (k Kind) String() string {
@@ -132,6 +147,14 @@ func (k Kind) String() string {
 		return "safepoint"
 	case KindGuardMutation:
 		return "guardMutation"
+	case KindStringOps:
+		return "stringOps"
+	case KindBigIntArith:
+		return "bigIntArith"
+	case KindBigIntBitwise:
+		return "bigIntBitwise"
+	case KindBigIntCompare:
+		return "bigIntCompare"
 	default:
 		return fmt.Sprintf("kind(%d)", int(k))
 	}
@@ -146,7 +169,8 @@ func (k Kind) String() string {
 func (k Kind) ExpectsQuickHit() bool {
 	switch k {
 	case KindBranch, KindLoop, KindStrictEq, KindPropRead, KindPropWrite,
-		KindPush, KindClosure, KindCall:
+		KindPush, KindClosure, KindCall, KindStringOps, KindBigIntArith,
+		KindBigIntBitwise, KindBigIntCompare:
 		return true
 	}
 	return false
@@ -209,7 +233,7 @@ func (c *Case) Name() string {
 }
 
 // KindCount is the number of case kinds the generator can produce.
-const KindCount = int(KindGuardMutation) + 1
+const KindCount = int(kindEnd)
 
 // AllKinds lists every case kind in canonical order.
 var AllKinds = func() []Kind {

@@ -489,6 +489,52 @@ func TestRunTierHonorsVerify(t *testing.T) {
 	}
 }
 
+// TestGeneratedCorpusIncludesPrimitiveOpKinds proves the R3-4/R3-5 generator
+// emits the new String/BigInt operation kinds in the random corpus.
+func TestGeneratedCorpusIncludesPrimitiveOpKinds(t *testing.T) {
+	g := NewGenerator(prSeed, prParams())
+	kinds := make(map[Kind]int)
+	for _, c := range g.Generate(400) {
+		kinds[c.Kind]++
+	}
+	for _, k := range []Kind{KindStringOps, KindBigIntArith, KindBigIntBitwise, KindBigIntCompare} {
+		if kinds[k] == 0 {
+			t.Fatalf("generator produced no %s cases in 400 samples", k)
+		}
+	}
+}
+
+// TestPrimitiveOpsFixedCasesHitQuick proves the R3-4/R3-5 fixed cases are not
+// Tier 0 sleight of hand: Quick must compile and execute each one, and the
+// mixed-type/exception shapes must produce real guard failures that fall back
+// to Tier 0.
+func TestPrimitiveOpsFixedCasesHitQuick(t *testing.T) {
+	needsFallback := map[int]bool{-32: true, -34: true, -35: true, -36: true, -37: true, -38: true}
+	for _, c := range FixedCases() {
+		if c.Kind != KindStringOps && c.Kind != KindBigIntArith &&
+			c.Kind != KindBigIntBitwise && c.Kind != KindBigIntCompare {
+			continue
+		}
+		c.applySource()
+		t.Run(fmt.Sprintf("%02d", -c.ID), func(t *testing.T) {
+			results, err := RunCase(c, c.Params)
+			if err != nil {
+				if mismatch, ok := err.(*Mismatch); ok {
+					t.Fatalf("cross-tier mismatch: %v", mismatch)
+				}
+				t.Fatalf("infrastructure error: %v", err)
+			}
+			quick := results[1].Stats
+			if quick.Compiled+quick.TracesCompiled == 0 || quick.Executed+quick.TracesExecuted == 0 {
+				t.Fatalf("case %d did not compile+execute in Quick: %+v", c.ID, quick)
+			}
+			if needsFallback[c.ID] && quick.GuardFailures == 0 {
+				t.Fatalf("case %d produced no guard failure (mixed/exception fallback missing): %+v", c.ID, quick)
+			}
+		})
+	}
+}
+
 // TestReplayFailure replays a saved artifact directory with a single command:
 //
 //	go test ./internal/engine/interpreter/jitdiff -run 'TestReplayFailure' -artifact <dir> -count=1

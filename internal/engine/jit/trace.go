@@ -569,49 +569,92 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 			push(numberValue(number))
 		case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpPow:
 			r, l := pop(), pop()
-			if !l.isNumber() || !r.isNumber() {
+			switch {
+			case l.isNumber() && r.isNumber():
+				switch in.Op {
+				case OpAdd:
+					push(numberValue(l.num + r.num))
+				case OpSub:
+					push(numberValue(l.num - r.num))
+				case OpMul:
+					push(numberValue(l.num * r.num))
+				case OpDiv:
+					push(numberValue(l.num / r.num))
+				case OpMod:
+					push(numberValue(floatMod(l.num, r.num)))
+				case OpPow:
+					push(numberValue(math.Pow(l.num, r.num)))
+				}
+			case l.kind == quickString && r.kind == quickString:
+				// R3-4: same-type String concat; allocation happens only in the
+				// trace executor and the result stays a quickString.
+				if in.Op != OpAdd {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				result, ok := quickStringConcat(l, r, &objects, &objectCount)
+				if !ok {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				push(result)
+			case l.kind == quickBigInt && r.kind == quickBigInt:
+				// R3-5: same-type BigInt arithmetic. `**` is not part of R3-5
+				// and div/mod by zero falls back so Tier 0 raises the
+				// identical RangeError.
+				if in.Op == OpPow {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				result, ok := quickBigIntArith(l, r, &objects, &objectCount, in.Op)
+				if !ok {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				push(result)
+			default:
 				return DeoptExit{}, GuardFailed, nil
-			}
-			switch in.Op {
-			case OpAdd:
-				push(numberValue(l.num + r.num))
-			case OpSub:
-				push(numberValue(l.num - r.num))
-			case OpMul:
-				push(numberValue(l.num * r.num))
-			case OpDiv:
-				push(numberValue(l.num / r.num))
-			case OpMod:
-				push(numberValue(floatMod(l.num, r.num)))
-			case OpPow:
-				push(numberValue(math.Pow(l.num, r.num)))
 			}
 		case OpBitAnd, OpBitOr, OpBitXor, OpShl, OpShr, OpUShr:
 			r, l := pop(), pop()
-			if !l.isNumber() || !r.isNumber() {
+			if l.isNumber() && r.isNumber() {
+				left, right := quickInt32(l.num), quickUint32(r.num)
+				switch in.Op {
+				case OpBitAnd:
+					push(numberValue(float64(left & quickInt32(r.num))))
+				case OpBitOr:
+					push(numberValue(float64(left | quickInt32(r.num))))
+				case OpBitXor:
+					push(numberValue(float64(left ^ quickInt32(r.num))))
+				case OpShl:
+					push(numberValue(float64(left << (right & 31))))
+				case OpShr:
+					push(numberValue(float64(left >> (right & 31))))
+				case OpUShr:
+					push(numberValue(float64(quickUint32(l.num) >> (right & 31))))
+				}
+			} else if l.kind == quickBigInt && r.kind == quickBigInt {
+				// R3-5: same-type BigInt bitwise ops; `>>>` and negative shifts
+				// fall back so Tier 0 raises the identical TypeError/RangeError.
+				result, ok := quickBigIntBitwise(l, r, &objects, &objectCount, in.Op)
+				if !ok {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				push(result)
+			} else {
 				return DeoptExit{}, GuardFailed, nil
-			}
-			left, right := quickInt32(l.num), quickUint32(r.num)
-			switch in.Op {
-			case OpBitAnd:
-				push(numberValue(float64(left & quickInt32(r.num))))
-			case OpBitOr:
-				push(numberValue(float64(left | quickInt32(r.num))))
-			case OpBitXor:
-				push(numberValue(float64(left ^ quickInt32(r.num))))
-			case OpShl:
-				push(numberValue(float64(left << (right & 31))))
-			case OpShr:
-				push(numberValue(float64(left >> (right & 31))))
-			case OpUShr:
-				push(numberValue(float64(quickUint32(l.num) >> (right & 31))))
 			}
 		case OpNeg:
 			n := pop()
-			if !n.isNumber() {
+			switch {
+			case n.isNumber():
+				push(numberValue(-n.num))
+			case n.kind == quickBigInt:
+				// R3-5: unary minus on BigInt.
+				result, ok := quickBigIntNeg(n, &objects, &objectCount)
+				if !ok {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				push(result)
+			default:
 				return DeoptExit{}, GuardFailed, nil
 			}
-			push(numberValue(-n.num))
 		case OpNot:
 			value := pop()
 			truth, ok := value.truthy()
@@ -621,35 +664,73 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 			push(booleanValue(!truth))
 		case OpBitNot:
 			n := pop()
-			if !n.isNumber() {
+			switch {
+			case n.isNumber():
+				push(numberValue(float64(^quickInt32(n.num))))
+			case n.kind == quickBigInt:
+				// R3-5: BigInt bitwise NOT with the correct ES semantics
+				// (~x = -x-1). Tier 0's OpBitNot does not dispatch BigInt and
+				// yields Number(-1) for every BigInt input (recorded Tier 0
+				// bug); Quick intentionally computes the correct result, so
+				// differential generators must not route BigInt through `~`.
+				result, ok := quickBigIntNot(n, &objects, &objectCount)
+				if !ok {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				push(result)
+			default:
 				return DeoptExit{}, GuardFailed, nil
 			}
-			push(numberValue(float64(^quickInt32(n.num))))
 		case OpUnaryPlus:
 			n := pop()
 			if !n.isNumber() {
 				return DeoptExit{}, GuardFailed, nil
 			}
 			push(n)
-		case OpEq, OpNe, OpLt, OpLe, OpGt, OpGe:
+		case OpEq, OpNe:
 			r, l := pop(), pop()
 			if !l.isNumber() || !r.isNumber() {
 				return DeoptExit{}, GuardFailed, nil
 			}
 			var b bool
-			switch in.Op {
-			case OpEq:
+			if in.Op == OpEq {
 				b = l.num == r.num
-			case OpNe:
+			} else {
 				b = l.num != r.num
-			case OpLt:
-				b = l.num < r.num
-			case OpLe:
-				b = l.num <= r.num
-			case OpGt:
-				b = l.num > r.num
-			case OpGe:
-				b = l.num >= r.num
+			}
+			push(booleanValue(b))
+		case OpLt, OpLe, OpGt, OpGe:
+			r, l := pop(), pop()
+			var b bool
+			switch {
+			case l.isNumber() && r.isNumber():
+				switch in.Op {
+				case OpLt:
+					b = l.num < r.num
+				case OpLe:
+					b = l.num <= r.num
+				case OpGt:
+					b = l.num > r.num
+				case OpGe:
+					b = l.num >= r.num
+				}
+			case l.kind == quickString && r.kind == quickString:
+				// R3-4: same-type String relational comparison, ordered exactly
+				// like Tier 0's compareValues.
+				cmp, ok := quickStringCompare(l, r, &objects)
+				if !ok {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				b = quickRelational(cmp, in.Op)
+			case l.kind == quickBigInt && r.kind == quickBigInt:
+				// R3-5: same-type BigInt relational comparison.
+				cmp, ok := quickBigIntCompare(l, r, &objects)
+				if !ok {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				b = quickRelational(cmp, in.Op)
+			default:
+				return DeoptExit{}, GuardFailed, nil
 			}
 			push(booleanValue(b))
 		case OpStrictEq, OpStrictNe:

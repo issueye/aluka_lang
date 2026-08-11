@@ -457,6 +457,133 @@ try { LOG("call", "kL3"); LOG("return", SV(kL(0, SYM2, 13))); } catch (e) { LOG(
 try { LOG("call", "kL4"); LOG("return", SV(kL(null, SYM2, 13))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 `,
 		},
+		{
+			// R3-4: String `+` concat loop plus a relational comparison. The
+			// same-type String calls concatenate inside Quick; the mixed
+			// String+Number call falls back to Tier 0 for the coercion.
+			ID: -40, Kind: KindStringOps, Seed: 132, Params: params,
+			Expected: "call:kQ1\nreturn:s:b\ncall:kQ2\nreturn:s:x\ncall:kQ3\nreturn:n:1",
+			Body: `function kQ(a, b, n) {
+  let s = a;
+  for (let i = 0; i < n; i++) { s = s + b; }
+  if (s < a) { return s; }
+  return b;
+}
+try { LOG("call", "kQ1"); LOG("return", SV(kQ("a", "b", 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kQ2"); LOG("return", SV(kQ("", "x", 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kQ3"); LOG("return", SV(kQ("a", 1, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-4: all four relational operators over same-type Strings.
+			// "2" > "10" exercises the lexicographic (code-unit) order.
+			ID: -41, Kind: KindStringOps, Seed: 133, Params: params,
+			Expected: "call:kR1\nreturn:n:3\ncall:kR2\nreturn:n:12\ncall:kR3\nreturn:n:10\ncall:kR4\nreturn:n:12",
+			Body: `function kR(a, b) {
+  let r = 0;
+  if (a < b) r += 1;
+  if (a <= b) r += 2;
+  if (a > b) r += 4;
+  if (a >= b) r += 8;
+  return r;
+}
+try { LOG("call", "kR1"); LOG("return", SV(kR("a", "b"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kR2"); LOG("return", SV(kR("ab", "a"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kR3"); LOG("return", SV(kR("a", "a"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kR4"); LOG("return", SV(kR("2", "10"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-4: a concat result feeds strict equality and truthiness.
+			// Single-return shape so the function-level leaf compiles and the
+			// whole kernel executes in Quick.
+			ID: -47, Kind: KindStringOps, Seed: 139, Params: params,
+			Expected: "call:kV1\nreturn:s:a\ncall:kV2\nreturn:s:\ncall:kV3\nreturn:s:xy",
+			Body: `function kV(a, b, c) {
+  let s = a + b;
+  if (s === c) { s = a; } else if (!s) { s = b; }
+  return s;
+}
+try { LOG("call", "kV1"); LOG("return", SV(kV("a", "b", "ab"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kV2"); LOG("return", SV(kV("", "", "x"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kV3"); LOG("return", SV(kV("x", "y", "z"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-5: BigInt + - * / % and unary - (same-type in Quick); the
+			// mixed BigInt+Number call throws the identical TypeError.
+			ID: -42, Kind: KindBigIntArith, Seed: 134, Params: params,
+			Expected: "call:kB1\nreturn:bi:-3\ncall:kB2\nreturn:bi:-1\ncall:kB3\nthrow:TypeError:cannot mix BigInt and other types, use explicit conversions\ncall:kB4\nreturn:bi:-14",
+			Body: `function kB(a, b, c) {
+  let s = -a;
+  for (let i = 0; i < c; i++) { s = s + b; }
+  return s * b - a;
+}
+try { LOG("call", "kB1"); LOG("return", SV(kB(5n, 2n, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kB2"); LOG("return", SV(kB(1n, 0n, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kB3"); LOG("return", SV(kB(1n, 1, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kB4"); LOG("return", SV(kB(7n, 1n, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-5: BigInt division/modulo truncate toward zero; division by
+			// zero throws the identical RangeError in every tier.
+			ID: -43, Kind: KindBigIntArith, Seed: 135, Params: params,
+			Expected: "call:kD1\nreturn:bi:3\ncall:kD2\nthrow:RangeError:Division by zero\ncall:kD3\nreturn:bi:0\ncall:kD4\nreturn:bi:-2",
+			Body: `function kD(a, b) { return (a / b) % b; }
+try { LOG("call", "kD1"); LOG("return", SV(kD(17n, 5n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kD2"); LOG("return", SV(kD(1n, 0n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kD3"); LOG("return", SV(kD(1n, 2n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kD4"); LOG("return", SV(kD(-7n, 3n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-5: BigInt & | ^ << >> (same-type in Quick) with the fallback
+			// exceptions: negative shift RangeError, mixed TypeError.
+			ID: -44, Kind: KindBigIntBitwise, Seed: 136, Params: params,
+			Expected: "call:kF1\nreturn:bi:48\ncall:kF2\nthrow:RangeError:BigInt negative shift\ncall:kF3\nthrow:TypeError:cannot mix BigInt and other types, use explicit conversions\ncall:kF4\nreturn:bi:56",
+			Body: `function kF(a, b, c) {
+  let s = a;
+  for (let i = 0; i < c; i++) { s = s ^ b; }
+  return s << b;
+}
+try { LOG("call", "kF1"); LOG("return", SV(kF(5n, 3n, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kF2"); LOG("return", SV(kF(1n, -1n, 1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kF3"); LOG("return", SV(kF(5n, 1, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kF4"); LOG("return", SV(kF(7n, 3n, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-5: BigInt `>>>` is a TypeError (BigInts have no unsigned
+			// right shift) in every tier; Number `>>>` is unaffected.
+			ID: -45, Kind: KindBigIntBitwise, Seed: 137, Params: params,
+			Expected: "call:kU1\nthrow:TypeError:BigInts have no unsigned right shift, use >> instead\ncall:kU2\nreturn:n:4",
+			Body: `function kU(a, b) { return a >>> b; }
+try { LOG("call", "kU1"); LOG("return", SV(kU(8n, 1n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kU2"); LOG("return", SV(kU(8, 1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-5: all six same-type BigInt comparisons in one kernel; the
+			// mixed BigInt/Number call resolves through Tier 0.
+			ID: -46, Kind: KindBigIntCompare, Seed: 138, Params: params,
+			Expected: "call:kC1\nreturn:n:35\ncall:kC2\nreturn:n:26\ncall:kC3\nreturn:n:44\ncall:kC4\nreturn:n:44",
+			Body: `function kC(a, b) {
+  let r = 0;
+  if (a < b) r += 1;
+  if (a <= b) r += 2;
+  if (a > b) r += 4;
+  if (a >= b) r += 8;
+  if (a === b) r += 16;
+  if (a !== b) r += 32;
+  return r;
+}
+try { LOG("call", "kC1"); LOG("return", SV(kC(5n, 8n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kC2"); LOG("return", SV(kC(7n, 7n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kC3"); LOG("return", SV(kC(8n, 5n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kC4"); LOG("return", SV(kC(2n, 1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
 	}
 }
 

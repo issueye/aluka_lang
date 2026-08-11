@@ -233,6 +233,14 @@ func (g *Generator) genCase(id int, seed int64) *Case {
 		return g.genCancelCase(id, seed)
 	case KindGuardMutation:
 		return g.genGuardMutationCase(id, seed)
+	case KindStringOps:
+		return g.genStringOpsCase(id, seed)
+	case KindBigIntArith:
+		return g.genBigIntArithCase(id, seed)
+	case KindBigIntBitwise:
+		return g.genBigIntBitwiseCase(id, seed)
+	case KindBigIntCompare:
+		return g.genBigIntCompareCase(id, seed)
 	default:
 		return g.genSafepointCase(id, seed)
 	}
@@ -682,4 +690,110 @@ func (g *Generator) genGuardMutationCase(id int, seed int64) *Case {
 	kind := guardMutationKind(rng.Intn(int(guardMutationCount)))
 	body := guardMutationTemplates(fn, n)[kind]
 	return g.build(id, KindGuardMutation, seed, body)
+}
+
+func (g *Generator) stringLeaf(rng *rand.Rand) string {
+	return stringLeaves[rng.Intn(len(stringLeaves))]
+}
+
+func (g *Generator) bigintLeaf(rng *rand.Rand) string {
+	return bigintLeaves[rng.Intn(len(bigintLeaves))]
+}
+
+// genStringOpsCase is the R3-4 generative shape: a hot function that
+// concatenates Strings (same-type, executed in Quick) and compares them
+// relationally, plus a mixed String+Number call whose coercion must fall back
+// to Tier 0 with identical observable behavior. The hot body uses only
+// parameters (String literals would reject the leaf compile), so String
+// results flow through Return and the SV serializer.
+func (g *Generator) genStringOpsCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xF2))
+	fn := callID(id)
+	n := g.loopBound(rng)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(a, b, n) {
+  let s = a;
+  for (let i = 0; i < n; i++) { s = s + b; }
+  if (s < a) { return s; }
+  return b;
+}
+`, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %d)", fn, g.stringLeaf(rng), g.stringLeaf(rng), n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %d)", fn, g.stringLeaf(rng), g.stringLeaf(rng), n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %d)", fn, g.stringLeaf(rng), g.numberLeaf(rng), n)))
+	return g.build(id, KindStringOps, seed, b.String())
+}
+
+// genBigIntArithCase is the R3-5 generative shape: same-type BigInt + - * /
+// % with unary minus, executed in Quick, plus a mixed BigInt+Number call that
+// must throw the identical TypeError in every tier.
+func (g *Generator) genBigIntArithCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xF3))
+	fn := callID(id)
+	n := g.loopBound(rng)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(a, b, c) {
+  let s = -a;
+  for (let i = 0; i < c; i++) { s = s + b; }
+  return (s * b - a) / b;
+}
+`, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %d)", fn, g.bigintLeaf(rng), g.bigintLeaf(rng), n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %d)", fn, g.bigintLeaf(rng), g.bigintLeaf(rng), n)))
+	// b == 0n -> RangeError (Division by zero) after a Quick-computed prefix.
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(7n, 0n, %d)", fn, 2)))
+	// Mixed BigInt + Number -> TypeError, identical in every tier.
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %d)", fn, g.bigintLeaf(rng), g.numberLeaf(rng), n)))
+	return g.build(id, KindBigIntArith, seed, b.String())
+}
+
+// genBigIntBitwiseCase is the R3-5 generative shape: same-type BigInt
+// & | ^ << >> executed in Quick, plus the fallback exceptions (negative shift
+// RangeError, mixed TypeError). BigInt `>>>` (TypeError) and unary `~` are
+// deliberately not generated here (see the package doc for the `~` Tier 0
+// bug); `>>>` is covered by the fixed corpus.
+func (g *Generator) genBigIntBitwiseCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xF4))
+	fn := callID(id)
+	n := g.loopBound(rng)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(a, b, c) {
+  let s = a;
+  for (let i = 0; i < c; i++) { s = (s ^ b) & b; }
+  return (s | b) << b;
+}
+`, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %d)", fn, g.bigintLeaf(rng), g.bigintLeaf(rng), n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %d)", fn, g.bigintLeaf(rng), g.bigintLeaf(rng), n)))
+	// Negative shift -> RangeError (BigInt negative shift) in every tier.
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(1n, -1n, %d)", fn, 1)))
+	// Mixed BigInt + Number -> TypeError in every tier.
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %d)", fn, g.bigintLeaf(rng), g.numberLeaf(rng), n)))
+	return g.build(id, KindBigIntBitwise, seed, b.String())
+}
+
+// genBigIntCompareCase is the R3-5 generative shape: all six same-type BigInt
+// comparisons in one kernel (executed in Quick), a mixed BigInt/Number call
+// (relational comparisons across types are legal in Tier 0), and a String
+// call through the same kernel (String relational comparisons in Quick).
+func (g *Generator) genBigIntCompareCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xF5))
+	fn := callID(id)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(a, b) {
+  let r = 0;
+  if (a < b) r += 1;
+  if (a <= b) r += 2;
+  if (a > b) r += 4;
+  if (a >= b) r += 8;
+  if (a === b) r += 16;
+  if (a !== b) r += 32;
+  return r;
+}
+`, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s)", fn, g.bigintLeaf(rng), g.bigintLeaf(rng))))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s)", fn, g.bigintLeaf(rng), g.bigintLeaf(rng))))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s)", fn, g.bigintLeaf(rng), g.numberLeaf(rng))))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s)", fn, g.stringLeaf(rng), g.stringLeaf(rng))))
+	return g.build(id, KindBigIntCompare, seed, b.String())
 }
