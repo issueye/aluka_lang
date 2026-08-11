@@ -266,12 +266,12 @@ R1-1/R1-2/R1-3/R1-4/R1-5/R1-6/R1-7/R1-8 已完成，R1 里程碑全部条目落�
 | ID | 工作项 | 交付物 | 完成条件 |
 |----|--------|--------|----------|
 | R2-1 | Linux 实机 CI | `jit-linux` job 的可追溯成功记录 | 主分支连续 5 次通过，不以交叉编译替代 |
-| R2-2 | W^X 验证 | Windows protection 与 Linux `/proc/self/maps` 检查 | 不存在同时可写可执行的 JIT 区域 |
+| R2-2 ✅ | W^X 验证 | Windows protection 与 Linux `/proc/self/maps` 检查 | 不存在同时可写可执行的 JIT 区域 |
 | R2-3 ✅ | GC/抢占压力 | Native 执行时并发 GC、异步抢占、栈增长测试 | race 和普通构建均无 crash/hang |
 | R2-4 ✅ | 生命周期 soak | 创建/关闭 VM、后台编译、LRU 淘汰循环 | RX 区域数和字节最终回到基线 |
 | R2-5 ✅ | 重配置竞态 | `ConfigureJIT`、`Close`、pending compile 交错 | 不安装过期代码、不 double free、不泄漏 |
-| R2-6 | 崩溃隔离 | 非法机器码继续只在子进程执行 | 测试进程能报告失败，不污染其他测试 |
-| R2-7 | 平台降级 | arm64/macOS/不支持环境显式使用 Quick/Tier 0 | 功能测试通过且不申请可执行内存 |
+| R2-6 ✅ | 崩溃隔离 | 非法机器码继续只在子进程执行 | 测试进程能报告失败，不污染其他测试 |
+| R2-7 ✅ | 平台降级 | arm64/macOS/不支持环境显式使用 Quick/Tier 0 | 功能测试通过且不申请可执行内存 |
 
 ### 7.3 soak 分级
 
@@ -305,10 +305,15 @@ Native crash，或必须关闭 GC/抢占才能稳定运行。触发后停止扩�
 `-count=10`），因此上表“race 交由 Linux”的描述仅保留为首次执行历史；Linux race 仍是 R2-1
 真实 runner 的独立验收项。
 
+| 2026-08-11 | R2-2 ✅ W^X 深度验证 | 新增 `internal/engine/jit/native/execmem_wx_test.go`（跨平台生命周期 + `execmem_wx_windows_test.go` / `execmem_wx_linux_test.go`），9 个 `TestExecMemWX*`：Windows 用 `VirtualQuery`（`Protect==PAGE_EXECUTE_READ` 且 `AllocationProtect==PAGE_READWRITE`，证明写后翻转协议、从未 RWX），Linux 解析 `/proc/self/maps`（perms==`r-xp`）；全进程 RWX 扫描（Windows 遍历整个用户地址空间断言无 `PAGE_EXECUTE_READWRITE`/`WRITECOPY` 页；Linux 断言无同时含 w 与 x 的映射行）；覆盖多页代码（>1 页 sled + AddF64Kernel 执行逐位校验）、3 个并存区域、失败发布（nil/空输入，计数不变）、重复关闭幂等、关闭后映射失效（State!=MEM_COMMIT / 地址不再落在映射内）；所有测试后 `LiveExecutableMemory` 回基线。Windows 实机 7 个可用测试全过（~0.02s）；Linux 测试交叉编译通过；未发现生产 bug（execmem 为标准写后翻转，无 RWX 中间态） |
+| 2026-08-11 | R2-6 ✅ Native 崩溃隔离 | 新增 `internal/engine/jit/native/native_crash_isolation_test.go`（跨平台，`(windows||linux) && amd64`），3 个崩溃矩阵场景（ud2 非法指令、截断指令 truncated-ud2/truncated-jmp、异常控制流 jump-out/bad-offset，全部只在子进程执行）+ 4 个判定机制测试（hang 检测/父进程超时/启动失败/意外成功）+ 恢复与生命周期测试（崩溃后父进程发布合法内核逐位校验、7 场景逐场景 RX 回基线、越界 offset 进程内拒绝）。父进程判定依赖 marker（`ALUKA_NATIVE_CRASH_EXECUTING`/`RETURNED`）与自有哨兵退出码（3=启动失败、42=watchdog），不硬编码平台退出码（Windows 崩溃 exit 2 / Linux 信号，均由 marker 区分）；子进程 10s watchdog（`ALUKA_NATIVE_CRASH_WATCHDOG_MS` 可调）+ 父进程 CommandContext 兜底超时 + 诊断输出截断（头尾各 1KB）。Windows 实机全过（6.6s，-count=3 19.8s）；Linux 测试交叉编译通过。记录 3 个改进建议（未改生产代码）：越界取指依赖零填充页（建议发布填充 0xCC/UD2）、`CallAt` 越界状态码 1 与内核返回 1 混同、不可抢占内核挂死线程（watchdog 依赖空闲 P） |
+| 2026-08-11 | R2-7 ✅ 不支持平台降级 | 新增 4 个测试文件：`jit/native/unsupported_fallback_test.go` 与 `jit/unsupported_fallback_test.go`（unsupported tag，直接测试桩编译单元：`Publish`/`CompileNative` 返回 `ErrUnsupported`、拒绝后 RX 计数不变、零值 Code 惰性、trace 拒绝、Clone/Adopt 惰性，无 t.Skip 全断言）、`jit/fallback_unsupported_test.go`（无 tag，全平台：用"局部未被证明为数字"确定性触发 Auto 回退，断言 `NativeRejected==1`/`NativeCompiled==0`/`Executed` 增长/结果与 Off 一致/重配置+Close 后 RX 保持基线）、`jit/fallback_unsupported_platform_test.go`（unsupported tag：VM 级端到端 Auto 热点函数/trace 稳定 Quick/Tier 0、生命周期 RX 全程基线）。区分"平台不支持"（`errors.Is(ErrUnsupported)`、reason "native jit is not supported on this platform"）与普通编译失败（exception-exit/"not a proven number"，`Is(ErrUnsupported)==false`）。交叉编译验证 `GOOS=darwin GOARCH=arm64`、`GOOS=linux GOARCH=arm64`（含 interpreter）通过，并借此修复 1 个仅交叉编译可见的测试编译错误（`Publish(nil)` 单值赋值）；darwin/amd64、linux/amd64 亦通过。本机 windows/amd64 全量 `go test ./internal/engine/jit/...` 通过。未发现 production bug；unsupported 平台测试需真机/CI 实跑 |
+
 R2-1（Linux 实机 CI 成功记录）保持未完成：本轮所有测试在 Windows 实机运行，ci.yml `jit-linux`
 的步骤已按最终测试名更新（race 正则、GOGC=20/100、asyncpreemptoff=0、Short PR soak、
-Extended soak），但尚无真实 Linux runner 成功记录，不以交叉构建代替。R2-2（W^X maps 检查）、
-R2-6（崩溃隔离）、R2-7（平台降级）沿用既有测试；release soak（≥8 小时）未运行，不得宣称完成。
+Extended soak），但尚无真实 Linux runner 成功记录，不以交叉构建代替。release soak（≥8 小时）未运行，不得宣称完成；
+R2-2/R2-6/R2-7 的 Linux 实机门禁已写入 ci.yml `jit-linux`（W^X deep verification / crash isolation / fallback gate step），
+等待真实 runner 连续 5 次成功记录后 R2-1 方可完成。
 
 ## 8. R3：Quick JIT 语义覆盖
 

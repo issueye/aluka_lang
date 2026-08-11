@@ -126,6 +126,9 @@ Number 边界值（`NaN`、`+0/-0`、`±Infinity`、除零、位运算截断、`
 | R2-4 生命周期/后台编译/LRU soak（PR 16 轮 + `ALUKA_JIT_SOAK=1` 320 轮；每轮 Native 命中/LRU 淘汰/RX 回基线） | `TestAutoJITSoakLifecycleGCAndLRU`（`jit_soak_amd64_test.go`；watchdog 超时保护；禁止 t.Parallel 因全局 RX 计数） | amd64 |
 | R2-5 重配置/关闭交错（Quick/Off 丢弃 queued 编译、Auto/Quick/Off 轮换、编译开始/Close 进入双屏障、发布未安装窗口、poll 丢弃 rejected 结果；证明旧 generation 不安装 + RX 回基线） | `TestAutoJITReconfigure*`/`TestJITReconfigure*` 7 场景（`jit_reconfigure_amd64_test.go`） | amd64 |
 | R2 门禁 CI 入口（race 正则、GOGC=20/100、asyncpreemptoff=0、Short PR soak、`ALUKA_JIT_SOAK=1` Extended soak） | `.github/workflows/ci.yml` `jit-linux` job（待真实 Linux runner 成功记录；R2-1 未完成） | linux amd64 |
+| R2-2 W^X 深度验证（Windows VirtualQuery：`Protect==PAGE_EXECUTE_READ`、`AllocationProtect==PAGE_READWRITE`；Linux `/proc/self/maps`：perms==`r-xp`；全进程 RWX 扫描；多页/并存/失败发布/重复关闭/映射失效；执行逐位校验；RX 回基线） | `TestExecMemWX*` 9 个（`execmem_wx_test.go` + windows/linux 平台文件） | windows + linux amd64 |
+| R2-6 崩溃隔离（ud2/截断指令/异常控制流只在子进程；marker+哨兵退出码区分预期崩溃/超时/启动失败/意外成功；10s watchdog + 诊断截断；崩溃后父进程合法执行；RX 逐场景回基线） | `TestNativeCrashIsolation*`（`native_crash_isolation_test.go`） | windows + linux amd64 |
+| R2-7 不支持平台降级（`ErrUnsupported` 拒绝发布/编译、拒绝后 RX 计数不变、零值 Code 惰性；Auto 回退 Quick/Tier 0 结果与 Off 一致、`NativeRejected>=1`/`NativeCompiled==0`；重配置+Close 后 RX 保持零；平台不支持与普通失败可区分；darwin/linux arm64 测试编译） | `TestUnsupportedPlatform*`/`TestFallback*`（`unsupported_fallback_test.go` ×2 + `fallback_unsupported_test.go` + `fallback_unsupported_platform_test.go`） | unsupported targets 编译 + amd64 实机 fallback 路径 |
 
 **未覆盖（明确依赖外部环境，不记入矩阵）**：Linux 实机 W^X/maps 检查、长期 GC/抢占 soak、
 race 构建。`go test -race` 在本机因 Windows TSan 影子内存分配失败（error code 87）不可执行；

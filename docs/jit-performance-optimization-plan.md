@@ -902,6 +902,25 @@ soak（`ALUKA_JIT_SOAK=1`）。该轮未改默认 `--jit=off`、未扩大 Native
 不改变性能快照口径；R2-1（真实 Linux CI 连续 5 次成功）、30-60 分钟 nightly soak 与 ≥8 小时
 release soak 仍未完成，不以交叉构建代替。
 
+v2.23 落地 R2-2/R2-6/R2-7 平台安全门禁测试（Windows 实机；Linux runner 记录待 CI）。
+R2-2：`internal/engine/jit/native/execmem_wx*_test.go` 九个 `TestExecMemWX*`——Windows
+`VirtualQuery`（`Protect==PAGE_EXECUTE_READ` 且 `AllocationProtect==PAGE_READWRITE` 证明写后
+翻转、从未 RWX）、Linux `/proc/self/maps`（perms==`r-xp`）、全进程 RWX 扫描、多页/并存区域/
+失败发布/重复关闭/映射失效、执行逐位校验、RX 回基线。R2-6：
+`internal/engine/jit/native/native_crash_isolation_test.go`——ud2/截断指令/异常控制流只在
+子进程执行，父进程用 marker+哨兵退出码（无平台硬编码）区分预期崩溃/超时/启动失败/意外成功，
+10s watchdog + 诊断截断，崩溃后父进程继续合法执行且 RX 逐场景回基线。R2-7：四个
+`TestUnsupportedPlatform*/TestFallback*` 文件——unsupported 桩编译单元直接断言
+`ErrUnsupported` 拒绝发布/编译且 RX 计数不变；全平台 Auto 回退路径（NativeRejected>=1、
+NativeCompiled==0、结果与 Off 一致、重配置+Close 后 RX 保持零）；"平台不支持"与普通编译失败
+可区分；darwin/linux arm64 交叉编译通过（借此修复 1 个仅交叉编译可见的测试编译错误）。
+ci.yml `jit-linux` 增加 Traceability metadata（commit/ref/runner/go version）、W^X deep
+verification、Native crash isolation、Unsupported platform fallback 四个 gate step，race 与
+repeat 正则扩至 WX/CrashIsolation/Fallback。三子代理提交经独立 integration worktree 整合。
+该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、不改变性能快照口径；
+R2-1（真实 Linux CI 连续 5 次成功）、unsupported 平台真机实跑、30-60 分钟 nightly soak 与
+≥8 小时 release soak 仍未完成，不以交叉构建代替。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见

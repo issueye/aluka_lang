@@ -90,6 +90,43 @@ jobs:
           CGO_ENABLED: "0"
         run: go test ./internal/engine/jit/... ./internal/engine/interpreter -count=1
 
+      # Traceability metadata: every gate below is attributable to a commit,
+      # runner image and Go version (R2 integration evidence).
+      - name: Traceability metadata
+        run: |
+          echo "commit=${{ github.sha }}"
+          echo "ref=${{ github.ref }}"
+          echo "runner=${{ runner.os }}/${{ runner.arch }}"
+          go version
+
+      # R2-2 W^X deep verification: published JIT regions must be RX with no
+      # RWX pages anywhere in the process (VirtualQuery on Windows,
+      # /proc/self/maps on Linux); multi-page, coexisting regions, failed
+      # publish, double close and mapping invalidation are covered.
+      - name: W^X deep verification gate
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./internal/engine/jit/native -run 'TestExecMemWX' -count=1 -v
+
+      # R2-6 Native crash isolation: all invalid machine code executes only in
+      # a child process; the parent distinguishes expected crash, timeout,
+      # startup failure and unexpected success, and continues running legal
+      # native code afterwards with RX accounting back at baseline.
+      - name: Native crash isolation gate
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./internal/engine/jit/native -run 'TestNativeCrashIsolation' -count=1
+
+      # R2-7 unsupported-platform fallback: Auto must reject Native publishing
+      # and stably fall back to Quick/Tier 0 with results identical to JIT
+      # Off and zero RX allocation. On amd64/linux this runs the platform-
+      # independent fallback path; the tag-gated unsupported tests compile for
+      # darwin/linux arm64 (see the build matrix).
+      - name: Unsupported platform fallback gate
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./internal/engine/jit/... -run 'TestFallback|TestUnsupportedPlatform' -count=1
+
       - name: Native JIT race and safepoint tests
         env:
           # Go race detector requires cgo; the normal Native JIT tests above
@@ -97,7 +134,7 @@ jobs:
           CGO_ENABLED: "1"
         run: >-
           go test -race ./internal/engine/jit/... ./internal/engine/interpreter
-          -run 'JIT|Trace|Native|Property|ArrayPush|ClosureIncrement|NativeCallback|Safepoint|OOM|ConcurrentGC|GC|Preempt|Soak|Lifecycle|Reconfigure|Close'
+          -run 'JIT|Trace|Native|WX|CrashIsolation|Property|ArrayPush|ClosureIncrement|NativeCallback|Safepoint|OOM|ConcurrentGC|GC|Preempt|Soak|Lifecycle|Reconfigure|Close|Fallback'
           -count=1
 
       - name: Repeat native JIT and GC tests
@@ -106,7 +143,7 @@ jobs:
           GODEBUG: "asyncpreemptoff=0"
         run: >-
           go test ./internal/engine/jit/... ./internal/engine/interpreter
-          -run 'JIT|Trace|Native|Safepoint|OOM|ConcurrentGC|GC|Preempt|Soak|Lifecycle|Reconfigure'
+          -run 'JIT|Trace|Native|WX|CrashIsolation|Safepoint|OOM|ConcurrentGC|GC|Preempt|Soak|Lifecycle|Reconfigure|Fallback'
           -count=5
 
       # R2-3/R2-4/R2-5 gates under both GC pressure settings (soak plan §7.3:
