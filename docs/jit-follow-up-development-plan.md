@@ -98,7 +98,7 @@ R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，�
 | 里程碑 | 启动状态 | 说明 |
 |--------|----------|------|
 | R0 | 交付物齐备，验收未过 | R0-1 至 R0-5 交付物均已产出（2026-08-11）；但 §5.3 稳定性验收（连续两轮中位数偏差 ≤5%）在本机未通过，需安静/固定电源环境复核后才可宣称 R0 完成 |
-| R1 | 部分完成 | R1-1/R1-2/R1-3/R1-4/R1-5/R1-6/R1-8 已落地（2026-08-11）：生成式差分框架（PR 1,000 例 + nightly 100,000 例无差分）、值域组合、异常差分（BigInt 除零/getter-setter/回调/OOM/取消/中断）、deopt 状态模型（含 pending exception 正式恢复映射与 verifier 拒绝）、副作用 prepare/validate/commit 两阶段提交协议、随机 guard 失效（8 类 mutation：shape/类型/callee/method/accessor/prototype/数组 receiver/upvalue，warmup-mutation-post 调度入 artifact，第三 shape/target 降级与 RX 释放断言）、失败产物与单命令重放；缺 R1-7 |
+| R1 | 全部条目完成 | R1-1/R1-2/R1-3/R1-4/R1-5/R1-6/R1-7/R1-8 已落地（2026-08-11）：生成式差分框架（PR 1,000 例 + nightly 100,000 例无差分）、值域组合、异常差分（BigInt 除零/getter-setter/回调/OOM/取消/中断）、deopt 状态模型（含 pending exception 正式恢复映射与 verifier 拒绝）、副作用 prepare/validate/commit 两阶段提交协议、随机 guard 失效（8 类 mutation，warmup-mutation-post 调度入 artifact，第三 shape/target 降级与 RX 释放断言）、fuzz 入口（verifier/trace compiler/deopt-exception/Native lowering/artifact replay 五个 Go fuzz target，seed corpus 确定性可复现，fuzz 运行无 panic/hang/RX 泄漏）、失败产物与单命令重放 |
 | R2 | 部分完成 | Linux 后端和 CI job 已写入，尚无 Linux runner 成功记录和长期 soak |
 | R3 | 部分完成 | Number 主路径、短路、nullish、String/BigInt opaque 值和严格相等已落地 |
 | R4 | 部分完成 | 两路 PIC、有限内联、属性、push 和单一 upvalue 模式已落地 |
@@ -168,7 +168,7 @@ R0-5 标记 `✅*` 表示**交付物已产出但 R0 整体验收未通过**：11
 | R1-4 ✅ | deopt 状态描述 | locals、operand stack、属性提交、pending exception、resume PC 映射 | verifier 能拒绝缺失、歧义或越界映射；pending exception 进入 `DeoptExit` 并经 Quick/VM 恢复链路实际使用 |
 | R1-5 ✅ | 副作用提交协议 | 属性写、数组 append、upvalue 写、用户调用在 guard/deopt/异常/OOM/取消/safepoint 中断附近严格“只发生一次” | prepare/validate/commit 两阶段协议；verifier 显式拒绝非法副作用状态；固定回归与 jitdiff 事件日志证明无重复、无遗漏、无部分提交 |
 | R1-6 ✅ | 随机 guard 失效 | shape、callee、类型、prototype、accessor 在热身后变化 | 第三 shape/target 稳定回退且 RX 正确释放 |
-| R1-7 | fuzz 入口 | IR verifier、trace compiler、deopt decoder fuzz test | 任意输入不 panic、不越界、不发布非法代码 |
+| R1-7 ✅ | fuzz 入口 | IR verifier、trace compiler、deopt decoder fuzz test | 任意输入不 panic、不越界、不发布非法代码 |
 | R1-8 ✅ | 差分失败最小化 | 保存 seed、源码、tier、IR、统计和最小复现 | CI 差分可在本机用单条命令复现 |
 
 ### 6.3 deopt 完整状态要求
@@ -249,10 +249,10 @@ nightly 无差分；所有语义出口具备 verifier 可证明的恢复映射�
 | 2026-08-11 | R1-4 进行中：deopt map 加固 | `DeoptExit{ID, ResumePC, LocalSlots, StackDepth, StackValues}` 的现有恢复映射增加 verifier 拒绝规则（§6.3）；`TestVerifyRejectsInvalidDeoptMaps` 覆盖 7 类非法 map，`TestDeoptExitMapIntegrity` 审计对齐 ResumePC、去重 local 槽、合法栈深；固定用例 -17 验证属性写 guard 失败前无部分写入 |
 | 2026-08-11 | R1-4 ✅ pending exception 正式恢复映射 | `DeoptExit` 增加 `PendingException engine.Value`（nil = 无）；trace 编译 `OpThrow` 为 exception exit（throw 位置直接放 `OpTraceExit`，不新增 IR opcode），Quick 执行器把栈顶原始 JS 值移入 `PendingException` 并丢弃其余操作数栈，VM 恢复经 `*jsThrow` 以原始值进入 `handleThrow`/catch-finally；Native 编译拒绝 exception exit（`lowerNativeInputsForMode` 检查），Auto 稳定回退 Quick；`SameDeoptExit` 比较 pending exception（Number 按位含 NaN、字符串按值、对象按 identity）；verifier 拒绝截断/扩展 exception map 与异常值缺失。测试：jit 包 `TestExceptionExitCompilesAndExecutes`/`TestNativeRejectsExceptionExit`/`TestVerifyRejectsInvalidExceptionMaps`/`TestSameDeoptExitPendingException`；interpreter 包 8 个 `TestDeoptExceptionExit*`（数字/字符串/对象 identity/非空栈丢弃/finally 重抛/嵌套 catch/guard 失败/Auto 回退/deopt stats）；jitdiff 固定用例 -18 与 artifact 保存/重放测试 |
 | 2026-08-11 | R1-6 ✅ 随机 guard 失效与稳定回退 | jitdiff 新增 `KindGuardMutation`：8 类 mutation（1st/2nd/3rd property shape、Number→String/BigInt/nullish/object、绑定 callee 身份替换、trivial method target 替换、own method→accessor、own method→prototype method（delete 后经原型链）、数组 push 被替换/receiver 变非数组、closure upvalue 类型/身份变化），每类以 warmup 调用 → 调用边界 mutation 语句 → post-mutation 调用的调度内嵌在 case 源码中，seed/源码/mutation 调度随 artifact 一起保存、单命令重放完全一致。固定用例扩至 31 个（-24..-31 每类一个）；`TestGuardMutationFixedCases` 断言每类在 off/quick/auto 零差分且**实际命中目标 guard**（TracesCompiled/Compiled ≥ 1 且 GuardFailures ≥ 1，非仅 Tier 0）；`TestGeneratorProducesGuardMutationCases` 证明随机生成器产出带完整调度源码的 mutation 用例；`TestArtifactRoundTripGuardMutation`（-24）验证 mutation 调度经 SaveArtifact/LoadArtifact/Replay 往返；interpreter 包 `TestGuardMutationThirdShapeDisablesNativeReleasesRX`/`TestGuardMutationThirdTargetDisablesNativeReleasesRX` 断言第三 shape/target 连续失败后 Native 禁用、RX 字节释放、VM 关闭后全局可执行内存回基线；accessor 用例用 getter 内 LOG 计数证明 getter 只在 Tier 0 每迭代恰好执行一次（JIT 内零调用）。差分发现并修复 Tier 0 引擎 bug：方法调用 IC（O1-C4 `CallCached`）未检查 deleted map，delete own 方法后 IC 仍返回被删闭包而非原型链方法——补 `TestMethodCallICInvalidatesOnDelete` 回归。profiling/guard 安全审计：`GuardedMethodLookup` 已统一用于方法 guard 收集/执行，纯 objectValue 链数据查找，非 plain receiver/原型链接口回退；accessor/Proxy 不触发用户代码。PR 1,000 例与 nightly 100,000 例（5 seed）零差分。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期 |
+| 2026-08-11 | R1-7 ✅ fuzz 入口与非法输入安全门禁 | 新增 5 个 Go fuzz target（`internal/engine/jit/fuzz_test.go`、`internal/engine/interpreter/fuzz_resume_test.go`、`internal/engine/interpreter/jitdiff/fuzz_artifact_test.go`）：① `FuzzVerifyProgram`——随机 opcode/operand/跳转目标、deopt map（负/越界/歧义 exit ID）、exception map（nil/对齐/截断/扩展）、side-effect protocol 与 guard index，Verify 必须稳定拒绝或接受、不 panic 不挂起（CFG 遍历每指令至多一次）；随机 IR 不执行（随机跳转图可成非回边环，执行覆盖由编译器产物承担）；② `FuzzCompileTrace`——随机模板（可能非 4 对齐/截断 code）、非对齐/越界 start/backedge、无效 call/method guard、unsupported opcode，编译成功产物在 budget=4 下执行（回边受限、必然终止），malformed deopt/exception 状态以错误或干净退出呈现；③ `FuzzResumeTraceExit`（interpreter）——随机 DeoptExit（负 ID、任意 ResumePC、重复/越界 LocalSlots、StackDepth 与 StackValues 不一致、PendingException nil/Number/NaN/String/Object），恢复路径必须返回受控错误或合法 resume，VM 每输入新建避免跨 case 污染；④ `FuzzNativeLowering`——随机已 Verify 程序过 native input planner（失败不得发布 RX），真实编译产物 CompileNative→Close 后 `LiveExecutableMemory` 每 case 回基线（45s 实跑 160 万 execs 无泄漏）；⑤ `FuzzArtifactReplay`（jitdiff）——Body 取自 R1-6 mutation 固定用例池（有界程序，排除 100 万次迭代用例），ID/Kind/Seed/Params/Hook/Expected/结果/IR 全随机，SaveArtifact 拒绝受控、LoadArtifact 必成功、Replay 元数据完整。seed corpus：`f.Add` 注册 throwTraceTemplate/sideEffectTraceTemplate 编码、malformed 字节、合法/非法 deopt 状态等，`go test ./...` 自动执行全部 seed（确定性可复现，无 wall clock/全局随机/不稳定并发依赖）。实跑证据：FuzzVerifyProgram 112 万 execs/30s、FuzzCompileTrace 142 万/30s、FuzzNativeLowering 161 万/45s（RX 断言全过）、FuzzResumeTraceExit 4.1 万/30s、FuzzArtifactReplay 3,249/45s，均零失败零 panic；失败输入自动写入 testdata/fuzz 由 Go 标准机制保存，复现命令 `go test <pkg> -fuzz=FuzzXxx -fuzztime=60s`。PR 1,000 例与 nightly 100,000 例（5 seed）零差分。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期 |
 | 2026-08-11 | R1-5 ✅ 副作用两阶段提交协议 | 审计确认 trace 内已有延迟提交骨架（属性写/数组 append/upvalue 写/guarded noop 调用），本轮将其形式化为 prepare/validate/commit 并补齐防御性原子性与 verifier：Quick/Native/verify 属性批次均先 validate-all 再 store-all，中途失败反向回滚；verifier 拒绝副作用协议 op 出现在非 trace、guard 索引越界及伪 trace 可达函数返回；Native Verify 的 Quick 预执行不触发嵌入 safepoint；方法身份 guard 仅接受不执行用户代码的普通对象及 plain object 原型链 data slot，Proxy/accessor 明确回退。测试覆盖跨 budget slice 恰一次、guard 失败零部分写、两属性后项失效零前项写、verify 恢复原子、safepoint 不双轮询、Proxy trap 次数三 tier 一致；interpreter 覆盖属性写后异常、调用 guard 失败、push/upvalue 中断；jitdiff 固定用例扩至 23 个并保留 artifact 重放。PR 1,000 例与 nightly 100,000 例（5 seed）零差分。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期 |
 
-R1-1/R1-2/R1-3/R1-4/R1-5/R1-6/R1-8 已完成。R1-7（fuzz
-入口）未在本轮完成；当前 Windows 已通过计划规定的 JIT race 子集和 jitdiff race，
+R1-1/R1-2/R1-3/R1-4/R1-5/R1-6/R1-7/R1-8 已完成，R1 里程碑全部条目落地。R1 之后的正确性闭环；当前 Windows 已通过计划规定的 JIT race 子集和 jitdiff race，
 但仍不能替代 R2 的 Linux 实机、连续 CI 与长期 soak 门禁。
 
 ## 7. R2：平台和运行时安全门禁
@@ -500,6 +500,7 @@ go test -race ./internal/engine/jit/... ./internal/engine/interpreter -count=1
 7. R5 统一调优阈值、预算和优化 pass；
 8. 完成 R6 最终检查表后，单独变更默认 auto。
 
-下一次开发应推进 R1-7（fuzz 入口），复用
-jitdiff 框架的事件日志、pending exception 状态与失败产物机制；R0 里程碑的稳定性验收
-（安静环境复核）可并行推进，R1/R2 的任何工作不得以 R0 验收未过为由扩大支持面。
+R1 正确性闭环的全部条目（R1-1 至 R1-8）已落地；R0 里程碑的稳定性验收（安静环境复核）可并行推进，
+R1/R2 的任何工作不得以 R0 验收未过为由扩大支持面；下一阶段按 R2（Linux 实机 CI、W^X、GC/抢占
+与长期 soak）与 R3（Quick 原始值/控制流语义覆盖）推进，新增 fuzz target 的长期运行（如
+`go test -fuzz=FuzzVerifyProgram -fuzztime=10m`）纳入 R2 soak。

@@ -413,7 +413,7 @@ J0-1 热点计数与 VM-local 状态
 | 里程碑 | 当前状态 | 已落地内容 | 仍缺内容 |
 |--------|----------|------------|----------|
 | J0 | 完成 | VM-local 调用/回边热点、拒绝缓存、generation、结构化候选拒绝原因、CLI 统计；冷函数只保留轻量计数，达到阈值后才提升为完整 state | 持续校准真实负载阈值 |
-| J1 | 基本完成 | 类型化 IR、CFG/栈校验、Number 算术/幂/比较/跳转、逻辑非、数值一元加、`&&/||/??` 短路、`!=/!==` 与 32 位位运算 lowering、Go executor、guard 回退、自递归、可恢复 trace 预算；Quick trace 支持多出口 `exitID/resumePC`、最多 8 槽的已建模操作数栈恢复，并只提交运行期实际写入的局部变量；String/BigInt 可作为 opaque Quick 值参与 truthiness、nullish、Return、严格相等和栈恢复；固定种子 Tier 0/Tier 1/Tier 2 集成差分和 try/catch 返回验证；R1-5 副作用 prepare/validate/commit 两阶段提交协议（属性写/数组 append/upvalue 写/调用 guard 失败/异常/OOM/取消/中断附近无重复、无遗漏、无部分提交，verifier 显式拒绝非法副作用状态） | 更广语法生成式差分、String/BigInt 算术、关系比较或宽松相等 |
+| J1 | 基本完成 | 类型化 IR、CFG/栈校验、Number 算术/幂/比较/跳转、逻辑非、数值一元加、`&&/||/??` 短路、`!=/!==` 与 32 位位运算 lowering、Go executor、guard 回退、自递归、可恢复 trace 预算；Quick trace 支持多出口 `exitID/resumePC`、最多 8 槽的已建模操作数栈恢复，并只提交运行期实际写入的局部变量；String/BigInt 可作为 opaque Quick 值参与 truthiness、nullish、Return、严格相等和栈恢复；固定种子 Tier 0/Tier 1/Tier 2 集成差分和 try/catch 返回验证；R1-5 副作用 prepare/validate/commit 两阶段提交协议（属性写/数组 append/upvalue 写/调用 guard 失败/异常/OOM/取消/中断附近无重复、无遗漏、无部分提交，verifier 显式拒绝非法副作用状态）；R1-6 随机 guard 失效（8 类 mutation 在 warmup 后失效，第三 shape/target 稳定降级且 RX 释放，方法 guard 纯数据查找不触发 accessor/Proxy trap）；R1-7 fuzz 入口（verifier/trace compiler/deopt-exception/Native lowering/artifact replay 五个 target，seed corpus 确定性，非法输入不发布 RX） | 更广语法生成式差分、String/BigInt 算术、关系比较或宽松相等 |
 | J2-S | amd64 原型完成 | 固定 trampoline、无 Go 指针 Frame、RW -> RX W^X、释放与 GC 压力测试；Windows 线性 kernel 约 `2.3ns/op`；Linux `mmap/mprotect` 后端已接入；非法指令由子进程崩溃测试隔离；新增跨平台 RX 区域生命周期计数与归零门禁 | Linux 运行时 CI、更多抢占/竞态门禁 |
 | J2 | 数值子集完成 | Number 参数/常量/局部变量、四则运算、`DUP/SWAP/NEG`、比较分支和数值循环的 amd64 native；Native trace 支持多个 `exitID`、预算恢复、最多 8 个 Number 操作数栈 spill 和 dirty-local 精确写回；函数与 trace 共用每 VM LRU RX 代码缓存；可输出真实 x86 Intel 反汇编 | 更广语法和控制流的生成式 Tier 0/Tier 1/Tier 2 差分 |
 | J3 | 基本完成 | 两路 callee PIC 均可 Native、有限叶子 IR 内联、guarded direct Quick call、两路 own Number property PIC；Quick/Native trace 支持已有 own data Number 属性写，属性值在语义出口或预算 yield 后由 Go 安全写回；新增严格 `Array.prototype.push` 数值范围批量 trace 与 numeric-upvalue closure trace；第三 shape/target/类型变化稳定关闭 Native 并保留 Quick，跨 local 对象别名回退 | 更多调用约定、数组/闭包/方法覆盖 |
@@ -856,6 +856,23 @@ deleted map，delete own 方法后 IC 仍返回被删闭包而非原型链方法
 查找，非 plain receiver/原型链接口回退，accessor/Proxy 不触发用户代码。PR 1,000 例与 nightly
 100,000 例（5 seed）零差分。该轮未改默认
 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、不改变任何性能快照口径。
+
+v2.21 完成 R1-7 fuzz 入口与非法输入安全门禁（R1 正确性闭环最后一项）。新增 5 个 Go fuzz
+target：`FuzzVerifyProgram`（随机 IR opcode/operand/跳转目标、deopt map 负/越界/歧义 exit ID、
+exception map nil/对齐/截断/扩展、side-effect protocol 与 guard index——Verify 稳定拒绝或接受、
+不 panic 不挂起；随机 IR 不执行，因随机跳转图可成非回边环，执行覆盖由编译器产物承担）、
+`FuzzCompileTrace`（随机模板含非对齐/截断 code、非对齐/越界 start/backedge、无效 call/method
+guard、unsupported opcode；编译成功产物在 budget=4 下执行必然终止）、`FuzzResumeTraceExit`
+（随机 DeoptExit 字段与 PendingException nil/Number/NaN/String/Object，恢复返回受控错误或合法
+resume，VM 每输入新建）、`FuzzNativeLowering`（随机已 Verify 程序过 native planner 失败不得发布
+RX；真实产物 CompileNative→Close 后 `LiveExecutableMemory` 每 case 回基线）、`FuzzArtifactReplay`
+（Body 取自 R1-6 mutation 固定用例池的有界程序，meta/结果/IR 全随机，Save/Load/Replay 错误
+可控且元数据完整）。seed corpus 由 `f.Add` 注册（throwTrace/sideEffectTrace 编码、malformed
+字节、合法/非法 deopt 状态），`go test ./...` 自动执行全部 seed，确定性可复现；失败输入由 Go
+标准机制写入 `testdata/fuzz/<Target>/`，单命令 `-fuzz=FuzzXxx` 复现。实跑证据：五个 target
+合计约 430 万 execs（30-45s 各），零失败零 panic，NativeLowering 的 RX 基线断言全过。
+PR 1,000 例与 nightly 100,000 例（5 seed）零差分。该轮未改默认 `--jit=off`、未扩大 Native ABI
+与 W^X 生命周期、不改变任何性能快照口径；fuzz 长期运行纳入 R2 soak。
 
 ## 17. 下一轮优先级
 

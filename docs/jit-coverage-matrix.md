@@ -187,6 +187,12 @@ guard 失败被记录、Auto 不产生 verify 失败）。审计后矩阵不存�
 | R1-6 每类 mutation 实际命中目标 guard（非仅 Tier 0）：TracesCompiled/Compiled ≥ 1 且 GuardFailures ≥ 1 | `TestGuardMutationFixedCases`（jitdiff，对 -24..-31 断言 quick/auto stats） |
 | R1-6 随机生成器（warmup/mutation/post 调度内嵌源码，seed/源码/调度随 artifact 重放一致） | `TestGeneratorProducesGuardMutationCases`、`TestArtifactRoundTripGuardMutation`（jitdiff）、`TestGeneratorDeterminism` |
 | R1-6 方法 guard 纯数据查找（不触发 accessor/Proxy trap/用户代码；非 plain receiver/原型链回退） | `TestGuardedMethodLookup`（engine 包）+ profiling/Quick/Native 三处实际调用（`jit_bridge.go`/`trace.go`/`native_trace.go`）|
+| R1-7 fuzz：`Program.Verify`（随机 opcode/operand/跳转、栈 underflow/overflow、负/越界/歧义 exit ID、exception map 截断/扩展/异常栈下溢、side-effect protocol/guard index/伪 trace return） | `FuzzVerifyProgram`（jit 包；seed corpus 在 `go test ./...` 自动执行，`-fuzz` 随机变异） |
+| R1-7 fuzz：`CompileTraceWithGuards`（非对齐 start/backedge、malformed bytecode、无效 call/method guard、unsupported opcode、属性写/throw/jump-fixup 组合；编译成功产物 budget=4 执行） | `FuzzCompileTrace`（jit 包；seed 含 throwTraceTemplate/sideEffectTraceTemplate 编码） |
+| R1-7 fuzz：deopt/exception 恢复（随机 DeoptExit 字段、ResumePC、LocalSlots、StackValues、PendingException nil/Number/NaN/String/Object；解码失败必须返回错误不 panic） | `FuzzResumeTraceExit`（interpreter 包；VM 每输入新建） |
+| R1-7 fuzz：Native lowering/生命周期（非法 property/callee plan、exception exit、Frame 限制；invalid input 不发布 RX；每 case `LiveExecutableMemory` 回基线） | `FuzzNativeLowering`（jit 包；45s 实跑 161 万 execs 无 RX 泄漏） |
+| R1-7 fuzz：artifact replay（随机/变异 case/meta/IR；SaveArtifact/LoadArtifact/Replay 错误可控；seed/source 元数据完整；body 池为 R1-6 mutation 固定用例的有界程序） | `FuzzArtifactReplay`（jitdiff 包） |
+| R1-7 失败复现（Go 标准机制：失败输入写入 `testdata/fuzz/<Target>/`，单命令 `go test <pkg> -fuzz=FuzzXxx` 复现） | 文档记录于 follow-up §6.5 R1-7 条目与 optimization v2.21 |
 
 ## 9. 维护约定
 
