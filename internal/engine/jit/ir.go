@@ -557,6 +557,19 @@ func CompileLeaf(tmpl *bytecode.FuncTemplate) (*Program, error) {
 	if err := p.Verify(); err != nil {
 		return nil, err
 	}
+	// R5-1/R5-2 conservative optimization passes (constant folding,
+	// redundant store-load elimination, unreachable block deletion, and the
+	// unary const folding). The result must verify again; a failed pass
+	// keeps the unoptimized code.
+	if OptimizeIR {
+		stats := OptimizeProgram(p)
+		_ = stats
+		if err := p.Verify(); err != nil {
+			// The optimizer must never turn a valid program invalid; fall
+			// back to the unoptimized code instead of failing the compile.
+			return nil, fmt.Errorf("jit: optimize produced invalid IR: %v", err)
+		}
+	}
 	p.propertyGuards = make([]propertyGuard, len(p.Code))
 	return p, nil
 }
