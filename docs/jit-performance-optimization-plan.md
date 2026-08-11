@@ -971,6 +971,12 @@ v2.27 完成 R3 第一批（R3-1/R3-2/R3-4/R3-5/R3-6/R3-7，Quick JIT 语义覆�
 集成阶段发现并修复 2 个问题：① `inlineCallTarget` 内联 `OpConstString` 未合并 callee 字符串常量池导致对象缓冲越界 panic（差分 PR 集暴露，合并池+operand 重映射，非内联特化保守拒绝含字符串常量的 callee）；② Tier 0 `~` 对 BigInt 错误返回 Number（VM 与 AST 解释器均修复为 -x-1，`TestBitwiseNotBigInt` 回归）。
 PR 1,000 例零差分（7 个新 Kind 全部 Quick 命中）；nightly 100,000 例复核中。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、不改变性能快照口径（性能数据待 R4/R5 批次后统一复测）。
 
+v2.28 完成 R3-3 与 R4 第一批（R3-3 宽松相等、R4-1/2 调用与闭包扩展、R4-3/4 属性 PIC 与未命中成本、R4-5/6 数值数组索引与批处理）。
+四个子代理独立 worktree 并行实施，主 Agent 集成（jitdiff 固定用例跨分支重编号 -51..-64、stats 字段合并、docs 里程碑行整合）：
+R3-3 共享 `engine.LooseEquals`/`StringToNumber` helper（对象操作数一律 guard 回退 Tier 0）；R4-1 调用特化扩展（0-4 参数/Boolean 返回/多调用点/局部转发 callee 内联，修复重赋值局部错误内联隐患）；R4-2 闭包泛化（多 numeric upvalue 顺序读写、只读捕获、帧内非逃逸闭包）；R4-3 属性 PIC 2-4 shape 自适应上限（第三/四 shape 需基线稳定+两次观察，超限稳定回退，吸收重置失败链）；R4-4 未命中成本（单次 name→slot 解析、无查找写槽、快速拒绝、五计数器可解释）；R4-5 数值数组索引读/批量写（length guard、hole/稀疏/原型/Proxy 回退、`WriteNumberRange` 一次性同步）；R4-6 map/filter/reduce 数值纯度路径扩展（编译器+guard 证明，Quick-only 不扩 Native ABI）。
+集成差分发现并修复 3 个 Tier 0 语义 bug：`looseEquals` String 操作数改用完整 ToNumber（`""==0`、`"0x10"==16` 修复）；`bigintLooseEqual` Boolean 精确 0/1 比较（`7n==true` 修复）；算术 opcode 统一 `jsToNumber`（`1+undefined` NaN、`"str"*2` NaN、`1+null` 1）——三处均带独立回归（`TestTier0LooseEqualitySemantics`/`TestTier0ArithmeticToNumberSemantics`）并更新依赖旧行为的既有测试期望。
+PR 1,000 例与 nightly 100,000 例（5 seed，144s）零差分；全库 26 包通过。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、不改变性能快照口径（性能数据待 R4-7/8 与 R5 后统一复测）。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见
