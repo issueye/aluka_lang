@@ -1274,42 +1274,6 @@ func quickUint32(n float64) uint32 {
 
 func quickInt32(n float64) int32 { return int32(quickUint32(n)) }
 
-type propertyGuardEntry struct {
-	shapeID uint64
-	slot    int
-}
-
-type propertyGuard struct {
-	entries [2]propertyGuardEntry
-	count   uint8
-}
-
-func (g *propertyGuard) loadNumber(object engine.Value, name string) (float64, bool) {
-	for i := uint8(0); i < g.count; i++ {
-		entry := g.entries[i]
-		if number, ok := engine.GuardedNumericOwnProperty(object, name, entry.shapeID, entry.slot); ok {
-			return number, true
-		}
-	}
-	number, shapeID, slot, ok := engine.NumericOwnProperty(object, name)
-	if !ok || g.count >= uint8(len(g.entries)) {
-		return 0, false
-	}
-	g.entries[g.count] = propertyGuardEntry{shapeID: shapeID, slot: slot}
-	g.count++
-	return number, true
-}
-
-func (g *propertyGuard) storeNumber(object engine.Value, name string, number float64) bool {
-	for i := uint8(0); i < g.count; i++ {
-		entry := g.entries[i]
-		if engine.GuardedSetNumericOwnProperty(object, name, entry.shapeID, entry.slot, number) {
-			return true
-		}
-	}
-	return false
-}
-
 func numberValue(n float64) quickValue { return quickValue{kind: quickNumber, num: n} }
 func booleanValue(b bool) quickValue   { return quickValue{kind: quickBoolean, b: b} }
 func (v quickValue) isNumber() bool    { return v.kind == quickNumber }

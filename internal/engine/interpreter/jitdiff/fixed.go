@@ -736,6 +736,56 @@ function inFrame54(end) { let acc = 0; const inc = () => ++acc; let sum = 0; for
 try { LOG("call", "k54c"); LOG("return", SV(inFrame54(4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 `,
 		},
+		{
+			// R4-3: a stable four-shape property-read PIC. The first two shapes
+			// rotate until the baseline is stable, then the third and fourth
+			// shapes arrive twice each and are absorbed by the extended guard
+			// (Quick tier). The four-shape rotation afterwards must keep every
+			// shape on the fast path with identical results in every tier.
+			ID: -55, Kind: KindPropRead, Seed: 155, Params: params,
+			Expected: "call:kP1\nreturn:n:12\ncall:kP2\nreturn:n:28\ncall:kP3\nreturn:n:12\ncall:kP4\nreturn:n:28\ncall:kP5\nreturn:n:12\ncall:kP6\nreturn:n:28\ncall:kP7\nreturn:n:44\ncall:kP8\nreturn:n:44\ncall:kP9\nreturn:n:60\ncall:kP10\nreturn:n:60\ncall:kP11\nreturn:n:12\ncall:kP12\nreturn:n:28\npost:n:1,n:5",
+			Body: `function kP(o, n) { let s = 0; for (let i = 0; i < n; i++) { s += o.a + o.b; } return s; }
+const S1 = { a: 1, b: 2 };
+const S2 = { a: 3, b: 4, c: 1 };
+const S3 = { a: 5, b: 6, c: 2, d: 3 };
+const S4 = { a: 7, b: 8, d: 4, e: 5, f: 6 };
+try { LOG("call", "kP1"); LOG("return", SV(kP(S1, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP2"); LOG("return", SV(kP(S2, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP3"); LOG("return", SV(kP(S1, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP4"); LOG("return", SV(kP(S2, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP5"); LOG("return", SV(kP(S1, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP6"); LOG("return", SV(kP(S2, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP7"); LOG("return", SV(kP(S3, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP8"); LOG("return", SV(kP(S3, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP9"); LOG("return", SV(kP(S4, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP10"); LOG("return", SV(kP(S4, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP11"); LOG("return", SV(kP(S1, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP12"); LOG("return", SV(kP(S2, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(S1.a) + "," + SV(S3.a));
+`,
+		},
+		{
+			// R4-3/R4-4: a stable three-shape property-write PIC with a return
+			// to the baseline. The third shape is absorbed by the extended
+			// Quick-tier guard; every tier must commit the identical values
+			// (the post event proves no write was lost or duplicated).
+			ID: -56, Kind: KindPropWrite, Seed: 156, Params: params,
+			Expected: "call:kW1\nreturn:n:4\ncall:kW2\nreturn:n:4\ncall:kW3\nreturn:n:4\ncall:kW4\nreturn:n:4\ncall:kW5\nreturn:n:4\ncall:kW6\nreturn:n:4\ncall:kW7\nreturn:n:4\ncall:kW8\nreturn:n:4\npost:n:4,n:4,n:4",
+			Body: `function kW(o, n) { for (let i = 0; i < n; i++) { o.a = i; } return o.a; }
+const W1 = { a: 0 };
+const W2 = { a: 0, b: 1 };
+const W3 = { a: 0, c: 2 };
+try { LOG("call", "kW1"); LOG("return", SV(kW(W1, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kW2"); LOG("return", SV(kW(W2, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kW3"); LOG("return", SV(kW(W1, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kW4"); LOG("return", SV(kW(W2, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kW5"); LOG("return", SV(kW(W1, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kW6"); LOG("return", SV(kW(W2, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kW7"); LOG("return", SV(kW(W3, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kW8"); LOG("return", SV(kW(W3, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(W1.a) + "," + SV(W2.a) + "," + SV(W3.a));
+`,
+		},
 	}
 }
 

@@ -82,6 +82,27 @@ func GuardedSetNumericOwnProperty(value Value, key string, shapeID uint64, slot 
 	return true
 }
 
+// GuardedSetNumericOwnPropertySlot is the R4-4 store-side companion for the
+// property PIC: it sets an existing Number-valued own data property whose
+// (shapeID, slot) pair the caller already resolved with NumericOwnProperty in
+// the same guard transaction. No user code (accessor, Proxy trap, prototype
+// walk) can run between the probe and this store, so the shape/slot pair
+// cannot go stale; the deleted map is still re-checked defensively, matching
+// GuardedSetNumericOwnProperty without repeating the name-to-slot hash lookup.
+func GuardedSetNumericOwnPropertySlot(value Value, key string, shapeID uint64, slot int, number float64) bool {
+	obj, isObject := value.(*objectValue)
+	if !isObject || obj.shape == nil || obj.shape.id != shapeID || slot < 0 || slot >= len(obj.slots) ||
+		obj.deleted != nil && obj.deleted[key] {
+		return false
+	}
+	property := obj.slots[slot]
+	if property == nil || property.Type() != TypeNumber {
+		return false
+	}
+	obj.slots[slot] = Number(number)
+	return true
+}
+
 // GuardedMethodLookup resolves a method along a plain object-value prototype
 // chain without invoking accessors, Proxy traps or any other user code. It is
 // the only method primitive exposed to the portable JIT tier: the caller must

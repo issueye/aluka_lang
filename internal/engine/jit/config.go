@@ -181,8 +181,20 @@ type Stats struct {
 	ClosureUpvalueYields     uint64
 	VerifyChecks             uint64
 	VerifyFailures           uint64
-	RejectionReasons         []RejectionReason
-	DeoptExits               []DeoptStat
-	LastError                string
-	LastNativeError          string
+	// R4-3/R4-4 property PIC diagnostics. PropertyPICAdds counts admissions
+	// beyond the two-way baseline (third/fourth shape); PropertyPICHits counts
+	// successful guarded loads through the entries; PropertyPICRejections
+	// counts fast rejections (not an own data Number property: accessor,
+	// Proxy, prototype, deleted or non-Number); PropertyPICOverflows counts
+	// misses at/over the adaptive limit (stable fallback); PropertyPICCoolDowns
+	// counts cool-down resets after repeated over-cap misses.
+	PropertyPICAdds       uint64
+	PropertyPICHits       uint64
+	PropertyPICRejections uint64
+	PropertyPICOverflows  uint64
+	PropertyPICCoolDowns  uint64
+	RejectionReasons      []RejectionReason
+	DeoptExits            []DeoptStat
+	LastError             string
+	LastNativeError       string
 }

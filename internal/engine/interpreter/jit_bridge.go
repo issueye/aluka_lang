@@ -151,6 +151,33 @@ func (v *VM) JITStats() jit.Stats {
 	stats.TraceBudget = v.jitConfig.TraceBudget
 	stats.CodeCacheLimit = v.jitConfig.CodeCacheBytes
 	stats.NativeCodeBytes = v.jitNativeBytes
+	// R4-4: aggregate the live property-PIC counters (function guards, native
+	// input-plan guards and trace guards). Counters are cumulative, so a
+	// repeated JITStats snapshot reports the same totals.
+	for _, state := range v.jitStates {
+		if state == nil {
+			continue
+		}
+		for _, program := range []*jit.Program{state.program, state.altProgram, state.baseProgram} {
+			hits, adds, rejects, overflows, coolDowns := program.PropertyPICStats()
+			stats.PropertyPICHits += hits
+			stats.PropertyPICAdds += adds
+			stats.PropertyPICRejections += rejects
+			stats.PropertyPICOverflows += overflows
+			stats.PropertyPICCoolDowns += coolDowns
+		}
+	}
+	for _, state := range v.jitTraces {
+		if state == nil {
+			continue
+		}
+		hits, adds, rejects, overflows, coolDowns := state.program.PropertyPICStats()
+		stats.PropertyPICHits += hits
+		stats.PropertyPICAdds += adds
+		stats.PropertyPICRejections += rejects
+		stats.PropertyPICOverflows += overflows
+		stats.PropertyPICCoolDowns += coolDowns
+	}
 	if len(v.jitRejections) != 0 {
 		stats.RejectionReasons = make([]jit.RejectionReason, 0, len(v.jitRejections))
 		for key, count := range v.jitRejections {
@@ -249,6 +276,15 @@ func (v *VM) noteJITGuardFailure(state *quickJITState) {
 	if state == nil || state.rejected {
 		return
 	}
+	// R4-3: a failed execution that absorbed a beyond-baseline shape is the
+	// confirmation step of polymorphic learning (the guard grew); reset the
+	// failure chain so a multi-property site can absorb one shape per guard
+	// without being rejected mid-learning. Unabsorbable sites (accessor,
+	// Proxy, prototype, over-cap churn) never admit and still disable after
+	// jitGuardFailureLimit consecutive failures.
+	if state.program != nil && state.program.TakePICAbsorptions() > 0 {
+		state.guardFailures = 0
+	}
 	if state.guardFailures < jitGuardFailureLimit {
 		state.guardFailures++
 	}
@@ -264,6 +300,13 @@ func (v *VM) noteJITGuardFailure(state *quickJITState) {
 func (v *VM) noteTraceGuardFailure(state *quickTraceState) {
 	if state == nil || state.rejected {
 		return
+	}
+	// R4-3: see noteJITGuardFailure — a trace with several property guards
+	// (e.g. writeBoth writes o.a and o.b) needs one confirmation observation
+	// per guard; each admission resets the chain instead of accumulating
+	// toward the rejection limit.
+	if state.program != nil && state.program.TakePICAbsorptions() > 0 {
+		state.guardFailures = 0
 	}
 	if state.guardFailures < jitGuardFailureLimit {
 		state.guardFailures++
@@ -998,6 +1041,17 @@ func (v *VM) dropNative(state *quickJITState) {
 	if !jitStateHasNative(state) {
 		return
 	}
+	// R4-4: the native input-plan guards are released with the machine code;
+	// fold their counters into the VM stats first so hits/rejections remain
+	// explainable after the native tier is dropped or evicted.
+	if v.jitConfig.Stats && state.program != nil {
+		h, a, r, o, c := state.program.NativePlanPropertyPICStats()
+		v.jitStats.PropertyPICHits += h
+		v.jitStats.PropertyPICAdds += a
+		v.jitStats.PropertyPICRejections += r
+		v.jitStats.PropertyPICOverflows += o
+		v.jitStats.PropertyPICCoolDowns += c
+	}
 	size := uint64(0)
 	if state.program != nil && state.program.HasNative() {
 		size += uint64(state.program.NativeSize())
@@ -1023,6 +1077,14 @@ func jitStateHasNative(state *quickJITState) bool {
 func (v *VM) dropNativeTrace(state *quickTraceState) {
 	if state == nil || state.program == nil || !state.program.HasNative() {
 		return
+	}
+	if v.jitConfig.Stats {
+		h, a, r, o, c := state.program.NativePlanPropertyPICStats()
+		v.jitStats.PropertyPICHits += h
+		v.jitStats.PropertyPICAdds += a
+		v.jitStats.PropertyPICRejections += r
+		v.jitStats.PropertyPICOverflows += o
+		v.jitStats.PropertyPICCoolDowns += c
 	}
 	size := uint64(state.program.NativeSize())
 	_ = state.program.Close()

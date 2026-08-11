@@ -248,6 +248,11 @@ func lowerNativeInputsForMode(p *Program, trace bool) (*Program, *nativeInputPla
 			sourceLocal: source,
 			frameLocal:  frameLocal,
 			name:        name,
+			// Native entry guards keep the historical two-way PIC semantics
+			// (R4-3): the portable Quick-tier guards absorb 2-4 stable shapes,
+			// while a third shape in the native input plan stays a miss so the
+			// existing third-shape cutoff / disable tests keep their behavior.
+			guard: propertyGuard{snapshot: true},
 		})
 		propertyIndexes[key] = index
 		preassigned |= uint64(1) << frameLocal

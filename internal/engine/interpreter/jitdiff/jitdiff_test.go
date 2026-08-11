@@ -548,8 +548,6 @@ func TestR34FixedCasesHitTargetTier(t *testing.T) {
 		default:
 			continue
 		}
-			continue
-		}
 		c.applySource()
 		t.Run(fmt.Sprintf("%02d", -c.ID), func(t *testing.T) {
 			results, err := RunCase(c, c.Params)
@@ -591,6 +589,7 @@ func TestR34FixedCasesHitTargetTier(t *testing.T) {
 					}
 				}
 			}
+		})
 	}
 }
 

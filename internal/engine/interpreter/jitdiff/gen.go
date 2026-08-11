@@ -368,6 +368,12 @@ func (g *Generator) genLooseEqCase(id int, seed int64) *Case {
 	return g.build(id, KindLooseEq, seed, b.String())
 }
 
+// genPropReadCase exercises the R4-3 property PIC: the first two calls warm up
+// two shapes, the middle rotation proves the baseline is stable (each of the
+// first two shapes is observed at least three times), then the third and
+// fourth shapes arrive twice each and are absorbed by the extended guard.
+// The final four-shape rotation keeps every shape hot. All reads are pure, so
+// the event log is identical across tiers no matter how the guard decides.
 func (g *Generator) genPropReadCase(id int, seed int64) *Case {
 	rng := rand.New(rand.NewSource(seed ^ 0xE6))
 	fn := callID(id)
@@ -375,15 +381,36 @@ func (g *Generator) genPropReadCase(id int, seed int64) *Case {
 	var b strings.Builder
 	fmt.Fprintf(&b, `function %s(o, n) { let s = 0; for (let i = 0; i < n; i++) { s += o.a + o.b; } return s; }
 const O = { a: %s, b: %s };
-`, fn, g.numberLeaf(rng), g.numberLeaf(rng))
+const O2 = { a: %s, b: %s, c: 1 };
+const O3 = { a: %s, b: %s, c: 2, d: 3 };
+const O4 = { a: %s, b: %s, d: 4, e: 5, f: 6 };
+`, fn, g.numberLeaf(rng), g.numberLeaf(rng), g.numberLeaf(rng), g.numberLeaf(rng),
+		g.numberLeaf(rng), g.numberLeaf(rng), g.numberLeaf(rng), g.numberLeaf(rng))
 	b.WriteString(tryLog(id, fmt.Sprintf("%s(O, %d)", fn, n)))
-	// A second object with a different shape exercises the shape guard path.
-	b.WriteString(fmt.Sprintf("const O2 = { a: %s, b: %s, c: 1 };\n", g.numberLeaf(rng), g.numberLeaf(rng)))
 	b.WriteString(tryLog(id, fmt.Sprintf("%s(O2, %d)", fn, n)))
+	// Stable two-shape rotation: each baseline shape accumulates >= 3 hits.
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O2, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O2, %d)", fn, n)))
+	// Third and fourth shapes arrive twice each (confirm + absorb).
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O3, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O3, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O4, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O4, %d)", fn, n)))
+	// Four-shape rotation keeps every absorbed shape hot.
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O2, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O3, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O4, %d)", fn, n)))
 	b.WriteString(fmt.Sprintf("LOG(\"post\", SV(O.a) + \",\" + SV(O.b));\n"))
 	return g.build(id, KindPropRead, seed, b.String())
 }
 
+// genPropWriteCase exercises the R4-3 property-write PIC: a stable two-shape
+// rotation is followed by a third shape observed twice, then a rotation back.
+// Writes stay inside the JIT function; the observable state is read only in
+// the post event, so every tier must commit the identical values.
 func (g *Generator) genPropWriteCase(id int, seed int64) *Case {
 	rng := rand.New(rand.NewSource(seed ^ 0xE7))
 	fn := callID(id)
@@ -391,9 +418,19 @@ func (g *Generator) genPropWriteCase(id int, seed int64) *Case {
 	var b strings.Builder
 	fmt.Fprintf(&b, `function %s(o, n) { for (let i = 0; i < n; i++) { o.a = i; } return o.a; }
 const O = { a: 0 };
+const O2 = { a: 0, b: 1 };
+const O3 = { a: 0, c: 2 };
 `, fn)
 	b.WriteString(tryLog(id, fmt.Sprintf("%s(O, %d)", fn, n)))
-	b.WriteString("LOG(\"post\", SV(O.a));\n")
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O2, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O2, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O2, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O3, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O3, %d)", fn, n)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O2, %d)", fn, n)))
+	b.WriteString(fmt.Sprintf("LOG(\"post\", SV(O.a) + \",\" + SV(O2.a) + \",\" + SV(O3.a));\n"))
 	return g.build(id, KindPropWrite, seed, b.String())
 }
 

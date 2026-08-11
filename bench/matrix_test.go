@@ -37,6 +37,28 @@ for (let i = 0; i < 100000; i++) { s += o.a + o.b + o.c; }
 
 func BenchmarkPropAccess(b *testing.B) { runJS(b, propAccessCode) }
 
+// BenchmarkPropAccessPolymorphic 多态属性读（4 种隐藏类轮换，Tier 0 IC 多态命中路径）。
+const propAccessPolymorphicCode = `
+let s = 0;
+const o1 = { a: 1, b: 2, c: 3 };
+const o2 = { a: 4, b: 5, c: 6, d: 1 };
+const o3 = { a: 7, b: 8, c: 9, d: 2, e: 3 };
+const o4 = { a: 10, b: 11, c: 12, d: 4, e: 5, f: 6 };
+const objs = [o1, o2, o3, o4];
+for (let i = 0; i < 100000; i++) { const o = objs[i & 3]; s += o.a + o.b + o.c; }
+`
+
+func BenchmarkPropAccessPolymorphic(b *testing.B) { runJS(b, propAccessPolymorphicCode) }
+
+// BenchmarkPropMiss 属性读未命中（每次新键名，Tier 0 IC 未命中路径）。
+const propMissCode = `
+let s = 0;
+const o = { a: 1 };
+for (let i = 0; i < 50000; i++) { s += o["k" + i] === undefined ? 1 : 2; }
+`
+
+func BenchmarkPropMiss(b *testing.B) { runJS(b, propMissCode) }
+
 // BenchmarkPropSet 对象属性写（隐藏类 IC SetCached 命中路径）。
 const propSetCode = `
 const o = { a: 0 };
