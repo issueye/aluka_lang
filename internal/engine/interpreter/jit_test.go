@@ -1093,34 +1093,46 @@ func TestJITStrictEqualityReferenceTraceDifferential(t *testing.T) {
 	}
 }
 
-// TestJITSymbolValuesGuardBackToTier0 verifies the v2.11 boundary claim:
-// Symbol values are not modeled by Quick/Native, so strict equality and
-// truthiness with Symbol operands must guard back to Tier 0 before any JIT
-// side effect, preserving the interpreter's Symbol identity semantics. The
-// coverage matrix (R0-3) treats this test as the authoritative evidence for
-// the "Symbol → Tier 0" row.
-func TestJITSymbolValuesGuardBackToTier0(t *testing.T) {
+// TestJITSymbolTruthinessNullishModeledInQuick verifies the R3-1 claim:
+// Symbol values are now modeled by Quick (quickSymbol), so truthiness
+// (`!`, `if (sym)`, `&&`, `||`, `??`) and nullish tests with Symbol operands
+// execute inside the JIT (function and trace levels) instead of guarding back
+// to Tier 0. Quick must run the whole scenario with zero guard failures; Auto
+// must produce identical results with the Native tier never executing Symbol
+// inputs (the number-only ABI rejects at the entry guard; programs containing
+// `!` are additionally not native-compilable and stay on Quick).
+func TestJITSymbolTruthinessNullishModeledInQuick(t *testing.T) {
 	source := `
 		const symA = Symbol("a");
 		const symB = Symbol("b");
-		function symStrictTrace(a, b, n) {
+		const objA = {};
+		function symTruthyTrace(a, b, n) {
 			const traceOnlyMarker = {};
 			let total = 0;
 			for (let i = 0; i < n; i++) {
-				if (a === b) total += 1;
-				if (a) total += 2;
+				if (a) total += 1;
+				if (a ?? b) total += 2;
+				if (!a) total += 4;
 			}
 			return total;
 		}
-		function symStrictLeaf(a, b) {
-			if (a === b) { return 1; }
-			if (a) { return 2; }
-			return 0;
+		function symTruthyLeaf(v, x) {
+			let r = 0;
+			if (!v) r += 1;
+			if (v && x) r += 2;
+			if (v || x) r += 4;
+			if (v ?? x) r += 8;
+			return r;
 		}
-		globalThis.symTraceSame = symStrictTrace(symA, symA, 12);
-		globalThis.symTraceDiff = symStrictTrace(symA, symB, 12);
-		globalThis.symLeafSame = symStrictLeaf(symA, symA);
-		globalThis.symLeafDiff = symStrictLeaf(symA, symB);
+		globalThis.symTruthyTraceSym = symTruthyTrace(symA, 0, 12);
+		globalThis.symTruthyTraceSymUndef = symTruthyTrace(symA, undefined, 12);
+		globalThis.symTruthyTraceZeroSym = symTruthyTrace(0, symB, 12);
+		globalThis.symTruthyTraceNullSym = symTruthyTrace(null, symB, 12);
+		globalThis.symTruthyLeafSymZero = symTruthyLeaf(symA, 0);
+		globalThis.symTruthyLeafSymThree = symTruthyLeaf(symA, 3);
+		globalThis.symTruthyLeafZeroSym = symTruthyLeaf(0, symB);
+		globalThis.symTruthyLeafNullSym = symTruthyLeaf(null, symB);
+		globalThis.symTruthyLeafObjSym = symTruthyLeaf(objA, symB);
 	`
 	run := func(mode jit.Mode) ([]engine.Value, jit.Stats) {
 		t.Helper()
@@ -1133,10 +1145,14 @@ func TestJITSymbolValuesGuardBackToTier0(t *testing.T) {
 			Mode: mode, Threshold: 1, BackedgeThreshold: 2,
 			TraceBudget: 3, Verify: mode == jit.Auto, Stats: true,
 		})
-		if _, err := vm.Eval(source, "jit-symbol-guard.js"); err != nil {
+		if _, err := vm.Eval(source, "jit-symbol-truthy.js"); err != nil {
 			t.Fatal(err)
 		}
-		names := []string{"symTraceSame", "symTraceDiff", "symLeafSame", "symLeafDiff"}
+		names := []string{
+			"symTruthyTraceSym", "symTruthyTraceSymUndef", "symTruthyTraceZeroSym", "symTruthyTraceNullSym",
+			"symTruthyLeafSymZero", "symTruthyLeafSymThree", "symTruthyLeafZeroSym",
+			"symTruthyLeafNullSym", "symTruthyLeafObjSym",
+		}
 		values := make([]engine.Value, len(names))
 		for i, name := range names {
 			value, err := vm.Global().Get(name)
@@ -1149,15 +1165,24 @@ func TestJITSymbolValuesGuardBackToTier0(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"symTraceSame": "36", // (=== + truthy) × 12
-		"symTraceDiff": "24", // truthy only × 12
-		"symLeafSame":  "1",  // a === b wins first branch
-		"symLeafDiff":  "2",  // truthy wins second branch
+		"symTruthyTraceSym":      "36", // truthy + nullish-kept x 12
+		"symTruthyTraceSymUndef": "36",
+		"symTruthyTraceZeroSym":  "48", // !0 only x 12
+		"symTruthyTraceNullSym":  "72", // (?? result truthy + !null) x 12
+		"symTruthyLeafSymZero":   "12", // || + ?? keep the Symbol
+		"symTruthyLeafSymThree":  "14", // && + || + ??
+		"symTruthyLeafZeroSym":   "5",  // !0 + || keeps Symbol
+		"symTruthyLeafNullSym":   "13", // !null + || + ??
+		"symTruthyLeafObjSym":    "14", // && + || + ?? with object operand
+	}
+	names := []string{
+		"symTruthyTraceSym", "symTruthyTraceSymUndef", "symTruthyTraceZeroSym", "symTruthyTraceNullSym",
+		"symTruthyLeafSymZero", "symTruthyLeafSymThree", "symTruthyLeafZeroSym",
+		"symTruthyLeafNullSym", "symTruthyLeafObjSym",
 	}
 	baseline, _ := run(jit.Off)
 	quick, quickStats := run(jit.Quick)
 	auto, autoStats := run(jit.Auto)
-	names := []string{"symTraceSame", "symTraceDiff", "symLeafSame", "symLeafDiff"}
 	for i, name := range names {
 		if got := baseline[i].String(); got != want[name] {
 			t.Fatalf("%s = %s, want %s", name, got, want[name])
@@ -1166,14 +1191,191 @@ func TestJITSymbolValuesGuardBackToTier0(t *testing.T) {
 			t.Fatalf("%s off=%v quick=%v auto=%v", name, baseline[i], quick[i], auto[i])
 		}
 	}
-	if quickStats.Compiled+quickStats.TracesCompiled == 0 || quickStats.GuardFailures == 0 {
-		t.Fatalf("quick did not attempt and guard Symbol values: %+v", quickStats)
+	// Quick: Symbol is modeled — compiled functions and traces execute without
+	// any guard fallback to Tier 0.
+	if quickStats.Compiled == 0 || quickStats.TracesCompiled == 0 ||
+		quickStats.Executed == 0 || quickStats.TracesExecuted == 0 {
+		t.Fatalf("quick did not model Symbol truthiness/nullish: %+v", quickStats)
 	}
-	if autoStats.Compiled+autoStats.TracesCompiled == 0 || autoStats.GuardFailures == 0 {
-		t.Fatalf("auto did not attempt and guard Symbol values: %+v", autoStats)
+	if quickStats.GuardFailures != 0 {
+		t.Fatalf("quick guard-failed on modeled Symbol values: %+v", quickStats)
+	}
+	// Auto: Native never executes Symbol inputs and the results stay identical;
+	// the `!`-bearing programs are not native-compilable, so Auto stabilizes on
+	// Quick with no runtime guard failures.
+	if autoStats.NativeExecuted+autoStats.NativeTracesExecuted != 0 {
+		t.Fatalf("auto executed Native with Symbol inputs (ABI leak): %+v", autoStats)
+	}
+	if autoStats.GuardFailures != 0 || autoStats.VerifyFailures != 0 {
+		t.Fatalf("auto guard/verify failures on Symbol truthiness paths: %+v", autoStats)
+	}
+	if autoStats.Executed == 0 || autoStats.TracesExecuted == 0 {
+		t.Fatalf("auto did not execute Symbol truthiness in Quick: %+v", autoStats)
+	}
+}
+
+// TestJITSymbolStrictEqualityAcrossTiers is the R3-2 differential for
+// `===` / `!==` with Symbol operands: same-symbol identity is equal,
+// different symbols (even with the same description) are not, and a Symbol is
+// never equal to any other type (no coercion). String, BigInt, Number, object
+// and nullish semantics must not regress. The leaf and trace shapes are
+// Native-compilable, so Auto exercises the number-only Native ABI: Symbol
+// inputs fail the entry guard and the site stabilizes on Quick after at most
+// jitGuardFailureLimit (2) failures.
+func TestJITSymbolStrictEqualityAcrossTiers(t *testing.T) {
+	source := `
+		const symA = Symbol("a");
+		const symB = Symbol("a");
+		const objA = {};
+		const objB = {};
+		function symStrictLeaf(a, b) {
+			let r = 0;
+			if (a === b) r += 1;
+			if (a !== b) r += 2;
+			return r;
+		}
+		function symStrictTrace(a, b, n) {
+			const traceOnlyMarker = {};
+			let total = 0;
+			for (let i = 0; i < n; i++) {
+				if (a === b) total += 1;
+				if (a !== b) total += 2;
+			}
+			return total;
+		}
+		function strictEq(a, b) { return a === b; }
+		function strictNe(a, b) { return a !== b; }
+		globalThis.leafSameSym = symStrictLeaf(symA, symA);
+		globalThis.leafDiffSym = symStrictLeaf(symA, symB);
+		globalThis.leafSymString = symStrictLeaf(symA, "a");
+		globalThis.leafSymNumber = symStrictLeaf(symA, 1);
+		globalThis.leafSymBigInt = symStrictLeaf(symA, 1n);
+		globalThis.leafSymBool = symStrictLeaf(symA, true);
+		globalThis.leafSymNull = symStrictLeaf(symA, null);
+		globalThis.leafSymUndef = symStrictLeaf(symA, undefined);
+		globalThis.leafSymObject = symStrictLeaf(symA, objA);
+		globalThis.leafBigIntValue = symStrictLeaf(7n, 7n);
+		globalThis.leafStringValue = symStrictLeaf("a", "a");
+		globalThis.leafNumberValue = symStrictLeaf(0, -0);
+		globalThis.leafNumberNaN = symStrictLeaf(NaN, NaN);
+		globalThis.leafObjectIdentity = symStrictLeaf(objA, objA);
+		globalThis.leafDifferentObject = symStrictLeaf(objA, objB);
+		globalThis.traceSameSym = symStrictTrace(symA, symA, 12);
+		globalThis.traceDiffSym = symStrictTrace(symA, symB, 12);
+		globalThis.traceSymString = symStrictTrace(symA, "a", 12);
+		globalThis.traceBigIntValue = symStrictTrace(7n, 7n, 12);
+		globalThis.traceStringValue = symStrictTrace("a", "a", 12);
+		globalThis.traceObjectIdentity = symStrictTrace(objA, objA, 12);
+		globalThis.traceDifferentObject = symStrictTrace(objA, objB, 12);
+		globalThis.eqSameSym = strictEq(symA, symA);
+		globalThis.eqDiffSym = strictEq(symA, symB);
+		globalThis.eqSymString = strictEq(symA, "a");
+		globalThis.eqSymBigInt = strictEq(symA, 1n);
+		globalThis.eqSymNull = strictEq(symA, null);
+		globalThis.eqSymUndef = strictEq(symA, undefined);
+		globalThis.eqSymObject = strictEq(symA, objA);
+		globalThis.eqNumberValue = strictEq(0, -0);
+		globalThis.eqNumberNaN = strictEq(NaN, NaN);
+		globalThis.neSameSym = strictNe(symA, symA);
+		globalThis.neDiffSym = strictNe(symA, symB);
+		globalThis.neSymString = strictNe(symA, "a");
+	`
+	run := func(mode jit.Mode) ([]engine.Value, jit.Stats) {
+		t.Helper()
+		vm, err := NewVM()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer vm.Close()
+		vm.ConfigureJIT(jit.Config{
+			Mode: mode, Threshold: 1, BackedgeThreshold: 2,
+			TraceBudget: 3, Verify: mode == jit.Auto, Stats: true,
+		})
+		if _, err := vm.Eval(source, "jit-symbol-strict.js"); err != nil {
+			t.Fatal(err)
+		}
+		names := []string{
+			"leafSameSym", "leafDiffSym", "leafSymString", "leafSymNumber", "leafSymBigInt",
+			"leafSymBool", "leafSymNull", "leafSymUndef", "leafSymObject",
+			"leafBigIntValue", "leafStringValue", "leafNumberValue", "leafNumberNaN",
+			"leafObjectIdentity", "leafDifferentObject",
+			"traceSameSym", "traceDiffSym", "traceSymString", "traceBigIntValue",
+			"traceStringValue", "traceObjectIdentity", "traceDifferentObject",
+			"eqSameSym", "eqDiffSym", "eqSymString", "eqSymBigInt", "eqSymNull",
+			"eqSymUndef", "eqSymObject", "eqNumberValue", "eqNumberNaN",
+			"neSameSym", "neDiffSym", "neSymString",
+		}
+		values := make([]engine.Value, len(names))
+		for i, name := range names {
+			value, err := vm.Global().Get(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			values[i] = value
+		}
+		return values, vm.JITStats()
+	}
+	want := map[string]string{
+		"leafSameSym": "1", "leafDiffSym": "2", "leafSymString": "2", "leafSymNumber": "2",
+		"leafSymBigInt": "2", "leafSymBool": "2", "leafSymNull": "2", "leafSymUndef": "2",
+		"leafSymObject": "2", "leafBigIntValue": "1", "leafStringValue": "1", "leafNumberValue": "1",
+		"leafNumberNaN": "2", "leafObjectIdentity": "1", "leafDifferentObject": "2",
+		"traceSameSym": "12", "traceDiffSym": "24", "traceSymString": "24", "traceBigIntValue": "12",
+		"traceStringValue": "12", "traceObjectIdentity": "12", "traceDifferentObject": "24",
+		"eqSameSym": "true", "eqDiffSym": "false", "eqSymString": "false", "eqSymBigInt": "false",
+		"eqSymNull": "false", "eqSymUndef": "false", "eqSymObject": "false",
+		"eqNumberValue": "true", "eqNumberNaN": "false",
+		"neSameSym": "false", "neDiffSym": "true", "neSymString": "true",
+	}
+	names := []string{
+		"leafSameSym", "leafDiffSym", "leafSymString", "leafSymNumber", "leafSymBigInt",
+		"leafSymBool", "leafSymNull", "leafSymUndef", "leafSymObject",
+		"leafBigIntValue", "leafStringValue", "leafNumberValue", "leafNumberNaN",
+		"leafObjectIdentity", "leafDifferentObject",
+		"traceSameSym", "traceDiffSym", "traceSymString", "traceBigIntValue",
+		"traceStringValue", "traceObjectIdentity", "traceDifferentObject",
+		"eqSameSym", "eqDiffSym", "eqSymString", "eqSymBigInt", "eqSymNull",
+		"eqSymUndef", "eqSymObject", "eqNumberValue", "eqNumberNaN",
+		"neSameSym", "neDiffSym", "neSymString",
+	}
+	baseline, _ := run(jit.Off)
+	quick, quickStats := run(jit.Quick)
+	auto, autoStats := run(jit.Auto)
+	for i, name := range names {
+		if got := baseline[i].String(); got != want[name] {
+			t.Fatalf("%s = %s, want %s", name, got, want[name])
+		}
+		if !sameJITValue(baseline[i], quick[i]) || !sameJITValue(baseline[i], auto[i]) {
+			t.Fatalf("%s off=%v quick=%v auto=%v", name, baseline[i], quick[i], auto[i])
+		}
+	}
+	// Quick: strict equality with Symbol operands executes in-JIT (function
+	// and trace) with zero guard failures; value/identity semantics intact.
+	if quickStats.Compiled == 0 || quickStats.TracesCompiled == 0 ||
+		quickStats.Executed == 0 || quickStats.TracesExecuted == 0 ||
+		quickStats.GuardFailures != 0 {
+		t.Fatalf("quick did not execute Symbol strict equality in-JIT: %+v", quickStats)
+	}
+	// Auto: Native compiles the leaf and the trace, but the number-only ABI
+	// rejects Symbol inputs at the entry guard; after at most two failures per
+	// site it stabilizes on Quick with identical results and no verify error.
+	if autoStats.NativeCompiled == 0 || autoStats.NativeTracesCompiled == 0 {
+		t.Fatalf("auto did not compile Native for Symbol strict programs: %+v", autoStats)
+	}
+	if autoStats.NativeExecuted != 0 || autoStats.NativeTracesExecuted != 0 {
+		t.Fatalf("auto executed Native with Symbol inputs (ABI leak): %+v", autoStats)
+	}
+	if autoStats.NativeGuardDisabled == 0 || autoStats.NativeTraceGuardDisabled == 0 {
+		t.Fatalf("auto did not disable Native after Symbol entry-guard failures: %+v", autoStats)
+	}
+	if autoStats.GuardFailures < 4 {
+		t.Fatalf("auto entry-guard failures %d, want at least 4 (2 leaf + 2 trace): %+v", autoStats.GuardFailures, autoStats)
+	}
+	if autoStats.Executed == 0 || autoStats.TracesExecuted == 0 {
+		t.Fatalf("auto did not fall back to Quick for Symbol strict equality: %+v", autoStats)
 	}
 	if autoStats.VerifyFailures != 0 {
-		t.Fatalf("auto verify must never run on guarded Symbol paths: %+v", autoStats)
+		t.Fatalf("auto verify must never run on Native-rejected Symbol paths: %+v", autoStats)
 	}
 }
 

@@ -291,9 +291,10 @@ func (g *Generator) genLoopCase(id int, seed int64) *Case {
 	return g.build(id, KindLoop, seed, b.String())
 }
 
-// genStrictEqCase uses controlled value pairs so the R1-2 identity semantics
-// (NaN !== NaN, +0 === -0, BigInt value equality, Symbol identity, object
-// identity) are exercised deterministically.
+// genStrictEqCase uses controlled value pairs so the R1-2 / R3-2 identity
+// semantics (NaN !== NaN, +0 === -0, BigInt value equality, Symbol identity,
+// object identity, Symbol never equal to any other type with no coercion) are
+// exercised deterministically.
 func (g *Generator) genStrictEqCase(id int, seed int64) *Case {
 	rng := rand.New(rand.NewSource(seed ^ 0xE4))
 	fn := callID(id)
@@ -307,6 +308,10 @@ func (g *Generator) genStrictEqCase(id int, seed int64) *Case {
 		{"null", "null"}, {"null", "undefined"},
 		{"OBJ_A", "OBJ_A"}, {"OBJ_A", "OBJ_B"},
 		{"SYM1", "SYM1"}, {"SYM1", "SYM2"},
+		// R3-2: a Symbol is never strictly equal to any other type — no
+		// coercion, not even against an equal-looking description.
+		{"SYM1", `"a"`}, {"SYM1", "7"}, {"SYM1", "7n"}, {"SYM1", "null"},
+		{"SYM1", "undefined"}, {"SYM1", "true"}, {"SYM1", "OBJ_A"},
 	}
 	start := rng.Intn(len(pairs))
 	for i := 0; i < 4; i++ {

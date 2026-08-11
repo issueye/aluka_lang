@@ -386,6 +386,77 @@ LOG("post", SV(O2.count > 0 && O2.count === O2.last + 1));
 			Expected: "call:kU1\nreturn:n:10\ncall:kU2\nreturn:NaN\ncall:kU3\nreturn:NaN\npost:NaN",
 			Body:     guardMutationTemplates("kU", 4)[mutUpvalueChange],
 		},
+		{
+			// R3-1: Symbol truthiness and nullish behavior across `!`, `&&`,
+			// `||` and `??`: a Symbol is always truthy, never nullish, and the
+			// short-circuit operators keep the Symbol value itself.
+			ID: -32, Kind: KindBranch, Seed: 132, Params: params,
+			Expected: "call:kA1\nreturn:n:12\ncall:kA2\nreturn:n:14\ncall:kA3\nreturn:n:12\ncall:kA4\nreturn:n:5\ncall:kA5\nreturn:n:13\ncall:kA6\nreturn:n:14",
+			Body: `function kT(v, x) {
+  let r = 0;
+  if (!v) r += 1;
+  if (v && x) r += 2;
+  if (v || x) r += 4;
+  if (v ?? x) r += 8;
+  return r;
+}
+try { LOG("call", "kA1"); LOG("return", SV(kT(SYM1, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kA2"); LOG("return", SV(kT(SYM1, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kA3"); LOG("return", SV(kT(SYM1, undefined))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kA4"); LOG("return", SV(kT(0, SYM2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kA5"); LOG("return", SV(kT(null, SYM2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kA6"); LOG("return", SV(kT(OBJ_A, SYM1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-2: Symbol strict equality is identity with no coercion: the
+			// same Symbol is equal only to itself, never to another Symbol or
+			// to any other type; !== inverts; String/BigInt/Number/object
+			// value semantics do not regress.
+			ID: -33, Kind: KindStrictEq, Seed: 133, Params: params,
+			Expected: "call:kS1\nreturn:b:true\ncall:kS2\nreturn:b:false\ncall:kS3\nreturn:b:false\ncall:kS4\nreturn:b:false\ncall:kS5\nreturn:b:false\ncall:kS6\nreturn:b:false\ncall:kS7\nreturn:b:false\ncall:kS8\nreturn:b:false\ncall:kS9\nreturn:b:false\ncall:kN1\nreturn:b:false\ncall:kN2\nreturn:b:true\ncall:kS10\nreturn:b:true\ncall:kS11\nreturn:b:true\ncall:kS12\nreturn:b:true\ncall:kS13\nreturn:b:true",
+			Body: `function kS(a, b) { return a === b; }
+function kN(a, b) { return a !== b; }
+try { LOG("call", "kS1"); LOG("return", SV(kS(SYM1, SYM1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS2"); LOG("return", SV(kS(SYM1, SYM2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS3"); LOG("return", SV(kS(SYM1, "a"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS4"); LOG("return", SV(kS(SYM1, 7))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS5"); LOG("return", SV(kS(SYM1, 7n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS6"); LOG("return", SV(kS(SYM1, null))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS7"); LOG("return", SV(kS(SYM1, undefined))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS8"); LOG("return", SV(kS(SYM1, true))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS9"); LOG("return", SV(kS(SYM1, OBJ_A))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kN1"); LOG("return", SV(kN(SYM1, SYM1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kN2"); LOG("return", SV(kN(SYM1, SYM2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS10"); LOG("return", SV(kS("a", "a"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS11"); LOG("return", SV(kS(7n, 7n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS12"); LOG("return", SV(kS(0, -0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS13"); LOG("return", SV(kS(OBJ_A, OBJ_A))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-1/R3-2: Symbol truthiness, nullish and strict equality inside
+			// a traced loop (the marker keeps the function out of the leaf
+			// tier so the trace tier handles it).
+			ID: -34, Kind: KindLoop, Seed: 134, Params: params,
+			Expected: "call:kL1\nreturn:n:91\ncall:kL2\nreturn:n:78\ncall:kL3\nreturn:n:104\ncall:kL4\nreturn:n:156",
+			Body: `function kL(a, b, n) {
+  const traceOnlyMarker = {};
+  let r = 0;
+  for (let i = 0; i < n; i++) {
+    if (a === b) r += 1;
+    if (a) r += 2;
+    if (a ?? b) r += 4;
+    if (!a) r += 8;
+  }
+  return r;
+}
+try { LOG("call", "kL1"); LOG("return", SV(kL(SYM1, SYM1, 13))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kL2"); LOG("return", SV(kL(SYM1, SYM2, 13))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kL3"); LOG("return", SV(kL(0, SYM2, 13))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kL4"); LOG("return", SV(kL(null, SYM2, 13))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
 	}
 }
 

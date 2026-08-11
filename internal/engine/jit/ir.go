@@ -932,6 +932,7 @@ const (
 	quickObject
 	quickString
 	quickBigInt
+	quickSymbol
 )
 
 type quickValue struct {
@@ -1008,6 +1009,9 @@ func (v quickValue) truthy() (bool, bool) {
 		return true, true
 	case quickString, quickBigInt:
 		return v.b, true
+	case quickSymbol:
+		// Symbols are always truthy (no falsy Symbol exists).
+		return true, true
 	default:
 		return false, false
 	}
@@ -1017,7 +1021,7 @@ func (v quickValue) nullish() (bool, bool) {
 	switch v.kind {
 	case quickUndefined, quickNull:
 		return true, true
-	case quickNumber, quickBoolean, quickObject, quickString, quickBigInt:
+	case quickNumber, quickBoolean, quickObject, quickString, quickBigInt, quickSymbol:
 		return false, true
 	default:
 		return false, false
@@ -1065,6 +1069,18 @@ func fromEngine(v engine.Value, objects *[maxQuickSlots]engine.Value, objectCoun
 		}
 		return quickValue{kind: kind, ref: uint8(ref), b: truthy}
 	}
+	if v.Type() == engine.TypeSymbol {
+		// R3-1: Symbols join the Quick value domain as opaque references
+		// (identity is the only observable property: always truthy, never
+		// nullish, strict equality by pointer identity).
+		if *objectCount >= len(objects) {
+			return quickValue{}
+		}
+		ref := *objectCount
+		objects[ref] = v
+		*objectCount++
+		return quickValue{kind: quickSymbol, ref: uint8(ref)}
+	}
 	return quickValue{}
 }
 
@@ -1083,7 +1099,7 @@ func (v quickValue) toEngine(objects []engine.Value) engine.Value {
 			return objects[v.ref]
 		}
 		return engine.Undefined()
-	case quickString, quickBigInt:
+	case quickString, quickBigInt, quickSymbol:
 		if int(v.ref) < len(objects) {
 			return objects[v.ref]
 		}
@@ -1119,6 +1135,15 @@ func strictQuickEqual(left, right quickValue, values []engine.Value) (bool, bool
 		leftInt, leftOK := engine.BigIntValue(values[left.ref])
 		rightInt, rightOK := engine.BigIntValue(values[right.ref])
 		return leftOK && rightOK && leftInt.Cmp(rightInt) == 0, leftOK && rightOK
+	case quickSymbol:
+		// R3-2: Symbol strict equality is pure identity — the same symbol
+		// object is equal only to itself, never to another symbol (even with
+		// the same description) and never to any other type. There is no
+		// coercion: different kinds already returned false above.
+		if int(left.ref) >= len(values) || int(right.ref) >= len(values) {
+			return false, false
+		}
+		return values[left.ref] == values[right.ref], true
 	case quickObject:
 		if int(left.ref) >= len(values) || int(right.ref) >= len(values) {
 			return false, false

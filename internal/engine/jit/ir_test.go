@@ -116,6 +116,7 @@ func TestExecuteNullishKeepDistinguishesNullishAndReferenceValues(t *testing.T) 
 	stringValue := engine.Str("value")
 	zeroBigInt := engine.BigIntZero()
 	bigIntValue := engine.BigIntFromInt(7)
+	symbolValue := engine.NewSymbol("s")
 	for _, tt := range []struct {
 		name string
 		args []engine.Value
@@ -132,6 +133,8 @@ func TestExecuteNullishKeepDistinguishesNullishAndReferenceValues(t *testing.T) 
 		{name: "string", args: []engine.Value{stringValue}, want: stringValue},
 		{name: "zero-bigint", args: []engine.Value{zeroBigInt}, want: zeroBigInt},
 		{name: "bigint", args: []engine.Value{bigIntValue}, want: bigIntValue},
+		// R3-1: a Symbol is never nullish, so `sym ?? 7` keeps the Symbol.
+		{name: "symbol", args: []engine.Value{symbolValue}, want: symbolValue},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, reason, err := p.Execute(engine.Undefined(), tt.args)
@@ -149,6 +152,8 @@ func TestExecuteNullishKeepDistinguishesNullishAndReferenceValues(t *testing.T) 
 func TestExecuteStrictEqualityAcrossQuickValues(t *testing.T) {
 	object := engine.NewObject()
 	otherObject := engine.NewObject()
+	symbol := engine.NewSymbol("same")
+	otherSymbol := engine.NewSymbol("same") // same description, different identity
 	cases := []struct {
 		name        string
 		left, right engine.Value
@@ -168,6 +173,16 @@ func TestExecuteStrictEqualityAcrossQuickValues(t *testing.T) {
 		{name: "bigint-number", left: engine.BigIntFromInt(7), right: engine.Number(7)},
 		{name: "object-identity", left: object, right: object, equal: true},
 		{name: "different-object", left: object, right: otherObject},
+		// R3-2: Symbol strict equality is identity, with no coercion.
+		{name: "symbol-identity", left: symbol, right: symbol, equal: true},
+		{name: "different-symbol", left: symbol, right: otherSymbol},
+		{name: "symbol-string", left: symbol, right: engine.Str("same")},
+		{name: "symbol-number", left: symbol, right: engine.Number(1)},
+		{name: "symbol-bigint", left: symbol, right: engine.BigIntFromInt(1)},
+		{name: "symbol-null", left: symbol, right: engine.Null()},
+		{name: "symbol-undefined", left: symbol, right: engine.Undefined()},
+		{name: "symbol-boolean", left: symbol, right: engine.Boolean(true)},
+		{name: "symbol-object", left: symbol, right: object},
 	}
 	for _, opCase := range []struct {
 		name   string
@@ -197,6 +212,55 @@ func TestExecuteStrictEqualityAcrossQuickValues(t *testing.T) {
 						t.Fatalf("got=%v want=%v", got, want)
 					}
 				})
+			}
+		})
+	}
+}
+
+// TestExecuteNotTruthinessAcrossQuickValues covers the R3-1 truthiness table
+// for every modeled Quick kind through OpNot: falsy values (undefined, null,
+// 0, -0, NaN, false, "", 0n) negate to true, truthy values (numbers, strings,
+// BigInts, objects and Symbols) negate to false. Symbols are always truthy.
+func TestExecuteNotTruthinessAcrossQuickValues(t *testing.T) {
+	tmpl := template(
+		emit(bytecode.OpLoadLocal, 1),
+		emit(bytecode.OpNot, 0),
+		emit(bytecode.OpReturn, 0),
+	)
+	p, err := CompileLeaf(tmpl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := engine.NewObject()
+	for _, tt := range []struct {
+		name string
+		arg  engine.Value
+		want bool
+	}{
+		{name: "undefined", arg: engine.Undefined(), want: true},
+		{name: "null", arg: engine.Null(), want: true},
+		{name: "zero", arg: engine.Number(0), want: true},
+		{name: "negative-zero", arg: engine.Number(math.Copysign(0, -1)), want: true},
+		{name: "nan", arg: engine.Number(math.NaN()), want: true},
+		{name: "false", arg: engine.Boolean(false), want: true},
+		{name: "empty-string", arg: engine.Str(""), want: true},
+		{name: "zero-bigint", arg: engine.BigIntZero(), want: true},
+		{name: "number", arg: engine.Number(2), want: false},
+		{name: "true", arg: engine.Boolean(true), want: false},
+		{name: "string", arg: engine.Str("x"), want: false},
+		{name: "bigint", arg: engine.BigIntFromInt(7), want: false},
+		{name: "object", arg: object, want: false},
+		// R3-1: Symbols are always truthy.
+		{name: "symbol", arg: engine.NewSymbol("s"), want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, reason, err := p.Execute(engine.Undefined(), []engine.Value{tt.arg})
+			if err != nil || reason != Executed {
+				t.Fatalf("got=%v reason=%v err=%v", got, reason, err)
+			}
+			value, ok := got.Bool()
+			if !ok || value != tt.want {
+				t.Fatalf("!%v = %v, want %v", tt.arg, got, tt.want)
 			}
 		})
 	}
