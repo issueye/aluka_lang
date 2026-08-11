@@ -1,0 +1,197 @@
+# AGENTS.md
+
+> 面向 AI 代码助手（与新人）的工程指南。先读本文，再读 [README.md](./README.md) 与 [docs/](./docs/)。
+
+Aluka 是一个**用纯 Go 实现的、API 行为兼容 [Bun](https://bun.sh/) 的 JavaScript/TypeScript 运行时**。核心组件（JS 引擎、模块系统、事件循环、TS 转译器、RegExp 引擎、GC、包管理器、打包器）全部自研。
+
+- 模块路径：`github.com/aluka-lang/aluka`
+- Go 版本：`1.25.x`（见 `go.mod`，CI 使用 `1.25`）
+- CLI 入口：`./cmd/aluka`
+
+---
+
+## 不可违背的约束（动手前必读）
+
+这些是项目级硬性约束，任何改动都不得破坏：
+
+1. **纯 Go，禁用 CGO**。所有构建带 `CGO_ENABLED=0`，引擎代码用 `//go:build !cgo`。
+   - 唯一例外：JIT 的 race 检测测试（`go test -race` 需要 cgo），仅限本地/CI 测试，不影响产物。
+2. **核心组件自研**。禁止引入第三方 JS 引擎（V8/QuickJS/Goja 等）。
+3. **暂不支持 JSX**。
+4. **单二进制，静态编译，零运行时依赖**。新增外部依赖需谨慎评估，且必须纯 Go（无 CGO）。
+5. **API 行为兼容 Bun/Node.js**。新增内置模块或 Web API 时，以 Node.js / Bun 的真实行为为权威基准（见 `tests/conformance/` 差分测试）。
+
+---
+
+## 常用命令
+
+```bash
+# 构建（产物到 bin/aluka）
+make build
+# 等价于：
+CGO_ENABLED=0 go build -o bin/aluka ./cmd/aluka
+
+# 全量单元测试
+make test            # CGO_ENABLED=0 go test ./...
+
+# 覆盖率
+make cover
+
+# Lint（需本地安装 golangci-lint）
+make lint
+
+# 跨平台发布产物（linux/darwin/windows × amd64/arm64）
+make release
+
+# 运行
+./bin/aluka -e "console.log(1+1)"
+./bin/aluka run hello.js
+./bin/aluka hello.ts        # run 的简写，.ts 自动转译
+./bin/aluka repl
+
+# 引擎/缓存选择
+./bin/aluka --vm  app.js    # 字节码 VM（默认）
+./bin/aluka --ast app.js    # AST 解释器
+./bin/aluka --no-cache app.js   # 禁用磁盘字节码缓存
+
+# JIT 相关（amd64 平台）
+./bin/aluka --jit=auto --jit-threshold=1 --jit-backedge-threshold=2 app.js
+
+# 针对某包跑测试（示例）
+CGO_ENABLED=0 go test ./internal/engine/interpreter/...
+CGO_ENABLED=0 go test ./internal/engine/jit/... ./internal/engine/interpreter
+```
+
+### 一致性测试（conformance，需先构建 `./aluka`）
+
+```bash
+bash tests/conformance/node/run.sh          # Node.js 官方测试子集
+bash tests/conformance/build/run.sh         # build --compile 产物
+bash tests/conformance/express/run.sh       # express 真实 HTTP 链路
+ALUKA=./aluka bash tests/conformance/npm/run.sh   # 真实 npm 包加载
+```
+
+详见 [README.md → 一致性测试](./README.md)。
+
+---
+
+## 代码仓库布局
+
+```
+cmd/aluka/                 CLI 入口：main.go / build.go / compiled.go / install.go / repl.go
+internal/
+  engine/                  自研 JS 引擎
+    lexer/                 词法分析
+    parser/                递归下降 + Pratt 解析器
+    ast/                   AST 节点定义
+    compiler/              AST → 字节码
+    bytecode/              指令集 / 序列化 / 优化（opcodes.go, serialize.go, optimize.go）
+    interpreter/           AST 解释器 + 字节码 VM（含 Date/URI/structuredClone/V8 堆栈/promise/async/regex/jit_bridge）
+      jitdiff/             JIT 差分测试框架
+    regex/                 正则翻译层 + 自研回溯引擎
+    jit/                   JIT（amd64 原生 + 不支持平台 fallback）
+      native/              原生代码发布 / W^X / 崩溃隔离（平台分文件）
+    engine.go              Engine/Context/Value 接口抽象
+    shape.go               隐藏类 + 内联缓存（IC）
+    gc.go                  标记-清除 GC
+  runtime/
+    globals/               全局对象：console/process/Buffer/URL/fetch/Intl/timers/streams...
+                           aluka*.go = Aluka 特有 API（兼容 Bun，含 SQL/Redis/S3/shell）
+    module/                ESM/CJS 模块系统 + 字节码缓存 + .ts 导入 / TLA
+  builtin/                 Node.js 内置模块（fs/http/net/crypto/sqlite/test/...，文件名即模块名）
+  pkgmanager/              npm 兼容包管理器（semver/registry/resolver/installer/lockfile/workspace/config）
+  bundler/                 build --compile 单文件打包器（analyze/graph/shake/minify/compile）
+  monitor/                 --monitor 性能/内存指标
+tests/
+  conformance/             一致性测试脚本（node/test262/npm/install/express/build/node22）
+  compat/node22/           Node 22 差分 conformance（aluka vs node22 双跑对比）
+bench/                     性能基准（fib/jit/matrix + cmd/jitbench）
+docs/                      需求 / 开发计划 / 兼容计划 / 性能报告 / 优化计划 / ADR
+docs/adr/                  架构决策记录（ADR）
+```
+
+**速记**：新增 Node 内置模块 → `internal/builtin/`；新增 Web API / 全局 → `internal/runtime/globals/`；新增 Aluka（Bun 兼容）API → `internal/runtime/globals/aluka*.go`。
+
+---
+
+## 代码风格与约定
+
+- **格式化由工具保证**：`gofmt` + `goimports`（`.golangci.yml` 已启用，CI 强制）。不要手调缩进。
+- **缩进**：Go 用 Tab；`*.yml/yaml/md/json/toml` 用 2 空格（见 `.editorconfig`）。
+- **行尾**：LF，去尾随空格，文件末尾留一个换行。
+- **注释语言**：项目以**中文注释为主**，接口/公开类型注释可中英混用。新增代码请对齐周边文件的语言风格。
+- **包文档**：每个包应有 `// Package xxx ...` 文档注释（参考 `internal/engine/engine.go`、`cmd/aluka/main.go`）。
+- **测试风格**：表驱动 + 子测试（`t.Run`），对齐同包已有 helper（如 `internal/engine/interpreter` 的 `vmEvalStr`）。测试代码放宽 `errcheck/dupl/gocritic`（见 `.golangci.yml`）。
+
+---
+
+## 测试约定
+
+- **首选表驱动测试**，用例集中、可读。先看同目录 `_test.go` 的既有写法再动手。
+- **环境门控测试**（无对应环境时 `t.Skip`，不要让本地/CI 失败）：
+  - `TEST_REDIS_URL` —— 活 Redis（`Aluka.Redis` 命令级测试）
+  - `TEST_DATABASE_URL` —— 活 Postgres（`Aluka.SQL` Postgres 路径）
+  - `ALUKA_JIT_SOAK=1` —— 长时 soak（轮数 ×20）
+  - `JITDIFF_NIGHTLY=1` —— 10 万用例 JIT 差分（仅 scheduled/manual 触发）
+- **test262 回归**：每个 ES 新特性尽量配 test262 子集回归（`tests/conformance/test262`）。
+- **差分测试**：行为对齐 Node 时，优先在 `tests/compat/node22/` 加 aluka vs node22 双跑用例。
+- 跑完整 JIT 套件（含 race）：
+  ```bash
+  CGO_ENABLED=0 go test ./internal/engine/jit/... ./internal/engine/interpreter
+  CGO_ENABLED=1 go test -race ./internal/engine/jit/... ./internal/engine/interpreter
+  ```
+
+---
+
+## 架构关键概念（改代码前需了解）
+
+- **双引擎**：AST-walking 解释器（`--ast`）与字节码 VM（`--vm`，**默认**）。两者共享 lexer/parser/ast/compiler/bytecode。抽象层在 `internal/engine/engine.go`（`Engine/Context/Value` 接口）。
+- **字节码磁盘缓存**：VM 默认把编译产物缓存到 `.aluka-cache/`。**改动字节码布局/常量编码/编译器输出时，必须同步 bump `internal/engine/bytecode/serialize.go` 的 `FormatVersion`**，否则旧缓存会被误读或报 version mismatch。
+- **隐藏类 + 内联缓存（IC）**：`internal/engine/shape.go`。`--ic-stats` 可看命中率。
+- **JIT 分层**：`internal/engine/jit/`。amd64 走原生机器码（W^X、崩溃隔离、safepoint、OSR），**不支持平台自动 fallback 到 Tier 0**（结果与 JIT Off 一致）。平台分文件用构建标签：`*_amd64.go` / `*_linux.go` / `*_windows.go` / `*_unsupported.go`。
+- **GC**：自研标记-清除（`internal/engine/gc.go`），与 JIT 协同（safepoint、异步抢占）。
+- **模块系统**：ESM + CJS + Node 解析算法 + 循环依赖，`internal/runtime/module/`。`.ts` 相对导入、import attributes、路径别名（`paths`/`baseUrl`）、top-level await 均已支持。
+- **TS 转译**：类型注解剥离在 parser/compiler 层完成（非独立编译器），`internal/engine/parser/` 与 `internal/engine/compiler/`。
+- **打包器**：`aluka build --compile`（Phase 7）= 基座二进制 + payload（预编译字节码 + manifest）+ footer。字节码平台无关，故可跨平台追加 payload。设计见 `docs/build-compile-plan.md`。
+
+---
+
+## 实现新功能时的注意事项
+
+- **新增 Node 内置模块**：在 `internal/builtin/` 加 `<modname>.go`，注册到模块表；对照 Node 行为补 `tests/compat/node22/` 差分用例。
+- **新增全局 / Web API**：放 `internal/runtime/globals/`，参考 `console.go`/`fetch.go` 的注册方式。
+- **新增 Aluka（Bun 兼容）API**：放 `internal/runtime/globals/aluka*.go`，以 Bun 同名 API 行为为准；`Bun` 是兼容别名。
+- **新增/修改字节码指令**：改 `internal/engine/bytecode/opcodes.go`，并 **bump `FormatVersion`**。
+- **平台相关代码**：用构建标签分文件（`_unix`/`_windows`/`_amd64`/`_unsupported`），保持公共逻辑在无后缀文件里。禁止让无 CGO 构建失败。
+- **新增第三方 Go 依赖**：必须纯 Go、无 CGO；先评估必要性。
+- **设计先行**：较大特性先在 `docs/` 写计划/设计文档（参考既有 `*-plan.md`），架构决策进 `docs/adr/`。
+
+---
+
+## 提交与 CI
+
+- **分支**：默认在 `main`；如需改动请先开分支（除非用户明确要求直接提交到 main）。**仅在用户要求时才 commit / push**。
+- **CI 门禁**（`.github/workflows/ci.yml`）：
+  - 三端（ubuntu/macos/windows）`go test ./... -cover` + CLI smoke
+  - lint（golangci-lint，`--timeout 5m`）
+  - 跨平台构建（5 目标）+ 跨平台 `--compile` 产物结构校验
+  - **JIT Linux amd64 专项门禁**：W^X 深度校验、崩溃隔离、fallback、`-race`、`GOGC=20/100` 压力、PR soak、nightly 10 万差分
+- 提交前本地自查：
+  ```bash
+  CGO_ENABLED=0 go build ./...
+  CGO_ENABLED=0 go test ./...
+  make lint   # 若已安装 golangci-lint
+  ```
+- **提交信息**：沿用既有约定（`feat:` / `fix:` / `test:` / `docs:` / `bench:` / `ci:` / `refactor:` 等前缀，正文可中文）。
+
+---
+
+## 进一步阅读
+
+- [README.md](./README.md) —— 项目总览、能力清单、已知限制、快速开始
+- [docs/requirements-analysis.md](./docs/requirements-analysis.md) —— 需求与约束
+- [docs/development-plan.md](./docs/development-plan.md) —— 分 Phase 开发计划（主蓝图）
+- [docs/development-roadmap.md](./docs/development-roadmap.md) —— 路线图
+- [docs/pi-compat-plan.md](./docs/pi-compat-plan.md) —— 真实世界兼容计划
+- [docs/adr/](./docs/adr/) —— 架构决策记录
+- [docs/](./docs/) —— 各专项计划与性能报告（`*-plan.md` / `performance-report-*.md`）
