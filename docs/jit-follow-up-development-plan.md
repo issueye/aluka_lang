@@ -315,6 +315,8 @@ Extended soak），但尚无真实 Linux runner 成功记录，不以交叉构�
 R2-2/R2-6/R2-7 的 Linux 实机门禁已写入 ci.yml `jit-linux`（W^X deep verification / crash isolation / fallback gate step），
 等待真实 runner 连续 5 次成功记录后 R2-1 方可完成。
 
+| 2026-08-11 | R2 剩余项目推进：CI 门禁就绪度 + 本地 extended soak + Frame 指针审计 | ① ci.yml 门禁就绪度验证：YAML 语法解析通过；`jit-linux` 全部 13 个 step 交叉核对——W^X gate（`TestExecMemWX*` 9 个）、crash isolation gate（`TestNativeCrashIsolation*` 8 个）、fallback gate（`TestFallback*`/`TestUnsupportedPlatform*`）、PR/extended soak（`TestAutoJITSoakLifecycleGCAndLRU`）测试名全部存在且 `GOOS=linux GOARCH=amd64` 测试包编译通过，避免 CI 上跑空门禁。② Windows 本地 extended soak：`ALUKA_JIT_SOAK=1 go test -run '^TestAutoJITSoakLifecycleGCAndLRU$' -count=20`（6400 轮，80 次 GC/轮次批）全过，每轮 nativeCompiled=2160/tracesCompiled=640/evictions=560/backgroundQueued=160 且 RX 逐轮回基线（本轮证据仅限 Windows 实机）。③ 硬停止条件审计补充：新增 `frame_pointer_free_test.go` 的 `TestFrameIsPointerFree`——用 reflect 递归验证 `jitnative.Frame` 全部字段为数值/数值数组类型，Go 类型系统保证 Native Frame 无 Go 指针槽位、GC 不扫描生成代码帧（R2 硬停止条件之一显式锁定）。④ 环境确认：本机无 WSL/Docker/Linux runner（`wsl -l` 提示未安装、`docker` 不存在），R2-1 真实 Linux CI 记录仍无法本地完成，等待 runner；30-60 分钟 nightly 与 ≥8 小时 release soak 仍待真实 CI 环境执行 |
+
 ## 8. R3：Quick JIT 语义覆盖
 
 ### 8.1 目标

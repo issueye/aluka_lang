@@ -921,6 +921,17 @@ repeat 正则扩至 WX/CrashIsolation/Fallback。三子代理提交经独立 int
 R2-1（真实 Linux CI 连续 5 次成功）、unsupported 平台真机实跑、30-60 分钟 nightly soak 与
 ≥8 小时 release soak 仍未完成，不以交叉构建代替。
 
+v2.24 推进 R2 剩余项目（Windows 实机证据；Linux runner 待 CI）。① ci.yml `jit-linux` 门禁
+就绪度验证：YAML 解析通过，W^X/crash isolation/fallback/soak 各 gate 的测试名与正则交叉
+核对全部存在，`GOOS=linux GOARCH=amd64` 测试包编译通过（避免 CI 上跑空门禁）。② 本地
+extended soak：`ALUKA_JIT_SOAK=1 -count=20`（6400 轮）全过——每批 320 轮
+nativeCompiled=2160/tracesCompiled=640/evictions=560/backgroundQueued=160，RX 逐轮回基线，
+累计 80 次 GC/批；证据仅限 Windows 实机。③ 硬停止条件审计：新增 `TestFrameIsPointerFree`
+（reflect 递归证明 `jitnative.Frame` 无 Go 指针槽位，GC 不扫描生成代码帧）。④ 环境确认：
+本机无 WSL/Docker/Linux runner，R2-1 真实 Linux CI 记录、30-60 分钟 nightly soak 与 ≥8 小时
+release soak 待真实 CI 环境执行。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、
+不改变性能快照口径。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见
