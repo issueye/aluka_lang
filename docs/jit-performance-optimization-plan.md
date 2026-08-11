@@ -884,6 +884,24 @@ RX；真实产物 CompileNative→Close 后 `LiveExecutableMemory` 每 case 回�
 PR 1,000 例与 nightly 100,000 例（5 seed）零差分。该轮未改默认 `--jit=off`、未扩大 Native ABI
 与 W^X 生命周期、不改变任何性能快照口径；fuzz 长期运行纳入 R2 soak。
 
+v2.23 落地 R2-3/R2-4/R2-5 平台与运行时门禁测试（Windows 实机；Linux runner 记录待 CI）。
+R2-3：`internal/engine/jit/native/native_runtime_stress_amd64_test.go` 四个 `TestNativeJIT*`
+压力测试——Native 机器码执行期间并发 runtime.GC、goroutine 调度、递归/大栈增长，150k-120k 次
+调用逐位校验（含 NaN 哨兵证明机器码真实执行），GC 期间关闭含双重 Close 后
+`LiveExecutableMemory` 回基线；unsupported 平台实际调用 Publish 并断言拒绝、RX 计数不变。R2-4：
+`internal/engine/interpreter/jit_soak_amd64_test.go` 的 `TestAutoJITSoakLifecycleGCAndLRU`
+按四阶段轮换后台编译全流程/pending 中关闭/1KB LRU 淘汰/trace Native，PR 16 轮 ~17ms、
+`ALUKA_JIT_SOAK=1` 320 轮 300ms（每轮 Native 命中与淘汰统计、RX 逐轮回基线、watchdog 超时）。
+R2-5：`internal/engine/interpreter/jit_reconfigure_amd64_test.go` 7 个确定性交错场景，用
+编译开始/Close 进入双测试屏障钉死 in-flight drain，`jitCompileWG.Wait()` 钉死"发布未安装"窗口，
+证明旧 generation 不安装，Quick/Off 丢弃 queued
+编译、轮换重配置、pending 中 Close、poll 丢弃 rejected 结果，全部 RX 回基线；未发现可复现
+生产缺陷。ci.yml `jit-linux` 更新：race 正则扩至 GC/Preempt/Soak/Lifecycle/Reconfigure/Close、
+GOGC=20/100 压力 step、asyncpreemptoff=0 重复 step、Short PR soak（-count=3）与 Extended
+soak（`ALUKA_JIT_SOAK=1`）。该轮未改默认 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、
+不改变性能快照口径；R2-1（真实 Linux CI 连续 5 次成功）、30-60 分钟 nightly soak 与 ≥8 小时
+release soak 仍未完成，不以交叉构建代替。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见

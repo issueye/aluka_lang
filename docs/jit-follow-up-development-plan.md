@@ -267,9 +267,9 @@ R1-1/R1-2/R1-3/R1-4/R1-5/R1-6/R1-7/R1-8 已完成，R1 里程碑全部条目落�
 |----|--------|--------|----------|
 | R2-1 | Linux 实机 CI | `jit-linux` job 的可追溯成功记录 | 主分支连续 5 次通过，不以交叉编译替代 |
 | R2-2 | W^X 验证 | Windows protection 与 Linux `/proc/self/maps` 检查 | 不存在同时可写可执行的 JIT 区域 |
-| R2-3 | GC/抢占压力 | Native 执行时并发 GC、异步抢占、栈增长测试 | race 和普通构建均无 crash/hang |
-| R2-4 | 生命周期 soak | 创建/关闭 VM、后台编译、LRU 淘汰循环 | RX 区域数和字节最终回到基线 |
-| R2-5 | 重配置竞态 | `ConfigureJIT`、`Close`、pending compile 交错 | 不安装过期代码、不 double free、不泄漏 |
+| R2-3 ✅ | GC/抢占压力 | Native 执行时并发 GC、异步抢占、栈增长测试 | race 和普通构建均无 crash/hang |
+| R2-4 ✅ | 生命周期 soak | 创建/关闭 VM、后台编译、LRU 淘汰循环 | RX 区域数和字节最终回到基线 |
+| R2-5 ✅ | 重配置竞态 | `ConfigureJIT`、`Close`、pending compile 交错 | 不安装过期代码、不 double free、不泄漏 |
 | R2-6 | 崩溃隔离 | 非法机器码继续只在子进程执行 | 测试进程能报告失败，不污染其他测试 |
 | R2-7 | 平台降级 | arm64/macOS/不支持环境显式使用 Quick/Tier 0 | 功能测试通过且不申请可执行内存 |
 
@@ -289,6 +289,26 @@ Native crash，或必须关闭 GC/抢占才能稳定运行。触发后停止扩�
 
 **完成条件**：Windows 和 Linux amd64 连续 5 次完整 CI 通过，release soak 满足 8 小时要求，
 关闭后 RX 计数回到起始基线，race 无报告。
+
+### 7.4 实施记录（R2-3 / R2-4 / R2-5）
+
+| 日期 | 条目 | 证据 |
+|------|------|------|
+| 2026-08-11 | R2-3 ✅ Native 运行期 GC/抢占/栈增长压力门禁 | 新增 `internal/engine/jit/native/native_runtime_stress_amd64_test.go`（+ unsupported 平台 skip 桩）：`TestNativeJITGCAndSchedStress`（4 份 AddF64Kernel 轮转 + 200 次 runtime.GC + channel/Gosched 调度 + 堆 churn，150k 次调用逐位校验）、`TestNativeJITLongNativeWindowGCAndStackGrowth`（手写汇编循环内核在 Native 内停留数百 µs + 120 次 GC + 4×1024 层×4KiB 栈帧递归，NaN 哨兵证明机器码真实执行）、`TestNativeJITStackGrowthDuringNativeCalls`（6×1536 层×4KiB 递归 + 300 次 GC，120k 次调用逐位校验）、`TestNativeJITAccountingReturnsToBaselineUnderGC`（GC 期间关闭 16 份代码含双重 Close，deadline 轮询 `LiveExecutableMemory` 回基线）。Windows 实机 4 测试全过（~0.13s），`-count=3` 稳定；race 在本机受 Windows TSan error code 87 限制，交由 ci.yml `jit-linux` 的 race step 承担。已知设计约束（记录于测试注释）：`Code.Close()` 与在途 `Code.Call()` 无同步（调用方须先 join 再 Close，本套测试遵守）；长 Native 窗口无异步抢占点，并发 GC 会等待内核返回（预算固定有界，不会挂死） |
+| 2026-08-11 | R2-4 ✅ 生命周期/后台编译/LRU soak 门禁 | 新增 `internal/engine/interpreter/jit_soak_amd64_test.go` 的 `TestAutoJITSoakLifecycleGCAndLRU`：单测试按 `i%4` 轮换四种生命周期阶段——phase 0 大 IR（≥128 条）后台编译 + 5s deadline 轮询 `BackgroundCompleted` 后 Native 命中；phase 1 pending 编译中立即 Close（`jitCompileWG.Wait()` 后）锻炼排空；phase 2 1KB `CodeCacheBytes` 安装多函数直到 `NativeEvictions` 增长并断言 `NativeCodeBytes ≤ 预算`；phase 3 8 个热点 trace + 512B 缓存断言 `NativeTracesCompiled/Executed`（Threshold 钉死 `^uint32(0)` + BackedgeThreshold:2 避免 leaf 抢占 trace 路径）。默认 PR 16 轮 ~17ms 主体（nativeCompiled=108 / tracesCompiled=32 / evictions=28 / backgroundQueued=8），`ALUKA_JIT_SOAK=1` 320 轮（80 次 GC）300ms 冒烟通过（nativeCompiled=2160 / tracesCompiled=640 / evictions=560 / backgroundQueued=160）；watchdog 超时保护（PR 90s / nightly 10min）。每轮 Close 后及收尾 GC 后 `LiveExecutableMemory` 精确回基线；禁止 `t.Parallel`（全局 RX 计数为包级共享状态，已注释）。ci.yml `jit-linux` 新增 Short PR soak（-count=3）与 Extended soak（`ALUKA_JIT_SOAK=1`）step；30-60 分钟 nightly soak 与 `ALUKA_JIT_SOAK=1 -count=10`（3200 轮）长期跑批仍需真实 runner 验证 |
+| 2026-08-11 | R2-5 ✅ 重配置/关闭交错门禁 | 新增 `internal/engine/interpreter/jit_reconfigure_amd64_test.go`，7 个确定性场景（全部用同步原语/状态轮询，无 sleep）：Quick/Off 切换丢弃 queued 后台编译（切换后 `jitPending==0`、无 state、`NativeCompiled/NativeExecuted` 恒 0、RX 立即回基线）；Auto→Quick→Off→Auto 轮换每轮结果正确且 generation +1、跨轮不残留；pending 完成前 Close（`jitCompileWG.Wait()` 钉死"发布未安装"窗口：RX > 基线但 `NativeCompiled==0`、无 state 带 HasNative，重配置/Close 后回基线，重新启用 Auto 后新 generation 正常）；poll 丢弃 rejected 后台结果（`BackgroundDiscarded==1`、`NativeCompiled==0`）。生产实现未发现可复现缺陷；三点观察（非 bug）：pollNativeCompiles 的 generation 失配分支在单线程 VM 语义下不可达（防御性）、ConfigureJIT/Close 阻塞等待在飞编译完成（病理级大函数会拖慢，实测 2000 项约 1-3ms）、closeJIT 排空不计数 BackgroundDiscarded（"未安装"证明依赖 jitNativeBytes/stats/RX）。Windows 实机 7 场景全过（-count=3 稳定）；race 交由 ci.yml Linux race step |
+
+审查修订：R2-5 增加 package-private 编译开始与 `closeJIT` 进入测试 hook，以双屏障确定性阻塞
+后台编译并证明 `Close` 在 in-flight compile 期间等待，之后释放屏障、排空结果并恢复 RX 基线；
+不再以大函数编译耗时碰撞代替该交错。unsupported 平台测试也改为实际调用 `Publish`，断言受控
+拒绝且 RX 计数不变。审查环境已成功执行三组 Windows race（R2-3/R2-4 各 `-count=3`、R2-5
+`-count=10`），因此上表“race 交由 Linux”的描述仅保留为首次执行历史；Linux race 仍是 R2-1
+真实 runner 的独立验收项。
+
+R2-1（Linux 实机 CI 成功记录）保持未完成：本轮所有测试在 Windows 实机运行，ci.yml `jit-linux`
+的步骤已按最终测试名更新（race 正则、GOGC=20/100、asyncpreemptoff=0、Short PR soak、
+Extended soak），但尚无真实 Linux runner 成功记录，不以交叉构建代替。R2-2（W^X maps 检查）、
+R2-6（崩溃隔离）、R2-7（平台降级）沿用既有测试；release soak（≥8 小时）未运行，不得宣称完成。
 
 ## 8. R3：Quick JIT 语义覆盖
 

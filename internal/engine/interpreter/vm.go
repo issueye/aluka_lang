@@ -61,6 +61,10 @@ type VM struct {
 	jitCompileDone chan nativeCompileResult
 	jitCompileWG   sync.WaitGroup
 	jitPending     int
+	// Package tests use these hooks to pin background-compile lifecycle
+	// interleavings. They are nil in production and are not part of the API.
+	jitCompileStartHook func()
+	jitCloseStartHook   func()
 }
 
 // EnableCoverage 启用行级覆盖率统计。

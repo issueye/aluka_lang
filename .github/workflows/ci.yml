@@ -97,7 +97,7 @@ jobs:
           CGO_ENABLED: "1"
         run: >-
           go test -race ./internal/engine/jit/... ./internal/engine/interpreter
-          -run 'JIT|Trace|Native|Property|ArrayPush|ClosureIncrement|NativeCallback|Safepoint|OOM|ConcurrentGC'
+          -run 'JIT|Trace|Native|Property|ArrayPush|ClosureIncrement|NativeCallback|Safepoint|OOM|ConcurrentGC|GC|Preempt|Soak|Lifecycle|Reconfigure|Close'
           -count=1
 
       - name: Repeat native JIT and GC tests
@@ -106,8 +106,47 @@ jobs:
           GODEBUG: "asyncpreemptoff=0"
         run: >-
           go test ./internal/engine/jit/... ./internal/engine/interpreter
-          -run 'JIT|Trace|Native|Safepoint|OOM|ConcurrentGC'
+          -run 'JIT|Trace|Native|Safepoint|OOM|ConcurrentGC|GC|Preempt|Soak|Lifecycle|Reconfigure'
           -count=5
+
+      # R2-3/R2-4/R2-5 gates under both GC pressure settings (soak plan §7.3:
+      # rotate GOGC=20/100 alongside default async preemption).
+      - name: Native stress under GOGC=20
+        env:
+          CGO_ENABLED: "0"
+          GOGC: "20"
+        run: >-
+          go test ./internal/engine/jit/native ./internal/engine/interpreter
+          -run 'TestNativeJIT|TestAutoJITSoakLifecycleGCAndLRU|TestAutoJITReconfigure|TestJITReconfigure|ConcurrentGC'
+          -count=1
+
+      - name: Native stress under GOGC=100
+        env:
+          CGO_ENABLED: "0"
+          GOGC: "100"
+        run: >-
+          go test ./internal/engine/jit/native ./internal/engine/interpreter
+          -run 'TestNativeJIT|TestAutoJITSoakLifecycleGCAndLRU|TestAutoJITReconfigure|TestJITReconfigure|ConcurrentGC'
+          -count=1
+
+      # R2-4 PR soak gate: the default (short) soak mode must pass repeatedly.
+      - name: Short PR soak
+        env:
+          CGO_ENABLED: "0"
+        run: >-
+          go test ./internal/engine/interpreter
+          -run '^TestAutoJITSoakLifecycleGCAndLRU$' -count=3
+
+      # R2-4 nightly soak entry: ALUKA_JIT_SOAK=1 multiplies the soak rounds.
+      # A longer soak (30-60 min) is a separate scheduled job; this step keeps
+      # the extended mode exercised on every push within CI time limits.
+      - name: Extended soak (nightly mode entry)
+        env:
+          CGO_ENABLED: "0"
+          ALUKA_JIT_SOAK: "1"
+        run: >-
+          go test ./internal/engine/interpreter
+          -run '^TestAutoJITSoakLifecycleGCAndLRU$' -count=1
 
       - name: Linux auto JIT CLI smoke test
         env:

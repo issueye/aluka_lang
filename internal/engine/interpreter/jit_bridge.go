@@ -443,6 +443,9 @@ func (v *VM) ConfigureJIT(config jit.Config) {
 }
 
 func (v *VM) closeJIT() {
+	if v.jitCloseStartHook != nil {
+		v.jitCloseStartHook()
+	}
 	for v.jitPending > 0 {
 		result := <-v.jitCompileDone
 		v.jitPending--
@@ -782,6 +785,9 @@ func (v *VM) queueNativeCompile(state *quickJITState) {
 	done := v.jitCompileDone
 	v.jitCompileWG.Add(1)
 	go func() {
+		if v.jitCompileStartHook != nil {
+			v.jitCompileStartHook()
+		}
 		start := time.Now()
 		var err error
 		defer func() {

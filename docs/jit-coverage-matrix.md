@@ -122,6 +122,10 @@ Number 边界值（`NaN`、`+0/-0`、`±Infinity`、除零、位运算截断、`
 | 崩溃隔离（子进程） | `TestNativeCrashIsIsolated` | amd64 |
 | 未支持平台不申请 RX | `execmem_unsupported.go` / `call_unsupported.go` 编译路径 | 由构建矩阵覆盖 |
 | 32 函数 1KB 预算反复淘汰 | `TestAutoJITNativeCodeCacheEvictsLRU`（配合 `--jit-code-cache` 调小） | amd64 |
+| R2-3 Native 执行期并发 GC/调度/栈增长（真实机器码逐位校验；GC 期间关闭含双重 Close 回基线） | `TestNativeJITGCAndSchedStress`/`TestNativeJITLongNativeWindowGCAndStackGrowth`/`TestNativeJITStackGrowthDuringNativeCalls`/`TestNativeJITAccountingReturnsToBaselineUnderGC`（`native_runtime_stress_amd64_test.go`）；`TestNativeJITStressUnsupportedPlatform` 断言 unsupported Publish 拒绝且 RX 计数不变 | amd64；unsupported 平台拒绝门禁 |
+| R2-4 生命周期/后台编译/LRU soak（PR 16 轮 + `ALUKA_JIT_SOAK=1` 320 轮；每轮 Native 命中/LRU 淘汰/RX 回基线） | `TestAutoJITSoakLifecycleGCAndLRU`（`jit_soak_amd64_test.go`；watchdog 超时保护；禁止 t.Parallel 因全局 RX 计数） | amd64 |
+| R2-5 重配置/关闭交错（Quick/Off 丢弃 queued 编译、Auto/Quick/Off 轮换、编译开始/Close 进入双屏障、发布未安装窗口、poll 丢弃 rejected 结果；证明旧 generation 不安装 + RX 回基线） | `TestAutoJITReconfigure*`/`TestJITReconfigure*` 7 场景（`jit_reconfigure_amd64_test.go`） | amd64 |
+| R2 门禁 CI 入口（race 正则、GOGC=20/100、asyncpreemptoff=0、Short PR soak、`ALUKA_JIT_SOAK=1` Extended soak） | `.github/workflows/ci.yml` `jit-linux` job（待真实 Linux runner 成功记录；R2-1 未完成） | linux amd64 |
 
 **未覆盖（明确依赖外部环境，不记入矩阵）**：Linux 实机 W^X/maps 检查、长期 GC/抢占 soak、
 race 构建。`go test -race` 在本机因 Windows TSan 影子内存分配失败（error code 87）不可执行；
