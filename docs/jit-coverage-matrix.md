@@ -134,6 +134,8 @@ Number 边界值（`NaN`、`+0/-0`、`±Infinity`、除零、位运算截断、`
 | R2-4 本地 extended soak（`ALUKA_JIT_SOAK=1 -count=20` = 6400 轮，nativeCompiled=43200/evictions=11200 累计，RX 逐轮回基线） | `TestAutoJITSoakLifecycleGCAndLRU`（Windows 实机证据；Linux 侧待 runner） | windows amd64 实机 |
 | R2 soak 延长证据：`ALUKA_JIT_SOAK=1 -count=200`（64,000 轮，累计 nativeCompiled=432,000 / evictions=112,000 / backgroundQueued=32,000，RX 逐轮回基线） | `TestAutoJITSoakLifecycleGCAndLRU`（Windows 实机，88s；与 6,400 轮合并共 70,400 轮） | windows amd64 实机 |
 | R2 fuzz 长期运行：`FuzzVerifyProgram -fuzztime=10m` 实跑 5m54s / 31,676,488 execs 零失败（被环境停止而非测试失败） | `FuzzVerifyProgram`（jit 包；其余 4 个 target 短跑证据见 R1-7 记录） | 全部平台 |
+| 性能回归根因：磁盘字节码缓存（`.aluka/cache`）产物漂移——`FormatVersion` 未随 OpInc/OpDec 递增，旧缓存（`PUSH_INT 1; ADD` 形态）使 arrayPush/closure 匹配器永不命中（auto 401ms/206ms） | 修复：`FormatVersion` 15→16（`serialize.go`）；清除缓存后 auto 90.5ms/3.05ms、11 项合计 813.55ms、mixed 270.75ms | 全部平台 |
+| 编译器产物形态回归（锁定 JIT matcher 依赖的 OpInc 形态：postfix `i++` 循环尾 LOAD/DUP/INC/STORE/POP、prefix `++n` LOAD_UPVALUE/INC/DUP/STORE_UPVALUE） | `TestCompileUpdateEmitsIncDec`/`TestCompileForUpdateIncKeepsDupShape`/`TestCompilePrefixIncEmitsIncDup`（`internal/engine/compiler/update_emit_test.go`） | 全部平台 |
 
 **未覆盖（明确依赖外部环境，不记入矩阵）**：Linux 实机 W^X/maps 检查、长期 GC/抢占 soak、
 race 构建。`go test -race` 在本机因 Windows TSan 影子内存分配失败（error code 87）不可执行；

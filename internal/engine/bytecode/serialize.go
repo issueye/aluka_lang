@@ -27,7 +27,11 @@ import (
 // 对 x=>x*2 等箭头回调 Go 侧直执行）。
 // v13 → v14：FuncTemplate.NewTargetSlot（new.target 词法槽位）。
 // v14 → v15：FuncTemplate.Inlinable（I-1 小函数内联标记）。
-const FormatVersion = 15
+// v15 → v16：更新表达式编译产物变化——`x++/x--` 从 `PUSH_INT 1; ADD` 序列改为
+//
+//	单指令 OpInc/OpDec（BigInt 保持类型）。旧缓存产物与 JIT 的 arrayPush /
+//	closureIncrement 匹配器（依赖 OpInc 形态）不兼容，必须使旧缓存失效。
+const FormatVersion = 16
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")

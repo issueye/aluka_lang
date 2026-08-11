@@ -939,6 +939,23 @@ backgroundQueued=32,000，RX 逐轮回基线；与 v2.24 的 6,400 轮合并为 
 （被后台环境停止，非测试失败；480k 轮 soak 与 10 分钟 fuzz 目标同因环境 kill 无输出，记录为
 限制）。Linux 实机、30-60 分钟 nightly、≥8 小时 release soak 与 R2-1 仍需真实 CI 环境。
 
+v2.26 性能回归调查与修复（磁盘字节码缓存产物漂移）。基准复测发现 arrayPush-1M 与
+closureCall-1M 的 Auto 未命中特化（auto 401ms/206ms，vsOff≈1.0x，历史 63ms/2.2ms）：
+二分定位（截断文件命中、完整文件不命中、字节码 dump 与运行时产物不一致）后确认根因——
+**磁盘字节码缓存（node_modules/.aluka/cache）保存了旧编译器产物**：R1-3 引入 OpInc/OpDec
+后 `i++` 产物从 `PUSH_INT 1; ADD` 变为单指令 `INC`，arrayPush/closureIncrement 匹配器
+依赖新形态，但 `bytecode.FormatVersion` 未递增（"序列化兼容"）→ 旧缓存永不失效 →
+基准每次加载旧产物 → 两个特化自 R1-3 起静默失效。修复：`FormatVersion` 15→16（文档明示
+"编译器语义变化时递增"）；新增 3 个编译器产物形态回归测试（`TestCompileUpdateEmitsIncDec`、
+`TestCompileForUpdateIncKeepsDupShape` 锁定 arrayPush 循环尾 LOAD/DUP/INC/STORE/POP/JMP
+形态、`TestCompilePrefixIncEmitsIncDup` 锁定 `++n` 闭包形态），防止产物再变而 matcher 漂移。
+修复后 Windows 实机 5 次中位数：arrayPush auto 90.5ms（vsOff 3.9x）、closureCall auto
+3.05ms（vsOff 56x）、callOverhead 3.34ms、propAccess 7.62ms、propSet 7.85ms、methodCall
+4.78ms；11 项合计 auto 813.55ms（off 2618ms，约 3.2x），mixed auto 270.75ms（off 504ms，
+约 1.9x）；Node 对照合计 63.97ms → auto/Node 约 12.7x，mixed 约 2.7x（本机后台负载环境，
+R0-5 已记录 A-B 19.1% 级波动，与历史快照 12.0x/2.2x 同量级）。该轮未改默认 `--jit=off`、
+未扩大 Native ABI 与 W^X 生命周期。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见
