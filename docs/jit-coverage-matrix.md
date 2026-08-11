@@ -66,7 +66,11 @@
 | Object | `quickObject`（引用） | truthiness/严格相等（identity）/属性 PIC/方法 guard/返回 | `TestExecuteStrictEqualityAcrossQuickValues`（object identity）、`TestQuickJITCompilesPropertyLoopTrace` |
 | String | `quickString`（opaque 引用） | truthiness/nullish/短路/严格相等/返回/栈恢复；无算术、无比较 | `TestJITLogicalReferenceValuesStayInQuick`、`TestJITStrictEqualityReferenceTraceDifferential`（"same"） |
 | BigInt | `quickBigInt`（opaque 引用） | truthiness/nullish/短路/严格相等（按整数值）/返回/栈恢复；无算术 | `TestJITLogicalReferenceValuesStayInQuick`、`TestJITStrictEqualityReferenceTraceDifferential`（7n） |
-| Symbol | 不建模 → guard 回 Tier 0 | 无；`===/!==` 与 truthiness 均在任何 JIT 副作用前回退 | `TestJITSymbolValuesGuardBackToTier0`（R0-3 新增） |
+| Symbol | `quickSymbol`（opaque 引用，R3-1/R3-2） | truthiness（恒真）/nullish（恒假）/短路保留/严格相等（identity）/返回 | `TestJITSymbolTruthinessNullishModeledInQuick`、`TestJITSymbolStrictEqualityAcrossTiers`、`TestExecuteStrictEqualityAcrossQuickValues`、`TestExecuteNotTruthinessAcrossQuickValues`、jitdiff -32/-33/-34 |
+| String（R3-4） | `quickString` + 常量池 | `+` 拼接（Quick 内分配）、同类型 `< <= > >=`；混合操作数回退 Tier 0 | `quick_ops.go`、`TestExecuteStringOps...`（jit 单测）、`jit_string_bigint_test.go` 集成、jitdiff `KindStringOps`/-40/-41/-47 |
+| BigInt（R3-5） | `quickBigInt` | 同类型 `+ - * / %`、一元 `-`、`& | ^ << >> >>>`、关系比较；除零/负移位/混型 guard 回退 Tier 0 异常一致；Native 显式拒绝 | `primitive_ops_test.go`、`jit_string_bigint_test.go`、jitdiff `KindBigIntArith/Bitwise/Compare`/-42..-46、`TestBitwiseNotBigInt`（Tier 0 `~` 回归） |
+| 控制流（R3-6） | `OpConstString` + CFG lowering | ternary、整数/字符串 switch、多层嵌套短路；合流栈深一致；trace 外跳带 deopt map | `controlflow_test.go`（含 `TestVerifyRejectsSwitchInconsistentMerge` 等）、jitdiff `KindTernary/Switch/ShortCircuit`/-48..-50 |
+| 拒绝成本（R3-7） | `RejectLeafReason`/`RejectTraceReason` 静态过滤 + 结构化拒绝缓存 | 不支持形态编译前 O(n) 拒绝；按 (template, backedge) 缓存不再重复编译；`RejectionCacheHits` 统计 | `candidate.go`、`TestRejectionCacheSkipsRepeatedLeafCompiles`/`...TraceCompiles`/`TestRejectLeafReasonAgreesWithCompileLeaf` |
 
 Number 边界值（`NaN`、`+0/-0`、`±Infinity`、除零、位运算截断、`1 / -0`）在
 `TestNumberEdgeCases`、`TestJITNumericTiersDifferential`、`TestJITNumericNotEqualTiersDifferential`、

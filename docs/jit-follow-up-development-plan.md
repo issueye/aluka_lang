@@ -100,7 +100,7 @@ R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，�
 | R0 | 交付物齐备，验收未过 | R0-1 至 R0-5 交付物均已产出（2026-08-11）；但 §5.3 稳定性验收（连续两轮中位数偏差 ≤5%）在本机未通过，需安静/固定电源环境复核后才可宣称 R0 完成 |
 | R1 | 全部条目完成 | R1-1/R1-2/R1-3/R1-4/R1-5/R1-6/R1-7/R1-8 已落地（2026-08-11）：生成式差分框架（PR 1,000 例 + nightly 100,000 例无差分）、值域组合、异常差分（BigInt 除零/getter-setter/回调/OOM/取消/中断）、deopt 状态模型（含 pending exception 正式恢复映射与 verifier 拒绝）、副作用 prepare/validate/commit 两阶段提交协议、随机 guard 失效（8 类 mutation，warmup-mutation-post 调度入 artifact，第三 shape/target 降级与 RX 释放断言）、fuzz 入口（verifier/trace compiler/deopt-exception/Native lowering/artifact replay 五个 Go fuzz target，seed corpus 确定性可复现，fuzz 运行无 panic/hang/RX 泄漏）、失败产物与单命令重放 |
 | R2 | 部分完成 | Linux 后端和 CI job 已写入，尚无 Linux runner 成功记录和长期 soak |
-| R3 | 部分完成 | Number 主路径、短路、nullish、String/BigInt opaque 值和严格相等已落地 |
+| R3 | 全部条目完成 | R3-1/R3-2/R3-4/R3-5/R3-6/R3-7 已落地（2026-08-12）：Symbol truthiness/nullish 与严格相等建模、String 拼接与关系比较、BigInt 算术/位运算/比较（异常 guard 回退 Tier 0 一致）、ternary/switch/嵌套短路控制流（OpConstString 常量池）、编译期候选过滤与结构化拒绝缓存；R3-3（宽松相等）待 R4 批次；差分发现并修复 Tier 0 `~` BigInt 语义 |
 | R4 | 部分完成 | 两路 PIC、有限内联、属性、push 和单一 upvalue 模式已落地 |
 | R5 | 部分完成 | 已有预算、LRU 和后台编译，缺优化 pass 与数据驱动阈值校准 |
 | R6 | 未开始 | 默认仍为 off，尚未满足默认 auto 检查表 |
@@ -319,6 +319,8 @@ R2-2/R2-6/R2-7 的 Linux 实机门禁已写入 ci.yml `jit-linux`（W^X deep ver
 | 2026-08-11 | R2 soak/fuzz 延长运行证据（Windows 实机） | ① `ALUKA_JIT_SOAK=1 -count=200`（64,000 轮，200 批 × 320 轮）88s 全过：每批 nativeCompiled=2160 / tracesCompiled=640 / evictions=560 / backgroundQueued=160 / 80 次 GC，RX 逐轮回基线；累计 nativeCompiled=432,000 / evictions=112,000；与上轮 -count=20（6,400 轮）合并构成 Windows 本地 70,400 轮连续 soak 证据。② 长时间 fuzz（R1-7 纳入 R2 soak）：`FuzzVerifyProgram -fuzztime=10m` 实跑 5m54s / 31,676,488 execs（90k execs/s）零失败零 panic 后被外部环境停止（非测试失败）；更长的 480k 轮 soak（-count=1500）与 10 分钟 fuzz 目标均被后台任务环境 kill 且无输出，属环境干预，记录为限制而非证据。③ 结论：Windows 实机已覆盖 7 万+ 轮生命周期/淘汰/重配置循环与 3 千万+ fuzz 输入；Linux 实机、30-60 分钟 nightly、≥8 小时 release soak 仍需真实 CI 环境执行 |
 | 2026-08-11 | 性能回归调查与修复（字节码缓存产物漂移） | 基准复测发现 arrayPush-1M/closureCall-1M Auto 未命中特化（401ms/206ms vs 历史 63ms/2.2ms）。二分定位：截断文件命中、完整文件不命中、编译器产物 dump 与运行时一致（INC 形态）但 matcher 仍失败 → 加临时诊断确认 `backedgePC` 与 dump 不一致（104 vs 100）→ 运行时产物为 `PUSH_INT 1; ADD` 形态 → 根因是**磁盘字节码缓存**：`node_modules/.aluka/cache` 中旧编译器（R1-3 前）产物被反复加载（`FormatVersion` 未随 OpInc/OpDec 递增，旧缓存永不失效），matcher 期待的新形态永不出现，两个特化自 R1-3 起静默失效。修复：`bytecode.FormatVersion` 15→16（"编译器语义变化时递增"的既有契约）+ 3 个产物形态回归测试（`internal/engine/compiler/update_emit_test.go`）。修复后（清除缓存重跑）：arrayPush auto 90.5ms（vsOff 3.9x）、closureCall 3.05ms（vsOff 56x）、callOverhead 3.34ms、11 项合计 813.55ms、mixed 270.75ms，与历史快照同量级（本机环境波动 R0-5 已记录）。诊断用临时 println 已全部还原，无生产代码残留 |
 
+| 2026-08-12 | R3 第一批（R3-1/2/4/5/6/7）| 三个子代理独立 worktree 并行实施后由主 Agent 集成：① R3-1/R3-2（`aae830a`）——quickSymbol opaque 建模（truthy 恒真/nullish 恒假），严格相等按 Symbol 指针 identity，Native 入口 guard 拒绝 Symbol 后 Auto 稳定 Quick；② R3-4/R3-5（`91ba74d`）——`quick_ops.go` 自包含 helper（`engine.ConcatStrings`/`strings.Compare`/math/big），String `+` 与关系比较、BigInt 算术/位运算/比较在 Quick 内执行，除零/负移位/混型等异常显式 guard 回退 Tier 0 且消息逐字一致；③ R3-6/R3-7（`7db39ac`）——ternary/switch/嵌套短路 lowering（含 OpConstString 字符串常量池）、编译器尾随 return_undef 不可达修剪、`RejectLeafReason`/`RejectTraceReason` 候选过滤与按 (template, backedge) 的结构化拒绝缓存（`RejectionCacheHits` 统计）。集成冲突解决：jitdiff Kind/生成器/固定用例三方合并（-32..-50 重编号）；**集成差分发现并修复 inlineCallTarget 未合并 callee 字符串常量池的 panic**（内联 OpConstString 越界解引用，`TestInlineCalleeStringConstantMergesPool`/`TestBindCallTargetRejectsStringConstantCallee` 回归）；**Tier 0 `~` BigInt 语义修复**（VM 与 AST 解释器均返回 -x-1 而非 ToInt32 数字，`TestBitwiseNotBigInt` 回归）。PR 1,000 例零差分（stringOps 41/bigIntArith 27/bigIntBitwise 43/bigIntCompare 29/ternary 42/switch 34/shortCircuit 43 Quick 命中）；nightly 100,000 例复核中。该轮未改默认 `--jit=off`、未扩大 Native ABI；R3-3 与 R4 批次待下一轮 |
+
 ## 8. R3：Quick JIT 语义覆盖
 
 ### 8.1 目标
@@ -329,13 +331,13 @@ R2-2/R2-6/R2-7 的 Linux 实机门禁已写入 ci.yml `jit-linux`（W^X deep ver
 
 | ID | 能力 | 实施要求 | 完成条件 |
 |----|------|----------|----------|
-| R3-1 | 全原始值 truthiness/nullish | 加入 Symbol；保持 invalid 与真实 undefined 分离 | `!`, `&&`, `||`, `??` 跨值类型差分通过 |
-| R3-2 | 严格相等补全 | 在现有 String/BigInt/对象基础上加入 Symbol identity | `===/!==` 无 coercion，Native Number 结果一致 |
+| R3-1 ✅ | 全原始值 truthiness/nullish | 加入 Symbol；保持 invalid 与真实 undefined 分离 | `!`, `&&`, `||`, `??` 跨值类型差分通过 |
+| R3-2 ✅ | 严格相等补全 | 在现有 String/BigInt/对象基础上加入 Symbol identity | `===/!==` 无 coercion，Native Number 结果一致 |
 | R3-3 | 宽松相等 | 抽取共享 primitive equality helper | 不在 JIT 复制另一套 ToPrimitive；对象一律 guard |
-| R3-4 | String 运算 | `+` 拼接、同类型关系比较 | 分配只发生在 Quick；异常/rope 语义与 Tier 0 一致 |
-| R3-5 | BigInt 运算 | 同类型算术、比较、位运算 | 除零/负指数异常一致；Native 显式拒绝 |
-| R3-6 | 控制流 | 条件表达式、更多 switch/嵌套短路形态 | CFG 合流栈深一致，外跳均有 deopt map |
-| R3-7 | opcode 拒绝成本 | 编译期候选过滤和稳定拒绝缓存 | 不支持 opcode 不在每个回边重复编译 |
+| R3-4 ✅ | String 运算 | `+` 拼接、同类型关系比较 | 分配只发生在 Quick；异常/rope 语义与 Tier 0 一致 |
+| R3-5 ✅ | BigInt 运算 | 同类型算术、比较、位运算 | 除零/负指数异常一致；Native 显式拒绝 |
+| R3-6 ✅ | 控制流 | 条件表达式、更多 switch/嵌套短路形态 | CFG 合流栈深一致，外跳均有 deopt map |
+| R3-7 ✅ | opcode 拒绝成本 | 编译期候选过滤和稳定拒绝缓存 | 不支持 opcode 不在每个回边重复编译 |
 
 R3-3 到 R3-5 若需要共用语义，应把无解释器依赖的纯 helper 下沉到 `internal/engine` 或新的
 内部语义包；禁止从 `jit` 反向依赖 `interpreter`。
