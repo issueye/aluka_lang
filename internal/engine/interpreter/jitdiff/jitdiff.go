@@ -98,10 +98,15 @@ const (
 	// R3-4 / R3-5 primitive operation differential kinds: same-type String
 	// and BigInt operations execute in Quick; mixed-type and exception shapes
 	// fall back to Tier 0.
-	KindStringOps    // String `+` concat and `< <= > >=`
-	KindBigIntArith  // BigInt + - * / % and unary -
+	KindStringOps     // String `+` concat and `< <= > >=`
+	KindBigIntArith   // BigInt + - * / % and unary -
 	KindBigIntBitwise // BigInt & | ^ << >> >>> (no unary ~, see package doc)
 	KindBigIntCompare // BigInt < <= > >= === !==
+	// R3-6 control-flow kinds: ternary conditionals, integer/string switch
+	// leaves and multi-level short-circuit (&& / || / ??) chains.
+	KindTernary
+	KindSwitch
+	KindShortCircuit
 	kindEnd
 )
 
@@ -155,6 +160,12 @@ func (k Kind) String() string {
 		return "bigIntBitwise"
 	case KindBigIntCompare:
 		return "bigIntCompare"
+	case KindTernary:
+		return "ternary"
+	case KindSwitch:
+		return "switch"
+	case KindShortCircuit:
+		return "shortCircuit"
 	default:
 		return fmt.Sprintf("kind(%d)", int(k))
 	}
@@ -170,7 +181,8 @@ func (k Kind) ExpectsQuickHit() bool {
 	switch k {
 	case KindBranch, KindLoop, KindStrictEq, KindPropRead, KindPropWrite,
 		KindPush, KindClosure, KindCall, KindStringOps, KindBigIntArith,
-		KindBigIntBitwise, KindBigIntCompare:
+		KindBigIntBitwise, KindBigIntCompare,
+		KindTernary, KindSwitch, KindShortCircuit:
 		return true
 	}
 	return false

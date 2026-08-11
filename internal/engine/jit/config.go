@@ -131,6 +131,12 @@ type Stats struct {
 	CompileNanos             uint64
 	Compiled                 uint64
 	Rejected                 uint64
+	// RejectionCacheHits counts hot-path compile attempts that were skipped
+	// because the structured rejection cache (per-template leaf state or per
+	// (template, backedge) trace state) already recorded a stable rejection.
+	// It is the observable proof that unsupported shapes are not re-compiled
+	// on every backedge (R3-7).
+	RejectionCacheHits       uint64
 	Executed                 uint64
 	GuardFailures            uint64
 	QuickGuardDisabled       uint64

@@ -32,8 +32,16 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 	if err != nil {
 		return nil, err
 	}
+	// The compiler now lowers whole functions, so unreachable tails (e.g. the
+	// implicit return_undef the bytecode compiler emits after the final
+	// return) are part of the IR. Native code only needs reachable
+	// instructions; skipping the rest keeps the linear depth tracking sound.
+	reachable := reachableFromEntry(p.Code)
 	targeted := make([]bool, len(p.Code))
-	for _, in := range p.Code {
+	for i, in := range p.Code {
+		if !reachable[i] {
+			continue
+		}
 		switch in.Op {
 		case OpJump, OpJumpTrue, OpJumpFalse, OpJumpTrueKeep, OpJumpFalseKeep, OpJumpNullishKeep:
 			if int(in.Operand) < 0 || int(in.Operand) >= len(targeted) {
@@ -50,6 +58,9 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 	fixups := make([]nativeFixup, 0, 8)
 	sawTerminal := false
 	for i := 0; i < len(p.Code); i++ {
+		if !reachable[i] {
+			continue
+		}
 		offsets[i] = len(code)
 		depths[i] = depth
 		in := p.Code[i]
@@ -191,6 +202,12 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 			code = append(code, 0x31, 0xC0, 0xC3) // XOR EAX,EAX; RET
 			depth--
 			sawTerminal = true
+		case OpReturnUndef:
+			// Unreachable return_undef tails are skipped above; a reachable
+			// one returns the JS undefined, which the numeric native frame
+			// cannot represent. Reject so Auto falls back to the Quick tier
+			// instead of silently returning a number.
+			return nil, fmt.Errorf("jit: native cannot represent undefined return")
 		case OpTraceExit:
 			exitID := int(in.Operand)
 			if !p.nativeTrace || in.Operand > ^uint32(0)-3 {
@@ -237,6 +254,9 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 	return jitnative.Publish(code, retainDebugBytes...)
 }
 
+// nativeAssignedLocals computes, for every instruction, the set of locals
+// that are proven Numbers on every path reaching it. assigned[0] starts from
+// the native preassignment (numeric params and property input slots).
 func nativeAssignedLocals(p *Program) ([]uint64, error) {
 	if p.NumLocals > 64 {
 		return nil, fmt.Errorf("jit: native local proof limit exceeded")

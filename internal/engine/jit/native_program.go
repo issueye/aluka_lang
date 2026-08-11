@@ -92,6 +92,7 @@ func (p *Program) CloneForNative() *Program {
 	clone.Code = append([]Instr(nil), p.Code...)
 	clone.traceExitDepths = append([]uint8(nil), p.traceExitDepths...)
 	clone.traceExceptionExits = append([]bool(nil), p.traceExceptionExits...)
+	clone.stringConsts = append([]engine.Value(nil), p.stringConsts...)
 	clone.propertyGuards = nil
 	clone.nativeCode = nil
 	clone.nativePlan = nil
@@ -352,6 +353,7 @@ func lowerNativeInputsForMode(p *Program, trace bool) (*Program, *nativeInputPla
 		NumLocals:           p.NumLocals + len(plan.properties),
 		SelfUpvalue:         -1,
 		Code:                code,
+		stringConsts:        append([]engine.Value(nil), p.stringConsts...),
 		nativeNumberArgs:    plan.numberArgs,
 		nativePreassigned:   preassigned,
 		nativeTrace:         trace,

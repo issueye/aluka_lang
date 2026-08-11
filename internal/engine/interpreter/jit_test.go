@@ -832,9 +832,9 @@ func TestJITStatsAggregateRejectionReasons(t *testing.T) {
 	}
 	vm.ConfigureJIT(jit.Config{Mode: jit.Auto, Threshold: 1, Stats: true})
 	_, err = vm.Eval(`
-		function text() { return "x"; }
+		function text() { return arguments[0]; }
 		function less(a, b) { return a < b; }
-		globalThis.jitRejectedText = text();
+		globalThis.jitRejectedText = text("x");
 		globalThis.jitRejectedNative = less(1, 2);
 	`, "jit-rejection-reasons.js")
 	if err != nil {
@@ -846,7 +846,7 @@ func TestJITStatsAggregateRejectionReasons(t *testing.T) {
 	}
 	want := []jit.RejectionReason{
 		{Tier: "native", Reason: "jit: native comparison result escapes", Count: 1},
-		{Tier: "quick", Reason: "jit: non-number constant", Count: 1},
+		{Tier: "quick", Reason: "jit: function is not a leaf candidate", Count: 1},
 	}
 	if !reflect.DeepEqual(stats.RejectionReasons, want) {
 		t.Fatalf("rejection reasons=%+v want=%+v", stats.RejectionReasons, want)

@@ -241,6 +241,12 @@ func (g *Generator) genCase(id int, seed int64) *Case {
 		return g.genBigIntBitwiseCase(id, seed)
 	case KindBigIntCompare:
 		return g.genBigIntCompareCase(id, seed)
+	case KindTernary:
+		return g.genTernaryCase(id, seed)
+	case KindSwitch:
+		return g.genSwitchCase(id, seed)
+	case KindShortCircuit:
+		return g.genShortCircuitCase(id, seed)
 	default:
 		return g.genSafepointCase(id, seed)
 	}
@@ -796,4 +802,51 @@ func (g *Generator) genBigIntCompareCase(id int, seed int64) *Case {
 	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s)", fn, g.bigintLeaf(rng), g.numberLeaf(rng))))
 	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s)", fn, g.stringLeaf(rng), g.stringLeaf(rng))))
 	return g.build(id, KindBigIntCompare, seed, b.String())
+}
+
+// genTernaryCase (R3-6) generates `a ? b : c` leaves whose test covers the
+// truthiness domain (numbers, booleans, strings, bigints, nullish) and whose
+// branches cover the value domain. Falsy tests must take the alternate path
+// identically in every tier.
+func (g *Generator) genTernaryCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xF2))
+	fn := callID(id)
+	var b strings.Builder
+	fmt.Fprintf(&b, "function %s(a, b, c) { return a ? b : c; }\n", fn)
+	for i := 0; i < 3; i++ {
+		b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %s)", fn, g.valueLeaf(rng), g.valueLeaf(rng), g.valueLeaf(rng))))
+	}
+	return g.build(id, KindTernary, seed, b.String())
+}
+
+// genSwitchCase (R3-6) generates an integer switch and a string switch leaf
+// (strict-equality jump chains) whose discriminant draws from the whole value
+// domain; non-matching discriminants must take the default body identically
+// in every tier.
+func (g *Generator) genSwitchCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xF3))
+	fn := callID(id)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(x) { switch (x) { case 1: return 10; case 2: return 20; default: return 30; } }
+function %ss(x) { switch (x) { case "a": return 1; case "b": return 2; default: return 3; } }
+`, fn, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s)", fn, g.valueLeaf(rng))))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s)", fn, g.valueLeaf(rng))))
+	b.WriteString(tryLog(id, fmt.Sprintf("%ss(%s)", fn, g.valueLeaf(rng))))
+	b.WriteString(tryLog(id, fmt.Sprintf("%ss(%s)", fn, g.valueLeaf(rng))))
+	return g.build(id, KindSwitch, seed, b.String())
+}
+
+// genShortCircuitCase (R3-6) generates multi-level `a && b || c && d` keep
+// chains; the short-circuit paths must preserve the left operand value
+// (numbers, strings, bigints, objects) identically in every tier.
+func (g *Generator) genShortCircuitCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xF4))
+	fn := callID(id)
+	var b strings.Builder
+	fmt.Fprintf(&b, "function %s(a, b, c, d) { return a && b || c && d; }\n", fn)
+	for i := 0; i < 3; i++ {
+		b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %s, %s)", fn, g.valueLeaf(rng), g.valueLeaf(rng), g.valueLeaf(rng), g.valueLeaf(rng))))
+	}
+	return g.build(id, KindShortCircuit, seed, b.String())
 }

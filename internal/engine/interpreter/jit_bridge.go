@@ -79,6 +79,7 @@ type quickTraceState struct {
 	backedges           uint32
 	program             *jit.TraceProgram
 	rejected            bool
+	reason              string
 	nativeUsed          uint64
 	arrayPush           *arrayPushTraceState
 	closureIncrement    *closureIncrementTraceState
@@ -556,13 +557,27 @@ func (v *VM) noteJITBackedge(tmpl *bytecode.FuncTemplate) *quickJITState {
 
 func (v *VM) maybeCompileJITState(state *quickJITState, tmpl *bytecode.FuncTemplate, hot bool) {
 	if state == nil || !hot || state.program != nil || state.rejected {
+		if state != nil && state.rejected && v.jitConfig.Stats {
+			// R3-7: the structured rejection cache serves this hot candidate;
+			// no compile attempt (and no candidate recount) happens again.
+			v.jitStats.RejectionCacheHits++
+		}
 		return
 	}
 	if v.jitConfig.Stats {
 		v.jitStats.Candidates++
 	}
 	compileStart := time.Now()
-	program, err := jit.CompileLeaf(tmpl)
+	// R3-7 compile-time candidate filter: reject statically unsupported
+	// shapes (try/catch regions, unsupported opcodes, dynamic arguments,
+	// oversized frames) without running the full lowering.
+	var program *jit.Program
+	var err error
+	if scanErr := jit.RejectLeafReason(tmpl); scanErr != nil {
+		err = scanErr
+	} else {
+		program, err = jit.CompileLeaf(tmpl)
+	}
 	if err == nil && program.IsTrivialThisPropertyGetter() {
 		err = fmt.Errorf("jit: cost model rejects trivial this-property getter")
 		program = nil
@@ -1546,6 +1561,11 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 		frame.jitTraceGeneration = v.jitGeneration
 	}
 	if state.rejected {
+		if v.jitConfig.Stats {
+			// R3-7: the stable rejection cache serves this backedge; no
+			// recompile attempt and no matcher/compiler cost.
+			v.jitStats.RejectionCacheHits++
+		}
 		return 0, false, nil
 	}
 	if state.program == nil && state.arrayPush == nil && state.closureIncrement == nil {
@@ -1556,6 +1576,19 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			return 0, false, nil
 		}
 		compileStart := time.Now()
+		// R3-7 compile-time candidate filter: reject ranges with try/catch
+		// regions or unsupported opcodes before the pattern matchers and the
+		// full trace compiler run.
+		if scanErr := jit.RejectTraceReason(frame.tmpl, startPC, backedgePC); scanErr != nil {
+			v.recordJITRejection("trace", scanErr)
+			state.rejected = true
+			state.reason = scanErr.Error()
+			v.jitStats.LastError = state.reason
+			if v.jitConfig.Stats {
+				v.jitStats.TracesRejected++
+			}
+			return 0, false, nil
+		}
 		if arrayPush := v.matchArrayPushTrace(frame, startPC, backedgePC); arrayPush != nil {
 			state.arrayPush = arrayPush
 			if v.jitConfig.Stats {
@@ -1581,6 +1614,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			if err != nil {
 				v.recordJITRejection("trace", err)
 				state.rejected = true
+				state.reason = err.Error()
 				v.jitStats.LastError = err.Error()
 				if v.jitConfig.Stats {
 					v.jitStats.TracesRejected++

@@ -584,6 +584,50 @@ try { LOG("call", "kC3"); LOG("return", SV(kC(8n, 5n))); } catch (e) { LOG("thro
 try { LOG("call", "kC4"); LOG("return", SV(kC(2n, 1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 `,
 		},
+		{
+			// R3-6: ternary `a ? b : c`. Falsy tests (0, "", 7n is truthy)
+			// must take the alternate path; the branch values must be
+			// preserved exactly in every tier.
+			ID: -48, Kind: KindTernary, Seed: 132, Params: params,
+			Expected: "call:kT1\nreturn:n:2\ncall:kT2\nreturn:n:3\ncall:kT3\nreturn:n:6\ncall:kT4\nreturn:n:2",
+			Body: `function kT(a, b, c) { return a ? b : c; }
+try { LOG("call", "kT1"); LOG("return", SV(kT(1, 2, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT2"); LOG("return", SV(kT(0, 2, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT3"); LOG("return", SV(kT("", 5, 6))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT4"); LOG("return", SV(kT(7n, 2, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-6: integer and string switch leaves (strict-equality jump
+			// chains). The string case tests exercise the OpConstString pool;
+			// non-matching discriminants take the default body.
+			ID: -49, Kind: KindSwitch, Seed: 133, Params: params,
+			Expected: "call:kS1\nreturn:n:10\ncall:kS2\nreturn:n:20\ncall:kS3\nreturn:n:30\ncall:kT1\nreturn:n:1\ncall:kT2\nreturn:n:2\ncall:kT3\nreturn:n:3",
+			Body: `function kS(x) { switch (x) { case 1: return 10; case 2: return 20; default: return 30; } }
+function kT(x) { switch (x) { case "a": return 1; case "b": return 2; default: return 3; } }
+try { LOG("call", "kS1"); LOG("return", SV(kS(1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS2"); LOG("return", SV(kS(2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kS3"); LOG("return", SV(kS(9))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT1"); LOG("return", SV(kT("a"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT2"); LOG("return", SV(kT("b"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kT3"); LOG("return", SV(kT("z"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R3-6: multi-level short-circuit `a && b || c && d` and
+			// `(a || b) && c`. The keep-branch merge depths stay consistent
+			// and the short-circuited value is preserved in every tier.
+			ID: -50, Kind: KindShortCircuit, Seed: 134, Params: params,
+			Expected: "call:kN1\nreturn:n:2\ncall:kN2\nreturn:n:4\ncall:kN3\nreturn:n:0\ncall:kM1\nreturn:n:3\ncall:kM2\nreturn:n:0",
+			Body: `function kN(a, b, c, d) { return a && b || c && d; }
+function kM(a, b, c) { return (a || b) && c; }
+try { LOG("call", "kN1"); LOG("return", SV(kN(1, 2, 0, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kN2"); LOG("return", SV(kN(0, 2, 3, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kN3"); LOG("return", SV(kN(1, 0, 3, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kM1"); LOG("return", SV(kM(0, 2, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kM2"); LOG("return", SV(kM(1, 0, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
 	}
 }
 

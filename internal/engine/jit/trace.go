@@ -79,16 +79,10 @@ func CompileTraceWithCallGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC
 }
 
 func CompileTraceWithGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC int, callGuards []TraceCallGuard, methodGuards []TraceMethodGuard) (*TraceProgram, error) {
-	if tmpl == nil || startPC < 0 || backedgePC < startPC || backedgePC+bytecode.InstrSize > len(tmpl.Code) {
-		return nil, fmt.Errorf("jit: invalid trace range")
-	}
-	if startPC%bytecode.InstrSize != 0 || backedgePC%bytecode.InstrSize != 0 {
-		return nil, fmt.Errorf("jit: unaligned trace range")
+	if err := rejectTraceCandidate(tmpl, startPC, backedgePC); err != nil {
+		return nil, err
 	}
 	p := &Program{NumParams: tmpl.NumParams, NumLocals: tmpl.NumLocals, SelfUpvalue: -1}
-	if p.NumLocals > maxQuickSlots {
-		return nil, fmt.Errorf("jit: too many trace locals")
-	}
 	trace := &TraceProgram{program: p, startPC: startPC, written: make([]bool, tmpl.NumLocals)}
 	guardByPC := make(map[int]TraceCallGuard, len(callGuards))
 	for _, guard := range callGuards {
@@ -144,11 +138,19 @@ func CompileTraceWithGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC int
 		case bytecode.OpPushNegInt:
 			p.Code = append(p.Code, Instr{Op: OpConst, Value: -float64(arg)})
 		case bytecode.OpPushConst:
-			if int(arg) >= len(tmpl.Constants) || tmpl.Constants[arg].Type() != engine.TypeNumber {
+			if int(arg) >= len(tmpl.Constants) {
 				return nil, fmt.Errorf("jit: trace non-number constant")
 			}
-			n, _ := tmpl.Constants[arg].Float()
-			p.Code = append(p.Code, Instr{Op: OpConst, Value: n})
+			switch tmpl.Constants[arg].Type() {
+			case engine.TypeNumber:
+				n, _ := tmpl.Constants[arg].Float()
+				p.Code = append(p.Code, Instr{Op: OpConst, Value: n})
+			case engine.TypeString:
+				p.Code = append(p.Code, Instr{Op: OpConstString, Operand: uint32(len(p.stringConsts)), Name: tmpl.Constants[arg].String()})
+				p.stringConsts = append(p.stringConsts, tmpl.Constants[arg])
+			default:
+				return nil, fmt.Errorf("jit: trace non-number constant")
+			}
 		case bytecode.OpLoadLocal:
 			if int(arg) >= tmpl.NumLocals {
 				return nil, fmt.Errorf("jit: trace local out of range")
@@ -408,6 +410,16 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 	var values [maxQuickSlots]quickValue
 	var objects [maxQuickSlots]engine.Value
 	objectCount := 0
+	// The string constant pool occupies the front of the object buffer (same
+	// layout as the function executor), so OpConstString refs and string
+	// locals resolve through one objects slice.
+	for _, constant := range t.program.stringConsts {
+		if objectCount >= len(objects) {
+			return DeoptExit{}, GuardFailed, nil
+		}
+		objects[objectCount] = constant
+		objectCount++
+	}
 	for i := 0; i < t.program.NumLocals; i++ {
 		values[i] = fromEngine(locals[i], &objects, &objectCount)
 	}
@@ -493,6 +505,14 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 		switch in.Op {
 		case OpConst:
 			push(numberValue(in.Value))
+		case OpConstString:
+			// Defensive: Verify bounds the pool, and the prepend above fails
+			// GuardFailed when the buffer is exhausted.
+			if int(in.Operand) >= len(objects) {
+				return DeoptExit{}, GuardFailed, nil
+			}
+			truthy, _ := objects[in.Operand].Bool()
+			push(quickValue{kind: quickString, ref: uint8(in.Operand), b: truthy})
 		case OpLoadLocal:
 			push(values[in.Operand])
 		case OpStoreLocal:

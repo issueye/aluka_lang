@@ -21,6 +21,7 @@ type Op uint8
 
 const (
 	OpConst Op = iota
+	OpConstString
 	OpLoadLocal
 	OpStoreLocal
 	OpAdd
@@ -76,7 +77,7 @@ type Instr struct {
 
 func (op Op) String() string {
 	names := [...]string{
-		"const", "load_local", "store_local", "add_f64", "sub_f64", "mul_f64", "div_f64", "mod_f64", "pow_f64",
+		"const", "const_string", "load_local", "store_local", "add_f64", "sub_f64", "mul_f64", "div_f64", "mod_f64", "pow_f64",
 		"neg_f64", "not_bool", "bit_not_i32", "number_identity",
 		"eq_f64", "ne_f64", "strict_eq", "strict_ne", "bit_and_i32", "bit_or_i32", "bit_xor_i32", "shl_i32", "shr_i32", "ushr_u32", "lt_f64", "le_f64", "gt_f64", "ge_f64", "pop", "return", "return_undef", "jump", "jump_true",
 		"jump_false", "jump_true_keep", "jump_false_keep", "jump_nullish_keep", "push_self", "self_call", "dup", "swap", "get_prop", "trace_exit", "set_prop", "guard_noop_call", "guard_method_get",
@@ -95,6 +96,11 @@ type Program struct {
 	Code              []Instr
 	nativeCode        *jitnative.Code
 	propertyGuards    []propertyGuard
+	// stringConsts is the per-program string constant pool. OpConstString
+	// operands index it; the executors place the values at the front of the
+	// object buffer so quickValue refs resolve through the same objects slice
+	// as string locals (switch case tests, string comparisons).
+	stringConsts      []engine.Value
 	callTarget        *Program
 	nativePlan        *nativeInputPlan
 	nativeNumberArgs  uint16
@@ -122,6 +128,8 @@ func (p *Program) DumpIR() string {
 		case OpConst:
 			out.WriteByte(' ')
 			out.WriteString(strconv.FormatFloat(in.Value, 'g', -1, 64))
+		case OpConstString:
+			fmt.Fprintf(&out, " %q", in.Name)
 		case OpLoadLocal, OpStoreLocal, OpJump, OpJumpTrue, OpJumpFalse, OpJumpTrueKeep, OpJumpFalseKeep, OpJumpNullishKeep,
 			OpSelfCall, OpTraceExit, OpGuardNoopCall:
 			fmt.Fprintf(&out, " %d", in.Operand)
@@ -255,22 +263,20 @@ func (p *Program) inlineCallTarget(target *Program) bool {
 
 const maxQuickSlots = 32
 
-// CompileLeaf lowers a function template when its body is a straight-line
-// numeric expression. Unsupported semantics are rejected before execution.
+// CompileLeaf lowers a function template whose body is a numeric expression
+// with structured control flow: if/else chains, integer and string switch
+// (lowered by the bytecode compiler to a strict-equality jump chain), ternary
+// expressions and short-circuit operators (&& / || / ?? keep-branches), all
+// the way down to arbitrary CFGs whose joins keep a consistent operand-stack
+// depth. Unsupported semantics are rejected before execution; the cheap
+// candidate pre-filter (RejectLeafReason) runs first so hot-path callers can
+// skip the full lowering without invoking it.
 func CompileLeaf(tmpl *bytecode.FuncTemplate) (*Program, error) {
-	if tmpl == nil || tmpl.IsAsync || tmpl.IsGenerator || tmpl.IsVarArgs ||
-		(tmpl.ArgumentsSlot >= 0 && !tmpl.NoArgumentsObject) {
-		return nil, fmt.Errorf("jit: function is not a leaf candidate")
-	}
-	if len(tmpl.Code) == 0 || len(tmpl.Code)%bytecode.InstrSize != 0 {
-		return nil, fmt.Errorf("jit: malformed bytecode")
+	if err := rejectLeafCandidate(tmpl); err != nil {
+		return nil, err
 	}
 	p := &Program{NumParams: tmpl.NumParams, NumLocals: tmpl.NumLocals, SelfUpvalue: -1}
-	if p.NumLocals > maxQuickSlots {
-		return nil, fmt.Errorf("jit: too many locals")
-	}
 	pcToIR := make(map[int]int, len(tmpl.Code)/bytecode.InstrSize)
-lower:
 	for pc := 0; pc < len(tmpl.Code); pc += bytecode.InstrSize {
 		pcToIR[pc] = len(p.Code)
 		op := bytecode.Opcode(tmpl.Code[pc])
@@ -281,14 +287,19 @@ lower:
 		case bytecode.OpPushNegInt:
 			p.Code = append(p.Code, Instr{Op: OpConst, Value: -float64(arg)})
 		case bytecode.OpPushConst:
-			if int(arg) >= len(tmpl.Constants) {
-				return nil, fmt.Errorf("jit: constant index out of range")
-			}
-			if tmpl.Constants[arg].Type() != engine.TypeNumber {
+			// Number constants lower to OpConst; string constants (string
+			// switch case tests, string comparisons) enter the per-program
+			// pool and lower to OpConstString.
+			switch tmpl.Constants[arg].Type() {
+			case engine.TypeNumber:
+				n, _ := tmpl.Constants[arg].Float()
+				p.Code = append(p.Code, Instr{Op: OpConst, Value: n})
+			case engine.TypeString:
+				p.Code = append(p.Code, Instr{Op: OpConstString, Operand: uint32(len(p.stringConsts)), Name: tmpl.Constants[arg].String()})
+				p.stringConsts = append(p.stringConsts, tmpl.Constants[arg])
+			default:
 				return nil, fmt.Errorf("jit: non-number constant")
 			}
-			n, _ := tmpl.Constants[arg].Float()
-			p.Code = append(p.Code, Instr{Op: OpConst, Value: n})
 		case bytecode.OpLoadLocal:
 			if int(arg) >= tmpl.NumLocals {
 				return nil, fmt.Errorf("jit: local index out of range")
@@ -380,10 +391,8 @@ lower:
 			p.Code = append(p.Code, Instr{Op: OpSelfCall, Operand: arg})
 		case bytecode.OpReturn:
 			p.Code = append(p.Code, Instr{Op: OpReturn})
-			break lower
 		case bytecode.OpReturnUndef:
 			p.Code = append(p.Code, Instr{Op: OpReturnUndef})
-			break lower
 		default:
 			return nil, fmt.Errorf("jit: unsupported opcode %s", op)
 		}
@@ -399,6 +408,12 @@ lower:
 			p.Code[i].Operand = uint32(target)
 		}
 	}
+	// The bytecode compiler appends an implicit trailing return_undef after
+	// the final explicit return. The contiguous unreachable suffix is dead
+	// code; trimming it keeps the leaf IR in the canonical single-return
+	// shape that inline targets, trivial-getter detection and the trailing
+	// return check rely on (reachable instructions are never trimmed).
+	p.Code = trimUnreachableTail(p.Code)
 	if len(p.Code) == 0 || (p.Code[len(p.Code)-1].Op != OpReturn && p.Code[len(p.Code)-1].Op != OpReturnUndef) {
 		return nil, fmt.Errorf("jit: no return")
 	}
@@ -407,6 +422,53 @@ lower:
 	}
 	p.propertyGuards = make([]propertyGuard, len(p.Code))
 	return p, nil
+}
+
+// reachableFromEntry marks every instruction reachable from the program entry
+// through control flow (a pure CFG traversal without stack-depth tracking).
+// It is the portable version of the native emitter's reachability pass.
+func reachableFromEntry(code []Instr) []bool {
+	reachable := make([]bool, len(code))
+	if len(code) == 0 {
+		return reachable
+	}
+	reachable[0] = true
+	work := []int{0}
+	visit := func(next int) {
+		if next >= 0 && next < len(code) && !reachable[next] {
+			reachable[next] = true
+			work = append(work, next)
+		}
+	}
+	for len(work) > 0 {
+		i := work[len(work)-1]
+		work = work[:len(work)-1]
+		switch code[i].Op {
+		case OpReturn, OpReturnUndef, OpTraceExit:
+		case OpJump:
+			visit(int(code[i].Operand))
+		case OpJumpTrue, OpJumpFalse, OpJumpTrueKeep, OpJumpFalseKeep, OpJumpNullishKeep:
+			visit(i + 1)
+			visit(int(code[i].Operand))
+		default:
+			visit(i + 1)
+		}
+	}
+	return reachable
+}
+
+// trimUnreachableTail drops the contiguous unreachable suffix of a lowered
+// program. The bytecode compiler appends an implicit trailing return_undef
+// after the final explicit return; that dead tail would otherwise change the
+// IR shape that inline targets, trivial-getter detection and the trailing
+// return check rely on. Reachable instructions are never trimmed: jump
+// targets of reachable jumps are reachable by construction.
+func trimUnreachableTail(code []Instr) []Instr {
+	reachable := reachableFromEntry(code)
+	for len(code) > 0 && !reachable[len(code)-1] {
+		code = code[:len(code)-1]
+	}
+	return code
 }
 
 // Verify validates stack effects and control-flow joins before a program runs.
@@ -435,6 +497,15 @@ func (p *Program) Verify() error {
 		need, delta := 0, 0
 		switch in.Op {
 		case OpConst, OpLoadLocal, OpPushSelf:
+			delta = 1
+		case OpConstString:
+			// The operand indexes the per-program string constant pool; a
+			// missing or out-of-range entry is a malformed program even when
+			// the pool is empty (the pool is only populated by the compilers
+			// before Verify runs).
+			if int(in.Operand) >= len(p.stringConsts) {
+				return fmt.Errorf("jit: string constant index out of range")
+			}
 			delta = 1
 		case OpGetProp:
 			need, delta = 1, 0
@@ -548,6 +619,11 @@ func (p *Program) Verify() error {
 		if maxDepth > maxQuickSlots {
 			return fmt.Errorf("jit: operand stack is too deep")
 		}
+		// The executors place the string constant pool at the front of the
+		// object buffer; a pool larger than the buffer is unrepresentable.
+		if len(p.stringConsts) > maxQuickSlots {
+			return fmt.Errorf("jit: string constant pool is too large")
+		}
 		type successor struct {
 			instruction int
 			depth       int
@@ -621,6 +697,15 @@ func (p *Program) ExecuteWithSafepoint(thisVal engine.Value, args []engine.Value
 	var argBuf [8]quickValue
 	var objectBuf [maxQuickSlots]engine.Value
 	objectCount := 0
+	// The string constant pool occupies the front of the object buffer so
+	// OpConstString refs and string locals share one objects slice.
+	for _, constant := range p.stringConsts {
+		if objectCount >= len(objectBuf) {
+			return engine.Undefined(), GuardFailed, nil
+		}
+		objectBuf[objectCount] = constant
+		objectCount++
+	}
 	if len(args) > len(argBuf) {
 		return engine.Undefined(), GuardFailed, nil
 	}
@@ -705,6 +790,14 @@ func (p *Program) executeQuick(thisVal quickValue, args []quickValue, objects *[
 		switch in.Op {
 		case OpConst:
 			push(numberValue(in.Value))
+		case OpConstString:
+			// The pool is prepended by ExecuteWithSafepoint; a ref beyond the
+			// buffer is a defensive guard (Verify bounds the pool already).
+			if int(in.Operand) >= len(objects) {
+				return quickValue{}, GuardFailed, nil
+			}
+			truthy, _ := objects[in.Operand].Bool()
+			push(quickValue{kind: quickString, ref: uint8(in.Operand), b: truthy})
 		case OpLoadLocal:
 			push(locals[in.Operand])
 		case OpStoreLocal:
