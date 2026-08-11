@@ -128,89 +128,306 @@ func nativeCallbackClosure(fn callableValue) (*vmClosure, *bytecode.NativeCallba
 	return cl, cl.tmpl.NativeCallback, true
 }
 
-// tryNumericMap recognizes x => x * K for arrays already containing Numbers.
+// numericBinOp reports whether op is a pure Number arithmetic opcode the
+// numeric fast paths evaluate directly with float semantics identical to
+// nativeArith (the micro-stack evaluator used by execNativeCallback).
+func numericBinOp(op bytecode.Opcode) bool {
+	switch op {
+	case bytecode.OpAdd, bytecode.OpSub, bytecode.OpMul, bytecode.OpDiv, bytecode.OpMod, bytecode.OpPow:
+		return true
+	}
+	return false
+}
+
+// numericApply applies a numericBinOp to two float64 operands with the exact
+// float arithmetic of nativeArith's Number branches (division by zero yields
+// ±Inf/NaN, modulo uses IEEE remainder like math.Mod, pow is Math.pow).
+func numericApply(op bytecode.Opcode, l, r float64) float64 {
+	switch op {
+	case bytecode.OpAdd:
+		return l + r
+	case bytecode.OpSub:
+		return l - r
+	case bytecode.OpMul:
+		return l * r
+	case bytecode.OpDiv:
+		return l / r
+	case bytecode.OpMod:
+		return math.Mod(l, r)
+	case bytecode.OpPow:
+		return math.Pow(l, r)
+	}
+	return 0
+}
+
+// numericCmpOp reports whether op is a comparison the filter fast path can
+// evaluate via nativeCompare with the same semantics as Tier 0.
+func numericCmpOp(op bytecode.Opcode) bool {
+	switch op {
+	case bytecode.OpStrictEq, bytecode.OpStrictNe, bytecode.OpLt, bytecode.OpLe, bytecode.OpGt, bytecode.OpGe:
+		return true
+	}
+	return false
+}
+
+// allNumberElems is the R4-6 input guard shared by every numeric callback
+// fast path: every element in elems[start:] must be a Number (holes, other
+// primitives and objects all fall back to the full per-element call).
+func allNumberElems(elems []engine.Value, start int) bool {
+	for i := start; i < len(elems); i++ {
+		if elems[i] == nil || elems[i].Type() != engine.TypeNumber {
+			return false
+		}
+	}
+	return true
+}
+
+// noteNumericCallback records the R4-6 numeric purity-path outcome: a hit when
+// the compiler/guard-proven fast path executed, a fall otherwise. The counter
+// is the observable proof that the purity paths are actually taken (and that
+// every failure mode goes back to the full call chain).
+func (v *VM) noteNumericCallback(fast bool) {
+	if v == nil || !v.jitConfig.Stats {
+		return
+	}
+	if fast {
+		v.jitStats.NumericCallbackHits++
+	} else {
+		v.jitStats.NumericCallbackFalls++
+	}
+}
+
+// tryNumericMap recognizes pure numeric arrow callbacks for arrays already
+// containing Numbers:
+//
+//	x => x              (identity)
+//	x => x OP K / K OP x (arithmetic + - * / % ** with a Number constant)
+//
+// Purity is compiler-proven: NativeCallback is only emitted for closure-free
+// single-expression arrows (compiler/native_callback.go); the runtime guards
+// prove the exact pattern and the Number inputs. Any other callback or mixed
+// array falls back to the full call chain with unchanged JS semantics.
 func tryNumericMap(fn callableValue, elems []engine.Value) ([]engine.Value, bool) {
 	cl, desc, ok := nativeCallbackClosure(fn)
-	if !ok || len(desc.Instrs) != 3 || desc.Instrs[2].Op != bytecode.CBBinOp ||
-		bytecode.Opcode(desc.Instrs[2].Operand) != bytecode.OpMul {
+	if !ok || len(desc.Instrs) < 1 || len(desc.Instrs) > 3 {
 		return nil, false
 	}
 	constIndex := -1
-	if desc.Instrs[0].Op == bytecode.CBPushParam0 && desc.Instrs[1].Op == bytecode.CBPushConst {
-		constIndex = int(desc.Instrs[1].Operand)
-	} else if desc.Instrs[1].Op == bytecode.CBPushParam0 && desc.Instrs[0].Op == bytecode.CBPushConst {
-		constIndex = int(desc.Instrs[0].Operand)
-	} else {
-		return nil, false
-	}
-	if constIndex < 0 || constIndex >= len(cl.tmpl.Constants) || cl.tmpl.Constants[constIndex].Type() != engine.TypeNumber {
-		return nil, false
-	}
-	for _, value := range elems {
-		if value == nil || value.Type() != engine.TypeNumber {
+	constFirst := false
+	op := bytecode.Opcode(0)
+	switch len(desc.Instrs) {
+	case 1:
+		if desc.Instrs[0].Op != bytecode.CBPushParam0 {
 			return nil, false
 		}
+	case 3:
+		if desc.Instrs[2].Op != bytecode.CBBinOp {
+			return nil, false
+		}
+		op = bytecode.Opcode(desc.Instrs[2].Operand)
+		if !numericBinOp(op) {
+			return nil, false
+		}
+		if desc.Instrs[0].Op == bytecode.CBPushParam0 && desc.Instrs[1].Op == bytecode.CBPushConst {
+			constIndex = int(desc.Instrs[1].Operand)
+		} else if desc.Instrs[0].Op == bytecode.CBPushConst && desc.Instrs[1].Op == bytecode.CBPushParam0 {
+			constIndex = int(desc.Instrs[0].Operand)
+			constFirst = true
+		} else {
+			return nil, false
+		}
+		if constIndex < 0 || constIndex >= len(cl.tmpl.Constants) || cl.tmpl.Constants[constIndex].Type() != engine.TypeNumber {
+			return nil, false
+		}
+	default:
+		return nil, false
 	}
-	factor, _ := cl.tmpl.Constants[constIndex].Float()
+	if !allNumberElems(elems, 0) {
+		return nil, false
+	}
 	result := make([]engine.Value, len(elems))
+	if len(desc.Instrs) == 1 {
+		for i, value := range elems {
+			result[i] = value
+		}
+		return result, true
+	}
+	constant, _ := cl.tmpl.Constants[constIndex].Float()
 	for i, value := range elems {
 		number, _ := value.Float()
-		result[i] = engine.Number(number * factor)
+		var computed float64
+		if constFirst {
+			computed = numericApply(op, constant, number)
+		} else {
+			computed = numericApply(op, number, constant)
+		}
+		result[i] = engine.Number(computed)
 	}
 	return result, true
 }
 
-// tryNumericFilter recognizes x => x % K === C for Number arrays.
+// tryNumericFilter recognizes pure numeric arrow predicates for Number
+// arrays:
+//
+//	x => x OP K / K OP x (strict comparison with a Number constant)
+//	x => x % K OP C      (modulo then strict comparison with Number constants)
+//
+// The predicate result goes through the same comparisons as Tier 0
+// (nativeCompare); anything else falls back to the full call chain.
 func tryNumericFilter(fn callableValue, elems []engine.Value) ([]engine.Value, bool) {
 	cl, desc, ok := nativeCallbackClosure(fn)
-	if !ok || len(desc.Instrs) != 5 || desc.Instrs[0].Op != bytecode.CBPushParam0 ||
-		desc.Instrs[1].Op != bytecode.CBPushConst || desc.Instrs[2].Op != bytecode.CBBinOp ||
-		bytecode.Opcode(desc.Instrs[2].Operand) != bytecode.OpMod || desc.Instrs[3].Op != bytecode.CBPushConst ||
-		desc.Instrs[4].Op != bytecode.CBCmp || bytecode.Opcode(desc.Instrs[4].Operand) != bytecode.OpStrictEq {
+	if !ok || len(desc.Instrs) < 3 || len(desc.Instrs) > 5 {
 		return nil, false
 	}
-	modIndex, expectedIndex := int(desc.Instrs[1].Operand), int(desc.Instrs[3].Operand)
-	if modIndex < 0 || modIndex >= len(cl.tmpl.Constants) || expectedIndex < 0 || expectedIndex >= len(cl.tmpl.Constants) ||
-		cl.tmpl.Constants[modIndex].Type() != engine.TypeNumber || cl.tmpl.Constants[expectedIndex].Type() != engine.TypeNumber {
-		return nil, false
-	}
-	for _, value := range elems {
-		if value == nil || value.Type() != engine.TypeNumber {
+	modIndex := -1
+	expectedIndex := -1
+	leftFirst := true
+	op := bytecode.Opcode(0)
+	switch len(desc.Instrs) {
+	case 3:
+		if desc.Instrs[2].Op != bytecode.CBCmp {
 			return nil, false
 		}
+		op = bytecode.Opcode(desc.Instrs[2].Operand)
+		if !numericCmpOp(op) {
+			return nil, false
+		}
+		if desc.Instrs[0].Op == bytecode.CBPushParam0 && desc.Instrs[1].Op == bytecode.CBPushConst {
+			expectedIndex = int(desc.Instrs[1].Operand)
+		} else if desc.Instrs[0].Op == bytecode.CBPushConst && desc.Instrs[1].Op == bytecode.CBPushParam0 {
+			expectedIndex = int(desc.Instrs[0].Operand)
+			leftFirst = false
+		} else {
+			return nil, false
+		}
+	case 5:
+		if desc.Instrs[0].Op != bytecode.CBPushParam0 || desc.Instrs[1].Op != bytecode.CBPushConst ||
+			desc.Instrs[2].Op != bytecode.CBBinOp || bytecode.Opcode(desc.Instrs[2].Operand) != bytecode.OpMod ||
+			desc.Instrs[3].Op != bytecode.CBPushConst || desc.Instrs[4].Op != bytecode.CBCmp {
+			return nil, false
+		}
+		op = bytecode.Opcode(desc.Instrs[4].Operand)
+		if !numericCmpOp(op) {
+			return nil, false
+		}
+		modIndex, expectedIndex = int(desc.Instrs[1].Operand), int(desc.Instrs[3].Operand)
+	default:
+		return nil, false
 	}
-	modulus, _ := cl.tmpl.Constants[modIndex].Float()
+	checkIndex := func(index int) bool {
+		return index >= 0 && index < len(cl.tmpl.Constants) && cl.tmpl.Constants[index].Type() == engine.TypeNumber
+	}
+	if !checkIndex(expectedIndex) || (modIndex >= 0 && !checkIndex(modIndex)) {
+		return nil, false
+	}
+	if !allNumberElems(elems, 0) {
+		return nil, false
+	}
 	expected, _ := cl.tmpl.Constants[expectedIndex].Float()
 	result := make([]engine.Value, 0, len(elems))
 	for _, value := range elems {
 		number, _ := value.Float()
-		if math.Mod(number, modulus) == expected {
+		var left, right float64
+		if modIndex >= 0 {
+			modulus, _ := cl.tmpl.Constants[modIndex].Float()
+			left = math.Mod(number, modulus)
+			right = expected
+		} else if leftFirst {
+			left, right = number, expected
+		} else {
+			left, right = expected, number
+		}
+		if nativeCompareFloat(op, left, right) {
 			result = append(result, value)
 		}
 	}
 	return result, true
 }
 
-// tryNumericReduce recognizes (acc, x) => acc + x for Number arrays.
+// nativeCompareFloat evaluates a numericCmpOp on two float64 operands with the
+// exact Tier 0 semantics for Numbers (strict equality via Go ==, so +0 === -0
+// and NaN fails every comparison; relational comparisons with NaN also fail).
+func nativeCompareFloat(op bytecode.Opcode, l, r float64) bool {
+	switch op {
+	case bytecode.OpStrictEq:
+		return l == r
+	case bytecode.OpStrictNe:
+		return l != r
+	case bytecode.OpLt:
+		return l < r
+	case bytecode.OpLe:
+		return l <= r
+	case bytecode.OpGt:
+		return l > r
+	case bytecode.OpGe:
+		return l >= r
+	}
+	return false
+}
+
+// tryNumericReduce recognizes pure numeric arrow reducers for Number arrays
+// with a Number accumulator:
+//
+//	(acc, x) => acc OP x   (arithmetic + - * / % **)
+//	(acc, x) => x OP acc   (commutative + *)
+//	(acc, x) => acc OP K   (constant operand; x is ignored like in Tier 0)
+//
+// Purity and the element/accumulator types are proven by the compiler and the
+// runtime guards; anything else falls back to the full call chain.
 func tryNumericReduce(fn callableValue, elems []engine.Value, initial engine.Value, start int) (engine.Value, bool) {
-	_, desc, ok := nativeCallbackClosure(fn)
-	if !ok || len(desc.Instrs) != 3 || desc.Instrs[0].Op != bytecode.CBPushParam0 ||
-		desc.Instrs[1].Op != bytecode.CBPushParam1 || desc.Instrs[2].Op != bytecode.CBBinOp ||
-		bytecode.Opcode(desc.Instrs[2].Operand) != bytecode.OpAdd {
+	cl, desc, ok := nativeCallbackClosure(fn)
+	if !ok || len(desc.Instrs) != 3 || desc.Instrs[2].Op != bytecode.CBBinOp {
+		return nil, false
+	}
+	op := bytecode.Opcode(desc.Instrs[2].Operand)
+	if !numericBinOp(op) {
+		return nil, false
+	}
+	accFirst := desc.Instrs[0].Op == bytecode.CBPushParam0 && desc.Instrs[1].Op == bytecode.CBPushParam1
+	xFirst := desc.Instrs[0].Op == bytecode.CBPushParam1 && desc.Instrs[1].Op == bytecode.CBPushParam0
+	constIndex := -1
+	constFirst := false
+	if !accFirst && !xFirst {
+		if desc.Instrs[0].Op == bytecode.CBPushParam0 && desc.Instrs[1].Op == bytecode.CBPushConst {
+			constIndex = int(desc.Instrs[1].Operand)
+		} else if desc.Instrs[0].Op == bytecode.CBPushConst && desc.Instrs[1].Op == bytecode.CBPushParam0 {
+			constIndex = int(desc.Instrs[0].Operand)
+			constFirst = true
+		} else {
+			return nil, false
+		}
+		if constIndex < 0 || constIndex >= len(cl.tmpl.Constants) || cl.tmpl.Constants[constIndex].Type() != engine.TypeNumber {
+			return nil, false
+		}
+	}
+	if xFirst && op != bytecode.OpAdd && op != bytecode.OpMul {
 		return nil, false
 	}
 	acc, ok := initial.Float()
 	if !ok {
 		return nil, false
 	}
-	for i := start; i < len(elems); i++ {
-		if elems[i] == nil || elems[i].Type() != engine.TypeNumber {
-			return nil, false
+	if !allNumberElems(elems, start) {
+		return nil, false
+	}
+	if constIndex >= 0 {
+		constant, _ := cl.tmpl.Constants[constIndex].Float()
+		for i := start; i < len(elems); i++ {
+			if constFirst {
+				acc = numericApply(op, constant, acc)
+			} else {
+				acc = numericApply(op, acc, constant)
+			}
 		}
+		return engine.Number(acc), true
 	}
 	for i := start; i < len(elems); i++ {
 		number, _ := elems[i].Float()
-		acc += number
+		if accFirst {
+			acc = numericApply(op, acc, number)
+		} else {
+			acc = numericApply(op, number, acc)
+		}
 	}
 	return engine.Number(acc), true
 }

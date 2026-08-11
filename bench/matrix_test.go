@@ -215,3 +215,64 @@ for (let i = 0; i < 50000; i++) {
 `
 
 func BenchmarkGCPressure(b *testing.B) { runJS(b, gcPressureCode) }
+
+// === R4-5 / R4-6 array fast path benchmarks（专项，§9.3 第 6 类证据）========
+//
+// runJSWithJIT 与 runJS 相同，但显式开启 Auto（threshold=1），使 R4-5/R4-6
+// 的 Quick trace（数组索引读/批量写）与 NativeCallback 数值纯度路径实际
+// 进入被测循环；Tier 0 对照仍由 runJS（默认 --jit=off）负责。
+
+func runJSWithJIT(b *testing.B, code string, mode jit.Mode) {
+	b.Helper()
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer vm.Close()
+	vm.ConfigureJIT(jit.Config{Mode: mode, Threshold: 1, BackedgeThreshold: 1, Stats: true})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := vm.Eval(code, "bench-r4.js"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkArrayIndexRead R4-5 packed Number 索引读循环（内层为规范形态）。
+const arrayIndexReadCode = `
+const a = [];
+for (let i = 0; i < 1000; i++) a.push(i);
+let s = 0;
+for (let j = 0; j < 10000; j++) { for (let k = 0; k < 1000; k++) s += a[k]; }
+`
+
+func BenchmarkArrayIndexRead(b *testing.B) { runJSWithJIT(b, arrayIndexReadCode, jit.Auto) }
+
+// BenchmarkArrayBatchWrite R4-6 批量写（a[i] = i，length 每 chunk 同步一次）。
+const arrayBatchWriteCode = `
+const a = [];
+for (let i = 0; i < 100000; i++) a[i] = i;
+`
+
+func BenchmarkArrayBatchWrite(b *testing.B) { runJSWithJIT(b, arrayBatchWriteCode, jit.Auto) }
+
+// BenchmarkArrayCbNumeric R4-6 编译器/guard 证明的 map/filter/reduce 数值
+// 纯度路径（快速路径 + 回退形态的混合负载）。
+const arrayCbNumericCode = `
+const a = [];
+for (let i = 0; i < 10000; i++) a.push(i);
+let s = 0;
+for (let j = 0; j < 20; j++) {
+  s += a.map(x => x * 2).length;
+  s += a.filter(x => x % 2 === 0).length;
+  s += a.reduce((acc, x) => acc + x, 0);
+}
+`
+
+func BenchmarkArrayCbNumeric(b *testing.B) { runJSWithJIT(b, arrayCbNumericCode, jit.Auto) }
+
+// BenchmarkArrayIndexReadOff Tier 0 对照（同一负载，--jit=off）。
+func BenchmarkArrayIndexReadOff(b *testing.B) { runJS(b, arrayIndexReadCode) }
+
+// BenchmarkArrayBatchWriteOff Tier 0 对照。
+func BenchmarkArrayBatchWriteOff(b *testing.B) { runJS(b, arrayBatchWriteCode) }

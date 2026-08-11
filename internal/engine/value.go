@@ -773,6 +773,39 @@ func (a *ArrayValue) AppendNumberRange(start float64, count int) {
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
+// WriteNumberRange fills elems[start:start+count] with count consecutive
+// Number values starting at valueStart (elems[start+i] = valueStart + i),
+// growing the slice with holes (undefined) first when start+count exceeds the
+// current length, and synchronizes the length property once. It mirrors the
+// per-write semantics of Set("k", v) for numeric keys (extend with holes,
+// fill, length slot sync) but commits the whole range atomically, so the
+// observable final state is identical to the per-iteration Tier 0 sequence
+// while the length slot is updated a single time. Like AppendNumberRange it is
+// intentionally narrow: the interpreter JIT uses it only after guarding the
+// ArrayValue receiver, the safe-integer index range and the loop semantics.
+func (a *ArrayValue) WriteNumberRange(start int, valueStart float64, count int) {
+	if count <= 0 {
+		return
+	}
+	oldLen := len(a.elems)
+	end := start + count
+	if end > oldLen {
+		if cap(a.elems)-oldLen < end-oldLen {
+			grown := make([]Value, oldLen, end)
+			copy(grown, a.elems)
+			a.elems = grown
+		}
+		a.elems = a.elems[:end]
+		for i := oldLen; i < end; i++ {
+			a.elems[i] = Undefined() // holes above the previous length
+		}
+	}
+	for i := 0; i < count; i++ {
+		a.elems[start+i] = numberValue(valueStart + float64(i))
+	}
+	a.objectValue.setSlot("length", IntValue(len(a.elems)))
+}
+
 // --- function --------------------------------------------------------------
 
 // functionValue 包装一个 Go Func 为 JS Function 对象。

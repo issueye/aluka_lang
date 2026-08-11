@@ -83,6 +83,8 @@ type quickTraceState struct {
 	nativeUsed          uint64
 	arrayPush           *arrayPushTraceState
 	closureIncrement    *closureIncrementTraceState
+	arrayIndex          *arrayIndexTraceState
+	arrayBatch          *arrayBatchWriteTraceState
 	guardFailures       uint8
 	nativeGuardFailures uint8
 	nativeDisabled      bool
@@ -100,6 +102,46 @@ type arrayPushTraceState struct {
 	pushTarget    engine.Value
 	startPC       int
 	exitPC        int
+}
+
+// arrayIndexTraceState is the R4-5 packed Number read shape:
+//
+//	for (; i < bound; i++) sum += array[i]
+//
+// The bulk executor accumulates the exact per-iteration float sequence into
+// the sum local and advances the index local atomically per committed chunk,
+// so a guard failure or safepoint interruption always resumes in a state Tier
+// 0 can continue from.
+type arrayIndexTraceState struct {
+	arrayLocal   int
+	sumLocal     int
+	indexLocal   int
+	boundLocal   int
+	boundConst   float64
+	boundIsLocal bool
+	startPC      int
+	exitPC       int
+}
+
+// arrayBatchWriteTraceState is the R4-6 safe batch write shape:
+//
+//	for (; i < bound; i++) array[i] = i              // key == value == loop var
+//	for (; i < bound; i++) { array[j] = i; j++; }    // separate key counter
+//	for (; i < bound; i++) array[j++] = i            // post-incremented key
+//
+// The bulk executor writes array[key+t] = value+t for the committed chunk and
+// synchronizes the length property once per chunk, matching the per-iteration
+// Tier 0 Set semantics (extend with holes, fill, length slot sync).
+type arrayBatchWriteTraceState struct {
+	arrayLocal   int
+	keyLocal     int
+	valueLocal   int
+	indexLocal   int
+	boundLocal   int
+	boundConst   float64
+	boundIsLocal bool
+	startPC      int
+	exitPC       int
 }
 
 type closureIncrementTraceState struct {
@@ -1901,6 +1943,441 @@ func (v *VM) executeClosureIncrementTrace(trace *closureIncrementTraceState, loc
 	return trace.exitPC, jit.Executed, nil
 }
 
+// traceBoundOperand parses the loop bound operand at instruction index
+// boundIndex of the canonical loop head (LoadLocal bound / PushInt /
+// PushNegInt / PushConst Number). Returns (boundLocal, boundConst, isLocal,
+// ok); on ok == false the shape is not a supported range loop.
+func traceBoundOperand(tmpl *bytecode.FuncTemplate, op func(int) bytecode.Opcode, arg func(int) uint32, boundIndex, excludedLocal int) (int, float64, bool, bool) {
+	switch op(boundIndex) {
+	case bytecode.OpLoadLocal:
+		boundLocal := int(arg(boundIndex))
+		if boundLocal < 0 || boundLocal >= tmpl.NumLocals || boundLocal == excludedLocal {
+			return 0, 0, false, false
+		}
+		return boundLocal, 0, true, true
+	case bytecode.OpPushInt:
+		return -1, float64(arg(boundIndex)), false, true
+	case bytecode.OpPushNegInt:
+		return -1, -float64(arg(boundIndex)), false, true
+	case bytecode.OpPushConst:
+		constantIndex := int(arg(boundIndex))
+		if constantIndex < 0 || constantIndex >= len(tmpl.Constants) ||
+			tmpl.Constants[constantIndex].Type() != engine.TypeNumber {
+			return 0, 0, false, false
+		}
+		boundConst, _ := tmpl.Constants[constantIndex].Float()
+		return -1, boundConst, false, true
+	default:
+		return 0, 0, false, false
+	}
+}
+
+// matchArrayIndexTrace recognizes the compiler's canonical R4-5 packed Number
+// read form:
+//
+//	for (; i < bound; i++) sum += array[i]
+//
+//	0 LoadLocal i     4 LoadLocal sum   8 Add     12 LoadLocal i
+//	1 <bound>         5 LoadLocal array 9 Dup     13 Dup
+//	2 Lt              6 LoadLocal i    10 Store   14 Inc
+//	3 JmpFalsePop     7 GetElem        11 Pop     15 StoreLocal i
+//	                                             16 Pop
+//	                                             17 Jmp back
+//
+// The matcher is exact so the bulk execution below is equivalent to the
+// bytecode it replaces; every other read shape (prototype index, hole or
+// mixed-type elements, Proxy receiver, unsafe numbers) stays on the Tier 0
+// path.
+func (v *VM) matchArrayIndexTrace(frame *vmFrame, startPC, backedgePC int) *arrayIndexTraceState {
+	if frame == nil || frame.tmpl == nil || frame.base < 0 {
+		return nil
+	}
+	code := frame.tmpl.Code
+	const instructionCount = 18
+	if startPC < 0 || backedgePC != startPC+(instructionCount-1)*bytecode.InstrSize ||
+		backedgePC+bytecode.InstrSize > len(code) {
+		return nil
+	}
+	op := func(index int) bytecode.Opcode { return bytecode.Opcode(code[startPC+index*bytecode.InstrSize]) }
+	arg := func(index int) uint32 { return jitTraceOperand(code, startPC+index*bytecode.InstrSize) }
+	if op(0) != bytecode.OpLoadLocal || op(2) != bytecode.OpLt || op(3) != bytecode.OpJmpFalsePop ||
+		op(4) != bytecode.OpLoadLocal || op(5) != bytecode.OpLoadLocal || op(6) != bytecode.OpLoadLocal ||
+		op(7) != bytecode.OpGetElem || op(8) != bytecode.OpAdd || op(9) != bytecode.OpDup ||
+		op(10) != bytecode.OpStoreLocal || op(11) != bytecode.OpPop || op(12) != bytecode.OpLoadLocal ||
+		op(13) != bytecode.OpDup || op(14) != bytecode.OpInc || op(15) != bytecode.OpStoreLocal ||
+		op(16) != bytecode.OpPop || op(17) != bytecode.OpJmp {
+		return nil
+	}
+	indexLocal := int(arg(0))
+	sumLocal := int(arg(4))
+	arrayLocal := int(arg(5))
+	if int(arg(6)) != indexLocal || int(arg(12)) != indexLocal || int(arg(15)) != indexLocal ||
+		int(arg(10)) != sumLocal {
+		return nil
+	}
+	localCount := frame.tmpl.NumLocals
+	for _, slot := range []int{indexLocal, sumLocal, arrayLocal} {
+		if slot < 0 || slot >= localCount {
+			return nil
+		}
+	}
+	if indexLocal == sumLocal || indexLocal == arrayLocal || sumLocal == arrayLocal {
+		return nil
+	}
+	boundLocal, boundConst, boundIsLocal, ok := traceBoundOperand(frame.tmpl, op, arg, 1, indexLocal)
+	if !ok {
+		return nil
+	}
+	// The bound must not alias the sum local: the body stores sum every
+	// iteration, so a bound that is also the sum would change mid-loop and
+	// make the chunked range diverge from Tier 0.
+	if boundIsLocal && boundLocal == sumLocal {
+		return nil
+	}
+	backedgeTarget := backedgePC + bytecode.InstrSize + bytecode.SignedOperand(arg(17))
+	exitPC := startPC + 4*bytecode.InstrSize + bytecode.SignedOperand(arg(3))
+	if backedgeTarget != startPC || exitPC <= backedgePC || exitPC > len(code) {
+		return nil
+	}
+	localsEnd := frame.base + localCount
+	if localsEnd > len(v.stack) {
+		return nil
+	}
+	locals := v.stack[frame.base:localsEnd]
+	if _, ok := locals[arrayLocal].(*engine.ArrayValue); !ok {
+		return nil
+	}
+	trace := &arrayIndexTraceState{
+		arrayLocal: arrayLocal, sumLocal: sumLocal, indexLocal: indexLocal,
+		boundLocal: boundLocal, boundConst: boundConst, boundIsLocal: boundIsLocal,
+		startPC: startPC, exitPC: exitPC,
+	}
+	if _, _, _, ok := trace.arrayIndexNumbers(locals); !ok {
+		return nil
+	}
+	return trace
+}
+
+func (t *arrayIndexTraceState) arrayIndexNumbers(locals []engine.Value) (float64, float64, float64, bool) {
+	if t == nil || t.indexLocal < 0 || t.indexLocal >= len(locals) ||
+		t.sumLocal < 0 || t.sumLocal >= len(locals) {
+		return 0, 0, 0, false
+	}
+	index, ok := locals[t.indexLocal].Float()
+	if !ok {
+		return 0, 0, 0, false
+	}
+	bound := t.boundConst
+	if t.boundIsLocal {
+		if t.boundLocal < 0 || t.boundLocal >= len(locals) {
+			return 0, 0, 0, false
+		}
+		bound, ok = locals[t.boundLocal].Float()
+		if !ok {
+			return 0, 0, 0, false
+		}
+	}
+	sum, ok := locals[t.sumLocal].Float()
+	if !ok {
+		return 0, 0, 0, false
+	}
+	const maxSafeInteger = float64(1<<53 - 1)
+	if math.IsNaN(index) || math.IsInf(index, 0) || math.Trunc(index) != index || index < 0 || index > maxSafeInteger ||
+		math.IsNaN(bound) || math.IsInf(bound, 0) || math.Trunc(bound) != bound || bound < 0 || bound > maxSafeInteger ||
+		math.IsNaN(sum) || math.IsInf(sum, 0) {
+		return 0, 0, 0, false
+	}
+	return index, bound, sum, true
+}
+
+// executeArrayIndexTrace bulk-executes the packed Number read chunk. The
+// length guard clamps the chunk to the current element storage (an index at
+// or above len resolves through the prototype chain in Tier 0 and must fall
+// back); a non-Number element in the range fails the whole chunk before any
+// local is touched. The sum and index locals are updated atomically per
+// committed chunk.
+func (v *VM) executeArrayIndexTrace(trace *arrayIndexTraceState, locals []engine.Value) (int, jit.ExitReason, error) {
+	if trace == nil || trace.arrayLocal < 0 || trace.arrayLocal >= len(locals) {
+		return 0, jit.GuardFailed, nil
+	}
+	receiver, ok := locals[trace.arrayLocal].(*engine.ArrayValue)
+	if !ok {
+		return 0, jit.GuardFailed, nil
+	}
+	index, bound, sum, ok := trace.arrayIndexNumbers(locals)
+	if !ok {
+		return 0, jit.GuardFailed, nil
+	}
+	if index >= bound {
+		return trace.exitPC, jit.Executed, nil
+	}
+	remaining := int(bound - index)
+	budget := int(v.jitConfig.TraceBudget)
+	if budget <= 0 {
+		budget = 65536
+	}
+	count := remaining
+	if count > budget {
+		count = budget
+	}
+	elems := receiver.Elems()
+	if index >= float64(len(elems)) {
+		return 0, jit.GuardFailed, nil
+	}
+	if maxCount := len(elems) - int(index); count > maxCount {
+		count = maxCount
+	}
+	start := int(index)
+	for i := 0; i < count; i++ {
+		element := elems[start+i]
+		if element == nil || element.Type() != engine.TypeNumber {
+			return 0, jit.GuardFailed, nil
+		}
+		number, _ := element.Float()
+		sum += number
+	}
+	locals[trace.sumLocal] = engine.Number(sum)
+	locals[trace.indexLocal] = engine.Number(index + float64(count))
+	// A chunk clamped by the element storage (index+count < bound) means the
+	// loop continues reading through the prototype chain in Tier 0; the trace
+	// must hand the loop back at its head instead of exiting it early.
+	if count >= budget {
+		if err := v.pollJITSafepoint(); err != nil {
+			return trace.startPC, jit.Interrupted, err
+		}
+		return trace.startPC, jit.Yielded, nil
+	}
+	if index+float64(count) < bound {
+		return trace.startPC, jit.Yielded, nil
+	}
+	return trace.exitPC, jit.Executed, nil
+}
+
+// matchArrayBatchWriteTrace recognizes the compiler's canonical R4-6 batch
+// write forms, where the loop variable (value) and the write key both advance
+// by exactly one per iteration:
+//
+//	W1: for (; i < bound; i++) array[i] = i            // key == value == loop var
+//	W2: for (; i < bound; i++) { array[j] = i; j++; }  // separate key counter
+//	W3: for (; i < bound; i++) array[j++] = i          // post-incremented key
+//
+//	head: 0 LoadLocal v  1 <bound>  2 Lt  3 JmpFalsePop exit
+//	body: 4 LoadLocal v  5 Dup  6 LoadLocal array  7 LoadLocal key
+//	      W1/W2: 8 SetElemTop 9 Pop
+//	      W3:    8 Dup 9 Inc 10 StoreLocal key 11 SetElemTop 12 Pop
+//	tail: increment blocks {LoadLocal c, Dup, Inc, StoreLocal c, Pop}* then Jmp back
+//
+// W1 requires one block for v; W2 requires blocks for key then v; W3 requires
+// one block for v (the key is incremented inside the body). The bulk executor
+// then writes array[key+t] = value+t for the committed chunk and syncs the
+// length property once, which is the exact final state of the per-iteration
+// Tier 0 Set sequence.
+func (v *VM) matchArrayBatchWriteTrace(frame *vmFrame, startPC, backedgePC int) *arrayBatchWriteTraceState {
+	if frame == nil || frame.tmpl == nil || frame.base < 0 {
+		return nil
+	}
+	code := frame.tmpl.Code
+	if startPC < 0 || backedgePC <= startPC+7*bytecode.InstrSize ||
+		backedgePC+bytecode.InstrSize > len(code) {
+		return nil
+	}
+	op := func(index int) bytecode.Opcode { return bytecode.Opcode(code[startPC+index*bytecode.InstrSize]) }
+	arg := func(index int) uint32 { return jitTraceOperand(code, startPC+index*bytecode.InstrSize) }
+	if op(0) != bytecode.OpLoadLocal || op(2) != bytecode.OpLt || op(3) != bytecode.OpJmpFalsePop ||
+		op(4) != bytecode.OpLoadLocal || op(5) != bytecode.OpDup || op(6) != bytecode.OpLoadLocal ||
+		op(7) != bytecode.OpLoadLocal {
+		return nil
+	}
+	valueLocal := int(arg(0))
+	arrayLocal := int(arg(6))
+	keyLocal := int(arg(7))
+	if int(arg(4)) != valueLocal {
+		return nil
+	}
+	bodyLength := 6
+	keyIncInBody := false
+	switch op(8) {
+	case bytecode.OpSetElemTop:
+		if op(9) != bytecode.OpPop {
+			return nil
+		}
+	case bytecode.OpDup:
+		bodyLength = 9
+		keyIncInBody = true
+		if op(9) != bytecode.OpInc || op(10) != bytecode.OpStoreLocal || int(arg(10)) != keyLocal ||
+			op(11) != bytecode.OpSetElemTop || op(12) != bytecode.OpPop {
+			return nil
+		}
+	default:
+		return nil
+	}
+	localCount := frame.tmpl.NumLocals
+	for _, slot := range []int{valueLocal, arrayLocal, keyLocal} {
+		if slot < 0 || slot >= localCount {
+			return nil
+		}
+	}
+	if valueLocal == arrayLocal || keyLocal == arrayLocal {
+		return nil
+	}
+	// Parse the tail increment blocks, then the backedge jump. pc is an
+	// instruction index within the loop range (the last index is the backedge
+	// Jmp), so every bound comparison here is in index units.
+	var incBlocks []int
+	tailStart := 4 + bodyLength
+	lastIndex := (backedgePC - startPC) / bytecode.InstrSize
+	pc := tailStart
+	for {
+		if op(pc) == bytecode.OpJmp {
+			break
+		}
+		if pc+4 > lastIndex ||
+			op(pc) != bytecode.OpLoadLocal || op(pc+1) != bytecode.OpDup || op(pc+2) != bytecode.OpInc ||
+			op(pc+3) != bytecode.OpStoreLocal || op(pc+4) != bytecode.OpPop {
+			return nil
+		}
+		incBlocks = append(incBlocks, int(arg(pc)))
+		pc += 5
+	}
+	if pc != lastIndex {
+		return nil
+	}
+	// Validate the increment schedule per form.
+	if keyLocal == valueLocal {
+		if keyIncInBody || len(incBlocks) != 1 || incBlocks[0] != valueLocal {
+			return nil
+		}
+	} else {
+		if keyIncInBody {
+			if len(incBlocks) != 1 || incBlocks[0] != valueLocal {
+				return nil
+			}
+		} else if len(incBlocks) != 2 || incBlocks[0] != keyLocal || incBlocks[1] != valueLocal {
+			return nil
+		}
+	}
+	boundLocal, boundConst, boundIsLocal, ok := traceBoundOperand(frame.tmpl, op, arg, 1, valueLocal)
+	if !ok {
+		return nil
+	}
+	// The bound must not alias the key local: the loop tail increments the
+	// key every iteration, so a bound that is also the key would move with
+	// the writes and make the chunked range diverge from Tier 0 (the
+	// value/index aliasing is already excluded above).
+	if boundIsLocal && (boundLocal == keyLocal || boundLocal == valueLocal) {
+		return nil
+	}
+	backedgeTarget := backedgePC + bytecode.InstrSize + bytecode.SignedOperand(arg(pc))
+	exitPC := startPC + 4*bytecode.InstrSize + bytecode.SignedOperand(arg(3))
+	if backedgeTarget != startPC || exitPC <= backedgePC || exitPC > len(code) {
+		return nil
+	}
+	localsEnd := frame.base + localCount
+	if localsEnd > len(v.stack) {
+		return nil
+	}
+	locals := v.stack[frame.base:localsEnd]
+	if _, ok := locals[arrayLocal].(*engine.ArrayValue); !ok {
+		return nil
+	}
+	trace := &arrayBatchWriteTraceState{
+		arrayLocal: arrayLocal, keyLocal: keyLocal, valueLocal: valueLocal,
+		indexLocal: valueLocal, boundLocal: boundLocal, boundConst: boundConst,
+		boundIsLocal: boundIsLocal, startPC: startPC, exitPC: exitPC,
+	}
+	if _, _, _, _, ok := trace.arrayBatchNumbers(locals); !ok {
+		return nil
+	}
+	return trace
+}
+
+func (t *arrayBatchWriteTraceState) arrayBatchNumbers(locals []engine.Value) (float64, float64, float64, float64, bool) {
+	if t == nil || t.indexLocal < 0 || t.indexLocal >= len(locals) ||
+		t.keyLocal < 0 || t.keyLocal >= len(locals) {
+		return 0, 0, 0, 0, false
+	}
+	index, ok := locals[t.indexLocal].Float()
+	if !ok {
+		return 0, 0, 0, 0, false
+	}
+	bound := t.boundConst
+	if t.boundIsLocal {
+		if t.boundLocal < 0 || t.boundLocal >= len(locals) {
+			return 0, 0, 0, 0, false
+		}
+		bound, ok = locals[t.boundLocal].Float()
+		if !ok {
+			return 0, 0, 0, 0, false
+		}
+	}
+	key, ok := locals[t.keyLocal].Float()
+	if !ok {
+		return 0, 0, 0, 0, false
+	}
+	value, ok := locals[t.valueLocal].Float()
+	if !ok {
+		return 0, 0, 0, 0, false
+	}
+	const maxSafeInteger = float64(1<<53 - 1)
+	if math.IsNaN(index) || math.IsInf(index, 0) || math.Trunc(index) != index || index < 0 || index > maxSafeInteger ||
+		math.IsNaN(bound) || math.IsInf(bound, 0) || math.Trunc(bound) != bound || bound < 0 || bound > maxSafeInteger ||
+		math.IsNaN(key) || math.IsInf(key, 0) || math.Trunc(key) != key || key < 0 || key > maxSafeInteger ||
+		math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, 0, 0, 0, false
+	}
+	return index, bound, key, value, true
+}
+
+// executeArrayBatchWriteTrace bulk-executes the batch write chunk: the
+// committed range [key, key+count) is filled with value..value+count-1,
+// growing the element storage with holes first (exactly the per-write Tier 0
+// Set semantics) and syncing the length property once. The length guard keeps
+// the final index inside the safe integer domain; the index/key/value locals
+// advance atomically per committed chunk so a guard failure or safepoint
+// interruption resumes in a state Tier 0 can continue from.
+func (v *VM) executeArrayBatchWriteTrace(trace *arrayBatchWriteTraceState, locals []engine.Value) (int, jit.ExitReason, error) {
+	if trace == nil || trace.arrayLocal < 0 || trace.arrayLocal >= len(locals) {
+		return 0, jit.GuardFailed, nil
+	}
+	receiver, ok := locals[trace.arrayLocal].(*engine.ArrayValue)
+	if !ok {
+		return 0, jit.GuardFailed, nil
+	}
+	index, bound, key, value, ok := trace.arrayBatchNumbers(locals)
+	if !ok {
+		return 0, jit.GuardFailed, nil
+	}
+	if index >= bound {
+		return trace.exitPC, jit.Executed, nil
+	}
+	remaining := int(bound - index)
+	budget := int(v.jitConfig.TraceBudget)
+	if budget <= 0 {
+		budget = 65536
+	}
+	count := remaining
+	if count > budget {
+		count = budget
+	}
+	// Length guard: the final write index key+count-1 must stay within the
+	// safe integer domain so the length synchronization is exact.
+	const maxSafeInteger = float64(1<<53 - 1)
+	if key+float64(count) > maxSafeInteger+1 {
+		return 0, jit.GuardFailed, nil
+	}
+	receiver.WriteNumberRange(int(key), value, count)
+	locals[trace.indexLocal] = engine.Number(index + float64(count))
+	locals[trace.keyLocal] = engine.Number(key + float64(count))
+	locals[trace.valueLocal] = engine.Number(value + float64(count))
+	if count >= budget {
+		if err := v.pollJITSafepoint(); err != nil {
+			return trace.startPC, jit.Interrupted, err
+		}
+		return trace.startPC, jit.Yielded, nil
+	}
+	return trace.exitPC, jit.Executed, nil
+}
+
 func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, error) {
 	if v.insnsEnabled || frame == nil || frame.tmpl == nil || frame.jitTraceFailed {
 		return 0, false, nil
@@ -1925,7 +2402,8 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 		}
 		return 0, false, nil
 	}
-	if state.program == nil && state.arrayPush == nil && state.closureIncrement == nil {
+	if state.program == nil && state.arrayPush == nil && state.closureIncrement == nil &&
+		state.arrayIndex == nil && state.arrayBatch == nil {
 		if state.backedges < ^uint32(0) {
 			state.backedges++
 		}
@@ -1933,25 +2411,31 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			return 0, false, nil
 		}
 		compileStart := time.Now()
-		// R3-7 compile-time candidate filter: reject ranges with try/catch
-		// regions or unsupported opcodes before the pattern matchers and the
-		// full trace compiler run.
-		if scanErr := jit.RejectTraceReason(frame.tmpl, startPC, backedgePC); scanErr != nil {
-			v.recordJITRejection("trace", scanErr)
-			state.rejected = true
-			state.reason = scanErr.Error()
-			v.jitStats.LastError = state.reason
-			if v.jitConfig.Stats {
-				v.jitStats.TracesRejected++
-			}
-			return 0, false, nil
-		}
+		// The Go-side shape matchers run before the compile-time candidate
+		// scan: the R4-5/R4-6 array loops contain OpGetElem / OpSetElemTop,
+		// which the general trace compiler does not lower, so they are only
+		// reachable through the exact matchers (everything else stays on the
+		// scan -> rejection-cache path).
 		if arrayPush := v.matchArrayPushTrace(frame, startPC, backedgePC); arrayPush != nil {
 			state.arrayPush = arrayPush
 			if v.jitConfig.Stats {
 				v.jitStats.TraceCompileNanos += uint64(time.Since(compileStart))
 				v.jitStats.TracesCompiled++
 				v.jitStats.ArrayPushSites++
+			}
+		} else if arrayIndex := v.matchArrayIndexTrace(frame, startPC, backedgePC); arrayIndex != nil {
+			state.arrayIndex = arrayIndex
+			if v.jitConfig.Stats {
+				v.jitStats.TraceCompileNanos += uint64(time.Since(compileStart))
+				v.jitStats.TracesCompiled++
+				v.jitStats.ArrayIndexSites++
+			}
+		} else if arrayBatch := v.matchArrayBatchWriteTrace(frame, startPC, backedgePC); arrayBatch != nil {
+			state.arrayBatch = arrayBatch
+			if v.jitConfig.Stats {
+				v.jitStats.TraceCompileNanos += uint64(time.Since(compileStart))
+				v.jitStats.TracesCompiled++
+				v.jitStats.ArrayBatchSites++
 			}
 		} else if closureIncrement := v.matchClosureIncrementTrace(frame, startPC, backedgePC); closureIncrement != nil {
 			state.closureIncrement = closureIncrement
@@ -1961,6 +2445,18 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 				v.jitStats.ClosureUpvalueSites++
 			}
 		} else {
+			// R3-7 compile-time candidate filter: reject ranges with try/catch
+			// regions or unsupported opcodes before the full trace compiler run.
+			if scanErr := jit.RejectTraceReason(frame.tmpl, startPC, backedgePC); scanErr != nil {
+				v.recordJITRejection("trace", scanErr)
+				state.rejected = true
+				state.reason = scanErr.Error()
+				v.jitStats.LastError = state.reason
+				if v.jitConfig.Stats {
+					v.jitStats.TracesRejected++
+				}
+				return 0, false, nil
+			}
 			program, err := jit.CompileTraceWithGuards(
 				frame.tmpl, startPC, backedgePC,
 				v.traceNoopCallGuards(frame, startPC, backedgePC),
@@ -2072,6 +2568,62 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			if v.jitConfig.Stats {
 				v.jitStats.TraceYields++
 				v.jitStats.ClosureUpvalueYields++
+			}
+			return exitPC, true, nil
+		case jit.GuardFailed:
+			frame.jitTraceFailed = true
+			v.noteTraceGuardFailure(state)
+			if v.jitConfig.Stats {
+				v.jitStats.GuardFailures++
+			}
+		}
+		return 0, false, nil
+	}
+	if state.arrayIndex != nil {
+		exitPC, reason, err := v.executeArrayIndexTrace(state.arrayIndex, locals)
+		if err != nil {
+			return 0, false, err
+		}
+		switch reason {
+		case jit.Executed:
+			resetQuickTraceGuardFailures(state)
+			if v.jitConfig.Stats {
+				v.jitStats.TracesExecuted++
+			}
+			return exitPC, true, nil
+		case jit.Yielded:
+			resetQuickTraceGuardFailures(state)
+			if v.jitConfig.Stats {
+				v.jitStats.TraceYields++
+				v.jitStats.ArrayIndexYields++
+			}
+			return exitPC, true, nil
+		case jit.GuardFailed:
+			frame.jitTraceFailed = true
+			v.noteTraceGuardFailure(state)
+			if v.jitConfig.Stats {
+				v.jitStats.GuardFailures++
+			}
+		}
+		return 0, false, nil
+	}
+	if state.arrayBatch != nil {
+		exitPC, reason, err := v.executeArrayBatchWriteTrace(state.arrayBatch, locals)
+		if err != nil {
+			return 0, false, err
+		}
+		switch reason {
+		case jit.Executed:
+			resetQuickTraceGuardFailures(state)
+			if v.jitConfig.Stats {
+				v.jitStats.TracesExecuted++
+			}
+			return exitPC, true, nil
+		case jit.Yielded:
+			resetQuickTraceGuardFailures(state)
+			if v.jitConfig.Stats {
+				v.jitStats.TraceYields++
+				v.jitStats.ArrayBatchYields++
 			}
 			return exitPC, true, nil
 		case jit.GuardFailed:

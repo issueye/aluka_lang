@@ -786,6 +786,71 @@ try { LOG("call", "kW8"); LOG("return", SV(kW(W3, 5))); } catch (e) { LOG("throw
 LOG("post", SV(W1.a) + "," + SV(W2.a) + "," + SV(W3.a));
 `,
 		},
+		{
+			// R4-5: packed Number index read. The all-Number prefix executes in
+			// the arrayIndex trace; after a[3] becomes a string the chunk guard
+			// fails before any local is touched and Tier 0 reproduces the
+			// string-concat accumulation exactly.
+			ID: -57, Kind: KindArrayIndex, Seed: 135, Params: params,
+			Expected: "call:kA1\nreturn:n:36\ncall:kA2\nreturn:s:6x5678",
+			Body: `function kA(array, end) { let s = 0; for (let i = 0; i < end; i++) s += array[i]; return s; }
+const A = [1, 2, 3, 4, 5, 6, 7, 8];
+try { LOG("call", "kA1"); LOG("return", SV(kA(A, 8))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+A[3] = "x";
+try { LOG("call", "kA2"); LOG("return", SV(kA(A, 8))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R4-6: safe batch range writes. W1 (array[i] = i) grows the empty
+			// array and syncs length once; W2 (array[j] = i; j++) with a
+			// separate key counter extends a pre-filled array above its
+			// length with holes then fills the range.
+			ID: -58, Kind: KindArrayBatch, Seed: 136, Params: params,
+			Expected: "call:kB1\nreturn:n:5\npost:n:5:n:0:n:4\ncall:kB2\nreturn:n:6\npost2:n:6:n:0:n:3",
+			Body: `function kB(array, end) { for (let i = 0; i < end; i++) array[i] = i; return array.length; }
+const B = [];
+try { LOG("call", "kB1"); LOG("return", SV(kB(B, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(B.length) + ":" + SV(B[0]) + ":" + SV(B[4]));
+function kJ(array, end) { let j = 2; for (let i = 0; i < end; i++) { array[j] = i; j++; } return array.length; }
+const B2 = [9, 9];
+try { LOG("call", "kB2"); LOG("return", SV(kJ(B2, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post2", SV(B2.length) + ":" + SV(B2[2]) + ":" + SV(B2[5]));
+`,
+		},
+		{
+			// R4-6: compiler/guard-proven numeric callback purity paths. Pure
+			// arrows over all-Number arrays (map/filter/reduce, extended
+			// patterns) execute in the Go fast path; the mixed array, the
+			// block-body impure callback (with its side effect) and the
+			// Proxy receiver all fall back to the full call chain.
+			ID: -59, Kind: KindArrayCb, Seed: 137, Params: params,
+			Expected: "call:kC1\nreturn:s:2,4,6,8\ncall:kC2\nreturn:s:2,4\ncall:kC3\nreturn:n:10\ncall:kC4\nreturn:n:16\ncall:kC5\nreturn:s:2,0,6\ncall:kC6\nreturn:s:2,4,6,8\npost:n:10",
+			Body: `const CB = [1, 2, 3, 4];
+try { LOG("call", "kC1"); LOG("return", SV(CB.map(x => x * 2).join(","))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kC2"); LOG("return", SV(CB.filter(x => x % 2 === 0).join(","))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kC3"); LOG("return", SV(CB.reduce((acc, x) => acc + x, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kC4"); LOG("return", SV(CB.reduce((acc, x) => acc * 2, 1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+const MIXED = [1, "x", 3];
+try { LOG("call", "kC5"); LOG("return", SV(MIXED.map(x => x * 2).join(","))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+let SIDE = 0;
+try { LOG("call", "kC6"); LOG("return", SV(CB.map(function(x) { SIDE += x; return x * 2; }).join(","))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(SIDE));
+`,
+		},
+		{
+			// R4-6: an embedding cancellation interrupts a batch write loop
+			// mid-JIT. Every committed chunk lands exactly once: the invariant
+			// B.length === B[B.length-1] + 1 proves consecutive elements with
+			// no duplicate and no lost write, in every tier.
+			ID: -60, Kind: KindArrayBatch, Seed: 138, Params: safepointParams,
+			Hook:     &RunHook{CancelAfter: 7, CancelErr: "cancel-batch"},
+			Expected: "call:kB\nthrow:Error:cancel-batch\npost:b:true",
+			Body: `function kB(array, end) { for (let i = 0; i < end; i++) array[i] = i; return array.length; }
+const B = [];
+try { LOG("call", "kB"); LOG("return", SV(kB(B, 1000000))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(B.length > 0 && B.length === B[B.length - 1] + 1));
+`,
+		},
 	}
 }
 

@@ -114,6 +114,16 @@ const (
 	KindTernary
 	KindSwitch
 	KindShortCircuit
+	// R4-5/R4-6 array fast path kinds: packed Number index reads (arrayIndex),
+	// safe batch range writes (arrayBatch) and the compiler/guard-proven
+	// numeric callback purity paths map/filter/reduce (arrayCb). The
+	// generators cover both the Quick hits (all-Number inputs) and the
+	// mandatory fallbacks (holes, sparse arrays, out-of-range indexes, Proxy
+	// receivers, impure callbacks), so the differential proves the guard
+	// contract instead of only the happy path.
+	KindArrayIndex
+	KindArrayBatch
+	KindArrayCb
 	kindEnd
 )
 
@@ -173,6 +183,12 @@ func (k Kind) String() string {
 		return "switch"
 	case KindShortCircuit:
 		return "shortCircuit"
+	case KindArrayIndex:
+		return "arrayIndex"
+	case KindArrayBatch:
+		return "arrayBatch"
+	case KindArrayCb:
+		return "arrayCb"
 	default:
 		return fmt.Sprintf("kind(%d)", int(k))
 	}
@@ -189,7 +205,8 @@ func (k Kind) ExpectsQuickHit() bool {
 	case KindBranch, KindLoop, KindStrictEq, KindLooseEq, KindPropRead, KindPropWrite,
 		KindPush, KindClosure, KindCall, KindStringOps, KindBigIntArith,
 		KindBigIntBitwise, KindBigIntCompare,
-		KindTernary, KindSwitch, KindShortCircuit:
+		KindTernary, KindSwitch, KindShortCircuit,
+		KindArrayIndex, KindArrayBatch:
 		return true
 	}
 	return false

@@ -645,10 +645,12 @@ func (interp *Interpreter) setupArrayProto() {
 		elems := arr.Elems()
 		vm := interp.currentVM
 		if result, fast := tryNumericMap(fn, elems); fast {
+			vm.noteNumericCallback(true)
 			out := engine.NewArray(result)
 			engine.SetProto(out, interp.arrayProto)
 			return out, nil
 		}
+		vm.noteNumericCallback(false)
 		result := make([]engine.Value, len(elems))
 		for i, e := range elems {
 			v, err := callCb3(vm, fn, thisArg, e, engine.IntValue(i), arr)
@@ -674,10 +676,12 @@ func (interp *Interpreter) setupArrayProto() {
 		vm := interp.currentVM
 		elems := arr.Elems()
 		if result, fast := tryNumericFilter(fn, elems); fast {
+			vm.noteNumericCallback(true)
 			out := engine.NewArray(result)
 			engine.SetProto(out, interp.arrayProto)
 			return out, nil
 		}
+		vm.noteNumericCallback(false)
 		var result []engine.Value
 		for i, e := range elems {
 			v, err := callCb3(vm, fn, thisArg, e, engine.IntValue(i), arr)
@@ -715,8 +719,10 @@ func (interp *Interpreter) setupArrayProto() {
 			startIdx = 1
 		}
 		if result, fast := tryNumericReduce(fn, elems, acc, startIdx); fast {
+			interp.currentVM.noteNumericCallback(true)
 			return result, nil
 		}
+		interp.currentVM.noteNumericCallback(false)
 		vm := interp.currentVM
 		for i := startIdx; i < len(elems); i++ {
 			// Node 语义：reduce 无 thisArg 参数（callback 的 this 为 undefined）。

@@ -638,3 +638,63 @@ func TestReplayFailure(t *testing.T) {
 	t.Logf("reproduced mismatch seed=%d kind=%s: off=%q quick=%q auto=%q",
 		art.Seed, art.Kind, results[0].Result, results[1].Result, results[2].Result)
 }
+
+// TestGeneratedCorpusIncludesArrayKinds proves the R4-5/R4-6 generator emits
+// the arrayIndex / arrayBatch / arrayCb kinds in the random corpus.
+func TestGeneratedCorpusIncludesArrayKinds(t *testing.T) {
+	g := NewGenerator(prSeed, prParams())
+	kinds := make(map[Kind]int)
+	for _, c := range g.Generate(600) {
+		kinds[c.Kind]++
+	}
+	for _, k := range []Kind{KindArrayIndex, KindArrayBatch, KindArrayCb} {
+		if kinds[k] == 0 {
+			t.Fatalf("generator produced no %s cases in 600 samples", k)
+		}
+	}
+}
+
+// TestArrayFixedCasesHitQuick proves the R4-5/R4-6 fixed cases are not Tier 0
+// sleight of hand: Quick must compile and execute the arrayIndex/arrayBatch
+// traces and the numeric callback purity path, while the fallback shapes
+// produce real guard failures.
+func TestArrayFixedCasesHitQuick(t *testing.T) {
+	needsTrace := map[int]bool{-57: true, -58: true, -60: true}
+	for _, c := range FixedCases() {
+		if c.Kind != KindArrayIndex && c.Kind != KindArrayBatch && c.Kind != KindArrayCb {
+			continue
+		}
+		c.applySource()
+		t.Run(fmt.Sprintf("%02d", -c.ID), func(t *testing.T) {
+			results, err := RunCase(c, c.Params)
+			if err != nil {
+				if mismatch, ok := err.(*Mismatch); ok {
+					t.Fatalf("cross-tier mismatch: %v", mismatch)
+				}
+				t.Fatalf("infrastructure error: %v", err)
+			}
+			quick := results[1].Stats
+			if c.Kind == KindArrayCb {
+				// The purity path is a Tier 0 Go-side optimization: no loop,
+				// no trace; the counters prove both the hits and the
+				// fallbacks (mixed/impure shapes).
+				if quick.NumericCallbackHits == 0 {
+					t.Fatalf("case %d did not hit the numeric callback purity path: %+v", c.ID, quick)
+				}
+				if quick.NumericCallbackFalls == 0 {
+					t.Fatalf("case %d produced no numeric callback fallback (mixed/impure shapes missing): %+v", c.ID, quick)
+				}
+				return
+			}
+			// Array trace shapes count their executions through TracesExecuted
+			// (final short chunk) or TraceYields (chunks at the budget
+			// boundary); either proves the trace tier ran.
+			if quick.TracesCompiled == 0 || quick.TracesExecuted+quick.TraceYields == 0 {
+				t.Fatalf("case %d did not compile+execute in Quick: %+v", c.ID, quick)
+			}
+			if needsTrace[c.ID] && quick.ArrayIndexSites+quick.ArrayBatchSites == 0 {
+				t.Fatalf("case %d did not enter the array trace specialization: %+v", c.ID, quick)
+			}
+		})
+	}
+}

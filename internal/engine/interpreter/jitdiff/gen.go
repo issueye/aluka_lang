@@ -247,6 +247,12 @@ func (g *Generator) genCase(id int, seed int64) *Case {
 		return g.genSwitchCase(id, seed)
 	case KindShortCircuit:
 		return g.genShortCircuitCase(id, seed)
+	case KindArrayIndex:
+		return g.genArrayIndexCase(id, seed)
+	case KindArrayBatch:
+		return g.genArrayBatchCase(id, seed)
+	case KindArrayCb:
+		return g.genArrayCbCase(id, seed)
 	default:
 		return g.genSafepointCase(id, seed)
 	}
@@ -895,6 +901,117 @@ func (g *Generator) genBigIntCompareCase(id int, seed int64) *Case {
 	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s)", fn, g.bigintLeaf(rng), g.numberLeaf(rng))))
 	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s)", fn, g.stringLeaf(rng), g.stringLeaf(rng))))
 	return g.build(id, KindBigIntCompare, seed, b.String())
+}
+
+// genArrayIndexCase (R4-5) generates the packed Number read loop
+// `s += array[i]` over all-Number arrays (Quick trace hit) plus the mandatory
+// fallbacks: bound beyond the element storage, mixed-type elements, holes,
+// sparse arrays, a prototype index and a Proxy receiver. Tier 0 is the only
+// semantic oracle in every shape.
+func (g *Generator) genArrayIndexCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xF6))
+	fn := callID(id)
+	n := g.loopBound(rng)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(array, end) { let s = 0; for (let i = 0; i < end; i++) s += array[i]; return s; }
+const AI1 = [1, 2, 3, 4, 5, 6, 7, 8];
+`, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(AI1, 8)", fn)))
+	// bound beyond the element storage: the packed prefix runs, the tail must
+	// hand back to Tier 0 (prototype-chain reads) with identical results.
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(AI1, %d)", fn, 2+n)))
+	// mixed-type element: the chunk guard fails before any local is touched.
+	b.WriteString(`const AI2 = [1, "x", 3, 4, 5, 6, 7, 8];
+`)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(AI2, 8)", fn)))
+	// hole (undefined element): guard fail, Tier 0 semantics preserved.
+	b.WriteString(`const AI3 = [1, 2, 3, 4, 5, 6, 7, 8];
+AI3[4] = undefined;
+`)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(AI3, 8)", fn)))
+	// sparse array: new Array(6) leaves undefined holes.
+	b.WriteString(`const AI4 = new Array(6);
+AI4[1] = 10; AI4[3] = 30;
+`)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(AI4, 6)", fn)))
+	// Proxy receiver never matches the ArrayValue guard.
+	b.WriteString(`const AI5 = new Proxy([1, 2, 3, 4, 5, 6, 7, 8], {});
+`)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(AI5, 8)", fn)))
+	return g.build(id, KindArrayIndex, seed, b.String())
+}
+
+// genArrayBatchCase (R4-6) generates the safe batch write forms
+// `array[i] = i` and `array[j] = i; j++` (length synced once per chunk) plus
+// the fallbacks: fractional key start (own-property path), Proxy receiver and
+// a pre-filled array that is overwritten and extended.
+func (g *Generator) genArrayBatchCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xF7))
+	fn := callID(id)
+	n := g.loopBound(rng)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(array, end) { for (let i = 0; i < end; i++) array[i] = i; return array.length; }
+const AB1 = [];
+`, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(AB1, %d)", fn, n)))
+	b.WriteString(fmt.Sprintf("LOG(\"post\", SV(AB1.length) + \":\" + SV(AB1[%d]));\n", n-1))
+	// separate key counter starting above the current length: hole filling
+	// above the previous storage plus overwrite of existing elements.
+	fmt.Fprintf(&b, `function %sJ(array, end) { let j = 2; for (let i = 0; i < end; i++) { array[j] = i; j++; } return array.length; }
+const AB2 = [7, 7];
+`, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("%sJ(AB2, %d)", fn, n)))
+	b.WriteString(fmt.Sprintf("LOG(\"post2\", SV(AB2.length) + \":\" + SV(AB2[2]) + \":\" + SV(AB2[%d]));\n", 1+n))
+	// fractional key start: never matches the safe-integer guard; the writes
+	// land as own properties in Tier 0.
+	fmt.Fprintf(&b, `function %sF(array, end) { let j = 0.5; for (let i = 0; i < end; i++) { array[j] = i; j++; } return array.length; }
+const AB3 = [];
+`, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("%sF(AB3, %d)", fn, n)))
+	b.WriteString("LOG(\"post3\", SV(AB3[0.5]) + \":\" + SV(AB3.length));\n")
+	// Proxy receiver never enters the batch specialization.
+	b.WriteString(`const AB4 = new Proxy([], {});
+`)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(AB4, %d)", fn, n)))
+	b.WriteString(fmt.Sprintf("LOG(\"post4\", SV(AB4.length));\n"))
+	return g.build(id, KindArrayBatch, seed, b.String())
+}
+
+// genArrayCbCase (R4-6) generates the compiler/guard-proven numeric callback
+// purity paths: pure arrows over all-Number arrays execute in the Go fast
+// path (map/filter/reduce with extended patterns), while mixed elements,
+// holes, block-body (impure) callbacks and Proxy receivers fall back to the
+// full call chain. The differential proves identical observable results.
+func (g *Generator) genArrayCbCase(id int, seed int64) *Case {
+	var b strings.Builder
+	b.WriteString(`const AC1 = [1, 2, 3, 4, 5, 6];
+`)
+	b.WriteString(tryLog(id, `AC1.map(x => x * 2).join(",")`))
+	b.WriteString(tryLog(id, `AC1.map(x => x + 1).join(",")`))
+	b.WriteString(tryLog(id, `AC1.filter(x => x % 2 === 0).join(",")`))
+	b.WriteString(tryLog(id, `AC1.filter(x => x >= 4).join(",")`))
+	b.WriteString(tryLog(id, `AC1.reduce((acc, x) => acc + x, 0)`))
+	b.WriteString(tryLog(id, `AC1.reduce((acc, x) => acc * 10, 1)`))
+	// mixed elements: input guard fails, full per-element call.
+	b.WriteString(`const AC2 = [1, "x", 3, 4];
+`)
+	b.WriteString(tryLog(id, `AC2.map(x => x * 2).join(",")`))
+	// hole: input guard fails, full call reproduces Tier 0's hole behavior.
+	b.WriteString(`const AC3 = [1, 2, 3, 4];
+AC3[1] = undefined;
+`)
+	b.WriteString(tryLog(id, `AC3.map(x => x * 2).join(",")`))
+	// impure block-body callback: the compiler refuses NativeCallback, so the
+	// full call chain runs with its side effect exactly once per element.
+	b.WriteString(`let ACSIDE = 0;
+`)
+	b.WriteString(tryLog(id, `AC1.map(function(x) { ACSIDE += x; return x * 2; }).join(",")`))
+	b.WriteString(tryLog(id, `ACSIDE`))
+	// Proxy receiver: full call chain through the proxy traps.
+	b.WriteString(`const AC4 = new Proxy([1, 2, 3], {});
+`)
+	b.WriteString(tryLog(id, `AC4.map(x => x * 2).join(",")`))
+	return g.build(id, KindArrayCb, seed, b.String())
 }
 
 // genTernaryCase (R3-6) generates `a ? b : c` leaves whose test covers the

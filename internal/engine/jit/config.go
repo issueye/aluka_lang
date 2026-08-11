@@ -120,17 +120,17 @@ func (c Config) Normalized() Config {
 }
 
 type Stats struct {
-	Mode                     Mode
-	Threshold                uint32
-	BackedgeThreshold        uint32
-	TraceBudget              uint32
-	CodeCacheLimit           uint64
-	Calls                    uint64
-	Backedges                uint64
-	Candidates               uint64
-	CompileNanos             uint64
-	Compiled                 uint64
-	Rejected                 uint64
+	Mode              Mode
+	Threshold         uint32
+	BackedgeThreshold uint32
+	TraceBudget       uint32
+	CodeCacheLimit    uint64
+	Calls             uint64
+	Backedges         uint64
+	Candidates        uint64
+	CompileNanos      uint64
+	Compiled          uint64
+	Rejected          uint64
 	// RejectionCacheHits counts hot-path compile attempts that were skipped
 	// because the structured rejection cache (per-template leaf state or per
 	// (template, backedge) trace state) already recorded a stable rejection.
@@ -193,8 +193,19 @@ type Stats struct {
 	PropertyPICRejections uint64
 	PropertyPICOverflows  uint64
 	PropertyPICCoolDowns  uint64
-	RejectionReasons      []RejectionReason
-	DeoptExits            []DeoptStat
-	LastError             string
-	LastNativeError       string
+	// R4-5/R4-6 array fast paths (Quick-only; machine code never receives Go
+	// array pointers). ArrayIndexSites/ArrayBatchSites count matched trace
+	// sites; the Yields counters count budgeted chunk yields. The Numeric
+	// callback counters prove the R4-6 compiler/guard-proven purity paths
+	// (NativeCallback numeric map/filter/reduce) were actually taken.
+	ArrayIndexSites      uint64
+	ArrayIndexYields     uint64
+	ArrayBatchSites      uint64
+	ArrayBatchYields     uint64
+	NumericCallbackHits  uint64
+	NumericCallbackFalls uint64
+	RejectionReasons     []RejectionReason
+	DeoptExits           []DeoptStat
+	LastError            string
+	LastNativeError      string
 }
