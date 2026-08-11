@@ -106,7 +106,12 @@ type vmFrame struct {
 	jitTrace           *quickTraceState
 	jitTracePC         int
 	jitTraceGeneration uint64
-	jitTraceFailed     bool
+	// jitTraceFailedPC records the backedge whose trace version failed a guard
+	// in this frame (R4-8): after a deopt the same frame must not retry the
+	// failed trace at the same backedge, but a different loop (a different
+	// backedge PC) in the same frame may still use its own trace. −1 means no
+	// failure. It is never cleared within the frame's lifetime.
+	jitTraceFailedPC int
 }
 
 // upvalue is a closure capture. Open upvalues point at a stack slot; when the

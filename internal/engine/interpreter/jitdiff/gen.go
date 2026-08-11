@@ -253,9 +253,48 @@ func (g *Generator) genCase(id int, seed int64) *Case {
 		return g.genArrayBatchCase(id, seed)
 	case KindArrayCb:
 		return g.genArrayCbCase(id, seed)
+	case KindNativeMod:
+		return g.genNativeModCase(id, seed)
+	case KindNativeBitwise:
+		return g.genNativeBitwiseCase(id, seed)
 	default:
 		return g.genSafepointCase(id, seed)
 	}
+}
+
+// genNativeModCase generates the R4-7 % shapes: an all-Number leaf called
+// with number pairs (the amd64 Native tier executes fmod via the x87 FPREM
+// loop) and a string-coercion call that must guard back to Tier 0 with the
+// identical result.
+func (g *Generator) genNativeModCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xA7))
+	fn := callID(id)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(a, b) { return a %% b; }
+`, fn)
+	for i := 0; i < 3; i++ {
+		b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s)", fn, g.numberLeaf(rng), g.numberLeaf(rng))))
+	}
+	// Negative: string operands coerce to Numbers in Tier 0; the JIT must
+	// guard back and reproduce the coercion exactly.
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s)", fn, stringLeaves[rng.Intn(len(stringLeaves))], g.numberLeaf(rng))))
+	return g.build(id, KindNativeMod, seed, b.String())
+}
+
+// genNativeBitwiseCase generates the R4-7 bitwise shapes: an all-Number leaf
+// mixing ^ << | >>> ~ (the amd64 Native tier executes ES ToInt32) and a
+// mixed-type call that must guard back to Tier 0.
+func (g *Generator) genNativeBitwiseCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xB17))
+	fn := callID(id)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(a, b, n) { return ((a ^ b) << (n & 31)) | ~(a >>> (n & 31)); }
+`, fn)
+	for i := 0; i < 3; i++ {
+		b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %s)", fn, g.numberLeaf(rng), g.numberLeaf(rng), g.numberLeaf(rng))))
+	}
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(%s, %s, %s)", fn, g.numberLeaf(rng), bigintLeaves[rng.Intn(len(bigintLeaves))], g.numberLeaf(rng))))
+	return g.build(id, KindNativeBitwise, seed, b.String())
 }
 
 func (g *Generator) loopBound(rng *rand.Rand) int {

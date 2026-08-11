@@ -204,8 +204,17 @@ type Stats struct {
 	ArrayBatchYields     uint64
 	NumericCallbackHits  uint64
 	NumericCallbackFalls uint64
-	RejectionReasons     []RejectionReason
-	DeoptExits           []DeoptStat
-	LastError            string
-	LastNativeError      string
+	// R4-8 side-exit cost observability. TraceFrameRetriesBlocked counts
+	// tryQuickTrace entries that returned immediately because the same frame
+	// already failed a guard at that backedge (deopt recovery must not retry
+	// the failed trace version in the same frame). NativeTraceQuickFallbacks
+	// counts the Quick re-execution of a native trace right after its entry
+	// guard failed (the R4-3 PIC learning path); together the counters make
+	// the per-backedge bridge cost of a side exit measurable.
+	TraceFrameRetriesBlocked  uint64
+	NativeTraceQuickFallbacks uint64
+	RejectionReasons          []RejectionReason
+	DeoptExits                []DeoptStat
+	LastError                 string
+	LastNativeError           string
 }

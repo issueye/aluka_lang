@@ -840,7 +840,7 @@ LOG("post", SV(SIDE));
 		{
 			// R4-6: an embedding cancellation interrupts a batch write loop
 			// mid-JIT. Every committed chunk lands exactly once: the invariant
-			// B.length === B[B.length-1] + 1 proves consecutive elements with
+			// B.length === B[B.length - 1] + 1 proves consecutive elements with
 			// no duplicate and no lost write, in every tier.
 			ID: -60, Kind: KindArrayBatch, Seed: 138, Params: safepointParams,
 			Hook:     &RunHook{CancelAfter: 7, CancelErr: "cancel-batch"},
@@ -849,6 +849,67 @@ LOG("post", SV(SIDE));
 const B = [];
 try { LOG("call", "kB"); LOG("return", SV(kB(B, 1000000))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 LOG("post", SV(B.length > 0 && B.length === B[B.length - 1] + 1));
+`,
+		},
+		{
+			// R4-7: % now executes in the amd64 Native tier (x87 FPREM loop,
+			// bit-identical to math.Mod). The fixed case covers the special
+			// cases (negative dividend, zero divisor, huge ratio, ±0) and the
+			// Auto tier must execute it natively.
+			ID: -71, Kind: KindNativeMod, Seed: 171, Params: params,
+			Expected: "call:kM1\nreturn:n:2\ncall:kM2\nreturn:n:-2\ncall:kM3\nreturn:NaN\ncall:kM4\nreturn:n:0\ncall:kM5\nreturn:n:0.5\ncall:kM6\nreturn:-0",
+			Body: `function kM(a, b) { return a % b; }
+try { LOG("call", "kM1"); LOG("return", SV(kM(100, 7))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kM2"); LOG("return", SV(kM(-100, 7))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kM3"); LOG("return", SV(kM(5, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kM4"); LOG("return", SV(kM(1e300, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kM5"); LOG("return", SV(kM(0.5, 1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kM6"); LOG("return", SV(kM(-0, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R4-7: the bitwise ops (& | ^ << >> >>> ~) execute in the amd64
+			// Native tier with exact ES ToInt32 semantics. The fixed case
+			// covers shift masking (n & 31), ToInt32 wrap (2^32+1), NaN and
+			// −0; the Auto tier must execute it natively.
+			ID: -72, Kind: KindNativeBitwise, Seed: 172, Params: params,
+			Expected: "call:kB1\nreturn:n:-2\ncall:kB2\nreturn:n:-1\ncall:kB3\nreturn:n:-1\ncall:kB4\nreturn:n:-1\ncall:kB5\nreturn:n:-1\ncall:kB6\nreturn:n:-1",
+			Body: `function kB(a, b, n) { return ((a ^ b) << (n & 31)) | ~(a >>> (n & 31)); }
+try { LOG("call", "kB1"); LOG("return", SV(kB(7, 3, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kB2"); LOG("return", SV(kB(1, 2, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kB3"); LOG("return", SV(kB(-0, 0, 9))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kB4"); LOG("return", SV(kB(4294967297, 1, 31))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kB5"); LOG("return", SV(kB(NaN, 7, 13))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kB6"); LOG("return", SV(kB(1e300, 0, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R4-7: a % trace with a tiny trace budget yields at safepoints;
+			// the completed prefix (sum of i % 7) must be exactly correct in
+			// every tier. CancelAfter interrupts mid-run.
+			ID: -73, Kind: KindNativeMod, Seed: 173, Params: safepointParams,
+			Hook:     &RunHook{CancelAfter: 9, CancelErr: "cancel-mod"},
+			Expected: "call:kM2\nthrow:Error:cancel-mod",
+			Body: `function kM2(n) {
+  const marker = {};
+  let s = 0;
+  for (let i = 1; i <= n; i++) { s += i % 7; }
+  return s;
+}
+try { LOG("call", "kM2"); LOG("return", SV(kM2(1000000))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R4-7: ** stays in the Quick tier (native pow would require libm).
+			// The differential must agree across tiers and the Auto tier must
+			// NOT claim a native execution.
+			ID: -74, Kind: KindExpr, Seed: 174, Params: params,
+			Expected: "call:kP1\nreturn:n:1024\ncall:kP2\nreturn:n:1\ncall:kP3\nreturn:NaN\ncall:kP4\nreturn:n:Infinity",
+			Body: `function kP(a, b) { return a ** b; }
+try { LOG("call", "kP1"); LOG("return", SV(kP(2, 10))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP2"); LOG("return", SV(kP(1, Infinity))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP3"); LOG("return", SV(kP(-1, 0.5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kP4"); LOG("return", SV(kP(0, -1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 `,
 		},
 	}

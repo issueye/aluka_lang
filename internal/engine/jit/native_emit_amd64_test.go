@@ -433,3 +433,187 @@ func randomNumericExpression(rng *rand.Rand, depth int) []Instr {
 	}
 	return code
 }
+
+// r4_7EdgeInputs is the R4-7 value sweep: every ToInt32/fmod corner class
+// (NaN, ±Inf, ±0, subnormals, fractions, int32/int64 boundaries, huge
+// magnitudes) plus a few benign values for the random generator.
+func r4_7EdgeInputs() []float64 {
+	return []float64{
+		0, math.Copysign(0, -1), 1, -1, 2, -3, 0.5, -3.25, 1e-320, -1e-320,
+		2147483647, -2147483648, 2147483648, 4294967295, 4294967296,
+		4294967297, 9007199254740992, 9007199254740993, 1.5e7,
+		math.Ldexp(1, 63), -math.Ldexp(1, 63), math.Ldexp(1, 63) + 2048,
+		math.Ldexp(1, 64), math.Ldexp(1, 84), -math.Ldexp(1, 84),
+		math.Ldexp(1, 100), -math.Ldexp(1, 100), 1e300, -1e300,
+		math.Inf(1), math.Inf(-1), math.NaN(),
+	}
+}
+
+func assertQuickNativeParity(t *testing.T, p *Program, args []engine.Value) {
+	t.Helper()
+	quick, quickReason, quickErr := p.Execute(engine.Undefined(), args)
+	native, nativeReason, nativeErr := p.ExecuteNative(engine.Undefined(), args)
+	if quickErr != nil || nativeErr != nil || quickReason != Executed || nativeReason != Executed {
+		t.Fatalf("args=%v quick=(%v,%v) native=(%v,%v)", args, quickReason, quickErr, nativeReason, nativeErr)
+	}
+	quickNumber, _ := quick.Float()
+	nativeNumber, _ := native.Float()
+	if math.IsNaN(quickNumber) && math.IsNaN(nativeNumber) {
+		return
+	}
+	if math.Float64bits(quickNumber) != math.Float64bits(nativeNumber) {
+		t.Fatalf("args=%v quick=%v bits=%x native=%v bits=%x", args, quickNumber, math.Float64bits(quickNumber), nativeNumber, math.Float64bits(nativeNumber))
+	}
+}
+
+// TestNativeModMatchesQuick proves the R4-7 native fmod is bit-identical to
+// the Quick executor (math.Mod) across the whole corner-value sweep.
+func TestNativeModMatchesQuick(t *testing.T) {
+	p := &Program{
+		NumParams: 2,
+		NumLocals: 3,
+		Code: []Instr{
+			{Op: OpLoadLocal, Operand: 1},
+			{Op: OpLoadLocal, Operand: 2},
+			{Op: OpMod},
+			{Op: OpReturn},
+		},
+	}
+	if err := p.Verify(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.CompileNative(); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	inputs := r4_7EdgeInputs()
+	for _, a := range inputs {
+		for _, b := range inputs {
+			assertQuickNativeParity(t, p, []engine.Value{engine.Number(a), engine.Number(b)})
+		}
+	}
+}
+
+// TestNativeBitwiseMatchesQuick proves the R4-7 native bitwise ops are
+// bit-identical to the Quick executor for every op and corner value.
+func TestNativeBitwiseMatchesQuick(t *testing.T) {
+	ops := [...]Op{OpBitAnd, OpBitOr, OpBitXor, OpShl, OpShr, OpUShr, OpBitNot}
+	for _, op := range ops {
+		t.Run(op.String(), func(t *testing.T) {
+			code := []Instr{
+				{Op: OpLoadLocal, Operand: 1},
+				{Op: OpLoadLocal, Operand: 2},
+			}
+			if op == OpBitNot {
+				code = []Instr{{Op: OpLoadLocal, Operand: 1}}
+			}
+			code = append(code, Instr{Op: op}, Instr{Op: OpReturn})
+			p := &Program{NumParams: 2, NumLocals: 3, SelfUpvalue: -1, Code: code}
+			if err := p.Verify(); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.CompileNative(); err != nil {
+				t.Fatal(err)
+			}
+			defer p.Close()
+			inputs := r4_7EdgeInputs()
+			for _, a := range inputs {
+				for _, b := range inputs {
+					assertQuickNativeParity(t, p, []engine.Value{engine.Number(a), engine.Number(b)})
+				}
+			}
+		})
+	}
+}
+
+// TestNativeMatchesQuickForRandomIRWithModBitwise runs random expression
+// trees over add/sub/mul/div/mod and every bitwise op through both executors.
+func TestNativeMatchesQuickForRandomIRWithModBitwise(t *testing.T) {
+	rng := rand.New(rand.NewSource(0xB17F0F))
+	inputs := r4_7EdgeInputs()
+	for programIndex := 0; programIndex < 40; programIndex++ {
+		code := randomNumericExpressionWithModBitwise(rng, 3)
+		code = append(code, Instr{Op: OpReturn})
+		p := &Program{NumParams: 2, NumLocals: 3, SelfUpvalue: -1, Code: code}
+		if err := p.Verify(); err != nil {
+			t.Fatalf("program %d verify: %v", programIndex, err)
+		}
+		if err := p.CompileNative(); err != nil {
+			t.Fatalf("program %d native compile: %v", programIndex, err)
+		}
+		for inputIndex := 0; inputIndex < 40; inputIndex++ {
+			a := inputs[rng.Intn(len(inputs))]
+			b := inputs[rng.Intn(len(inputs))]
+			assertQuickNativeParity(t, p, []engine.Value{engine.Number(a), engine.Number(b)})
+		}
+		if err := p.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func randomNumericExpressionWithModBitwise(rng *rand.Rand, depth int) []Instr {
+	if depth == 0 {
+		switch rng.Intn(3) {
+		case 0:
+			return []Instr{{Op: OpLoadLocal, Operand: 1}}
+		case 1:
+			return []Instr{{Op: OpLoadLocal, Operand: 2}}
+		default:
+			return []Instr{{Op: OpConst, Value: float64(rng.Intn(17)-8) / 2}}
+		}
+	}
+	code := randomNumericExpressionWithModBitwise(rng, depth-1)
+	code = append(code, randomNumericExpressionWithModBitwise(rng, depth-1)...)
+	ops := [...]Op{OpAdd, OpSub, OpMul, OpDiv, OpMod, OpBitAnd, OpBitOr, OpBitXor, OpShl, OpShr, OpUShr}
+	code = append(code, Instr{Op: ops[rng.Intn(len(ops))]})
+	if rng.Intn(5) == 0 {
+		switch rng.Intn(2) {
+		case 0:
+			code = append(code, Instr{Op: OpNeg})
+		default:
+			code = append(code, Instr{Op: OpBitNot})
+		}
+	}
+	return code
+}
+
+// TestNativePowRejectedKeepsQuick proves the R4-7 pow decision: the native
+// compiler rejects `**` with a descriptive error, the program stays on the
+// Quick tier, and both executors agree on pow results.
+func TestNativePowRejectedKeepsQuick(t *testing.T) {
+	p := &Program{
+		NumParams: 2,
+		NumLocals: 3,
+		Code: []Instr{
+			{Op: OpLoadLocal, Operand: 1},
+			{Op: OpLoadLocal, Operand: 2},
+			{Op: OpPow},
+			{Op: OpReturn},
+		},
+	}
+	if err := p.Verify(); err != nil {
+		t.Fatal(err)
+	}
+	err := p.CompileNative()
+	if err == nil || !strings.Contains(err.Error(), "pow requires libm") {
+		t.Fatalf("CompileNative error = %v, want the descriptive pow rejection", err)
+	}
+	if p.HasNative() {
+		t.Fatal("pow program must not install native code")
+	}
+	for _, tt := range []struct{ a, b float64 }{
+		{2, 10}, {-0, 3}, {1, math.Inf(1)}, {-1, math.Inf(-1)}, {math.NaN(), 0}, {0, -1},
+	} {
+		args := []engine.Value{engine.Number(tt.a), engine.Number(tt.b)}
+		got, reason, err := p.Execute(engine.Undefined(), args)
+		if err != nil || reason != Executed {
+			t.Fatalf("pow (%v,%v): reason=%v err=%v", tt.a, tt.b, reason, err)
+		}
+		want := math.Pow(tt.a, tt.b)
+		g, _ := got.Float()
+		if !math.IsNaN(want) && math.Float64bits(g) != math.Float64bits(want) {
+			t.Fatalf("pow (%v,%v): quick=%v want=%v", tt.a, tt.b, g, want)
+		}
+	}
+}

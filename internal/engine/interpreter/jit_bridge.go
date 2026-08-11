@@ -2379,7 +2379,14 @@ func (v *VM) executeArrayBatchWriteTrace(trace *arrayBatchWriteTraceState, local
 }
 
 func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, error) {
-	if v.insnsEnabled || frame == nil || frame.tmpl == nil || frame.jitTraceFailed {
+	if v.insnsEnabled || frame == nil || frame.tmpl == nil || frame.jitTraceFailedPC == backedgePC {
+		// R4-8: the same frame must not retry a trace version that already
+		// failed a guard at this backedge (deopt recovery); interpreting the
+		// loop is the oracle-equivalent continuation. Only the failed backedge
+		// is blocked: a different loop in the same frame can still try.
+		if frame != nil && frame.jitTraceFailedPC == backedgePC && v.jitConfig.Stats {
+			v.jitStats.TraceFrameRetriesBlocked++
+		}
 		return 0, false, nil
 	}
 	key := quickTraceKey{tmpl: frame.tmpl, backedgePC: backedgePC}
@@ -2543,7 +2550,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			}
 			return exitPC, true, nil
 		case jit.GuardFailed:
-			frame.jitTraceFailed = true
+			frame.jitTraceFailedPC = backedgePC
 			v.noteTraceGuardFailure(state)
 			if v.jitConfig.Stats {
 				v.jitStats.GuardFailures++
@@ -2571,7 +2578,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			}
 			return exitPC, true, nil
 		case jit.GuardFailed:
-			frame.jitTraceFailed = true
+			frame.jitTraceFailedPC = backedgePC
 			v.noteTraceGuardFailure(state)
 			if v.jitConfig.Stats {
 				v.jitStats.GuardFailures++
@@ -2599,7 +2606,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			}
 			return exitPC, true, nil
 		case jit.GuardFailed:
-			frame.jitTraceFailed = true
+			frame.jitTraceFailedPC = backedgePC
 			v.noteTraceGuardFailure(state)
 			if v.jitConfig.Stats {
 				v.jitStats.GuardFailures++
@@ -2627,7 +2634,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			}
 			return exitPC, true, nil
 		case jit.GuardFailed:
-			frame.jitTraceFailed = true
+			frame.jitTraceFailedPC = backedgePC
 			v.noteTraceGuardFailure(state)
 			if v.jitConfig.Stats {
 				v.jitStats.GuardFailures++
@@ -2707,6 +2714,12 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			v.noteNativeTraceGuardFailure(state)
 			if v.jitConfig.Stats {
 				v.jitStats.GuardFailures++
+				// R4-8: the native trace entry guard failed; the bridge then
+				// re-executes the same trace in Quick (the R4-3 property-PIC
+				// learning path: Quick may absorb the new shape). The counter
+				// makes this duplicate bridge work observable so the cost can
+				// be tracked against the absorption wins.
+				v.jitStats.NativeTraceQuickFallbacks++
 			}
 		}
 	}
@@ -2738,7 +2751,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 		}
 		return exit.ResumePC, true, nil
 	case jit.GuardFailed:
-		frame.jitTraceFailed = true
+		frame.jitTraceFailedPC = backedgePC
 		v.noteTraceGuardFailure(state)
 		if v.jitConfig.Stats {
 			v.jitStats.GuardFailures++

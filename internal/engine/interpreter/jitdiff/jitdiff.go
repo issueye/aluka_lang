@@ -45,7 +45,7 @@ import (
 // generated source shapes, the value domain, the event log format or the
 // comparison change; the value is recorded in every failure artifact so a
 // reproduction stays tied to the exact generator that produced the mismatch.
-const Version = "4"
+const Version = "5"
 
 // Params controls generation and execution. It is part of the failure
 // artifact; changing it changes reproducibility, and changes that alter
@@ -124,6 +124,13 @@ const (
 	KindArrayIndex
 	KindArrayBatch
 	KindArrayCb
+	// R4-7 native opcode kinds: % and the bitwise ops (& | ^ << >> >>> ~) now
+	// execute in the amd64 Native tier (fmod via the x87 FPREM loop and ES
+	// ToInt32 via CVTTSD2SI); ** stays in Quick because pow requires libm.
+	// The generators cover the all-Number hits plus the coercion/type-change
+	// fallbacks so the differential proves the guard contract.
+	KindNativeMod
+	KindNativeBitwise
 	kindEnd
 )
 
@@ -189,6 +196,10 @@ func (k Kind) String() string {
 		return "arrayBatch"
 	case KindArrayCb:
 		return "arrayCb"
+	case KindNativeMod:
+		return "nativeMod"
+	case KindNativeBitwise:
+		return "nativeBitwise"
 	default:
 		return fmt.Sprintf("kind(%d)", int(k))
 	}
@@ -206,7 +217,7 @@ func (k Kind) ExpectsQuickHit() bool {
 		KindPush, KindClosure, KindCall, KindStringOps, KindBigIntArith,
 		KindBigIntBitwise, KindBigIntCompare,
 		KindTernary, KindSwitch, KindShortCircuit,
-		KindArrayIndex, KindArrayBatch:
+		KindArrayIndex, KindArrayBatch, KindNativeMod, KindNativeBitwise:
 		return true
 	}
 	return false
@@ -217,7 +228,8 @@ func (k Kind) ExpectsQuickHit() bool {
 // fallback coverage but do not claim a Native hit.
 func (k Kind) ExpectsNativeHit() bool {
 	switch k {
-	case KindLoop, KindPropRead, KindPropWrite, KindCall, KindDeoptPrefix:
+	case KindLoop, KindPropRead, KindPropWrite, KindCall, KindDeoptPrefix,
+		KindNativeMod, KindNativeBitwise:
 		return true
 	}
 	return false
