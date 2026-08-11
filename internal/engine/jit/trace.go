@@ -47,11 +47,27 @@ type DeoptExit struct {
 	LocalSlots  []uint16
 	StackDepth  int
 	StackValues []engine.Value
+	// PendingException is the JS value the VM must throw when resuming this
+	// exit (an exception exit). Nil means no pending exception: the exit is a
+	// normal side exit / yield and execution continues at ResumePC.
+	PendingException engine.Value
 }
 
 func SameDeoptExit(a, b DeoptExit) bool {
 	return a.ID == b.ID && a.ResumePC == b.ResumePC && a.StackDepth == b.StackDepth &&
-		sameTraceValues(a.StackValues, b.StackValues)
+		sameTraceValues(a.StackValues, b.StackValues) &&
+		samePendingException(a.PendingException, b.PendingException)
+}
+
+// samePendingException compares the pending-exception values of two exits.
+// Nil (no exception) must match nil; otherwise values compare with the same
+// semantics as trace stack values (numbers bitwise incl. NaN, strings by
+// value, everything else by identity).
+func samePendingException(a, b engine.Value) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return sameTraceValues([]engine.Value{a}, []engine.Value{b})
 }
 
 func CompileTrace(tmpl *bytecode.FuncTemplate, startPC, backedgePC int) (*TraceProgram, error) {
@@ -113,6 +129,11 @@ func CompileTraceWithGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC int
 		}
 	}
 	pcToIR := make(map[int]int, (backedgePC-startPC)/bytecode.InstrSize+1)
+	type exitFixup struct {
+		instruction int
+		exitID      int
+	}
+	var exitFixups []exitFixup
 	for pc := startPC; pc <= backedgePC; pc += bytecode.InstrSize {
 		pcToIR[pc] = len(p.Code)
 		op := bytecode.Opcode(tmpl.Code[pc])
@@ -234,6 +255,21 @@ func CompileTraceWithGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC int
 				irOp = OpJumpNullishKeep
 			}
 			p.Code = append(p.Code, Instr{Op: irOp, Operand: uint32(target)})
+		case bytecode.OpThrow:
+			// The thrown value sits on the stack top. Compile to a dedicated
+			// exception exit placed right here: the executor pops the value
+			// into DeoptExit.PendingException and the VM throws it on resume,
+			// entering the existing try/catch/finally state machine. ResumePC
+			// is the instruction after the throw (diagnostic; the VM does not
+			// resume execution at it). A jump is NOT used so the exit-fixup
+			// pass below cannot mistake this for a normal branch target.
+			exitID := len(trace.exits)
+			trace.exits = append(trace.exits, DeoptExit{ID: exitID, ResumePC: pc + bytecode.InstrSize})
+			for len(p.traceExceptionExits) < len(trace.exits) {
+				p.traceExceptionExits = append(p.traceExceptionExits, false)
+			}
+			p.traceExceptionExits[exitID] = true
+			p.Code = append(p.Code, Instr{Op: OpTraceExit, Operand: uint32(exitID)})
 		default:
 			return nil, fmt.Errorf("jit: trace unsupported opcode %s", op)
 		}
@@ -241,12 +277,7 @@ func CompileTraceWithGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC int
 	if len(guardByPC) != 0 || len(methodByPC) != 0 {
 		return nil, fmt.Errorf("jit: unused trace call guard")
 	}
-	type exitFixup struct {
-		instruction int
-		exitID      int
-	}
 	exitByPC := make(map[int]int)
-	var exitFixups []exitFixup
 	for i := range p.Code {
 		switch p.Code[i].Op {
 		case OpJump, OpJumpTrue, OpJumpFalse, OpJumpTrueKeep, OpJumpFalseKeep, OpJumpNullishKeep:
@@ -260,6 +291,9 @@ func CompileTraceWithGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC int
 				exitID = len(trace.exits)
 				exitByPC[targetPC] = exitID
 				trace.exits = append(trace.exits, DeoptExit{ID: exitID, ResumePC: targetPC})
+				for len(p.traceExceptionExits) < len(trace.exits) {
+					p.traceExceptionExits = append(p.traceExceptionExits, false)
+				}
 			}
 			exitFixups = append(exitFixups, exitFixup{instruction: i, exitID: exitID})
 		}
@@ -267,23 +301,42 @@ func CompileTraceWithGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC int
 	if len(trace.exits) == 0 {
 		return nil, fmt.Errorf("jit: trace has no exit")
 	}
+	if len(p.traceExceptionExits) != len(trace.exits) {
+		return nil, fmt.Errorf("jit: exception exit map size %d != exits %d", len(p.traceExceptionExits), len(trace.exits))
+	}
 	localSlots := make([]uint16, 0, len(trace.written))
 	for slot, written := range trace.written {
 		if written {
 			localSlots = append(localSlots, uint16(slot))
 		}
 	}
-	exitStart := len(p.Code)
 	p.traceExitDepths = make([]uint8, len(trace.exits))
 	for i := range p.traceExitDepths {
 		p.traceExitDepths[i] = ^uint8(0)
 	}
 	for i := range trace.exits {
 		trace.exits[i].LocalSlots = append([]uint16(nil), localSlots...)
+	}
+	// Normal exits get their OpTraceExit appended here (exception exits were
+	// placed at their throw site), and every fixup target is resolved to the
+	// exact IR position of its exit's OpTraceExit.
+	exitIRPos := make([]int, len(trace.exits))
+	for i := range exitIRPos {
+		exitIRPos[i] = -1
+	}
+	for i := range trace.exits {
+		if p.traceExceptionExits[i] {
+			continue
+		}
+		exitIRPos[i] = len(p.Code)
 		p.Code = append(p.Code, Instr{Op: OpTraceExit, Operand: uint32(i)})
 	}
 	for _, fixup := range exitFixups {
-		p.Code[fixup.instruction].Operand = uint32(exitStart + fixup.exitID)
+		pos := exitIRPos[fixup.exitID]
+		if pos < 0 {
+			return nil, fmt.Errorf("jit: exit %d has no OpTraceExit to fix up", fixup.exitID)
+		}
+		p.Code[fixup.instruction].Operand = uint32(pos)
 	}
 	p.propertyGuards = make([]propertyGuard, len(p.Code))
 	if err := p.Verify(); err != nil {
@@ -635,6 +688,16 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 				return DeoptExit{}, GuardFailed, nil
 			}
 			exit := t.exits[exitID]
+			// An exception exit carries the thrown value on the stack top:
+			// move it into PendingException instead of restoring it.
+			if exitID < len(t.program.traceExceptionExits) && t.program.traceExceptionExits[exitID] {
+				if len(stack) < 1 {
+					return DeoptExit{}, Malformed, fmt.Errorf("jit: exception exit %d has no thrown value", exitID)
+				}
+				thrown := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				exit.PendingException = thrown.toEngine(objects[:objectCount])
+			}
 			if len(stack) != exit.StackDepth {
 				return DeoptExit{}, Malformed, fmt.Errorf("jit: trace exit stack depth %d, want %d", len(stack), exit.StackDepth)
 			}

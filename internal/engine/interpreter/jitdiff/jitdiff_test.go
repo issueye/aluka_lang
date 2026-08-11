@@ -251,6 +251,57 @@ func TestArtifactRoundTrip(t *testing.T) {
 	}
 }
 
+// TestArtifactRoundTripExceptionExit saves and replays the R1-4 exception-exit
+// fixed case: the artifact must carry the throw-bearing source (the pending
+// exception configuration) and replay to identical results in all tiers.
+func TestArtifactRoundTripExceptionExit(t *testing.T) {
+	var c *Case
+	for _, candidate := range FixedCases() {
+		if candidate.ID == -18 {
+			c = candidate
+			break
+		}
+	}
+	if c == nil {
+		t.Fatal("exception-exit fixed case -18 not found")
+	}
+	c.applySource()
+	results, err := RunCase(c, c.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Result != c.Expected {
+		t.Fatalf("off result:\n%s\nwant:\n%s", results[0].Result, c.Expected)
+	}
+	dir := t.TempDir()
+	// Inject a synthetic first-observation mismatch; SaveArtifact reruns only
+	// to capture IR and must not overwrite this original result.
+	results[1].Result = results[1].Result + "\nsynthetic-mismatch"
+	art, err := SaveArtifact(dir, &Mismatch{Case: c, Results: results}, c.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadArtifact(art.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Source, "throw") {
+		t.Fatalf("artifact source lost the throw (pending exception config): %q", loaded.Source)
+	}
+	results2, reproduced, err := loaded.Replay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reproduced {
+		t.Fatalf("exception-exit case reported as reproduced mismatch: %+v", results2)
+	}
+	for _, res := range results2 {
+		if res.Result != c.Expected {
+			t.Fatalf("replay tier %s result:\n%s\nwant:\n%s", res.Tier, res.Result, c.Expected)
+		}
+	}
+}
+
 func TestSaveArtifactRejectsPassingResults(t *testing.T) {
 	c := FixedCases()[0]
 	c.applySource()

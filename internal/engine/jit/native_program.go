@@ -37,12 +37,28 @@ func (p *Program) CompileNativeForDump() error {
 	return p.compileNative(true)
 }
 
+// hasExceptionExit reports whether the program contains an exception exit.
+// Exception exits carry a JS pending-exception value that Native cannot
+// represent (no Go pointers / engine.Values in the frame), so such programs
+// must never be published as machine code.
+func (p *Program) hasExceptionExit() bool {
+	for _, isException := range p.traceExceptionExits {
+		if isException {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Program) compileNative(retainDebugBytes bool) error {
 	if p == nil {
 		return fmt.Errorf("jit: nil program")
 	}
 	if p.nativeCode != nil {
 		return nil
+	}
+	if p.hasExceptionExit() {
+		return fmt.Errorf("jit: native cannot represent exception exit (pending JS exception)")
 	}
 	lowered, plan, err := lowerNativeInputs(p)
 	if err != nil {
@@ -75,6 +91,7 @@ func (p *Program) CloneForNative() *Program {
 	clone := *p
 	clone.Code = append([]Instr(nil), p.Code...)
 	clone.traceExitDepths = append([]uint8(nil), p.traceExitDepths...)
+	clone.traceExceptionExits = append([]bool(nil), p.traceExceptionExits...)
 	clone.propertyGuards = nil
 	clone.nativeCode = nil
 	clone.nativePlan = nil
@@ -181,6 +198,9 @@ func lowerNativeTraceInputs(p *Program) (*Program, *nativeInputPlan, error) {
 func lowerNativeInputsForMode(p *Program, trace bool) (*Program, *nativeInputPlan, error) {
 	if p == nil || p.NumParams > 8 {
 		return nil, nil, fmt.Errorf("jit: invalid native input program")
+	}
+	if p.hasExceptionExit() {
+		return nil, nil, fmt.Errorf("jit: native cannot represent exception exit (pending JS exception)")
 	}
 	plan := &nativeInputPlan{}
 	code := make([]Instr, 0, len(p.Code))
@@ -328,14 +348,15 @@ func lowerNativeInputsForMode(p *Program, trace bool) (*Program, *nativeInputPla
 		code[fixup.index].Operand = uint32(oldToNew[fixup.oldTarget])
 	}
 	lowered := &Program{
-		NumParams:         p.NumParams,
-		NumLocals:         p.NumLocals + len(plan.properties),
-		SelfUpvalue:       -1,
-		Code:              code,
-		nativeNumberArgs:  plan.numberArgs,
-		nativePreassigned: preassigned,
-		nativeTrace:       trace,
-		traceExitDepths:   append([]uint8(nil), p.traceExitDepths...),
+		NumParams:           p.NumParams,
+		NumLocals:           p.NumLocals + len(plan.properties),
+		SelfUpvalue:         -1,
+		Code:                code,
+		nativeNumberArgs:    plan.numberArgs,
+		nativePreassigned:   preassigned,
+		nativeTrace:         trace,
+		traceExitDepths:     append([]uint8(nil), p.traceExitDepths...),
+		traceExceptionExits: append([]bool(nil), p.traceExceptionExits...),
 	}
 	plan.stackBase = lowered.NumLocals
 	if err := lowered.Verify(); err != nil {

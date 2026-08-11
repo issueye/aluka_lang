@@ -797,6 +797,21 @@ lowering 展开为 Number 序列保住既有 `i++` 循环支持，arrayPush/clos
 PR 1,000 例与 nightly 100,000 例（5 seed，140.73s）均零差分。该轮未改默认 `--jit=off`、未扩大
 Native ABI 与 W^X 生命周期；`OpInc/OpDec` 为新增字节码（追加在 iota 尾部，序列化兼容）。
 
+v2.18 完成 R1-4 pending exception 正式状态。`DeoptExit` 增加 `PendingException engine.Value`
+（nil = 无）：trace 编译 `OpThrow` 为 exception exit（在 throw 位置直接放置 `OpTraceExit`，不新增
+IR opcode，避免被普通跳转 fixup 误判），Quick 执行器把栈顶原始 JS 值移入 `PendingException` 并
+按 JS 异常展开语义丢弃其余操作数栈；VM 恢复经 `*jsThrow` 将原始值送入现有 `handleThrow`
+try/catch/finally 状态机（catch 参数获得原始值，finally 重抛与外层 catch 不丢失不重复）；Native
+编译在 `lowerNativeInputsForMode` 拒绝含 exception exit 的程序（机器码无法表示 Go 指针/engine.Value），
+Auto 稳定回退 Quick；`SameDeoptExit` 比较 pending exception（Number 按位含 NaN、字符串按值、对象
+identity）；verifier 拒绝截断 exception map 与异常值缺失；IR dump 标注 `(exception)`。测试：
+jit 包 4 个（编译/执行/Native 拒绝/verifier 拒绝/SameDeoptExit 10 子用例）、interpreter 包 8 个
+场景（数字/字符串/对象 identity 抛错、finally 重抛、嵌套 catch、guard 失败进 catch、Auto 回退、
+deopt stats 记录 exception exit）、jitdiff 固定用例 -18 与 artifact 保存/重放。PR 1,000 例与
+nightly 100,000 例（5 seed，154.7s）零差分。该轮未改默认 `--jit=off`、未扩大 Native ABI 与
+W^X 生命周期；exception exit 仅由 trace 内 `OpThrow` 触发，`if (cond) throw` 的 throw 块在
+backedge 后仍走普通 guard 回退路径（文档说明）。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见

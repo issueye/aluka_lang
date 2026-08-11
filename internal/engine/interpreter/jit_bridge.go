@@ -207,6 +207,24 @@ func (v *VM) restoreTraceExitStack(exit jit.DeoptExit) error {
 	return nil
 }
 
+// resumeTraceExit restores a trace semantic exit into the VM. Normal exits
+// restore the operand stack and resume at the recorded bytecode boundary. An
+// exception exit (PendingException != nil) instead discards the trace's
+// operand stack — JS exception-unwinding semantics — and returns a *jsThrow
+// carrying the original thrown value, which the VM main loop feeds to
+// handleThrow so the existing try/catch/finally machinery consumes it. The
+// exit is recorded for deopt statistics in both cases.
+func (v *VM) resumeTraceExit(key quickTraceKey, exit jit.DeoptExit) (int, bool, error) {
+	v.recordTraceDeopt(key, exit)
+	if exit.PendingException != nil {
+		return 0, false, &jsThrow{val: exit.PendingException}
+	}
+	if err := v.restoreTraceExitStack(exit); err != nil {
+		return 0, false, err
+	}
+	return exit.ResumePC, true, nil
+}
+
 func (v *VM) noteJITGuardFailure(state *quickJITState) {
 	if state == nil || state.rejected {
 		return
@@ -1693,11 +1711,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 				v.jitStats.VerifyFailures++
 				v.dropNativeTrace(state)
 				if nativeErr == nil && reason == jit.Executed {
-					v.recordTraceDeopt(key, exit)
-					if err := v.restoreTraceExitStack(exit); err != nil {
-						return 0, false, err
-					}
-					return exit.ResumePC, true, nil
+					return v.resumeTraceExit(key, exit)
 				}
 			}
 		}
@@ -1718,24 +1732,16 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 					v.dropNativeTrace(state)
 					copy(locals, expectedLocals)
 					if expectedErr == nil && expectedReason == jit.Executed {
-						v.recordTraceDeopt(key, expectedExit)
-						if err := v.restoreTraceExitStack(expectedExit); err != nil {
-							return 0, false, err
-						}
-						return expectedExit.ResumePC, true, nil
+						return v.resumeTraceExit(key, expectedExit)
 					}
 					return 0, false, nil
 				}
-			}
-			v.recordTraceDeopt(key, exit)
-			if err := v.restoreTraceExitStack(exit); err != nil {
-				return 0, false, err
 			}
 			if v.jitConfig.Stats {
 				v.jitStats.NativeTracesExecuted++
 			}
 			resetTraceGuardFailures(state)
-			return exit.ResumePC, true, nil
+			return v.resumeTraceExit(key, exit)
 		} else if reason == jit.Yielded {
 			resetTraceGuardFailures(state)
 			return exit.ResumePC, true, nil
@@ -1763,14 +1769,10 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 	switch reason {
 	case jit.Executed:
 		resetQuickTraceGuardFailures(state)
-		v.recordTraceDeopt(key, exit)
-		if err := v.restoreTraceExitStack(exit); err != nil {
-			return 0, false, err
-		}
 		if v.jitConfig.Stats {
 			v.jitStats.TracesExecuted++
 		}
-		return exit.ResumePC, true, nil
+		return v.resumeTraceExit(key, exit)
 	case jit.Yielded:
 		resetQuickTraceGuardFailures(state)
 		if v.jitConfig.Stats {

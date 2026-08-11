@@ -194,6 +194,30 @@ try { LOG("call", "ky"); LOG("return", SV(kx(O, 3))); } catch (e) { LOG("throw",
 LOG("post", SV(O.a));
 `,
 		},
+		{
+			// R1-4: a throw inside the loop's trace (after two committed
+			// iterations) exits through the exception exit. The pending
+			// exception (the original numeric value) reaches the catch, the
+			// committed local prefix survives, and execution continues after
+			// the catch. Identical observable state in all three tiers.
+			ID: -18, Kind: KindLoop, Seed: 118, Params: params,
+			Expected: "call:ky\ncatch:number:20\nreturn:n:1002",
+			Body: `function ky(n) {
+  let s = 0;
+  try {
+    for (let i = 0; i < n; i++) {
+      if (i < 2) { s += 1; continue; }
+      throw s * 10;
+    }
+  } catch (e) {
+    s += 1000;
+    LOG("catch", typeof e + ":" + e);
+  }
+  return s;
+}
+try { LOG("call", "ky"); LOG("return", SV(ky(100))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
 	}
 }
 

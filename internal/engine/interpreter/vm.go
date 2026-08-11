@@ -751,6 +751,12 @@ func (v *VM) run() (engine.Value, error) {
 							return v.doReturn(result), nil
 						}
 						if exitPC, ok, err := v.tryQuickTrace(frame, target, pc); err != nil {
+							if jt, isJS := err.(*jsThrow); isJS {
+								// Exception exit: the pending exception is the
+								// original JS thrown value; feed it straight
+								// into the handler machinery (catch/finally).
+								return v.handleThrow(jt.val)
+							}
 							return v.handleThrow(v.interp.goErrorToJSValue(err))
 						} else if ok {
 							frame.pc = exitPC

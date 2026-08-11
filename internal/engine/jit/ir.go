@@ -101,8 +101,13 @@ type Program struct {
 	nativePreassigned uint64
 	nativeTrace       bool
 	traceExitDepths   []uint8
-	traceCallGuards   []traceCallGuard
-	traceMethodGuards []traceMethodGuard
+	// traceExceptionExits marks exit IDs whose OpTraceExit is an exception
+	// exit: the executor pops the stack top into DeoptExit.PendingException
+	// instead of restoring it, and the VM throws that value on resume. The
+	// slice is aligned with traceExitDepths (nil means no exception exits).
+	traceExceptionExits []bool
+	traceCallGuards     []traceCallGuard
+	traceMethodGuards   []traceMethodGuard
 }
 
 func (p *Program) DumpIR() string {
@@ -120,6 +125,9 @@ func (p *Program) DumpIR() string {
 		case OpLoadLocal, OpStoreLocal, OpJump, OpJumpTrue, OpJumpFalse, OpJumpTrueKeep, OpJumpFalseKeep, OpJumpNullishKeep,
 			OpSelfCall, OpTraceExit, OpGuardNoopCall:
 			fmt.Fprintf(&out, " %d", in.Operand)
+			if in.Op == OpTraceExit && int(in.Operand) < len(p.traceExceptionExits) && p.traceExceptionExits[in.Operand] {
+				out.WriteString(" (exception)")
+			}
 		case OpGetProp, OpSetProp:
 			fmt.Fprintf(&out, " %q", in.Name)
 		}
@@ -463,15 +471,37 @@ func (p *Program) Verify() error {
 			if exitID < 0 || exitID >= len(p.traceExitDepths) {
 				return fmt.Errorf("jit: trace exit %d has no deopt map", exitID)
 			}
+			// A non-nil exception map must cover every exit; nil means the
+			// program has no exception exits (all exits are normal side
+			// exits). A truncated map is a missing exception-state mapping.
+			isException := false
+			if p.traceExceptionExits != nil {
+				if exitID >= len(p.traceExceptionExits) {
+					return fmt.Errorf("jit: trace exit %d has no exception map", exitID)
+				}
+				isException = p.traceExceptionExits[exitID]
+			}
+			// An exception exit carries the thrown value on the stack top,
+			// which the executor moves into DeoptExit.PendingException; the
+			// recoverable stack depth is therefore one less, and the value
+			// must be present (stack underflow is a malformed exception
+			// exit).
+			recoverDepth := depth
+			if isException {
+				if depth < 1 {
+					return fmt.Errorf("jit: exception exit %d stack underflow at %d", exitID, i)
+				}
+				recoverDepth = depth - 1
+			}
 			if p.traceExitDepths[exitID] != ^uint8(0) && p.traceExitDepths[exitID] > 8 {
 				return fmt.Errorf("jit: trace exit %d deopt map stack depth is too deep", exitID)
 			}
 			if p.traceExitDepths[exitID] == ^uint8(0) {
-				if depth > 8 {
+				if recoverDepth > 8 {
 					return fmt.Errorf("jit: trace exit stack is too deep at %d", i)
 				}
-				p.traceExitDepths[exitID] = uint8(depth)
-			} else if int(p.traceExitDepths[exitID]) != depth {
+				p.traceExitDepths[exitID] = uint8(recoverDepth)
+			} else if int(p.traceExitDepths[exitID]) != recoverDepth {
 				return fmt.Errorf("jit: trace exit stack depth mismatch at %d", i)
 			}
 			reachableReturn = true

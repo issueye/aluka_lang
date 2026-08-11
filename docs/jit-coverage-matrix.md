@@ -160,6 +160,12 @@ guard 失败被记录、Auto 不产生 verify 失败）。审计后矩阵不存�
 | verifier 拒绝非法 deopt map（缺失/越界/负 ID/歧义/预置冲突/栈深过深/预置越界） | `TestVerifyRejectsInvalidDeoptMaps`（jit 包，7 类拒绝 + 1 个合法子用例） |
 | deopt 恢复映射完整性（对齐 ResumePC/去重 local 槽/合法栈深/顺序 ID） | `TestDeoptExitMapIntegrity`（jit 包） |
 | guard 失败前无部分写入、类型变化后整循环回退 | `TestEventLogFixedCases` 的 propWrite 固定用例 -17（jitdiff） |
+| pending exception 正式状态（`DeoptExit.PendingException`，nil=无；原始 JS 值保真） | `TestExceptionExitCompilesAndExecutes`（jit 包：异常值入 PendingException、栈丢弃、IR dump 标注）、`TestSameDeoptExitPendingException`（10 子用例：nil/Number/NaN/字符串/对象 identity） |
+| exception exit 编译与执行（trace 内 `OpThrow` → exception exit，不新增 IR opcode） | `TestExceptionExitCompilesAndExecutes`、interpreter 包 `TestDeoptExceptionExitNumericThrow`/`StringThrow`/`ObjectIdentity` |
+| Native 拒绝 exception exit（机器码无法表示 Go 指针/engine.Value） | `TestNativeRejectsExceptionExit`（jit 包）、`TestDeoptExceptionExitAutoFallsBackToQuick`（interpreter：Auto 回退 Quick 稳定） |
+| verifier 拒绝非法 exception map（截断 map/异常值缺失/栈下溢） | `TestVerifyRejectsInvalidExceptionMaps`（jit 包，3 子用例） |
+| 异常恢复链路（dirty locals 前缀提交、catch 后继续、finally 重抛、嵌套 catch、guard 失败、deopt stats） | interpreter 包 `TestDeoptExceptionExit*`（8 个场景，off/quick/auto 三 tier 一致） |
+| jitdiff exception exit 差分与 artifact 保存/重放 | 固定用例 -18（`TestEventLogFixedCases`）、`TestArtifactRoundTripExceptionExit`（jitdiff） |
 
 ## 9. 维护约定
 
