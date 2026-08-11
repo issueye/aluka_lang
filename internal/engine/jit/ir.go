@@ -184,6 +184,15 @@ func (p *Program) BindCallTarget(target *Program) (bool, error) {
 	return false, nil
 }
 
+// inlineCallTarget inlines the callee into every OpSelfCall site of the
+// caller. R4-1 extends the site analysis beyond "one OpPushSelf directly
+// before each call": a caller may also route the self callee token through a
+// local (`let target = callee; ...; target(a, b); target(c, d);` compiles to
+// OpPushSelf; OpStoreLocal X; ...; OpLoadLocal X; args; OpSelfCall at each
+// site). Both shapes are inlined; every other OpSelfCall shape (callee from a
+// parameter, a reassigned local, a nested call result, a different argument
+// count) falls back to the guarded non-inlined callTarget path, which remains
+// correct because the self token round-trips through locals at runtime.
 func (p *Program) inlineCallTarget(target *Program) bool {
 	if len(target.Code) < 2 || target.Code[len(target.Code)-1].Op != OpReturn ||
 		target.NumParams > 8 || p.NumLocals+target.NumParams > maxQuickSlots {
@@ -209,19 +218,119 @@ func (p *Program) inlineCallTarget(target *Program) bool {
 			return false
 		}
 	}
-	callCount, tokenCount := 0, 0
-	for _, in := range p.Code {
-		if in.Op == OpSelfCall {
-			if int(in.Operand) != target.NumParams {
-				return false
+	// --- R4-1 site analysis -------------------------------------------------
+	// selfLocals marks locals that provably hold the self callee token: a
+	// local stored directly from OpPushSelf (the bytecode compiler emits
+	// LOAD_UPVALUE; STORE_LOCAL for `let target = callee;`). A store from any
+	// other source removes the local (a reassigned callee local can hold an
+	// arbitrary closure at the call site). selfStores records those exact
+	// store instructions so the rewrite below can drop them together with
+	// their OpPushSelf (an inlined site never pushes the callee).
+	selfLocals := make([]bool, p.NumLocals)
+	selfStores := make([]bool, len(p.Code))
+	pendingSelf := false
+	for i, in := range p.Code {
+		switch in.Op {
+		case OpPushSelf:
+			pendingSelf = true
+		case OpStoreLocal:
+			if pendingSelf && int(in.Operand) < len(selfLocals) {
+				selfLocals[in.Operand] = true
+				selfStores[i] = true
+			} else if int(in.Operand) < len(selfLocals) {
+				selfLocals[in.Operand] = false
 			}
-			callCount++
-		} else if in.Op == OpPushSelf {
-			tokenCount++
+			pendingSelf = false
+		default:
+			pendingSelf = false
 		}
 	}
-	if callCount == 0 || tokenCount != callCount {
+	// Every OpSelfCall must be a provable self call with the exact callee
+	// arity: the callee is pushed first, then the argument expressions are
+	// evaluated on top of it. A backward depth walk over the argument region
+	// locates the callee source: `above` counts the values above the callee
+	// position (starting at the argument count at the call); an instruction
+	// that would execute below that position (before < 0) is the callee
+	// source, and an instruction that would pop below it (need > before) is
+	// rejected — e.g. `target(x + 1, x * 2)` is fine, a nested call or a
+	// jump inside the region is not. The callee source must be either a
+	// direct OpPushSelf or a load of a selfLocal. calleeLoad records the
+	// selfLocal loads that feed sites; they become dead code once the store
+	// and the sites are inlined.
+	calleeLoad := make(map[int]bool)
+	sites := 0
+	for i, in := range p.Code {
+		if in.Op != OpSelfCall {
+			continue
+		}
+		if int(in.Operand) != target.NumParams {
+			return false
+		}
+		above := int(in.Operand)
+		source := -1
+		for j := i - 1; j >= 0; j-- {
+			need, delta := 0, 0
+			switch p.Code[j].Op {
+			case OpConst, OpLoadLocal, OpConstString, OpDup, OpPushSelf:
+				delta = 1
+			case OpStoreLocal, OpPop:
+				need, delta = 1, -1
+			case OpSwap:
+				need = 2
+			case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpPow, OpEq, OpNe, OpStrictEq, OpStrictNe,
+				OpBitAnd, OpBitOr, OpBitXor, OpShl, OpShr, OpUShr, OpLt, OpLe, OpGt, OpGe:
+				need, delta = 2, -1
+			case OpNeg, OpNot, OpBitNot, OpUnaryPlus:
+				need = 1
+			case OpGetProp:
+				need, delta = 1, 0
+			default:
+				return false
+			}
+			before := above - delta
+			if before < 0 {
+				// This instruction pushed the value occupying the callee
+				// position: it is the callee source.
+				source = j
+				break
+			}
+			if p.Code[j].Op == OpPushSelf || need > before {
+				// A second OpPushSelf inside the argument region is impossible
+				// (a leaf caller has exactly one callee upvalue), and an
+				// instruction that pops below the callee position breaks the
+				// self-call shape.
+				return false
+			}
+			above = before
+		}
+		if source < 0 {
+			return false
+		}
+		switch p.Code[source].Op {
+		case OpPushSelf:
+		case OpLoadLocal:
+			slot := int(p.Code[source].Operand)
+			if slot >= len(selfLocals) || !selfLocals[slot] {
+				return false
+			}
+			calleeLoad[source] = true
+		default:
+			return false
+		}
+		sites++
+	}
+	if sites == 0 {
 		return false
+	}
+	// Dead-code safety: a selfLocal store is only dropped when every load of
+	// the local feeds an inlined site. Any other use (an argument, a store to
+	// another local, arithmetic) observes the self token and forbids the
+	// inlining.
+	for i, in := range p.Code {
+		if in.Op == OpLoadLocal && int(in.Operand) < len(selfLocals) &&
+			selfLocals[in.Operand] && !calleeLoad[i] {
+			return false
+		}
 	}
 
 	base := p.NumLocals
@@ -231,10 +340,22 @@ func (p *Program) inlineCallTarget(target *Program) bool {
 		oldTarget int
 	}
 	fixups := make([]jumpFixup, 0, 4)
-	code := make([]Instr, 0, len(p.Code)+callCount*len(target.Code))
+	code := make([]Instr, 0, len(p.Code)+sites*len(target.Code))
 	for oldIndex, in := range p.Code {
 		oldToNew[oldIndex] = len(code)
 		if in.Op == OpPushSelf {
+			// Direct call-site self push, dropped: an inlined site never
+			// needs the callee on the operand stack.
+			continue
+		}
+		if in.Op == OpStoreLocal && selfStores[oldIndex] {
+			// The store consumed the dropped OpPushSelf; it is dead once its
+			// selfLocal loads are inlined.
+			continue
+		}
+		if calleeLoad[oldIndex] {
+			// A selfLocal load feeding an inlined site; the value it would
+			// push is never observed by the inlined computation.
 			continue
 		}
 		if in.Op != OpSelfCall {

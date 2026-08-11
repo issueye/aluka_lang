@@ -410,6 +410,13 @@ const A = [];
 	return g.build(id, KindPush, seed, b.String())
 }
 
+// genClosureCase is the R4-2 generative shape. Besides the single-upvalue
+// increment kernel it now covers: a closure with multiple numeric upvalues
+// read and written in order (`() => { a++; b += a; return b; }`), a read-only
+// capture (`() => a + b`), and an in-frame (non-escaping) closure created
+// inside the loop function. Each shape must run on the closure fast path in
+// Quick/Auto and fall back to Tier 0 identically when the captured cells are
+// non-numeric.
 func (g *Generator) genClosureCase(id int, seed int64) *Case {
 	rng := rand.New(rand.NewSource(seed ^ 0xE9))
 	fn := callID(id)
@@ -417,10 +424,29 @@ func (g *Generator) genClosureCase(id int, seed int64) *Case {
 	var b strings.Builder
 	fmt.Fprintf(&b, `function make%s() { let n = 0; return () => ++n; }
 function run%s(fn, end) { let sum = 0; for (let i = 0; i < end; i++) sum += fn(); return sum; }
-const C = make%s();
-`, fn, fn, fn)
-	b.WriteString(tryLog(id, fmt.Sprintf("run%s(C, %d)", fn, n)))
-	b.WriteString(fmt.Sprintf("LOG(\"post\", SV(C()));\n"))
+const C%s = make%s();
+`, fn, fn, fn, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("run%s(C%s, %d)", fn, fn, n)))
+	b.WriteString(fmt.Sprintf("LOG(\"post\", SV(C%s()));\n", fn))
+	// R4-2: multi-upvalue read/write closure (own loop template so the fast
+	// path is exercised per shape, not shadowed by the increment kernel).
+	fmt.Fprintf(&b, `function makeM%s() { let a = %s; let b = %s; return () => { a++; b += a; return b; }; }
+function runM%s(fn, end) { let sum = 0; for (let i = 0; i < end; i++) sum += fn(); return sum; }
+const CM%s = makeM%s();
+`, fn, g.numberLeaf(rng), g.numberLeaf(rng), fn, fn, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("runM%s(CM%s, %d)", fn, fn, n)))
+	b.WriteString(fmt.Sprintf("LOG(\"post\", SV(CM%s()));\n", fn))
+	// R4-2: read-only capture (own loop template).
+	fmt.Fprintf(&b, `function makeR%s() { let a = %s; let b = %s; return () => a + b; }
+function runR%s(fn, end) { let sum = 0; for (let i = 0; i < end; i++) sum += fn(); return sum; }
+const CR%s = makeR%s();
+`, fn, g.numberLeaf(rng), g.numberLeaf(rng), fn, fn, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("runR%s(CR%s, %d)", fn, fn, n)))
+	b.WriteString(fmt.Sprintf("LOG(\"post\", SV(CR%s()));\n", fn))
+	// R4-2: in-frame (non-escaping) closure.
+	fmt.Fprintf(&b, `function runF%s(end) { let acc = %s; const inc = () => ++acc; let sum = 0; for (let i = 0; i < end; i++) sum += inc(); return sum; }
+`, fn, g.numberLeaf(rng))
+	b.WriteString(tryLog(id, fmt.Sprintf("runF%s(%d)", fn, n)))
 	return g.build(id, KindClosure, seed, b.String())
 }
 
@@ -429,14 +455,31 @@ func (g *Generator) genCallCase(id int, seed int64) *Case {
 	fn := callID(id)
 	n := g.loopBound(rng)
 	var b strings.Builder
+	// R4-1: zero-argument leaf called through a single-upvalue wrapper.
+	fmt.Fprintf(&b, `function zero%s() { return %s; }
+function c0%s() { return zero%s(); }
+`, fn, g.numberLeaf(rng), fn, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("c0%s()", fn)))
+	// 1-arg leaf (R1-2 shape).
 	fmt.Fprintf(&b, `function leaf%s(x) { return x + %s; }
 function run%s(n) { let s = 0; for (let i = 0; i < n; i++) s += leaf%s(i); return s; }
 `, fn, g.numberLeaf(rng), fn, fn)
 	b.WriteString(tryLog(id, fmt.Sprintf("run%s(%d)", fn, n)))
+	// R4-1: four-argument leaf with two call sites in one body (argument
+	// order and multi-site inlining).
+	fmt.Fprintf(&b, `function leaf4%s(a, b, c, d) { return (a + b) * (c - d) + %s; }
+function run4%s(n) { let s = 0; for (let i = 0; i < n; i++) { s += leaf4%s(i, i + 1, 10, 3); s += leaf4%s(i + 1, i, 5, 2); } return s; }
+`, fn, g.numberLeaf(rng), fn, fn, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("run4%s(%d)", fn, n)))
+	// R4-1: boolean-returning leaf feeding a branch.
+	fmt.Fprintf(&b, `function leafB%s(x) { return x > %s; }
+function runB%s(n) { let c = 0; for (let i = 0; i < n; i++) { if (leafB%s(i)) c++; } return c; }
+`, fn, g.numberLeaf(rng), fn, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("runB%s(%d)", fn, n)))
 	// A non-inlineable callee (string concat) must fall back cleanly.
-	b.WriteString(fmt.Sprintf(`function leafS%s(x) { return "s" + x; }
+	fmt.Fprintf(&b, `function leafS%s(x) { return "s" + x; }
 function runS%s(n) { let s = 0; for (let i = 0; i < n; i++) s += leafS%s(i); return s; }
-`, fn, fn, fn))
+`, fn, fn, fn)
 	b.WriteString(tryLog(id, fmt.Sprintf("runS%s(%d)", fn, n)))
 	return g.build(id, KindCall, seed, b.String())
 }

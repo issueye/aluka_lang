@@ -2041,7 +2041,12 @@ func TestJITClosureIncrementTraceRejectsNonNumberUpvalue(t *testing.T) {
 	target := &vmClosure{upvalues: []*upvalue{uv}}
 	trace := &closureIncrementTraceState{
 		calleeLocal: 0, indexLocal: 1, boundLocal: 2, sumLocal: 3,
-		target: target, upvalue: uv,
+		target: target, upvalues: []*upvalue{uv},
+		plan: &closurePlan{
+			writes: []closureWrite{{slot: 0, expr: closureExpr{kind: closureExprBin, op: bytecode.OpAdd,
+				left: &closureExpr{kind: closureExprUpvalue, slot: 0}, right: &closureExpr{kind: closureExprConst, value: 1}}}},
+			result: closureExpr{kind: closureExprUpvalue, slot: 0},
+		},
 	}
 	vm := &VM{jitConfig: jit.Config{TraceBudget: 3}}
 	locals := []engine.Value{target, engine.Number(0), engine.Number(10), engine.Number(0)}

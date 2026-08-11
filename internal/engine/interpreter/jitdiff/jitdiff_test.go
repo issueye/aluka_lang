@@ -535,14 +535,19 @@ func TestPrimitiveOpsFixedCasesHitQuick(t *testing.T) {
 	}
 }
 
-// TestLooseEqFixedCasesHitQuick proves the R3-3 fixed cases are not Tier 0
-// sleight of hand: -51 (leaf ==/!= over primitives) must compile and execute
-// in Quick with zero guard failures, and -52 (traced loop kernel) must
-// compile traces, execute them, and produce real guard failures on the object
-// operand pairs that fall back to Tier 0.
-func TestLooseEqFixedCasesHitQuick(t *testing.T) {
+// TestR34FixedCasesHitTargetTier proves the R3-3 / R4-1 / R4-2 fixed cases
+// are not Tier 0 sleight of hand: -51/-52 (loose equality leaf and traced
+// kernel) must execute in Quick with the expected guard behavior; -61/-62
+// (multi-arg, multi-site and boolean call shapes) must specialize and inline
+// the callee; -63/-64 (multi-upvalue, read-only and in-frame closures) must
+// enter the closure fast path in both quick and auto.
+func TestR34FixedCasesHitTargetTier(t *testing.T) {
 	for _, c := range FixedCases() {
-		if c.Kind != KindLooseEq {
+		switch c.ID {
+		case -51, -52, -61, -62, -63, -64:
+		default:
+			continue
+		}
 			continue
 		}
 		c.applySource()
@@ -560,7 +565,6 @@ func TestLooseEqFixedCasesHitQuick(t *testing.T) {
 			quick := results[1].Stats
 			switch c.ID {
 			case -51:
-				// All-primitive leaf: compiled + executed, no guard failure.
 				if quick.Compiled == 0 || quick.Executed == 0 {
 					t.Fatalf("case %d did not compile+execute in Quick: %+v", c.ID, quick)
 				}
@@ -568,16 +572,46 @@ func TestLooseEqFixedCasesHitQuick(t *testing.T) {
 					t.Fatalf("case %d has unexpected guard failures (all pairs are primitives): %+v", c.ID, quick)
 				}
 			case -52:
-				// Traced loop kernel: traces compiled+executed, and the object
-				// pairs produced real guard failures that fell back to Tier 0.
 				if quick.TracesCompiled == 0 || quick.TracesExecuted == 0 {
 					t.Fatalf("case %d did not compile+execute traces in Quick: %+v", c.ID, quick)
 				}
 				if quick.GuardFailures == 0 {
 					t.Fatalf("case %d produced no guard failure (object operand fallback missing): %+v", c.ID, quick)
 				}
+			case -61, -62:
+				for _, res := range results[1:] {
+					if res.Stats.CalleeSpecialized == 0 || res.Stats.CalleeInlined == 0 {
+						t.Fatalf("tier %s did not specialize+inline the call shapes: %+v", res.Tier, res.Stats)
+					}
+				}
+			case -63, -64:
+				for _, res := range results[1:] {
+					if res.Stats.ClosureUpvalueSites == 0 || res.Stats.TracesExecuted == 0 {
+						t.Fatalf("tier %s did not enter the closure fast path: %+v", res.Tier, res.Stats)
+					}
+				}
 			}
-		})
+	}
+}
+
+// TestGeneratorProducesR4Shapes proves the random generator emits the R4-1
+// call shapes (0-arg wrapper, 4-arg multi-site, boolean leaf) and the R4-2
+// closure shapes (multi-upvalue, read-only, in-frame) in the corpus.
+func TestGeneratorProducesR4Shapes(t *testing.T) {
+	g := NewGenerator(prSeed, prParams())
+	var all strings.Builder
+	for _, c := range g.Generate(300) {
+		all.WriteString(c.Source)
+		all.WriteByte('\n')
+	}
+	text := all.String()
+	for _, token := range []string{
+		"function c0", "leaf4", "leafB", // R4-1 shapes
+		"a++; b += a", "() => a + b", "runF", // R4-2 shapes
+	} {
+		if !strings.Contains(text, token) {
+			t.Errorf("generated corpus missing R4 shape %q", token)
+		}
 	}
 }
 

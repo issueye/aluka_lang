@@ -685,6 +685,57 @@ try { LOG("call", "kT10"); LOG("return", SV(kT(null, 0, 3))); } catch (e) { LOG(
 try { LOG("call", "kT11"); LOG("return", SV(kT("", "", 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 `,
 		},
+		{
+			// R4-1: four-argument leaf with two call sites in one loop body
+			// (argument order + multi-site inlining). Per iteration:
+			// (1+2)*(3-4) = -3 and (i + i+1)*(5-2) = (2i+1)*3; i=0..3 sums to
+			// (-3+3) + (-3+9) + (-3+15) + (-3+21) = 36.
+			ID: -61, Kind: KindCall, Seed: 135, Params: params,
+			Expected: "call:k51\nreturn:n:36",
+			Body: `function leaf51(a, b, c, d) { return (a + b) * (c - d); }
+function run51(n) { let s = 0; for (let i = 0; i < n; i++) { s += leaf51(1, 2, 3, 4); s += leaf51(i, i + 1, 5, 2); } return s; }
+try { LOG("call", "k51"); LOG("return", SV(run51(4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R4-1: boolean-returning leaf feeding a branch. The inlined
+			// `x > 2` result drives JMP_FALSE_POP; i = 3..9 count, c = 7.
+			ID: -62, Kind: KindCall, Seed: 136, Params: params,
+			Expected: "call:k52\nreturn:n:7",
+			Body: `function leaf52(x) { return x > 2; }
+function run52(n) { let c = 0; for (let i = 0; i < n; i++) { if (leaf52(i)) c++; } return c; }
+try { LOG("call", "k52"); LOG("return", SV(run52(10))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R4-2: closure with two numeric upvalues read and written in
+			// order (`() => { a++; b += a; return b; }`). Five calls return
+			// T_1..T_5 = 1+3+6+10+15 = 35; the post call returns T_5 + 6 = 21.
+			ID: -63, Kind: KindClosure, Seed: 137, Params: params,
+			Expected: "call:k53\nreturn:n:35\npost:n:21",
+			Body: `function make53() { let a = 0; let b = 0; return () => { a++; b += a; return b; }; }
+function run53(fn, end) { let sum = 0; for (let i = 0; i < end; i++) sum += fn(); return sum; }
+const C53 = make53();
+try { LOG("call", "k53"); LOG("return", SV(run53(C53, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(C53()));
+`,
+		},
+		{
+			// R4-2: read-only capture (`() => a * b`) and an in-frame
+			// non-escaping closure (`() => ++acc` created inside the loop
+			// function). The read-only kernel adds a constant 10 per call; the
+			// in-frame closure adds 1..4.
+			ID: -64, Kind: KindClosure, Seed: 138, Params: params,
+			Expected: "call:k54a\nreturn:n:60\ncall:k54b\nreturn:n:30\ncall:k54c\nreturn:n:10",
+			Body: `function make54() { let a = 2; let b = 5; return () => a * b; }
+function run54(fn, end) { let sum = 0; for (let i = 0; i < end; i++) sum += fn(); return sum; }
+const R54 = make54();
+try { LOG("call", "k54a"); LOG("return", SV(run54(R54, 6))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "k54b"); LOG("return", SV(run54(R54, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+function inFrame54(end) { let acc = 0; const inc = () => ++acc; let sum = 0; for (let i = 0; i < end; i++) sum += inc(); return sum; }
+try { LOG("call", "k54c"); LOG("return", SV(inFrame54(4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
 	}
 }
 

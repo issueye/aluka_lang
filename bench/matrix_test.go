@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/engine/jit"
 )
 
 // runJS 在独立 VM 中执行 JS 源码（每个基准迭代新建 VM，编译缓存命中）。
@@ -97,6 +98,90 @@ for (let i = 0; i < 100000; i++) { s += f(); }
 `
 
 func BenchmarkClosureCall(b *testing.B) { runJS(b, closureCallCode) }
+
+// --- R4-1 / R4-2 专项基准（docs/jit-follow-up-development-plan.md §9.3
+// 证据 6）：专用基准和综合基准。每个基准在 Auto 模式下运行，统计中必须
+// 实际命中目标 tier（CalleeSpecialized/ClosureUpvalueSites）。
+
+// runJSAuto 在 Auto 模式（Threshold=1）的独立 VM 中执行 JS 源码，用于 R4
+// 专项基准。
+func runJSAuto(b *testing.B, code string) {
+	b.Helper()
+	for i := 0; i < b.N; i++ {
+		vm, err := interpreter.NewVM()
+		if err != nil {
+			b.Fatal(err)
+		}
+		vm.ConfigureJIT(jit.Config{Mode: jit.Auto, Threshold: 1, BackedgeThreshold: 2, TraceBudget: 65536, Stats: true})
+		if _, err := vm.Eval(code, "bench-r4.js"); err != nil {
+			b.Fatal(err)
+		}
+		stats := vm.JITStats()
+		if err := vm.Close(); err != nil {
+			b.Fatal(err)
+		}
+		if stats.CalleeSpecialized == 0 && stats.ClosureUpvalueSites == 0 {
+			b.Fatalf("R4 benchmark did not hit the target tier: %+v", stats)
+		}
+	}
+}
+
+// BenchmarkCalleeInline4Args 四参数数值叶子 + 同一函数体两个调用点（R4-1）。
+const calleeInline4ArgsCode = `
+function leaf(a, b, c, d) { return (a + b) * (c - d); }
+function run(n) {
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    s += leaf(i, i + 1, 10, 3);
+    s += leaf(i + 1, i, 5, 2);
+  }
+  return s;
+}
+run(100000);
+`
+
+func BenchmarkCalleeInline4Args(b *testing.B) { runJSAuto(b, calleeInline4ArgsCode) }
+
+// BenchmarkCalleeInlineBoolean 返回 Boolean 的叶子驱动分支（R4-1）。
+const calleeInlineBooleanCode = `
+function pos(x) { return x > 0; }
+function run(n) {
+  let c = 0;
+  for (let i = 0; i < n; i++) { if (pos(i)) c++; }
+  return c;
+}
+run(100000);
+`
+
+func BenchmarkCalleeInlineBoolean(b *testing.B) { runJSAuto(b, calleeInlineBooleanCode) }
+
+// BenchmarkClosureMultiUpvalue 多个 numeric upvalue 读/写闭包（R4-2）。
+const closureMultiUpvalueCode = `
+function make() { let a = 0; let b = 0; return () => { a++; b += a; return b; }; }
+const f = make();
+function run(fn, n) {
+  let s = 0;
+  for (let i = 0; i < n; i++) { s += fn(); }
+  return s;
+}
+run(f, 100000);
+`
+
+func BenchmarkClosureMultiUpvalue(b *testing.B) { runJSAuto(b, closureMultiUpvalueCode) }
+
+// BenchmarkClosureReadOnly 只读捕获闭包（R4-2，无写回）。
+const closureReadOnlyCode = `
+function make() { let a = 3; let b = 4; return () => a + b; }
+const f = make();
+function run(fn, n) {
+  let s = 0;
+  for (let i = 0; i < n; i++) { s += fn(); }
+  return s;
+}
+run(f, 100000);
+`
+
+func BenchmarkClosureReadOnly(b *testing.B) { runJSAuto(b, closureReadOnlyCode) }
 
 // BenchmarkGCPressure 短生命周期对象压力（GC 回收路径）。
 const gcPressureCode = `
