@@ -542,9 +542,7 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Float()
-					rn, _ := r.Float()
-					v.push(engine.Number(ln - rn))
+					v.push(engine.Number(jsToNumber(l) - jsToNumber(r)))
 				}
 			case bytecode.OpMul:
 				r := v.pop()
@@ -556,9 +554,7 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Float()
-					rn, _ := r.Float()
-					v.push(engine.Number(ln * rn))
+					v.push(engine.Number(jsToNumber(l) * jsToNumber(r)))
 				}
 			case bytecode.OpDiv:
 				r := v.pop()
@@ -570,9 +566,7 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Float()
-					rn, _ := r.Float()
-					v.push(engine.Number(ln / rn))
+					v.push(engine.Number(jsToNumber(l) / jsToNumber(r)))
 				}
 			case bytecode.OpMod:
 				r := v.pop()
@@ -584,8 +578,8 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Float()
-					rn, _ := r.Float()
+					ln := jsToNumber(l)
+					rn := jsToNumber(r)
 					if rn == 0 {
 						v.push(engine.Number(math.NaN()))
 					} else {
@@ -602,9 +596,7 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Float()
-					rn, _ := r.Float()
-					v.push(engine.Number(math.Pow(ln, rn)))
+					v.push(engine.Number(math.Pow(jsToNumber(l), jsToNumber(r))))
 				}
 			case bytecode.OpBitAnd:
 				r := v.pop()
@@ -616,8 +608,8 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Float()
-					rn, _ := r.Float()
+					ln := jsToNumber(l)
+					rn := jsToNumber(r)
 					v.push(engine.Number(float64(jsToInt32(ln) & jsToInt32(rn))))
 				}
 			case bytecode.OpBitOr:
@@ -630,8 +622,8 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Float()
-					rn, _ := r.Float()
+					ln := jsToNumber(l)
+					rn := jsToNumber(r)
 					v.push(engine.Number(float64(jsToInt32(ln) | jsToInt32(rn))))
 				}
 			case bytecode.OpBitXor:
@@ -644,8 +636,8 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Float()
-					rn, _ := r.Float()
+					ln := jsToNumber(l)
+					rn := jsToNumber(r)
 					v.push(engine.Number(float64(jsToInt32(ln) ^ jsToInt32(rn))))
 				}
 			case bytecode.OpShl:
@@ -658,8 +650,8 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Float()
-					rn, _ := r.Float()
+					ln := jsToNumber(l)
+					rn := jsToNumber(r)
 					v.push(engine.Number(float64(jsToInt32(ln) << (jsToUint32(rn) & 31))))
 				}
 			case bytecode.OpShr:
@@ -672,8 +664,8 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Float()
-					rn, _ := r.Float()
+					ln := jsToNumber(l)
+					rn := jsToNumber(r)
 					v.push(engine.Number(float64(jsToInt32(ln) >> (jsToUint32(rn) & 31))))
 				}
 			case bytecode.OpUShr:
@@ -2203,9 +2195,11 @@ func (v *VM) binAdd(l, r engine.Value) engine.Value {
 	if l.Type() == engine.TypeString || r.Type() == engine.TypeString {
 		return engine.ConcatStrings(l, r)
 	}
-	ln, _ := l.Float()
-	rn, _ := r.Float()
-	return engine.Number(ln + rn)
+	// Non-Number operands follow JS ToNumber (undefined -> NaN, null -> 0,
+	// string -> StringToNumber, boolean -> 0/1, object -> ToPrimitive);
+	// the plain Float() path silently treated conversion failures as 0
+	// (1 + undefined returned 1 instead of NaN).
+	return engine.Number(jsToNumber(l) + jsToNumber(r))
 }
 
 func (v *VM) instanceof(l, r engine.Value) bool {

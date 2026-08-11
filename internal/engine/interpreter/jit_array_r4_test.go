@@ -117,9 +117,9 @@ func TestJITArrayIndexTraceRejectsUnsafeShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{
-		"jitIndexHole":    "18",
-		"jitIndexSparse":  "40",
-		"jitIndexProto":   "10",
+		"jitIndexHole":    "NaN",
+		"jitIndexSparse":  "NaN",
+		"jitIndexProto":   "NaN",
 		"jitIndexMixed":   "3x456",
 		"jitIndexProxy":   "10",
 		"jitIndexNeg":     "1",
@@ -320,14 +320,14 @@ func TestJITArrayBatchWriteTraceRange(t *testing.T) {
 				t.Fatal(err)
 			}
 			for name, want := range map[string]string{
-				"jitBatchLenA":    "20",
-				"jitBatchFirstA":  "0",
-				"jitBatchLastA":   "19",
-				"jitBatchLenB":    "8",
-				"jitBatchKeyB":    "0:5",
-				"jitBatchHoleB":   "9",
-				"jitBatchLenC":    "6",
-				"jitBatchKeyC":    "0:4",
+				"jitBatchLenA":   "20",
+				"jitBatchFirstA": "0",
+				"jitBatchLastA":  "19",
+				"jitBatchLenB":   "8",
+				"jitBatchKeyB":   "0:5",
+				"jitBatchHoleB":  "9",
+				"jitBatchLenC":   "6",
+				"jitBatchKeyC":   "0:4",
 			} {
 				got, err := vm.Global().Get(name)
 				if err != nil || got.String() != want {
@@ -374,11 +374,11 @@ func TestJITArrayBatchWriteTraceRejectsUnsafeShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{
-		"jitBatchFrac":    "0",
-		"jitBatchFracKey": "0:1:0",
-		"jitBatchNeg":     "2",
-		"jitBatchNegKey":  "0:1:2",
-		"jitBatchProxy":   "4",
+		"jitBatchFrac":     "0",
+		"jitBatchFracKey":  "0:1:0",
+		"jitBatchNeg":      "2",
+		"jitBatchNegKey":   "0:1:2",
+		"jitBatchProxy":    "4",
 		"jitBatchProxyLen": "4",
 	} {
 		got, err := vm.Global().Get(name)
@@ -421,11 +421,11 @@ func TestJITArrayBatchWriteTraceRejectsUnsafeShapes(t *testing.T) {
 func TestJITArrayBatchTraceRejectsUnsafeNumbers(t *testing.T) {
 	trace := &arrayBatchWriteTraceState{indexLocal: 0, keyLocal: 1, valueLocal: 2, boundLocal: 3, boundIsLocal: true}
 	cases := []struct {
-		name   string
-		index  *float64
-		key    *float64
-		value  *float64
-		bound  *float64
+		name  string
+		index *float64
+		key   *float64
+		value *float64
+		bound *float64
 	}{
 		{name: "nan index", index: fptr(math.NaN())},
 		{name: "inf index", index: fptr(math.Inf(1))},

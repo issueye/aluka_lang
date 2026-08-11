@@ -331,7 +331,7 @@ LOG("post", SV(O2.count > 0 && O2.count === O2.last + 1));
 			// the BigInt mix must throw the same TypeError in every tier, and
 			// the nullish/object cases resume in Tier 0.
 			ID: -25, Kind: KindGuardMutation, Seed: 125, Params: params,
-			Expected: "call:kT1\nreturn:n:12\ncall:kT2\nreturn:s:0strstr\ncall:kT3\nthrow:TypeError:cannot mix BigInt and other types, use explicit conversions\ncall:kT4\nreturn:n:0\ncall:kT5\nreturn:n:0",
+			Expected: "call:kT1\nreturn:n:12\ncall:kT2\nreturn:s:0strstr\ncall:kT3\nthrow:TypeError:cannot mix BigInt and other types, use explicit conversions\ncall:kT4\nreturn:n:0\ncall:kT5\nreturn:NaN",
 			Body:     guardMutationTemplates("kT", 4)[mutTypeChange],
 		},
 		{

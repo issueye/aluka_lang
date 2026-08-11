@@ -195,18 +195,12 @@ func looseEquals(l, r engine.Value) bool {
 	}
 	// number/string
 	if l.Type() == engine.TypeNumber && r.Type() == engine.TypeString {
-		if rf, ok := r.Float(); ok {
-			ln, _ := l.Float()
-			return ln == rf
-		}
-		return false
+		ln, _ := l.Float()
+		return ln == engine.StringToNumber(r.String())
 	}
 	if l.Type() == engine.TypeString && r.Type() == engine.TypeNumber {
-		if lf, ok := l.Float(); ok {
-			rn, _ := r.Float()
-			return lf == rn
-		}
-		return false
+		rn, _ := r.Float()
+		return engine.StringToNumber(l.String()) == rn
 	}
 	// bool → number
 	if l.Type() == engine.TypeBoolean {

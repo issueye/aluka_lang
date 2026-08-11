@@ -32,8 +32,8 @@ import (
 
 // fallbackGuardedSource: `y` is only assigned on one branch, so the leaf's
 // `y + 1` cannot be proven numeric by native lowering on ANY platform.
-// guarded(1) -> 6, guarded(0) -> 1 (this engine coerces undefined to 0 in
-// arithmetic, identically in every tier — verified against Off/Quick/Auto).
+// guarded(1) -> 6, guarded(0) -> NaN (undefined follows JS ToNumber after
+// the binAdd fix; identical in every tier — verified against Off/Quick/Auto).
 const fallbackGuardedSource = `
 	function guarded(x) { let y; if (x > 0) y = 5; return y + 1; }
 	globalThis.fbPos = guarded(1);
@@ -91,11 +91,11 @@ func TestFallbackAutoUsesQuickWhenNativeRejected(t *testing.T) {
 	if foundPlatformGate {
 		t.Fatalf("ordinary lowering rejection must not be reported as the platform gate: %+v", stats.RejectionReasons)
 	}
-	fallbackCheckResults(t, auto, "6", "1")
+	fallbackCheckResults(t, auto, "6", "NaN")
 
 	off := fallbackRunVM(t, jit.Config{Mode: jit.Off, Stats: true},
 		fallbackGuardedSource, "fb-off.js")
-	fallbackCheckResults(t, off, "6", "1")
+	fallbackCheckResults(t, off, "6", "NaN")
 	if st := off.JITStats(); st.Executed != 0 {
 		t.Fatalf("Off mode must not execute JIT tiers: %+v", st)
 	}
@@ -128,7 +128,7 @@ func TestFallbackReconfigureAndCloseKeepAccounting(t *testing.T) {
 	if _, err := vm.Eval(fallbackGuardedSource, "fb-reconfig-2.js"); err != nil {
 		t.Fatal(err)
 	}
-	fallbackCheckResults(t, vm, "6", "1")
+	fallbackCheckResults(t, vm, "6", "NaN")
 	if stats := vm.JITStats(); stats.NativeCodeBytes != 0 || stats.NativeCompiled != 0 {
 		t.Fatalf("reconfigured Quick VM must not hold native state: %+v", stats)
 	}

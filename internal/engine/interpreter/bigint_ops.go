@@ -149,14 +149,24 @@ func bigintLooseEqual(l, r engine.Value) (bool, bool) {
 		lf, _ := l.Float()
 		return cmpBigIntFloat(asBigInt(r), lf) == 0, true
 	}
-	// BigInt == Boolean
+	// BigInt == Boolean: the boolean converts to 0/1 and compares exactly
+	// (7n == true is false; the old formula (x != 0n) != b was wrong for
+	// BigInts outside {0n, 1n}).
 	if isBigInt(l) && r.Type() == engine.TypeBoolean {
 		b, _ := r.Bool()
-		return bigintStrictEqual(l, engine.BigIntFromInt(0)) != b, true
+		bi := engine.BigIntFromInt(0)
+		if b {
+			bi = engine.BigIntFromInt(1)
+		}
+		return bigintStrictEqual(l, bi), true
 	}
 	if isBigInt(r) && l.Type() == engine.TypeBoolean {
 		b, _ := l.Bool()
-		return bigintStrictEqual(r, engine.BigIntFromInt(0)) != b, true
+		bi := engine.BigIntFromInt(0)
+		if b {
+			bi = engine.BigIntFromInt(1)
+		}
+		return bigintStrictEqual(r, bi), true
 	}
 	// BigInt == String：将 String 转 BigInt 后比较
 	if isBigInt(l) && r.Type() == engine.TypeString {

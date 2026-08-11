@@ -17,9 +17,9 @@ func TestInlineBehavior(t *testing.T) {
 		{"mul-chain", `const f = (x) => x * 2 + 1; globalThis.__r = f(5);`, "11"},
 		{"sub-div", `const f = (a, b, c) => (a - b) / c; globalThis.__r = f(10, 4, 2);`, "3"},
 		{"literal", `const z = () => 42; globalThis.__r = z();`, "42"},
-		// 未传参数 b = undefined：内联与未内联行为一致（aluka 既有
-		// undefined 参与算术返回 0 而非 NaN，见 value.Float；Node 为 NaN）。
-		{"undefined-arg", `const f = (a, b) => a + b; globalThis.__r = f(1);`, "1"},
+		// 未传参数 b = undefined：内联与未内联行为一致。Tier 0 binAdd
+		// 修复后按 JS ToNumber（undefined -> NaN），1 + undefined 为 NaN。
+		{"undefined-arg", `const f = (a, b) => a + b; globalThis.__r = f(1);`, "NaN"},
 		{"string-concat", `const f = (a, b) => a + "!" + b; globalThis.__r = f("x", "y");`, "x!y"},
 		// 比较
 		{"cmp", `const f = (a, b) => a < b; globalThis.__r = f(1, 2);`, "true"},
