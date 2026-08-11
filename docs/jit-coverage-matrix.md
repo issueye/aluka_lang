@@ -143,7 +143,7 @@ guard 失败被记录、Auto 不产生 verify 失败）。审计后矩阵不存�
 | 生成器可复现（同 seed 同源码） | `TestGeneratorDeterminism` |
 | 值域覆盖（Number 边界/Boolean/nullish/String/BigInt/Symbol/对象 identity） | `TestGeneratedCorpusIncludesValueLeaves`（随机语料存在性）、`TestValueDomainOperationCoverage`（逐值结构化覆盖 return/shortCircuit/comparison/guardChange，三 tier 差分） |
 | Quick/Native 命中按 Kind 证明 | `TestDifferentialPRSet` 逐一断言 8 类 Quick 与 5 类 Native 预期命中集合，`SuiteSummary.quickHitsByKind/nativeHitsByKind` 归档分布 |
-| 事件日志确定性用例（属性写/数组 append/upvalue 写/函数调用/getter/setter/回调抛错/try-catch/safepoint yield deopt 前缀/Symbol identity/BigInt TypeError/宽松相等回退） | `TestEventLogFixedCases`（11 个固定用例，逐断言 off 事件日志 + 三 tier 一致） |
+| 事件日志确定性用例（属性写/数组 append/upvalue 写/函数调用/getter/setter/回调抛错/try-catch/safepoint yield deopt 前缀/Symbol identity/BigInt TypeError/宽松相等回退） | `TestEventLogFixedCases`（17 个固定用例，逐断言 off 事件日志 + 三 tier 一致） |
 | 失败产物与单命令重放 | `TestArtifactRoundTrip`（原始 mismatch 不被 IR 重跑覆盖）、`TestSaveArtifactRejectsPassingResults`、`TestReplayFailure`（`-artifact` 标志）、`TestRunTierHonorsVerify` |
 | verifier 拒绝非法 deopt map（缺失/越界/负 ID/歧义深度） | `TestVerifyRejectsInvalidDeoptMaps`（jit 包） |
 | 差分发现并修复：Tier 0 BigInt/NaN 关系比较（panic + `NaN > 3` 语义错误） | `TestBigIntCompare`（NaN/Infinity 扩展）、`TestNaNRelationalComparisons` |
@@ -153,6 +153,13 @@ guard 失败被记录、Auto 不产生 verify 失败）。审计后矩阵不存�
 | 泛型 vs 比较歧义（`foo < bar > (baz)` 按 TSC 解析为泛型调用；无 `(` 时按比较；`>` 在括号内为比较） | `TestGenericVsComparisonDisambiguation`（6 形态）、`TestGenericAmbiguityRuntimeSemantics`（3 形态，运行时锁定 TSC 兼容语义） |
 | 比较链运行时语义（NaN、-0、布尔强转、链式短路、循环条件） | `TestComparisonChainRuntimeSemantics`（25 例，interpreter 包，对照 Node） |
 | trace 级 IR dump（失败产物含 trace IR） | `TestArtifactRoundTrip`（断言 quick/auto 层 IR 非空） |
+| 异常差分：BigInt 除零 / getter/setter 抛错（含前缀副作用）/ 回调抛错 / OOM / 嵌入方取消 / safepoint 中断 | `TestEventLogFixedCases` 的 `bigIntDivZero`/`getterSetterThrow`/`oom`/`cancel`/`safepoint` 固定用例（jitdiff，断言三 tier 的异常类型、消息、catch 路径和事件前缀一致；延迟中断断言已提交迭代无重复/遗漏） |
+| OOM/取消中断注入（RunHook：OOMBytes/TriggerOOM/CancelAfter/CancelErr；差分夹具显式启用 `InterpreterSafepoints`，使解释循环回边与 JIT budget yield 共用回调） | `TestEventLogFixedCases`（oom/cancel/safepoint）、`TestDifferentialPRSet`、`TestDifferentialNightly` |
+| BigInt 字面量后 `/` 为除法（非 regex） | `TestLexSlashAfterBigInt`（lexer 包） |
+| `++/--` 对 BigInt 保持 BigInt（`i++` 加 1n） | `TestBigIntDivisionByZero`（interpreter 包）；`OpInc/OpDec` 字节码（`opcodes.go`），JIT lowering 展开为 Number 序列（`ir.go`/`trace.go`），BigInt guard 回退 Tier 0 |
+| verifier 拒绝非法 deopt map（缺失/越界/负 ID/歧义/预置冲突/栈深过深/预置越界） | `TestVerifyRejectsInvalidDeoptMaps`（jit 包，7 类拒绝 + 1 个合法子用例） |
+| deopt 恢复映射完整性（对齐 ResumePC/去重 local 槽/合法栈深/顺序 ID） | `TestDeoptExitMapIntegrity`（jit 包） |
+| guard 失败前无部分写入、类型变化后整循环回退 | `TestEventLogFixedCases` 的 propWrite 固定用例 -17（jitdiff） |
 
 ## 9. 维护约定
 

@@ -498,6 +498,19 @@ func (v *VM) run() (engine.Value, error) {
 				v.push(closure)
 
 				// --- Binary arithmetic & bitwise ---
+			case bytecode.OpInc, bytecode.OpDec:
+				// ++ / -- use ToNumeric: BigInt stays BigInt and all other
+				// supported primitives use ToNumber.
+				value := v.pop()
+				delta := int64(1)
+				if op == bytecode.OpDec {
+					delta = -1
+				}
+				updated, err := updateNumeric(value, delta)
+				if err != nil {
+					return v.handleThrow(err)
+				}
+				v.push(updated)
 			case bytecode.OpAdd:
 				r := v.pop()
 				l := v.pop()
@@ -730,17 +743,28 @@ func (v *VM) run() (engine.Value, error) {
 			// --- Control flow ---
 			case bytecode.OpJmp:
 				target := pc + bytecode.InstrSize + bytecode.SignedOperand(operand)
-				if target < pc && v.jitConfig.Mode != jit.Off {
-					if result, ok, err := v.tryQuickFrame(frame); err != nil {
-						return v.handleThrow(v.interp.goErrorToJSValue(err))
-					} else if ok {
-						return v.doReturn(result), nil
+				if target < pc {
+					if v.jitConfig.Mode != jit.Off {
+						if result, ok, err := v.tryQuickFrame(frame); err != nil {
+							return v.handleThrow(v.interp.goErrorToJSValue(err))
+						} else if ok {
+							return v.doReturn(result), nil
+						}
+						if exitPC, ok, err := v.tryQuickTrace(frame, target, pc); err != nil {
+							return v.handleThrow(v.interp.goErrorToJSValue(err))
+						} else if ok {
+							frame.pc = exitPC
+							break
+						}
 					}
-					if exitPC, ok, err := v.tryQuickTrace(frame, target, pc); err != nil {
-						return v.handleThrow(v.interp.goErrorToJSValue(err))
-					} else if ok {
-						frame.pc = exitPC
-						break
+					// Embedders need the same cancellation boundary when a loop is
+					// still interpreted (including --jit=off). Compiled loops poll
+					// inside their budgeted executor and return through the branch
+					// above, so this does not double-poll a completed JIT slice.
+					if v.jitConfig.InterpreterSafepoints && v.jitConfig.Safepoint != nil {
+						if err := v.pollJITSafepoint(); err != nil {
+							return v.handleThrow(v.interp.goErrorToJSValue(err))
+						}
 					}
 				}
 				frame.pc = target

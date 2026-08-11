@@ -1985,13 +1985,14 @@ func (c *Compiler) compileUpdate(n *ast.UpdateExpr) error {
 		// postfix: we need the OLD value as the result. Dup it.
 		c.emit(bytecode.OpDup, 0)
 	}
-	// Compute new value (for prefix, the value is on top; for postfix, we
-	// duplicated so new value is on top with old below).
-	c.emit(bytecode.OpPushInt, 1)
+	// Compute new value. OpInc/OpDec pick the successor/predecessor at
+	// runtime, preserving the operand type: BigInt stays BigInt (x++ adds
+	// 1n, per ES), Number stays Number. A plain `x + 1` must still throw on
+	// BigInt, so this cannot reuse OpAdd/OpSub with an inline 1.
 	if n.Op == "++" {
-		c.emit(bytecode.OpAdd, 0)
+		c.emit(bytecode.OpInc, 0)
 	} else {
-		c.emit(bytecode.OpSub, 0)
+		c.emit(bytecode.OpDec, 0)
 	}
 	// prefix 需要把"新值"作为表达式结果留在栈上，赋值前 Dup 一份。
 	if n.Prefix {

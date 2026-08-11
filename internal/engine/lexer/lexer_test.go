@@ -1,19 +1,20 @@
 package lexer
 
 import (
+	"strings"
 	"testing"
 )
 
 func TestLexNumber(t *testing.T) {
 	cases := map[string]string{
-		"123":      "123",
-		"3.14":     "3.14",
-		"0x1F":     "0x1F",
-		"0o17":     "0o17",
-		"0b101":    "0b101",
-		"1e10":     "1e10",
-		"1.5e-3":   "1.5e-3",
-		"1_000":    "1_000",
+		"123":    "123",
+		"3.14":   "3.14",
+		"0x1F":   "0x1F",
+		"0o17":   "0o17",
+		"0b101":  "0b101",
+		"1e10":   "1e10",
+		"1.5e-3": "1.5e-3",
+		"1_000":  "1_000",
 	}
 	for src, want := range cases {
 		l := New(src)
@@ -43,13 +44,13 @@ func TestLexUTF8BOM(t *testing.T) {
 
 func TestLexString(t *testing.T) {
 	cases := map[string]string{
-		`"hello"`:       "hello",
-		`'world'`:        "world",
-		`"a\nb"`:         "a\nb",
-		`"tab\there"`:    "tab\there",
-		`"\u0041"`:       "A",
-		`"\x41"`:         "A",
-		`"\u{1F600}"`:    "😀",
+		`"hello"`:     "hello",
+		`'world'`:     "world",
+		`"a\nb"`:      "a\nb",
+		`"tab\there"`: "tab\there",
+		`"\u0041"`:    "A",
+		`"\x41"`:      "A",
+		`"\u{1F600}"`: "😀",
 	}
 	for src, want := range cases {
 		l := New(src)
@@ -123,6 +124,51 @@ func TestLexRegex(t *testing.T) {
 		}
 		if tok.Type != TokenRegex {
 			t.Errorf("expected regex, got %v", tok)
+		}
+	}
+}
+
+// TestLexSlashAfterBigInt is a regression for the R1-3 exception differential
+// finding: a BigInt literal must not set allowRegex, so the `/` in `1n / 0n`
+// lexes as division instead of starting a regex. A regex after a BigInt
+// literal is likewise impossible.
+func TestLexSlashAfterBigInt(t *testing.T) {
+	cases := []struct {
+		src     string
+		bigInts int // expected number of TokenBigInt tokens
+		slashes int // expected number of division punct tokens
+	}{
+		{`1n / 0n`, 2, 1},
+		{`7n / 1n`, 2, 1},
+		{`0xFFn / 2`, 1, 1},
+		{`let x = 1n / 2;`, 1, 1},
+	}
+	for _, tc := range cases {
+		l := New(tc.src)
+		tokens, err := l.Tokens()
+		if err != nil {
+			t.Fatalf("lex %q: %v", tc.src, err)
+		}
+		bigInts, slashes := 0, 0
+		for _, tok := range tokens {
+			if tok.Type == TokenEOF {
+				continue
+			}
+			if tok.Type == TokenBigInt {
+				bigInts++
+				if !strings.HasSuffix(tok.Raw, "n") {
+					t.Fatalf("lex %q BigInt raw = %q, want n suffix", tc.src, tok.Raw)
+				}
+			}
+			if tok.Type == TokenPunct && tok.Value == "/" {
+				slashes++
+			}
+			if tok.Type == TokenRegex {
+				t.Fatalf("lex %q: unexpected regex token %v", tc.src, tok)
+			}
+		}
+		if bigInts != tc.bigInts || slashes != tc.slashes {
+			t.Fatalf("lex %q: bigInts=%d slashes=%d, want %d/%d", tc.src, bigInts, slashes, tc.bigInts, tc.slashes)
 		}
 	}
 }

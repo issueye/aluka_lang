@@ -332,6 +332,17 @@ lower:
 			p.Code = append(p.Code, Instr{Op: OpUnaryPlus})
 		case bytecode.OpPop:
 			p.Code = append(p.Code, Instr{Op: OpPop})
+		case bytecode.OpInc, bytecode.OpDec:
+			// ++ / -- lower to the existing Number sequence (the operand is
+			// already on the stack): x++ -> x + 1, x-- -> x - 1.
+			// A BigInt operand fails the arithmetic Number guard and falls
+			// back to Tier 0, where OpInc/OpDec preserve the BigInt type.
+			p.Code = append(p.Code, Instr{Op: OpConst, Value: 1})
+			if op == bytecode.OpInc {
+				p.Code = append(p.Code, Instr{Op: OpAdd})
+			} else {
+				p.Code = append(p.Code, Instr{Op: OpSub})
+			}
 		case bytecode.OpDup:
 			p.Code = append(p.Code, Instr{Op: OpDup})
 		case bytecode.OpSwap:
@@ -451,6 +462,9 @@ func (p *Program) Verify() error {
 			// Verify runs.
 			if exitID < 0 || exitID >= len(p.traceExitDepths) {
 				return fmt.Errorf("jit: trace exit %d has no deopt map", exitID)
+			}
+			if p.traceExitDepths[exitID] != ^uint8(0) && p.traceExitDepths[exitID] > 8 {
+				return fmt.Errorf("jit: trace exit %d deopt map stack depth is too deep", exitID)
 			}
 			if p.traceExitDepths[exitID] == ^uint8(0) {
 				if depth > 8 {

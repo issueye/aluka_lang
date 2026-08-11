@@ -171,6 +171,13 @@ const (
 	// Close captured lexical bindings before a loop reuses their local slots.
 	OpCloseUpvalues // A: first local slot to close
 
+	// ++ / -- (ES update expressions): pop a value, push its successor /
+	// predecessor preserving the operand type (BigInt stays BigInt, Number
+	// stays Number). Runtime type selection is required because a plain
+	// BigInt + Number(1) must throw, while x++ on a BigInt adds 1n.
+	OpInc
+	OpDec
+
 	OpEnd // sentinel marking end of code (for safety)
 )
 
@@ -293,6 +300,9 @@ var opNames = [...]string{
 	OpSetGetterObj:  "SET_GETTER_OBJ",
 	OpSetSetterObj:  "SET_SETTER_OBJ",
 	OpCloseUpvalues: "CLOSE_UPVALUES",
+
+	OpInc: "INC",
+	OpDec: "DEC",
 
 	OpEnd: "END",
 }

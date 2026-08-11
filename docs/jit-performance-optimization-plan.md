@@ -781,6 +781,22 @@ nightly 100,000 例（5 seed × 20,000，复核 131s）均零差分通过**；�
 实机连续 CI 与长期 soak 仍由 R2 验收。
 该轮未改默认 `--jit=off`、未扩大 Native ABI；引擎修复只影响 Tier 0 正确性，不改变性能快照口径。
 
+v2.17 落地 R1-3 异常差分，并推进 R1-4 deopt map 加固。`jitdiff` 新增 5 个 Kind（BigIntDivZero/
+GetterSetterThrow/OOM/Cancel/Safepoint）与 `RunHook`（OOMBytes/TriggerOOM/CancelAfter/CancelErr），
+生成器 Version 1→2；固定用例扩至 17 个。确定性异常（BigInt 除零、getter/setter 抛错、回调抛错）
+在 guard 回退后同点抛出，三 tier 事件日志与副作用前缀精确一致；OOM/嵌入方取消/safepoint 中断
+通过差分夹具显式启用 `InterpreterSafepoints`，在解释循环回边与 JIT budget yield 上复用同一回调
+（默认嵌入行为不变）；取消保持独立 `Error`，异常进入同一 catch 路径；
+延迟中断通过 `count == last + 1` 验证已提交迭代无重复/遗漏。差分框架发现并修复 3 个 Tier 0 引擎 bug：① BigInt
+字面量后 `/` 被误当 regex（`regexAllowedAfter` 缺 TokenBigInt，`1n / 0n` 曾为语法错误）；② `++/--`
+对 BigInt 抛 TypeError（新增 `OpInc/OpDec` 字节码，compileUpdate 与 VM 运行期保持类型，JIT
+lowering 展开为 Number 序列保住既有 `i++` 循环支持，arrayPush/closure 匹配器适配新字节码）；
+③ AST `evalUpdate` 对 BigInt 同样修复；审核另修复 JIT `--` 降低顺序曾计算为 `1-x`，新增三 tier
+回归。R1-4 对现有 `DeoptExit` 恢复映射补充 verifier 拒绝规则（缺失/越界/负 ID/歧义/预置冲突/
+栈深过深/预置越界，7 类测试）+ `TestDeoptExitMapIntegrity`；pending exception 尚未建模，R1-4 未完成。
+PR 1,000 例与 nightly 100,000 例（5 seed，140.73s）均零差分。该轮未改默认 `--jit=off`、未扩大
+Native ABI 与 W^X 生命周期；`OpInc/OpDec` 为新增字节码（追加在 iota 尾部，序列化兼容）。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见

@@ -129,7 +129,7 @@ func isControlParenKeyword(keyword string) bool {
 // regexAllowedAfter 判断某 token 之后是否允许 regex 字面量。
 func regexAllowedAfter(t Token) bool {
 	switch t.Type {
-	case TokenNumber, TokenString, TokenRegex, TokenTemplate:
+	case TokenNumber, TokenBigInt, TokenString, TokenRegex, TokenTemplate:
 		return false
 	case TokenIdent:
 		return false

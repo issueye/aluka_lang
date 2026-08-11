@@ -1173,7 +1173,7 @@ func (v *VM) matchArrayPushTrace(frame *vmFrame, startPC, backedgePC int) *array
 		return nil
 	}
 	code := frame.tmpl.Code
-	const instructionCount = 15
+	const instructionCount = 14
 	if startPC < 0 || backedgePC != startPC+(instructionCount-1)*bytecode.InstrSize ||
 		backedgePC+bytecode.InstrSize > len(code) {
 		return nil
@@ -1183,13 +1183,13 @@ func (v *VM) matchArrayPushTrace(frame *vmFrame, startPC, backedgePC int) *array
 	if op(0) != bytecode.OpLoadLocal || op(2) != bytecode.OpLt || op(3) != bytecode.OpJmpFalsePop ||
 		op(4) != bytecode.OpLoadLocal || op(5) != bytecode.OpLoadLocal || op(6) != bytecode.OpCallMethod ||
 		op(7) != bytecode.OpPop || op(8) != bytecode.OpLoadLocal || op(9) != bytecode.OpDup ||
-		op(10) != bytecode.OpPushInt || arg(10) != 1 || op(11) != bytecode.OpAdd ||
-		op(12) != bytecode.OpStoreLocal || op(13) != bytecode.OpPop || op(14) != bytecode.OpJmp {
+		op(10) != bytecode.OpInc || op(11) != bytecode.OpStoreLocal ||
+		op(12) != bytecode.OpPop || op(13) != bytecode.OpJmp {
 		return nil
 	}
 	indexLocal := int(arg(0))
 	receiverLocal := int(arg(4))
-	if int(arg(5)) != indexLocal || int(arg(8)) != indexLocal || int(arg(12)) != indexLocal ||
+	if int(arg(5)) != indexLocal || int(arg(8)) != indexLocal || int(arg(11)) != indexLocal ||
 		indexLocal < 0 || indexLocal >= frame.tmpl.NumLocals || receiverLocal < 0 || receiverLocal >= frame.tmpl.NumLocals ||
 		indexLocal == receiverLocal {
 		return nil
@@ -1200,7 +1200,7 @@ func (v *VM) matchArrayPushTrace(frame *vmFrame, startPC, backedgePC int) *array
 		frame.tmpl.Constants[nameIndex].Type() != engine.TypeString || frame.tmpl.Constants[nameIndex].String() != "push" {
 		return nil
 	}
-	backedgeTarget := backedgePC + bytecode.InstrSize + bytecode.SignedOperand(arg(14))
+	backedgeTarget := backedgePC + bytecode.InstrSize + bytecode.SignedOperand(arg(13))
 	exitPC := startPC + 4*bytecode.InstrSize + bytecode.SignedOperand(arg(3))
 	if backedgeTarget != startPC || exitPC <= backedgePC || exitPC > len(code) {
 		return nil
@@ -1332,7 +1332,7 @@ func matchIncrementUpvalueClosure(target *vmClosure) (*upvalue, bool) {
 		return nil, false
 	}
 	code := target.tmpl.Code
-	const instructionCount = 6
+	const instructionCount = 5
 	if len(code) != instructionCount*bytecode.InstrSize &&
 		(len(code) != (instructionCount+1)*bytecode.InstrSize ||
 			bytecode.Opcode(code[instructionCount*bytecode.InstrSize]) != bytecode.OpReturnUndef) {
@@ -1341,9 +1341,8 @@ func matchIncrementUpvalueClosure(target *vmClosure) (*upvalue, bool) {
 	op := func(index int) bytecode.Opcode { return bytecode.Opcode(code[index*bytecode.InstrSize]) }
 	arg := func(index int) uint32 { return jitTraceOperand(code, index*bytecode.InstrSize) }
 	if op(0) != bytecode.OpLoadUpvalue || arg(0) != 0 ||
-		op(1) != bytecode.OpPushInt || arg(1) != 1 ||
-		op(2) != bytecode.OpAdd || op(3) != bytecode.OpDup ||
-		op(4) != bytecode.OpStoreUpvalue || arg(4) != 0 || op(5) != bytecode.OpReturn {
+		op(1) != bytecode.OpInc || op(2) != bytecode.OpDup ||
+		op(3) != bytecode.OpStoreUpvalue || arg(3) != 0 || op(4) != bytecode.OpReturn {
 		return nil, false
 	}
 	return target.upvalues[0], true
@@ -1371,7 +1370,7 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 		return nil
 	}
 	code := frame.tmpl.Code
-	const instructionCount = 18
+	const instructionCount = 17
 	if startPC < 0 || backedgePC != startPC+(instructionCount-1)*bytecode.InstrSize ||
 		backedgePC+bytecode.InstrSize > len(code) {
 		return nil
@@ -1382,16 +1381,16 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 		op(3) != bytecode.OpJmpFalsePop || op(4) != bytecode.OpLoadLocal || op(5) != bytecode.OpLoadLocal ||
 		op(6) != bytecode.OpCall || arg(6) != 0 || op(7) != bytecode.OpAdd || op(8) != bytecode.OpDup ||
 		op(9) != bytecode.OpStoreLocal || op(10) != bytecode.OpPop || op(11) != bytecode.OpLoadLocal ||
-		op(12) != bytecode.OpDup || op(13) != bytecode.OpPushInt || arg(13) != 1 ||
-		op(14) != bytecode.OpAdd || op(15) != bytecode.OpStoreLocal || op(16) != bytecode.OpPop ||
-		op(17) != bytecode.OpJmp {
+		op(12) != bytecode.OpDup || op(13) != bytecode.OpInc ||
+		op(14) != bytecode.OpStoreLocal || op(15) != bytecode.OpPop ||
+		op(16) != bytecode.OpJmp {
 		return nil
 	}
 	indexLocal := int(arg(0))
 	boundLocal := int(arg(1))
 	sumLocal := int(arg(4))
 	calleeLocal := int(arg(5))
-	if int(arg(9)) != sumLocal || int(arg(11)) != indexLocal || int(arg(15)) != indexLocal {
+	if int(arg(9)) != sumLocal || int(arg(11)) != indexLocal || int(arg(14)) != indexLocal {
 		return nil
 	}
 	localCount := frame.tmpl.NumLocals
@@ -1404,7 +1403,7 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 		boundLocal == sumLocal || boundLocal == calleeLocal || sumLocal == calleeLocal {
 		return nil
 	}
-	backedgeTarget := backedgePC + bytecode.InstrSize + bytecode.SignedOperand(arg(17))
+	backedgeTarget := backedgePC + bytecode.InstrSize + bytecode.SignedOperand(arg(16))
 	exitPC := startPC + 4*bytecode.InstrSize + bytecode.SignedOperand(arg(3))
 	if backedgeTarget != startPC || exitPC <= backedgePC || exitPC > len(code) {
 		return nil

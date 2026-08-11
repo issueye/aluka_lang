@@ -56,7 +56,7 @@ func TestGeneratorDeterminism(t *testing.T) {
 // Boolean, null, undefined, String, BigInt, Symbol identity and object
 // identity.
 func TestGeneratedCorpusIncludesValueLeaves(t *testing.T) {
-	cases := NewGenerator(prSeed, prParams()).Generate(300)
+	cases := NewGenerator(prSeed, prParams()).Generate(600)
 	var all strings.Builder
 	for _, c := range cases {
 		all.WriteString(c.Source)
@@ -71,7 +71,7 @@ func TestGeneratedCorpusIncludesValueLeaves(t *testing.T) {
 	}
 	for _, token := range required {
 		if !strings.Contains(text, token) {
-			t.Errorf("generated corpus (%d cases) missing value %q", 300, token)
+			t.Errorf("generated corpus (%d cases) missing value %q", 600, token)
 		}
 	}
 }
@@ -177,6 +177,19 @@ func TestEventLogFixedCases(t *testing.T) {
 					t.Fatalf("cross-tier mismatch: %v", mismatch)
 				}
 				t.Fatalf("infrastructure error: %v", err)
+			}
+			if c.ExpectedErr != "" {
+				// Top-level exception propagation: all tiers must raise the
+				// same normalized error (the fixed case records the off one).
+				if got := NormalizedErr(results[0].EvalErr); got != c.ExpectedErr {
+					t.Fatalf("off eval error = %q, want %q", got, c.ExpectedErr)
+				}
+				for i := 1; i < len(results); i++ {
+					if NormalizedErr(results[i].EvalErr) != c.ExpectedErr {
+						t.Fatalf("tier %s eval error = %q, want %q", results[i].Tier, NormalizedErr(results[i].EvalErr), c.ExpectedErr)
+					}
+				}
+				return
 			}
 			if got := results[0].Result; got != c.Expected {
 				t.Fatalf("off event log:\n%s\nwant:\n%s", got, c.Expected)

@@ -203,6 +203,16 @@ func CompileTraceWithGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC int
 			p.Code = append(p.Code, Instr{Op: OpUnaryPlus})
 		case bytecode.OpPop:
 			p.Code = append(p.Code, Instr{Op: OpPop})
+		case bytecode.OpInc, bytecode.OpDec:
+			// Same expansion as the function lowering: ++ / -- become the
+			// Number sequence (x++ -> x + 1, x-- -> x - 1); BigInt
+			// operands fail the arithmetic guard and fall back to Tier 0.
+			p.Code = append(p.Code, Instr{Op: OpConst, Value: 1})
+			if op == bytecode.OpInc {
+				p.Code = append(p.Code, Instr{Op: OpAdd})
+			} else {
+				p.Code = append(p.Code, Instr{Op: OpSub})
+			}
 		case bytecode.OpDup:
 			p.Code = append(p.Code, Instr{Op: OpDup})
 		case bytecode.OpSwap:

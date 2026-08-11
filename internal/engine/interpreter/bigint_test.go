@@ -1,6 +1,11 @@
 package interpreter
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/aluka-lang/aluka/internal/engine/jit"
+)
 
 // 本文件覆盖 BigInt（ES2020，1D.12）的字面量、运算、比较、互操作。
 // 注意：vmEvalStr 中除法 `/` 在某些上下文可能触发 lexer 正则歧义，
@@ -155,6 +160,90 @@ func TestBigIntMixedTypeError(t *testing.T) {
 		_, err := vmEvalTest(t, code)
 		if err == nil {
 			t.Errorf("Eval(%q) should throw TypeError, got nil", code)
+		}
+	}
+}
+
+// TestBigIntDivisionByZero is a regression for the R1-3 lexer finding: the `/`
+// after a BigInt literal was lexed as a regex start, making `1n / 0n` a
+// syntax error. Division by zero now throws the JS RangeError, and mixed
+// BigInt/Number division throws TypeError.
+func TestBigIntDivisionByZero(t *testing.T) {
+	cases := []struct{ code, want string }{
+		{`try { 1n / 0n; } catch (e) { e.name + ":" + e.message }`, "RangeError:Division by zero"},
+		{`try { 0n / 0n; } catch (e) { e.name + ":" + e.message }`, "RangeError:Division by zero"},
+		{`7n / 1n`, "7"},
+		{`try { 1n / 0; } catch (e) { e.name }`, "TypeError"},
+		{`try { 1n / 2; } catch (e) { e.name }`, "TypeError"},
+		{`try { 1 / 0n; } catch (e) { e.name }`, "TypeError"},
+		{`let r = []; for (let i = 3n; i > 0n; i--) r.push(i / 1n); r.length`, "3"},
+	}
+	for _, c := range cases {
+		if got := vmEvalStr(t, c.code); got != c.want {
+			t.Errorf("Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
+// TestUpdateExpressionAcrossJITTiers locks prefix/postfix Number and BigInt
+// semantics. In particular, the JIT lowering for -- must compute x-1 rather
+// than 1-x, while BigInt updates guard back to Tier 0 and remain BigInt.
+func TestUpdateExpressionAcrossJITTiers(t *testing.T) {
+	const source = `
+function dec(x) { return --x; }
+function postDec(x) { const old = x--; return String(old) + ":" + String(x); }
+let out = [];
+for (let i = 0; i < 1000; i++) {
+  const next = dec(10);
+  if (i < 8) out.push(next, postDec(10));
+}
+let b = 3n;
+const oldB = b--;
+out.push(typeof oldB + ":" + String(oldB), typeof b + ":" + String(b));
+globalThis.updateResult = out.join("|");
+`
+	want := strings.Repeat("9|10:9|", 8) + "bigint:3|bigint:2"
+	for _, mode := range []jit.Mode{jit.Off, jit.Quick, jit.Auto} {
+		vm, err := NewVM()
+		if err != nil {
+			t.Fatal(err)
+		}
+		vm.ConfigureJIT(jit.Config{Mode: mode, Threshold: 1, BackedgeThreshold: 1, TraceBudget: 2, Stats: true})
+		_, evalErr := vm.Eval(source, "update-expression.js")
+		if evalErr != nil {
+			vm.Close()
+			t.Fatalf("mode=%s: %v", mode, evalErr)
+		}
+		value, getErr := vm.Global().Get("updateResult")
+		stats := vm.JITStats()
+		vm.Close()
+		if getErr != nil {
+			t.Fatalf("mode=%s: %v", mode, getErr)
+		}
+		got := value.String()
+		if got != want {
+			t.Fatalf("mode=%s result=%q, want %q", mode, got, want)
+		}
+		if mode == jit.Quick && stats.Executed+stats.TracesExecuted == 0 {
+			t.Fatalf("quick mode did not execute compiled update code: %+v", stats)
+		}
+		if mode == jit.Auto && stats.NativeExecuted+stats.NativeTracesExecuted == 0 {
+			t.Fatalf("auto mode did not execute native update code: %+v", stats)
+		}
+	}
+}
+
+func TestUpdateExpressionToNumericConversions(t *testing.T) {
+	cases := []struct{ code, want string }{
+		{`let x = undefined; x++; String(x)`, "NaN"},
+		{`let x = null; ++x; String(x)`, "1"},
+		{`let x = "2"; x--; String(x)`, "1"},
+		{`let x = true; x++; String(x)`, "2"},
+		{`let x = Symbol("x"); try { x++; } catch (e) { e.name }`, "TypeError"},
+	}
+	for _, tc := range cases {
+		if got := vmEvalStr(t, tc.code); got != tc.want {
+			t.Errorf("Eval(%q) = %q, want %q", tc.code, got, tc.want)
 		}
 	}
 }

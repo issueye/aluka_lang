@@ -38,7 +38,11 @@ function SV(v) {
   return "obj:?";
 }
 const EV = [];
-function LOG(n, d) { EV.push(n + ":" + d); }
+globalThis.JITDIFF_RESULT = "";
+function LOG(n, d) {
+  EV.push(n + ":" + d);
+  globalThis.JITDIFF_RESULT = EV.join("\n");
+}
 `
 
 // harnessTail serializes the event log into one global string. Separator is
@@ -217,8 +221,18 @@ func (g *Generator) genCase(id int, seed int64) *Case {
 		return g.genCallbackThrowCase(id, seed)
 	case KindProxy:
 		return g.genProxyCase(id, seed)
-	default:
+	case KindDeoptPrefix:
 		return g.genDeoptPrefixCase(id, seed)
+	case KindBigIntDivZero:
+		return g.genBigIntDivZeroCase(id, seed)
+	case KindGetterSetterThrow:
+		return g.genGetterSetterThrowCase(id, seed)
+	case KindOOM:
+		return g.genOOMCase(id, seed)
+	case KindCancel:
+		return g.genCancelCase(id, seed)
+	default:
+		return g.genSafepointCase(id, seed)
 	}
 }
 
@@ -446,4 +460,83 @@ func (g *Generator) genDeoptPrefixCase(id int, seed int64) *Case {
 `, fn)
 	b.WriteString(tryLog(id, fmt.Sprintf("%s(96)", fn)))
 	return g.build(id, KindDeoptPrefix, seed, b.String())
+}
+
+// genBigIntDivZeroCase covers BigInt division by zero (RangeError) and
+// BigInt/Number mixing (TypeError). Both throw at a deterministic point after
+// the JIT guards back to Tier 0, so the exception prefix is identical across
+// tiers.
+func (g *Generator) genBigIntDivZeroCase(id int, seed int64) *Case {
+	fn := callID(id)
+	var b strings.Builder
+	fmt.Fprintf(&b, "function %s(a, b) { return a / b; }\n", fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(1n, 0n)", fn)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(7n, 1n)", fn)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(1n, 0)", fn)))
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(0n, 0n)", fn)))
+	return g.build(id, KindBigIntDivZero, seed, b.String())
+}
+
+// genGetterSetterThrowCase covers getter/setter throws with a committed side
+// effect before the throw: the prefix (setter write, earlier getter reads)
+// must be committed exactly once and no post-throw side effect may run.
+func (g *Generator) genGetterSetterThrowCase(id int, seed int64) *Case {
+	fn := callID(id)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(o, n) { let s = 0; for (let i = 0; i < n; i++) s += o.v; return s; }
+const O = { _v: 0, get v() { LOG("get", SV(this._v)); if (this._v === 1) throw new RangeError("boom-get"); return this._v; }, set v(x) { LOG("set", SV(x)); this._v = x; } };
+O.v = 1;
+`, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("%s(O, 3)", fn)))
+	b.WriteString("LOG(\"post\", SV(O._v));\n")
+	// A throwing setter: the write must not land (post value stays 0).
+	b.WriteString(`const O2 = { _v: 0, set v(x) { LOG("set", SV(x)); throw new TypeError("boom-set"); } };
+`)
+	b.WriteString(tryLog(id, "O2.v = 9"))
+	b.WriteString("LOG(\"post2\", SV(O2._v));\n")
+	return g.build(id, KindGetterSetterThrow, seed, b.String())
+}
+
+// genOOMCase covers an OOM interruption observed at the same loop-backedge
+// safepoint contract in every tier.
+func (g *Generator) genOOMCase(id int, seed int64) *Case {
+	fn := callID(id)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(n) { let s = 0; for (let i = 0; i < n; i++) { s += i; } return s; }
+try { LOG("call", "%s"); LOG("return", SV(%s(1000000))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", "caught");
+`, fn, callID(id), fn)
+	c := g.build(id, KindOOM, seed, b.String())
+	c.Hook = &RunHook{OOMBytes: 1 << 40, TriggerOOM: 1}
+	return c
+}
+
+// genCancelCase covers an embedding cancellation at the first safepoint poll.
+func (g *Generator) genCancelCase(id int, seed int64) *Case {
+	fn := callID(id)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(n) { let s = 0; for (let i = 0; i < n; i++) { s += i; } return s; }
+try { LOG("call", "%s"); LOG("return", SV(%s(1000000))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", "caught");
+`, fn, callID(id), fn)
+	c := g.build(id, KindCancel, seed, b.String())
+	c.Hook = &RunHook{CancelAfter: 1, CancelErr: "embedding canceled"}
+	return c
+}
+
+// genSafepointCase covers a long loop that yields repeatedly under a small
+// trace budget and is then interrupted at a later safepoint poll; the
+// committed prefix must survive and the post-throw statement must not run.
+func (g *Generator) genSafepointCase(id int, seed int64) *Case {
+	fn := callID(id)
+	var b strings.Builder
+	fmt.Fprintf(&b, `function %s(n, o) { for (let i = 0; i < n; i++) { o.last = i; o.count++; } return o.last; }
+const INTERRUPT_STATE = { last: -1, count: 0 };
+try { LOG("call", "%s"); LOG("return", SV(%s(1000000, INTERRUPT_STATE))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(INTERRUPT_STATE.count > 0 && INTERRUPT_STATE.count === INTERRUPT_STATE.last + 1));
+`, fn, callID(id), fn)
+	c := g.build(id, KindSafepoint, seed, b.String())
+	c.Params.TraceBudget = 1
+	c.Hook = &RunHook{CancelAfter: 5, CancelErr: "safepoint interrupted"}
+	return c
 }

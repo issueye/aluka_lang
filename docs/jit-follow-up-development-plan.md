@@ -98,7 +98,7 @@ R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，�
 | 里程碑 | 启动状态 | 说明 |
 |--------|----------|------|
 | R0 | 交付物齐备，验收未过 | R0-1 至 R0-5 交付物均已产出（2026-08-11）；但 §5.3 稳定性验收（连续两轮中位数偏差 ≤5%）在本机未通过，需安静/固定电源环境复核后才可宣称 R0 完成 |
-| R1 | 部分完成 | R1-1/R1-2/R1-8 已落地（2026-08-11）：固定种子生成式差分框架（PR 1,000 例 + nightly 100,000 例无差分）、值域组合、失败产物与单命令重放，并发现修复 2 个 Tier 0 引擎 bug；缺 R1-3 至 R1-7（异常专项、deopt 状态模型、副作用协议、随机失效、fuzz） |
+| R1 | 部分完成 | R1-1/R1-2/R1-3/R1-8 已落地，R1-4 部分完成（2026-08-11）：生成式差分框架（PR 1,000 例 + nightly 100,000 例无差分）、值域组合、异常差分（BigInt 除零/getter-setter/回调/OOM/取消/中断）、deopt map verifier 加固、失败产物与单命令重放；R1-4 仍缺 pending exception 的正式恢复映射，另缺 R1-5 至 R1-7 |
 | R2 | 部分完成 | Linux 后端和 CI job 已写入，尚无 Linux runner 成功记录和长期 soak |
 | R3 | 部分完成 | Number 主路径、短路、nullish、String/BigInt opaque 值和严格相等已落地 |
 | R4 | 部分完成 | 两路 PIC、有限内联、属性、push 和单一 upvalue 模式已落地 |
@@ -164,8 +164,8 @@ R0-5 标记 `✅*` 表示**交付物已产出但 R0 整体验收未通过**：11
 |----|--------|--------|----------|
 | R1-1 ✅ | AST/语法生成式差分 | 固定种子表达式、循环、嵌套分支生成器 | Tier 0/Quick/Native 每日不少于 10,000 例无差分 |
 | R1-2 ✅ | 值域组合 | `NaN/Inf/-0`、nullish、Boolean、String、BigInt、Symbol、对象 identity | 每种值参与短路、比较、返回和 guard 变化 |
-| R1-3 | 异常差分 | 除零 BigInt、getter/setter 抛错、回调抛错、OOM、取消 | 异常类型、消息、catch PC 和副作用日志一致 |
-| R1-4 | deopt 状态描述 | locals、operand stack、属性提交、pending exception、resume PC 映射 | verifier 能拒绝缺失、歧义或越界映射 |
+| R1-3 ✅ | 异常差分 | 除零 BigInt、getter/setter 抛错、回调抛错、OOM、取消 | 异常类型、消息、catch PC 和副作用日志一致 |
+| R1-4 进行中 | deopt 状态描述 | locals、operand stack、属性提交、pending exception、resume PC 映射 | 已覆盖 exitID/resume PC/locals/stack；pending exception 尚未进入 `DeoptExit`，因此未完成 |
 | R1-5 | 副作用提交协议 | prepare/validate/commit 或等价两阶段协议 | 退出后不重复属性写、调用、upvalue 写或数组 append |
 | R1-6 | 随机 guard 失效 | shape、callee、类型、prototype、accessor 在热身后变化 | 第三 shape/target 稳定回退且 RX 正确释放 |
 | R1-7 | fuzz 入口 | IR verifier、trace compiler、deopt decoder fuzz test | 任意输入不 panic、不越界、不发布非法代码 |
@@ -179,10 +179,19 @@ R0-5 标记 `✅*` 表示**交付物已产出但 R0 整体验收未通过**：11
 |------|----------|
 | PC | 指向 Tier 0 可安全继续的字节码边界 |
 | locals | 只提交当前路径已完成的写入，保留 `-0/NaN` 位语义 |
-| operand stack | 深度和顺序由 verifier 锁定；Quick 可持有建模值，Native 仅 Number spill |
+| operand stack | 深度和顺序由 verifier 锁定；Quick 可持有建模值，Native 仅 Number spill（≤8 槽） |
 | 属性/数组/upvalue | 提交点前 guard 全部通过；失败时不留下部分写入 |
 | 异常 | 不跨 Native 栈传播；回到 Go 后进入现有 `handleThrow` |
 | safepoint | 只在完整迭代或完整提交点退出，恢复后不得重复迭代 |
+
+**R1-4 当前基础（2026-08-11）**：每个 `OpTraceExit` 携带 `exitID` → `DeoptExit{ID, ResumePC,
+LocalSlots, StackDepth, StackValues}`。verifier（`Program.Verify` 的 `OpTraceExit` 分支）对 map
+强制：exitID 必须落在 `traceExitDepths` 内（缺失/越界/负 ID 一律拒绝，即使栈为空）；同一 exit 在
+可达路径上的栈深必须一致（歧义/预置冲突拒绝）；栈深 ≤8 槽（非法深拒绝）。`CompileTraceWithGuards`
+在 Verify 后拒绝不可达 exit（map 项仍为未置位）。`TestVerifyRejectsInvalidDeoptMaps` 覆盖缺失/越界/
+负 ID/歧义/预置冲突/栈深过深/预置越界 7 类；`TestDeoptExitMapIntegrity` 证明编译产物的每个 exit
+都有对齐 ResumePC、去重 local 槽、合法栈深。该结构尚无 pending exception 字段和对应 verifier
+规则；补齐并验证异常恢复前，R1-4 保持“进行中”。
 
 ### 6.4 验收命令
 
@@ -199,7 +208,7 @@ panic、非法内存访问、重复副作用或不可复现失败均视为未完
 **完成条件**：覆盖矩阵中所有已支持 opcode/值类型组合都有 Tier 0 对照；连续 5 次 CI 与一次
 nightly 无差分；所有语义出口具备 verifier 可证明的恢复映射。
 
-### 6.5 实施记录（R1-1 / R1-2 / R1-8）
+### 6.5 实施记录（R1-1 / R1-2 / R1-3 / R1-4 / R1-8）
 
 | 日期 | 条目 | 证据 |
 |------|------|------|
@@ -208,9 +217,10 @@ nightly 无差分；所有语义出口具备 verifier 可证明的恢复映射�
 | 2026-08-11 | R1-8 ✅ 失败最小化 | 失败时保存 `case.js`、`meta.json`、`SUMMARY.txt` 与单命令重放；`Params.Verify` 已接入 Auto 执行与重放；Artifact 保留首次 mismatch 的 Result/EvalErr/Stats，仅从重跑补 IR，避免时序故障被重跑覆盖；`TestArtifactRoundTrip` 使用合成 mismatch 验证原始差异落盘，另有 passing-result 拒绝与 Verify 生效测试 |
 | 2026-08-11 | 框架发现并修复 2 个 Tier 0 引擎 bug | ① BigInt/NaN 关系比较：NaN panic、反向误判及数字路径 `NaN > 3` 修复为统一 `compareBool` 哨兵处理。② parser 泛型/比较消歧：括号深度避免吞掉关系表达式，同时恢复 CallExpr/NewExpr 泛型调用与函数类型内部嵌套泛型闭合；新增比较链、调用结果泛型与嵌套函数类型回归。两个修复均不改变默认 `--jit=off` 或 Native ABI |
 | 2026-08-11 | verifier deopt map 拒绝（R1-4 前置） | 收紧 `OpTraceExit` 校验：缺失/越界/负 exitID 一律拒绝（原仅栈非空时拒绝）；`TestVerifyRejectsInvalidDeoptMaps` 覆盖缺失/越界/负 ID/歧义深度（同一 exit 两条路径不同栈深）四类，并修正 `TestNativePropertyWriteVerifyRestoresQuickResultOnMismatch` 补合法 deopt map；`jit_bridge.go` 增加 trace IR dump（`JIT dump tier=trace`），使失败产物含 trace 级 IR |
+| 2026-08-11 | R1-3 ✅ 异常差分 | `jitdiff` 新增 5 个 Kind（BigIntDivZero/GetterSetterThrow/OOM/Cancel/Safepoint）+ `RunHook`（OOMBytes/TriggerOOM/CancelAfter/CancelErr），生成器 Version 1→2；差分夹具显式启用 `InterpreterSafepoints`，使解释循环回边与 JIT budget yield 共用回调，同时不改变默认嵌入行为；取消保持独立 `Error`，不再伪装为 OOM；固定用例扩至 17 个，异常均进入同一 catch 路径并保留逐步事件日志，延迟中断验证已提交迭代无重复/遗漏；差分发现并修复 BigInt `/` lexer 与 BigInt `++/--` 问题，审核另修复 JIT `--` 曾错误降低为 `1-x`；`TestUpdateExpressionAcrossJITTiers` 锁定三 tier 前后缀语义；PR 1,000 例与 nightly 100,000 例（5 seed）均零差分 |
+| 2026-08-11 | R1-4 进行中：deopt map 加固 | `DeoptExit{ID, ResumePC, LocalSlots, StackDepth, StackValues}` 的现有恢复映射增加 verifier 拒绝规则（§6.3）；`TestVerifyRejectsInvalidDeoptMaps` 覆盖 7 类非法 map，`TestDeoptExitMapIntegrity` 审计对齐 ResumePC、去重 local 槽、合法栈深；固定用例 -17 验证属性写 guard 失败前无部分写入。`PendingException` 仍缺，不能标记 R1-4 完成 |
 
-R1-1/R1-2/R1-8 的边界：R1-3（异常差分专项：除零 BigInt、OOM、取消的显式 catch PC 校验）、R1-4
-（deopt 状态描述的正式模型与 verifier 全量拒绝）、R1-5（副作用两阶段提交协议）、R1-6（随机 guard
+R1-1/R1-2/R1-3/R1-8 已完成；R1-4 的剩余边界是 pending exception 正式建模与恢复验证。R1-5（副作用两阶段提交协议）、R1-6（随机 guard
 失效）、R1-7（fuzz 入口）未在本轮完成；当前 Windows 已通过计划规定的 JIT race 子集和 jitdiff race，
 但仍不能替代 R2 的 Linux 实机、连续 CI 与长期 soak 门禁。
 
@@ -452,13 +462,13 @@ go test -race ./internal/engine/jit/... ./internal/engine/interpreter -count=1
 
 1. R0-1 至 R0-4：先建立结果和覆盖证据；
 2. R1-1、R1-2、R1-8：建立可复现生成式差分；
-3. R1-3 至 R1-6：补异常、副作用和完整 deopt；
+3. R1-4 至 R1-6：补 pending exception、副作用和完整 deopt；
 4. 并行完成 R2 Linux CI、W^X 和短/长 soak；
 5. 在差分框架保护下实施 R3 原始值与控制流覆盖；
 6. 逐条实施 R4 热点，每条都通过六类必要证据；
 7. R5 统一调优阈值、预算和优化 pass；
 8. 完成 R6 最终检查表后，单独变更默认 auto。
 
-下一次开发应推进 R1-3 至 R1-7（异常专项差分、deopt 状态模型与 verifier 全量拒绝、副作用提交协议、
+下一次开发应推进 R1-4 至 R1-7（补齐 pending exception 状态与 verifier、完成副作用提交协议、
 随机 guard 失效、fuzz 入口），复用 jitdiff 框架的事件日志与失败产物机制；R0 里程碑的稳定性验收
 （安静环境复核）可并行推进，R1/R2 的任何工作不得以 R0 验收未过为由扩大支持面。

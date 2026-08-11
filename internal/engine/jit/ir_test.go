@@ -329,6 +329,39 @@ func TestVerifyRejectsInvalidDeoptMaps(t *testing.T) {
 			want:   "depth mismatch",
 		},
 		{
+			// Duplicate/pre-set map entry that conflicts with the runtime
+			// depth: the map was already recorded at depth 2, the exit is
+			// reached at depth 1.
+			name: "preset map depth conflict",
+			code: []Instr{
+				{Op: OpConst, Value: 1},
+				{Op: OpPop},
+				{Op: OpTraceExit, Operand: 0}, // reached at depth 0
+			},
+			depths: []uint8{2},
+			want:   "depth mismatch",
+		},
+		{
+			// Illegal stack depth: the exit is reached with 9 values on the
+			// operand stack (limit is 8 spill slots).
+			name: "exit stack too deep",
+			code: []Instr{
+				{Op: OpConst, Value: 1}, {Op: OpConst, Value: 2}, {Op: OpConst, Value: 3},
+				{Op: OpConst, Value: 4}, {Op: OpConst, Value: 5}, {Op: OpConst, Value: 6},
+				{Op: OpConst, Value: 7}, {Op: OpConst, Value: 8}, {Op: OpConst, Value: 9},
+				{Op: OpTraceExit, Operand: 0},
+			},
+			depths: []uint8{^uint8(0)},
+			want:   "too deep",
+		},
+		{
+			// Invalid map entry type: a pre-set depth above the 8-slot limit.
+			name:   "preset depth out of range",
+			code:   []Instr{{Op: OpConst, Value: 1}, {Op: OpTraceExit, Operand: 0}},
+			depths: []uint8{9},
+			want:   "deopt map stack depth is too deep",
+		},
+		{
 			// Valid: one exit reached at a consistent depth.
 			name:   "valid deopt map",
 			code:   []Instr{{Op: OpConst, Value: 1}, {Op: OpTraceExit}},
@@ -408,6 +441,60 @@ func TestTraceSupportsMultiplePreciseDeoptExits(t *testing.T) {
 	second, reason, err := trace.ExecuteBudgetDetailed(secondLocals, 0)
 	if err != nil || reason != Executed || second.ID != 1 || second.ResumePC != 56 || secondLocals[1].String() != "2" {
 		t.Fatalf("second exit=%+v reason=%v err=%v locals=%v", second, reason, err, secondLocals)
+	}
+}
+
+// TestDeoptExitMapIntegrity checks the currently modeled non-exception state
+// for every compiled trace exit: unique sequential IDs, bytecode-aligned
+// ResumePCs, deduplicated local slots, and an operand-stack depth within the
+// 8-slot spill limit. Pending exceptions remain an R1-4 follow-up.
+func TestDeoptExitMapIntegrity(t *testing.T) {
+	tmpl := template(
+		emit(bytecode.OpLoadLocal, 1), emit(bytecode.OpLoadLocal, 2),
+		emit(bytecode.OpLt, 0), emit(bytecode.OpJmpFalsePop, 36),
+		emit(bytecode.OpLoadLocal, 1), emit(bytecode.OpPushInt, 1),
+		emit(bytecode.OpAdd, 0), emit(bytecode.OpStoreLocal, 1),
+		emit(bytecode.OpLoadLocal, 1), emit(bytecode.OpPushInt, 2),
+		emit(bytecode.OpEq, 0), emit(bytecode.OpJmpTruePop, 8),
+		emit(bytecode.OpJmp, (1<<24)-52),
+		emit(bytecode.OpReturnUndef, 0), emit(bytecode.OpReturnUndef, 0),
+	)
+	trace, err := CompileTrace(tmpl, 0, 48)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exits := trace.DeoptExits()
+	if len(exits) != 2 {
+		t.Fatalf("exits = %d, want 2", len(exits))
+	}
+	seen := make(map[int]bool)
+	for _, exit := range exits {
+		if exit.ID < 0 || seen[exit.ID] {
+			t.Fatalf("exit ID %d not unique/sequential", exit.ID)
+		}
+		seen[exit.ID] = true
+		if exit.ResumePC < 0 || exit.ResumePC%bytecode.InstrSize != 0 || exit.ResumePC >= len(tmpl.Code) {
+			t.Fatalf("exit %d ResumePC %d not an aligned bytecode boundary", exit.ID, exit.ResumePC)
+		}
+		if exit.StackDepth < 0 || exit.StackDepth > 8 {
+			t.Fatalf("exit %d StackDepth %d outside [0,8]", exit.ID, exit.StackDepth)
+		}
+		if len(exit.LocalSlots) == 0 {
+			t.Fatalf("exit %d has no local slots", exit.ID)
+		}
+		seenSlots := make(map[uint16]bool)
+		for _, slot := range exit.LocalSlots {
+			if seenSlots[slot] {
+				t.Fatalf("exit %d duplicates local slot %d", exit.ID, slot)
+			}
+			seenSlots[slot] = true
+			if int(slot) >= tmpl.NumLocals {
+				t.Fatalf("exit %d local slot %d out of frame", exit.ID, slot)
+			}
+		}
+	}
+	if exits[0].ID != 0 || exits[1].ID != 1 {
+		t.Fatalf("exit IDs not sequential: %+v", exits)
 	}
 }
 

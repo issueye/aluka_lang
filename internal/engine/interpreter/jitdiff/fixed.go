@@ -10,6 +10,8 @@ import "strings"
 // equality. IDs are negative so they never collide with generated cases.
 func FixedCases() []*Case {
 	params := Params{Seed: 0, MaxExprDepth: 3, MaxLoopBound: 24, TraceBudget: 3}
+	safepointParams := params
+	safepointParams.TraceBudget = 1
 	return []*Case{
 		{
 			ID: -1, Kind: KindPropWrite, Seed: 101, Params: params,
@@ -113,6 +115,83 @@ try { LOG("call", "kB"); LOG("return", SV(kB(1))); } catch (e) { LOG("throw", e.
 			Body: `function kL(a, b) { return a == b; }
 try { LOG("call", "kL1"); LOG("return", SV(kL("2", 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 try { LOG("call", "kL2"); LOG("return", SV(kL("a", "b"))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R1-3: BigInt division by zero throws a deterministic
+			// RangeError at the same guard-fallback point in every tier.
+			ID: -12, Kind: KindBigIntDivZero, Seed: 112, Params: params,
+			Expected: "call:kZ\nthrow:RangeError:Division by zero\ncall:kZ\nreturn:bi:7\ncall:kZ\nthrow:TypeError:cannot mix BigInt and other types, use explicit conversions",
+			Body: `function kZ(a, b) { return a / b; }
+try { LOG("call", "kZ"); LOG("return", SV(kZ(1n, 0n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kZ"); LOG("return", SV(kZ(7n, 1n))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kZ"); LOG("return", SV(kZ(1n, 0))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// R1-3: getter throws after a committed prefix; the setter write
+			// before the throw lands exactly once and the throwing setter's
+			// write never lands.
+			ID: -13, Kind: KindGetterSetterThrow, Seed: 113, Params: params,
+			Expected: "set:n:1\ncall:kT\nget:n:1\nthrow:RangeError:boom-get\npost:n:1\ncall:kU\nset:n:9\nthrow:TypeError:boom-set\npost2:n:0",
+			Body: `function kT(o, n) { let s = 0; for (let i = 0; i < n; i++) s += o.v; return s; }
+const O = { _v: 0, get v() { LOG("get", SV(this._v)); if (this._v === 1) throw new RangeError("boom-get"); return this._v; }, set v(x) { LOG("set", SV(x)); this._v = x; } };
+O.v = 1;
+try { LOG("call", "kT"); LOG("return", SV(kT(O, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(O._v));
+const O2 = { _v: 0, set v(x) { LOG("set", SV(x)); throw new TypeError("boom-set"); } };
+try { LOG("call", "kU"); LOG("return", SV((O2.v = 9))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post2", SV(O2._v));
+`,
+		},
+		{
+			// R1-3: OOM is triggered by the first loop safepoint in every tier,
+			// enters the same catch block at the next check, and preserves the
+			// event prefix.
+			ID: -14, Kind: KindOOM, Seed: 114, Params: params,
+			Hook:     &RunHook{OOMBytes: 1 << 40, TriggerOOM: 1},
+			Expected: "call:kO\nthrow:RangeError:JavaScript heap out of memory (limit 1099511627776 bytes)\npost:caught",
+			Body: `function kO(n) { let s = 0; for (let i = 0; i < n; i++) { s += i; } return s; }
+try { LOG("call", "kO"); LOG("return", SV(kO(1000000))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", "caught");
+`,
+		},
+		{
+			// R1-3: embedding cancellation at the first safepoint poll
+			// remains a distinct Error and enters the same catch block.
+			ID: -15, Kind: KindCancel, Seed: 115, Params: params,
+			Hook:     &RunHook{CancelAfter: 1, CancelErr: "embedding canceled"},
+			Expected: "call:kV\nthrow:Error:embedding canceled\npost:caught",
+			Body: `function kV(n) { let s = 0; for (let i = 0; i < n; i++) { s += i; } return s; }
+try { LOG("call", "kV"); LOG("return", SV(kV(1000000))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", "caught");
+`,
+		},
+		{
+			// R1-3: safepoint interruption after several yields under a tiny
+			// trace budget (TraceBudget=1), preserving committed writes.
+			ID: -16, Kind: KindSafepoint, Seed: 116, Params: safepointParams,
+			Hook:     &RunHook{CancelAfter: 5, CancelErr: "safepoint interrupted"},
+			Expected: "call:kW\nthrow:Error:safepoint interrupted\npost:b:true",
+			Body: `function kW(n, o) { for (let i = 0; i < n; i++) { o.last = i; o.count++; } return o.last; }
+const INTERRUPT_STATE = { last: -1, count: 0 };
+try { LOG("call", "kW"); LOG("return", SV(kW(1000000, INTERRUPT_STATE))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(INTERRUPT_STATE.count > 0 && INTERRUPT_STATE.count === INTERRUPT_STATE.last + 1));
+`,
+		},
+		{
+			// R1-4: a property-write loop commits its prefix, then a type
+			// change makes the next guard fail. The guard must fire before
+			// any partial write of the failing iteration, and the whole loop
+			// falls back to Tier 0 with the exact same observable state.
+			ID: -17, Kind: KindPropWrite, Seed: 117, Params: params,
+			Expected: "call:kx\nreturn:n:4\ncall:ky\nreturn:n:2\npost:n:2",
+			Body: `function kx(o, n) { for (let i = 0; i < n; i++) { o.a = i; } return o.a; }
+const O = { a: 0 };
+try { LOG("call", "kx"); LOG("return", SV(kx(O, 5))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+O.a = "str";
+try { LOG("call", "ky"); LOG("return", SV(kx(O, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(O.a));
 `,
 		},
 	}

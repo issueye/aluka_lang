@@ -69,22 +69,24 @@ func (m Mode) String() string {
 	}
 }
 
-// Safepoint runs on the Go side whenever a budgeted JIT executor yields.
-// Returning an error interrupts optimized execution and propagates the error
-// to the VM without treating it as a compilation or machine-code failure.
+// Safepoint runs on the Go side whenever a budgeted JIT executor yields. When
+// InterpreterSafepoints is enabled it also runs at interpreted loop
+// backedges. Returning an error interrupts execution without treating it as a
+// compilation or machine-code failure.
 type Safepoint func() error
 
 type Config struct {
-	Mode              Mode
-	Threshold         uint32
-	BackedgeThreshold uint32
-	TraceBudget       uint32
-	CodeCacheBytes    uint64
-	Verify            bool
-	Stats             bool
-	Dump              DumpMode
-	DumpWriter        io.Writer
-	Safepoint         Safepoint
+	Mode                  Mode
+	Threshold             uint32
+	BackedgeThreshold     uint32
+	TraceBudget           uint32
+	CodeCacheBytes        uint64
+	Verify                bool
+	Stats                 bool
+	Dump                  DumpMode
+	DumpWriter            io.Writer
+	Safepoint             Safepoint
+	InterpreterSafepoints bool
 }
 
 type RejectionReason struct {

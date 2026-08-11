@@ -1,12 +1,27 @@
 package interpreter
 
 import (
+	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 )
+
+// updateNumeric implements the ToNumeric part of ++/--. BigInt preserves its
+// type, Symbol throws, and all other currently modeled values use ToNumber.
+func updateNumeric(value engine.Value, delta int64) (engine.Value, error) {
+	if isBigInt(value) {
+		bi := new(big.Int).Set(asBigInt(value))
+		return engine.BigInt(bi.Add(bi, big.NewInt(delta))), nil
+	}
+	if value != nil && value.Type() == engine.TypeSymbol {
+		return nil, fmt.Errorf("%w: Cannot convert a Symbol value to a number", engine.ErrTypeError)
+	}
+	return engine.Number(jsToNumber(value) + float64(delta)), nil
+}
 
 const uint32Range = 4294967296.0
 

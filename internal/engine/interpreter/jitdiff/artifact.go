@@ -42,7 +42,8 @@ type Artifact struct {
 	Kind             string       `json:"kind"`
 	Body             string       `json:"body"`
 	Source           string       `json:"source"`
-	Results          []TierResult `json:"results"` // off first
+	Hook             *RunHook     `json:"hook,omitempty"` // interruption controls (R1-3)
+	Results          []TierResult `json:"results"`        // off first
 	ReproCommand     string       `json:"reproCommand"`
 	Dir              string       `json:"-"`
 }
@@ -85,6 +86,7 @@ func SaveArtifact(baseDir string, mismatch *Mismatch, params Params) (*Artifact,
 		CaseID:           mismatch.Case.ID,
 		Kind:             mismatch.Case.Kind.String(),
 		Body:             mismatch.Case.Body,
+		Hook:             mismatch.Case.Hook,
 		Source:           mismatch.Case.Source,
 		Results:          results,
 	}
@@ -134,7 +136,7 @@ func LoadArtifact(dir string) (*Artifact, error) {
 // Replay re-runs the artifact's case across all tiers and returns the results
 // plus whether the recorded failure still reproduces.
 func (a *Artifact) Replay() ([]TierResult, bool, error) {
-	c := &Case{ID: a.CaseID, Kind: parseKind(a.Kind), Seed: a.Seed, Params: a.Params, Body: a.Body, Source: a.Source}
+	c := &Case{ID: a.CaseID, Kind: parseKind(a.Kind), Seed: a.Seed, Params: a.Params, Body: a.Body, Source: a.Source, Hook: a.Hook}
 	results := make([]TierResult, 0, len(Tiers))
 	for _, tier := range Tiers {
 		res, err := RunTier(c, tier, a.Params, false)
@@ -145,7 +147,7 @@ func (a *Artifact) Replay() ([]TierResult, bool, error) {
 	}
 	off := results[0]
 	for i := 1; i < len(results); i++ {
-		if results[i].EvalErr != off.EvalErr || results[i].Result != off.Result {
+		if NormalizedErr(results[i].EvalErr) != NormalizedErr(off.EvalErr) || results[i].Result != off.Result {
 			return results, true, nil
 		}
 	}
@@ -158,7 +160,7 @@ func tierResultsDiffer(results []TierResult) bool {
 	}
 	off := results[0]
 	for i := 1; i < len(results); i++ {
-		if results[i].EvalErr != off.EvalErr || results[i].Result != off.Result {
+		if NormalizedErr(results[i].EvalErr) != NormalizedErr(off.EvalErr) || results[i].Result != off.Result {
 			return true
 		}
 	}

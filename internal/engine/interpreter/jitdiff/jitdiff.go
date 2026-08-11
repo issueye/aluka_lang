@@ -31,7 +31,7 @@ import (
 // generated source shapes, the value domain, the event log format or the
 // comparison change; the value is recorded in every failure artifact so a
 // reproduction stays tied to the exact generator that produced the mismatch.
-const Version = "1"
+const Version = "2"
 
 // Params controls generation and execution. It is part of the failure
 // artifact; changing it changes reproducibility, and changes that alter
@@ -78,6 +78,12 @@ const (
 	KindCallbackThrow
 	KindProxy
 	KindDeoptPrefix
+	// R1-3 exception differential kinds.
+	KindBigIntDivZero
+	KindGetterSetterThrow
+	KindOOM
+	KindCancel
+	KindSafepoint
 )
 
 func (k Kind) String() string {
@@ -110,6 +116,16 @@ func (k Kind) String() string {
 		return "proxy"
 	case KindDeoptPrefix:
 		return "deoptPrefix"
+	case KindBigIntDivZero:
+		return "bigIntDivZero"
+	case KindGetterSetterThrow:
+		return "getterSetterThrow"
+	case KindOOM:
+		return "oom"
+	case KindCancel:
+		return "cancel"
+	case KindSafepoint:
+		return "safepoint"
 	default:
 		return fmt.Sprintf("kind(%d)", int(k))
 	}
@@ -151,6 +167,32 @@ type Case struct {
 	// Expected is the known off-mode event log for deterministic fixed cases
 	// (negative IDs); empty for generated cases.
 	Expected string `json:"expected,omitempty"`
+	// ExpectedErr is the known normalized off-mode Eval error
+	// ("name:message") for fixed cases whose exception propagates to the top.
+	ExpectedErr string `json:"expectedErr,omitempty"`
+	// Hook carries test-only execution controls (OOM triggering, embedding
+	// cancellation at a safepoint) used by the R1-3 exception differential
+	// kinds. It is recorded in failure artifacts so reproductions keep the
+	// exact interruption behavior.
+	Hook *RunHook `json:"hook,omitempty"`
+}
+
+// RunHook injects safepoint-level interruptions into a differential run.
+// OOMBytes and the Safepoint callback are applied identically to every tier,
+// so off/quick/auto observe the same exception semantics.
+type RunHook struct {
+	// OOMBytes, when non-zero, sets the process memory limit before the VM is
+	// created so the VM's OOM safepoint check is enabled (the value is a
+	// generous ceiling that never trips the watchdog; OOM is triggered via
+	// TriggerOOM below).
+	OOMBytes int64 `json:"oomBytes,omitempty"`
+	// TriggerOOM, when > 0, fires engine.TriggerOOMForTest on the n-th
+	// safepoint poll (1-based).
+	TriggerOOM int `json:"triggerOOM,omitempty"`
+	// CancelAfter, when > 0, returns CancelErr from the safepoint callback on
+	// the n-th poll (1-based), simulating an embedding cancellation.
+	CancelAfter int    `json:"cancelAfter,omitempty"`
+	CancelErr   string `json:"cancelErr,omitempty"`
 }
 
 func (c *Case) Name() string {
@@ -158,7 +200,7 @@ func (c *Case) Name() string {
 }
 
 // KindCount is the number of case kinds the generator can produce.
-const KindCount = int(KindDeoptPrefix) + 1
+const KindCount = int(KindSafepoint) + 1
 
 // AllKinds lists every case kind in canonical order.
 var AllKinds = func() []Kind {

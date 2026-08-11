@@ -1197,12 +1197,13 @@ func (interp *Interpreter) evalUpdate(e *ast.UpdateExpr, scope *Scope) (engine.V
 	if err != nil {
 		return nil, err
 	}
-	f, _ := cur.Float()
-	var newVal engine.Value
-	if e.Op == "++" {
-		newVal = engine.Number(f + 1)
-	} else {
-		newVal = engine.Number(f - 1)
+	delta := int64(1)
+	if e.Op == "--" {
+		delta = -1
+	}
+	newVal, err := updateNumeric(cur, delta)
+	if err != nil {
+		return nil, err
 	}
 	// Assign back
 	if err := interp.assignToRef(e.Arg, newVal, scope); err != nil {
