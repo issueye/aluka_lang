@@ -151,9 +151,22 @@ func TestGuardMutationThirdTargetDisablesNativeReleasesRX(t *testing.T) {
 	if stats.CalleeGuardDisabled == 0 || stats.CalleeGuardFailures < 2 {
 		t.Fatalf("third callee target did not disable the callee guard after repeated failures: %+v", stats)
 	}
-	// The callee-disabled run still produces the right results for every
-	// callee (already asserted above); the remaining NativeCodeBytes belong to
-	// the independent leaf-function specializations, which were not disabled.
+	disabledStates := 0
+	for _, state := range vm.jitStates {
+		if state == nil || !state.calleeDisabled {
+			continue
+		}
+		disabledStates++
+		if jitStateHasNative(state) {
+			t.Fatal("callee-disabled state still owns native code")
+		}
+	}
+	if disabledStates == 0 {
+		t.Fatal("callee guard disable counter has no matching disabled JIT state")
+	}
+	// Remaining NativeCodeBytes may belong to independent leaf-function
+	// specializations. The disabled state itself must already be released;
+	// VM.Close below verifies all remaining executable memory is reclaimed.
 	if err := vm.Close(); err != nil {
 		t.Fatal(err)
 	}

@@ -548,11 +548,14 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 				return DeoptExit{}, GuardFailed, nil
 			}
 			method := t.program.traceMethodGuards[in.Operand]
-			methodValue, ok := engine.OwnDataProperty(objects[receiver.ref], method.method)
+			objectValue, ok := objects[receiver.ref].AsObject()
+			if !ok {
+				return DeoptExit{}, GuardFailed, nil
+			}
+			methodValue, ok := engine.GuardedMethodLookup(objectValue, method.method)
 			if !ok || methodValue != method.target {
 				return DeoptExit{}, GuardFailed, nil
 			}
-			objectValue := objects[receiver.ref]
 			if stateIndex := findProperty(objectValue, method.property); stateIndex >= 0 {
 				push(numberValue(propertyStates[stateIndex].value))
 				continue

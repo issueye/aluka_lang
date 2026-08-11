@@ -173,7 +173,7 @@ guard 失败被记录、Auto 不产生 verify 失败）。审计后矩阵不存�
 | 调用 guard 失败无部分写（noop callee 换成延迟抛错者；guard 在调用前失效；Tier 0 重放后用户调用抛错进同一 catch） | interpreter 包 `TestDeoptCallGuardFailureNoPartialWrite`、jitdiff 固定用例 -19（事件日志含抛错与提交前缀） |
 | 数组 append 中断不重复、不漏写（每 chunk 原子；取消后 `A.length === A[A.length-1]+1` 不变量） | interpreter 包 `TestDeoptArrayPushInterruptNoDuplicateNoLoss`、jitdiff 固定用例 -20 |
 | upvalue 写原子性（upvalue 与 sum 同 chunk 写回；中断后 `sum === N(N+1)/2` 不变量） | interpreter 包 `TestDeoptUpvalueWriteAtomicOnInterrupt`、jitdiff 固定用例 -21 |
-| 方法 guard 不执行用户代码（仅接受普通对象 own data method；accessor/原型/Proxy 明确回退） | engine 包 `TestOwnDataProperty`、interpreter 包 `TestTraceMethodGuardDoesNotProbeProxy`（off/quick/auto trap 次数精确一致） |
+| 方法 guard 不执行用户代码（仅接受普通对象及 plain object 原型链 data method；accessor/Proxy 明确回退） | engine 包 `TestOwnDataProperty`/`TestGuardedMethodLookup`、interpreter 包 `TestTraceMethodGuardDoesNotProbeProxy`（off/quick/auto trap 次数精确一致） |
 | 属性写 + OOM 中断（已提交前缀完整；`count === last + 1` 不变量进入同一 catch） | jitdiff 固定用例 -23（`TestEventLogFixedCases`） |
 | R1-5 artifact 保存/重放（call guard 失败 + 属性写用例） | `TestArtifactRoundTripSideEffect`（jitdiff，-19 合成 mismatch 经 SaveArtifact/LoadArtifact/Replay） |
 | R1-6 随机 guard 失效：1st/2nd/3rd property shape（两路 PIC 吸收前两个、第三 shape 回退且第一 shape 继续正确） | jitdiff 固定用例 -24（`TestGuardMutationFixedCases`）、interpreter `TestGuardMutationThirdShapeDisablesNativeReleasesRX`（第三 shape 连续失败后 Native 禁用 + RX 回基线） |
@@ -186,7 +186,7 @@ guard 失败被记录、Auto 不产生 verify 失败）。审计后矩阵不存�
 | R1-6 closure upvalue 类型 / identity 变化（回退 Tier 0 结果一致） | jitdiff 固定用例 -31 |
 | R1-6 每类 mutation 实际命中目标 guard（非仅 Tier 0）：TracesCompiled/Compiled ≥ 1 且 GuardFailures ≥ 1 | `TestGuardMutationFixedCases`（jitdiff，对 -24..-31 断言 quick/auto stats） |
 | R1-6 随机生成器（warmup/mutation/post 调度内嵌源码，seed/源码/调度随 artifact 重放一致） | `TestGeneratorProducesGuardMutationCases`、`TestArtifactRoundTripGuardMutation`（jitdiff）、`TestGeneratorDeterminism` |
-| R1-6 方法 guard 纯数据查找（不触发 accessor/Proxy trap/用户代码；非 plain receiver/原型链回退） | `TestGuardedMethodLookup`（engine 包）+ 基线 `OwnDataProperty`（0a71963）|
+| R1-6 方法 guard 纯数据查找（不触发 accessor/Proxy trap/用户代码；非 plain receiver/原型链回退） | `TestGuardedMethodLookup`（engine 包）+ profiling/Quick/Native 三处实际调用（`jit_bridge.go`/`trace.go`/`native_trace.go`）|
 
 ## 9. 维护约定
 

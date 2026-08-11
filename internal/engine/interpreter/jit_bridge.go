@@ -1151,7 +1151,11 @@ func (v *VM) traceMethodGuards(frame *vmFrame, startPC, backedgePC int) []jit.Tr
 			continue
 		}
 		receiver := v.stack[stackIndex]
-		methodValue, ok := engine.OwnDataProperty(receiver, frame.tmpl.Constants[nameIndex].String())
+		object, ok := receiver.AsObject()
+		if !ok {
+			continue
+		}
+		methodValue, ok := engine.GuardedMethodLookup(object, frame.tmpl.Constants[nameIndex].String())
 		if !ok {
 			continue
 		}

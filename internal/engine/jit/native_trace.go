@@ -98,7 +98,11 @@ func (t *TraceProgram) ExecuteNativeBudgetDetailedWithSafepoint(locals []engine.
 		}
 		matched := locals[guard.sourceLocal] == guard.target
 		if guard.method != "" {
-			method, ok := engine.OwnDataProperty(locals[guard.sourceLocal], guard.method)
+			object, ok := locals[guard.sourceLocal].AsObject()
+			if !ok {
+				return DeoptExit{}, GuardFailed, 0, nil
+			}
+			method, ok := engine.GuardedMethodLookup(object, guard.method)
 			matched = ok && method == guard.target
 		}
 		if !matched {

@@ -852,9 +852,9 @@ getter 内 LOG 计数证明 getter 只在 Tier 0 每迭代恰好执行一次（J
 interpreter 包断言第三 shape/target 连续失败后 Native 禁用、RX 字节释放、VM 关闭后全局
 可执行内存回基线。差分发现并修复 Tier 0 引擎 bug：方法调用 IC（O1-C4 `CallCached`）未检查
 deleted map，delete own 方法后 IC 仍返回被删闭包而非原型链方法，补独立回归。profiling/guard
-安全审计：基线 `OwnDataProperty` 已保证方法 guard 收集/执行不触发 accessor/Proxy trap；
-本轮补 `engine.GuardedMethodLookup`（纯 objectValue 链数据查找，非 plain receiver/原型链接口
-回退）并覆盖原型链方法解析。PR 1,000 例与 nightly 100,000 例（5 seed）零差分。该轮未改默认
+安全审计：`engine.GuardedMethodLookup` 已统一用于方法 guard 收集/执行，纯 objectValue 链数据
+查找，非 plain receiver/原型链接口回退，accessor/Proxy 不触发用户代码。PR 1,000 例与 nightly
+100,000 例（5 seed）零差分。该轮未改默认
 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、不改变任何性能快照口径。
 
 ## 17. 下一轮优先级
