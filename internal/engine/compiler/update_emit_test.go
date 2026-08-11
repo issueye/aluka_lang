@@ -28,12 +28,13 @@ func compileFirst(t *testing.T, src string) *bytecode.FuncTemplate {
 	return nil
 }
 
-// TestCompileUpdateEmitsIncDec locks the update-expression bytecode shape
+// TestCompileUpdateEmitsIncDec locks the update-expression bytecode shapes
 // that the JIT arrayPush/closureIncrement matchers depend on: postfix `i++`
-// must be LOAD_LOCAL/DUP/INC/STORE_LOCAL/POP and prefix `++n` must be
-// LOAD_UPVALUE/INC/DUP/STORE_UPVALUE. The disk bytecode cache is keyed on
-// FormatVersion so any future change to this shape must bump it, otherwise
-// stale caches silently disable the JIT specializations.
+// must emit OpInc and prefix `++n` must emit LOAD_UPVALUE/INC/DUP/
+// STORE_UPVALUE (see the dedicated tests below for each shape). The disk
+// bytecode cache is keyed on FormatVersion so any future change to these
+// shapes must bump it, otherwise stale caches silently disable the JIT
+// specializations.
 func TestCompileUpdateEmitsIncDec(t *testing.T) {
 	fn := compileFirst(t, `
 function f(iters) {
@@ -51,6 +52,29 @@ function f(iters) {
 	}
 	if !found {
 		t.Fatal("no OpInc emitted for postfix i++")
+	}
+}
+
+// TestCompileUpdateEmitsDec is the decrement mirror of
+// TestCompileUpdateEmitsIncDec: postfix `i--` must emit OpDec so the JIT
+// matcher shapes stay locked on both directions of the update operators.
+func TestCompileUpdateEmitsDec(t *testing.T) {
+	fn := compileFirst(t, `
+function f(iters) {
+  let s = 0;
+  for (let i = iters; i > 0; i--) { s += i; }
+  return s;
+}
+`)
+	code := fn.Code
+	found := false
+	for pc := 0; pc+bytecode.InstrSize <= len(code); pc += bytecode.InstrSize {
+		if bytecode.Opcode(code[pc]) == bytecode.OpDec {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no OpDec emitted for postfix i--")
 	}
 }
 
@@ -136,4 +160,34 @@ function make() { let n = 0; return () => ++n; }
 		return
 	}
 	t.Fatal("no increment closure template found")
+}
+
+// TestCompilePrefixDecEmitsDecDup locks the prefix `--n` closure shape:
+// LOAD_UPVALUE, DEC, DUP, STORE_UPVALUE (decrement mirror of the ++n test).
+func TestCompilePrefixDecEmitsDecDup(t *testing.T) {
+	prog, err := parser.Parse(`
+function make() { let n = 0; return () => --n; }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mod, err := New().Compile(prog, "update-emit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range mod.Functions {
+		if fn.Name != "" || len(fn.Upvalues) != 1 || len(fn.Code) < 4*bytecode.InstrSize {
+			continue
+		}
+		if bytecode.Opcode(fn.Code[0]) != bytecode.OpLoadUpvalue ||
+			bytecode.Opcode(fn.Code[1*bytecode.InstrSize]) != bytecode.OpDec ||
+			bytecode.Opcode(fn.Code[2*bytecode.InstrSize]) != bytecode.OpDup ||
+			bytecode.Opcode(fn.Code[3*bytecode.InstrSize]) != bytecode.OpStoreUpvalue {
+			t.Fatalf("prefix --n shape broken: %s %s %s %s",
+				bytecode.Opcode(fn.Code[0]), bytecode.Opcode(fn.Code[4]),
+				bytecode.Opcode(fn.Code[8]), bytecode.Opcode(fn.Code[12]))
+		}
+		return
+	}
+	t.Fatal("no decrement closure template found")
 }

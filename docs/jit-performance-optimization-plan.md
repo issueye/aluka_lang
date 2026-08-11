@@ -959,9 +959,11 @@ R0-5 已记录 A-B 19.1% 级波动，与历史快照 12.0x/2.2x 同量级）。�
 `arrayPushSites=2`、`closureUpvalueSites=1`、`tracesCompiled=7`、`nativeTracesCompiled=4`、
 `guardFailures=0`，特化命中证据入档）；复测中位数 arrayPush 71.75ms / closureCall 3.07ms /
 callOverhead 2.88ms / 11 项合计 814.41ms / mixed 285.98ms。**数据性质声明**：36 个
-case/tier 组合中 13 个相对 MAD 超过 5%（closureCall quick 22.6%、callOverhead auto 22.2%、
-arrayPush auto 20.1% 等，本机后台负载所致），此快照仅作诊断证据，不作验收级冻结——验收须在
-安静/固定电源环境连续两轮中位数偏差 ≤5%（R0 §5.3 门禁）后另行冻结。该轮未改默认
+case/tier 组合中 12 个相对 MAD 超过 5%（最高 arrayPush quick 18.5%、strConcat auto 18.1%、
+closureCall auto 14.0%、closureCall quick 10.2%、arrayMap quick 9.4%、callOverhead auto
+8.7% 等，本机后台负载所致），此快照仅作诊断证据，不作验收级冻结——验收须在安静/固定电源
+环境连续两轮中位数偏差 ≤5%（R0 §5.3 门禁）后另行冻结；MAD 超标组合数随环境波动（前次重跑
+为 13 个），以归档 `jit-20260811-windows-amd64.json` 中的 `madPct` 字段为准。该轮未改默认
 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期。
 
 ## 17. 下一轮优先级
