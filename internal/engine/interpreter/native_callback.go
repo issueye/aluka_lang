@@ -20,7 +20,8 @@ import (
 // args 为回调参数（map/filter: [x]、[x, i, arr]；reduce: [acc, x] 等）。
 // 参数缺失时按 JS 语义补 undefined（回调参数未传即为 undefined）。
 func (v *VM) execNativeCallback(tmpl *bytecode.FuncTemplate, nc *bytecode.NativeCallbackDesc, args []engine.Value) (engine.Value, error) {
-	stack := make([]engine.Value, 0, 4)
+	var stackBuf [8]engine.Value
+	stack := stackBuf[:0]
 	arg := func(i int) engine.Value {
 		if i < len(args) {
 			return args[i]
@@ -89,6 +90,131 @@ func callCb(vm *VM, fn callableValue, thisArg engine.Value, args []engine.Value)
 	return fn.callWith(thisArg, args)
 }
 
+func callCb2(vm *VM, fn callableValue, thisArg, arg0, arg1 engine.Value) (engine.Value, error) {
+	if vm != nil {
+		if vc, ok := fn.(*vmClosure); ok && vc.tmpl != nil && vc.tmpl.NativeCallback != nil {
+			args := [2]engine.Value{arg0, arg1}
+			return vm.execNativeCallback(vc.tmpl, vc.tmpl.NativeCallback, args[:])
+		}
+	}
+	return fn.callWith(thisArg, []engine.Value{arg0, arg1})
+}
+
+func callCb3(vm *VM, fn callableValue, thisArg, arg0, arg1, arg2 engine.Value) (engine.Value, error) {
+	if vm != nil {
+		if vc, ok := fn.(*vmClosure); ok && vc.tmpl != nil && vc.tmpl.NativeCallback != nil {
+			args := [3]engine.Value{arg0, arg1, arg2}
+			return vm.execNativeCallback(vc.tmpl, vc.tmpl.NativeCallback, args[:])
+		}
+	}
+	return fn.callWith(thisArg, []engine.Value{arg0, arg1, arg2})
+}
+
+func callCb4(vm *VM, fn callableValue, thisArg, arg0, arg1, arg2, arg3 engine.Value) (engine.Value, error) {
+	if vm != nil {
+		if vc, ok := fn.(*vmClosure); ok && vc.tmpl != nil && vc.tmpl.NativeCallback != nil {
+			args := [4]engine.Value{arg0, arg1, arg2, arg3}
+			return vm.execNativeCallback(vc.tmpl, vc.tmpl.NativeCallback, args[:])
+		}
+	}
+	return fn.callWith(thisArg, []engine.Value{arg0, arg1, arg2, arg3})
+}
+
+func nativeCallbackClosure(fn callableValue) (*vmClosure, *bytecode.NativeCallbackDesc, bool) {
+	cl, ok := fn.(*vmClosure)
+	if !ok || cl.tmpl == nil || !cl.tmpl.IsArrow || cl.tmpl.NativeCallback == nil {
+		return nil, nil, false
+	}
+	return cl, cl.tmpl.NativeCallback, true
+}
+
+// tryNumericMap recognizes x => x * K for arrays already containing Numbers.
+func tryNumericMap(fn callableValue, elems []engine.Value) ([]engine.Value, bool) {
+	cl, desc, ok := nativeCallbackClosure(fn)
+	if !ok || len(desc.Instrs) != 3 || desc.Instrs[2].Op != bytecode.CBBinOp ||
+		bytecode.Opcode(desc.Instrs[2].Operand) != bytecode.OpMul {
+		return nil, false
+	}
+	constIndex := -1
+	if desc.Instrs[0].Op == bytecode.CBPushParam0 && desc.Instrs[1].Op == bytecode.CBPushConst {
+		constIndex = int(desc.Instrs[1].Operand)
+	} else if desc.Instrs[1].Op == bytecode.CBPushParam0 && desc.Instrs[0].Op == bytecode.CBPushConst {
+		constIndex = int(desc.Instrs[0].Operand)
+	} else {
+		return nil, false
+	}
+	if constIndex < 0 || constIndex >= len(cl.tmpl.Constants) || cl.tmpl.Constants[constIndex].Type() != engine.TypeNumber {
+		return nil, false
+	}
+	for _, value := range elems {
+		if value == nil || value.Type() != engine.TypeNumber {
+			return nil, false
+		}
+	}
+	factor, _ := cl.tmpl.Constants[constIndex].Float()
+	result := make([]engine.Value, len(elems))
+	for i, value := range elems {
+		number, _ := value.Float()
+		result[i] = engine.Number(number * factor)
+	}
+	return result, true
+}
+
+// tryNumericFilter recognizes x => x % K === C for Number arrays.
+func tryNumericFilter(fn callableValue, elems []engine.Value) ([]engine.Value, bool) {
+	cl, desc, ok := nativeCallbackClosure(fn)
+	if !ok || len(desc.Instrs) != 5 || desc.Instrs[0].Op != bytecode.CBPushParam0 ||
+		desc.Instrs[1].Op != bytecode.CBPushConst || desc.Instrs[2].Op != bytecode.CBBinOp ||
+		bytecode.Opcode(desc.Instrs[2].Operand) != bytecode.OpMod || desc.Instrs[3].Op != bytecode.CBPushConst ||
+		desc.Instrs[4].Op != bytecode.CBCmp || bytecode.Opcode(desc.Instrs[4].Operand) != bytecode.OpStrictEq {
+		return nil, false
+	}
+	modIndex, expectedIndex := int(desc.Instrs[1].Operand), int(desc.Instrs[3].Operand)
+	if modIndex < 0 || modIndex >= len(cl.tmpl.Constants) || expectedIndex < 0 || expectedIndex >= len(cl.tmpl.Constants) ||
+		cl.tmpl.Constants[modIndex].Type() != engine.TypeNumber || cl.tmpl.Constants[expectedIndex].Type() != engine.TypeNumber {
+		return nil, false
+	}
+	for _, value := range elems {
+		if value == nil || value.Type() != engine.TypeNumber {
+			return nil, false
+		}
+	}
+	modulus, _ := cl.tmpl.Constants[modIndex].Float()
+	expected, _ := cl.tmpl.Constants[expectedIndex].Float()
+	result := make([]engine.Value, 0, len(elems))
+	for _, value := range elems {
+		number, _ := value.Float()
+		if math.Mod(number, modulus) == expected {
+			result = append(result, value)
+		}
+	}
+	return result, true
+}
+
+// tryNumericReduce recognizes (acc, x) => acc + x for Number arrays.
+func tryNumericReduce(fn callableValue, elems []engine.Value, initial engine.Value, start int) (engine.Value, bool) {
+	_, desc, ok := nativeCallbackClosure(fn)
+	if !ok || len(desc.Instrs) != 3 || desc.Instrs[0].Op != bytecode.CBPushParam0 ||
+		desc.Instrs[1].Op != bytecode.CBPushParam1 || desc.Instrs[2].Op != bytecode.CBBinOp ||
+		bytecode.Opcode(desc.Instrs[2].Operand) != bytecode.OpAdd {
+		return nil, false
+	}
+	acc, ok := initial.Float()
+	if !ok {
+		return nil, false
+	}
+	for i := start; i < len(elems); i++ {
+		if elems[i] == nil || elems[i].Type() != engine.TypeNumber {
+			return nil, false
+		}
+	}
+	for i := start; i < len(elems); i++ {
+		number, _ := elems[i].Float()
+		acc += number
+	}
+	return engine.Number(acc), true
+}
+
 // nativeArith 执行算术/位运算（复刻主循环 OpAdd..OpUShr 语义）。
 func (v *VM) nativeArith(op bytecode.Opcode, l, r engine.Value) (engine.Value, error) {
 	lb, rb := isBigInt(l), isBigInt(r)
@@ -118,16 +244,6 @@ func (v *VM) nativeArith(op bytecode.Opcode, l, r engine.Value) (engine.Value, e
 		}
 		ln, _ := l.Float()
 		rn, _ := r.Float()
-		if rn == 0 {
-			switch {
-			case ln == 0:
-				return engine.Number(math.NaN()), nil
-			case ln > 0:
-				return engine.Number(math.Inf(1)), nil
-			default:
-				return engine.Number(math.Inf(-1)), nil
-			}
-		}
 		return engine.Number(ln / rn), nil
 	case bytecode.OpMod:
 		if lb || rb {
@@ -150,44 +266,44 @@ func (v *VM) nativeArith(op bytecode.Opcode, l, r engine.Value) (engine.Value, e
 		if lb || rb {
 			return bigintBitwise(l, r, "&")
 		}
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(ln & rn)), nil
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToInt32(ln) & jsToInt32(rn))), nil
 	case bytecode.OpBitOr:
 		if lb || rb {
 			return bigintBitwise(l, r, "|")
 		}
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(ln | rn)), nil
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToInt32(ln) | jsToInt32(rn))), nil
 	case bytecode.OpBitXor:
 		if lb || rb {
 			return bigintBitwise(l, r, "^")
 		}
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(ln ^ rn)), nil
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToInt32(ln) ^ jsToInt32(rn))), nil
 	case bytecode.OpShl:
 		if lb || rb {
 			return bigintBitwise(l, r, "<<")
 		}
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(ln << (uint(rn) & 31))), nil
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToInt32(ln) << (jsToUint32(rn) & 31))), nil
 	case bytecode.OpShr:
 		if lb || rb {
 			return bigintBitwise(l, r, ">>")
 		}
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(ln >> (uint(rn) & 31))), nil
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToInt32(ln) >> (jsToUint32(rn) & 31))), nil
 	case bytecode.OpUShr:
 		if lb || rb {
 			return engine.Undefined(), fmt.Errorf("%w: BigInts have no unsigned right shift, use >> instead", engine.ErrTypeError)
 		}
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(uint32(ln) >> (uint(rn) & 31))), nil
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToUint32(ln) >> (jsToUint32(rn) & 31))), nil
 	}
 	return engine.Undefined(), fmt.Errorf("unsupported native arith op %d", op)
 }

@@ -68,4 +68,5 @@ GC 压力用例 -80%（Shape 修复），合计差距 v3 的 ~99x → **42.5x**�
   **值类型化栈**（数字直接存栈）是下一大收益点（改动大，已列入长期方向）
 
 **下一步候选**：T-2 superinstruction（OpIncLocal 等）、属性访问路径优化、
-值类型化栈。
+值类型化栈。JIT 方向的分层路线、Native 可行性门禁和验收指标见
+[`docs/jit-performance-optimization-plan.md`](jit-performance-optimization-plan.md)。

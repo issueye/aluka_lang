@@ -628,7 +628,7 @@ func (interp *Interpreter) setupArrayProto() {
 		vm := interp.currentVM
 		elems := arr.Elems()
 		for i, e := range elems {
-			_, _ = callCb(vm, fn, thisArg, []engine.Value{e, engine.IntValue(i), arr})
+			_, _ = callCb3(vm, fn, thisArg, e, engine.IntValue(i), arr)
 		}
 		return engine.Undefined(), nil
 	}))
@@ -644,9 +644,14 @@ func (interp *Interpreter) setupArrayProto() {
 		thisArg := argsThis(args) // N22-A2
 		elems := arr.Elems()
 		vm := interp.currentVM
+		if result, fast := tryNumericMap(fn, elems); fast {
+			out := engine.NewArray(result)
+			engine.SetProto(out, interp.arrayProto)
+			return out, nil
+		}
 		result := make([]engine.Value, len(elems))
 		for i, e := range elems {
-			v, err := callCb(vm, fn, thisArg, []engine.Value{e, engine.IntValue(i), arr})
+			v, err := callCb3(vm, fn, thisArg, e, engine.IntValue(i), arr)
 			if err != nil {
 				return nil, err
 			}
@@ -668,9 +673,14 @@ func (interp *Interpreter) setupArrayProto() {
 		thisArg := argsThis(args) // N22-A2
 		vm := interp.currentVM
 		elems := arr.Elems()
+		if result, fast := tryNumericFilter(fn, elems); fast {
+			out := engine.NewArray(result)
+			engine.SetProto(out, interp.arrayProto)
+			return out, nil
+		}
 		var result []engine.Value
 		for i, e := range elems {
-			v, err := callCb(vm, fn, thisArg, []engine.Value{e, engine.IntValue(i), arr})
+			v, err := callCb3(vm, fn, thisArg, e, engine.IntValue(i), arr)
 			if err != nil {
 				return nil, err
 			}
@@ -704,10 +714,13 @@ func (interp *Interpreter) setupArrayProto() {
 			acc = elems[0]
 			startIdx = 1
 		}
+		if result, fast := tryNumericReduce(fn, elems, acc, startIdx); fast {
+			return result, nil
+		}
 		vm := interp.currentVM
 		for i := startIdx; i < len(elems); i++ {
 			// Node 语义：reduce 无 thisArg 参数（callback 的 this 为 undefined）。
-			v, err := callCb(vm, fn, engine.Undefined(), []engine.Value{acc, elems[i], engine.IntValue(i), arr})
+			v, err := callCb4(vm, fn, engine.Undefined(), acc, elems[i], engine.IntValue(i), arr)
 			if err != nil {
 				return nil, err
 			}

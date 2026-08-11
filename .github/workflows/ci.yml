@@ -68,6 +68,54 @@ jobs:
           cd ../..
           ALUKA=/tmp/aluka bash tests/conformance/express/run.sh
 
+  # JIT Linux amd64 门禁：显式覆盖 W^X、GC、异步抢占和重复运行稳定性。
+  # 该 job 不替代全仓 test，而是让 Native JIT 的平台假设在真实 Linux runner 上可见地失败。
+  jit-linux:
+    name: JIT Linux amd64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Native JIT tests
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./internal/engine/jit/... ./internal/engine/interpreter -count=1
+
+      - name: Native JIT race and safepoint tests
+        env:
+          # Go race detector requires cgo; the normal Native JIT tests above
+          # remain CGO-disabled to match the shipped binary configuration.
+          CGO_ENABLED: "1"
+        run: >-
+          go test -race ./internal/engine/jit/... ./internal/engine/interpreter
+          -run 'JIT|Trace|Native|Property|ArrayPush|ClosureIncrement|NativeCallback|Safepoint|OOM|ConcurrentGC'
+          -count=1
+
+      - name: Repeat native JIT and GC tests
+        env:
+          CGO_ENABLED: "0"
+          GODEBUG: "asyncpreemptoff=0"
+        run: >-
+          go test ./internal/engine/jit/... ./internal/engine/interpreter
+          -run 'JIT|Trace|Native|Safepoint|OOM|ConcurrentGC'
+          -count=5
+
+      - name: Linux auto JIT CLI smoke test
+        env:
+          CGO_ENABLED: "0"
+        shell: bash
+        run: |
+          go build -o /tmp/aluka ./cmd/aluka
+          OUT=$(/tmp/aluka --jit=auto --jit-threshold=1 --jit-backedge-threshold=2 -e \
+            'function sum(n){let t=0; for(let i=0;i<n;i++) t+=i; return t} console.log(sum(100))' 2>&1)
+          test "$OUT" = "4950"
+
   # Lint（仅 ubuntu）
   lint:
     name: Lint

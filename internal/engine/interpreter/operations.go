@@ -8,6 +8,24 @@ import (
 	"github.com/aluka-lang/aluka/internal/engine"
 )
 
+const uint32Range = 4294967296.0
+
+// jsToUint32/jsToInt32 implement the Number conversion used by JavaScript
+// bitwise operators. Host-sized int conversion is not equivalent on 64-bit
+// systems (for example, 2147483648 | 0 must become -2147483648).
+func jsToUint32(n float64) uint32 {
+	if math.IsNaN(n) || math.IsInf(n, 0) || n == 0 {
+		return 0
+	}
+	n = math.Mod(math.Trunc(n), uint32Range)
+	if n < 0 {
+		n += uint32Range
+	}
+	return uint32(n)
+}
+
+func jsToInt32(n float64) int32 { return int32(jsToUint32(n)) }
+
 // applyBinaryOp performs a JS binary operation.
 func applyBinaryOp(op string, l, r engine.Value) engine.Value {
 	switch op {
@@ -33,12 +51,6 @@ func applyBinaryOp(op string, l, r engine.Value) engine.Value {
 	case "/":
 		ln, _ := l.Float()
 		rn, _ := r.Float()
-		if rn == 0 {
-			if ln == 0 {
-				return engine.Number(math.NaN())
-			}
-			return engine.Number(math.Inf(1))
-		}
 		return engine.Number(ln / rn)
 	case "%":
 		ln, _ := l.Float()
@@ -68,29 +80,29 @@ func applyBinaryOp(op string, l, r engine.Value) engine.Value {
 	case ">=":
 		return engine.Boolean(compareValues(l, r) >= 0)
 	case "&":
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(ln & rn))
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToInt32(ln) & jsToInt32(rn)))
 	case "|":
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(ln | rn))
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToInt32(ln) | jsToInt32(rn)))
 	case "^":
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(ln ^ rn))
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToInt32(ln) ^ jsToInt32(rn)))
 	case "<<":
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(ln << (uint(rn) & 31)))
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToInt32(ln) << (jsToUint32(rn) & 31)))
 	case ">>":
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(ln >> (uint(rn) & 31)))
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToInt32(ln) >> (jsToUint32(rn) & 31)))
 	case ">>>":
-		ln, _ := l.Int()
-		rn, _ := r.Int()
-		return engine.Number(float64(uint32(ln) >> (uint(rn) & 31)))
+		ln, _ := l.Float()
+		rn, _ := r.Float()
+		return engine.Number(float64(jsToUint32(ln) >> (jsToUint32(rn) & 31)))
 	case "in":
 		if o, ok := r.AsObject(); ok {
 			key := propertyKeyOf(l)
@@ -292,7 +304,7 @@ func jsStringToNumber(s string) float64 {
 // toInt32 converts a value to a 32-bit integer (JS ToInt32).
 func toInt32(v engine.Value) int32 {
 	f, _ := v.Float()
-	return int32(f)
+	return jsToInt32(f)
 }
 
 // formatNumber formats a float64 like JS Number.prototype.toString.

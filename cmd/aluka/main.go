@@ -29,6 +29,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/engine/jit"
 	"github.com/aluka-lang/aluka/internal/engine/parser"
 	"github.com/aluka-lang/aluka/internal/monitor"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
@@ -44,6 +45,19 @@ var profileStop func()
 
 // icStats 启用 IC 命中统计输出（--ic-stats，O1 验收）。
 var icStats bool
+
+var (
+	jitMode                     = jit.Off
+	jitThreshold         uint32 = 1000
+	jitBackedgeThreshold uint32 = 10000
+	jitTraceBudget       uint32 = 65536
+	jitCodeCacheBytes    uint64 = 4 << 20
+	jitDumpMode                 = jit.DumpOff
+	jitVerify            bool
+	jitStatsOut          bool
+	jitLast              jit.Stats
+	jitSeen              bool
+)
 
 // 监控器（--monitor）与内存上限（--max-memory）状态。
 var (
@@ -111,6 +125,117 @@ func main() {
 		}
 	}
 	args = filtered
+	// JIT controls are global switches and are removed before subcommand/file
+	// arguments are handed to the loader.
+	filtered = args[:0]
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--jit-stats":
+			jitStatsOut = true
+		case a == "--jit-dump":
+			if i+1 >= len(args) {
+				fatalErr("aluka: missing value after --jit-dump")
+			}
+			i++
+			dump, err := jit.ParseDumpMode(args[i])
+			if err != nil {
+				fatalErr("aluka: " + err.Error())
+			}
+			jitDumpMode = dump
+		case strings.HasPrefix(a, "--jit-dump="):
+			dump, err := jit.ParseDumpMode(strings.TrimPrefix(a, "--jit-dump="))
+			if err != nil {
+				fatalErr("aluka: " + err.Error())
+			}
+			jitDumpMode = dump
+		case a == "--jit":
+			if i+1 >= len(args) {
+				fatalErr("aluka: missing value after --jit")
+			}
+			i++
+			mode, err := jit.ParseMode(args[i])
+			if err != nil {
+				fatalErr("aluka: " + err.Error())
+			}
+			jitMode = mode
+		case strings.HasPrefix(a, "--jit="):
+			mode, err := jit.ParseMode(strings.TrimPrefix(a, "--jit="))
+			if err != nil {
+				fatalErr("aluka: " + err.Error())
+			}
+			jitMode = mode
+		case a == "--jit-threshold":
+			if i+1 >= len(args) {
+				fatalErr("aluka: missing value after --jit-threshold")
+			}
+			i++
+			n, err := strconv.ParseUint(args[i], 10, 32)
+			if err != nil || n == 0 {
+				fatalErr("aluka: --jit-threshold must be a positive integer")
+			}
+			jitThreshold = uint32(n)
+		case strings.HasPrefix(a, "--jit-threshold="):
+			n, err := strconv.ParseUint(strings.TrimPrefix(a, "--jit-threshold="), 10, 32)
+			if err != nil || n == 0 {
+				fatalErr("aluka: --jit-threshold must be a positive integer")
+			}
+			jitThreshold = uint32(n)
+		case a == "--jit-backedge-threshold":
+			if i+1 >= len(args) {
+				fatalErr("aluka: missing value after --jit-backedge-threshold")
+			}
+			i++
+			n, err := strconv.ParseUint(args[i], 10, 32)
+			if err != nil || n == 0 {
+				fatalErr("aluka: --jit-backedge-threshold must be a positive integer")
+			}
+			jitBackedgeThreshold = uint32(n)
+		case strings.HasPrefix(a, "--jit-backedge-threshold="):
+			n, err := strconv.ParseUint(strings.TrimPrefix(a, "--jit-backedge-threshold="), 10, 32)
+			if err != nil || n == 0 {
+				fatalErr("aluka: --jit-backedge-threshold must be a positive integer")
+			}
+			jitBackedgeThreshold = uint32(n)
+		case a == "--jit-trace-budget":
+			if i+1 >= len(args) {
+				fatalErr("aluka: missing value after --jit-trace-budget")
+			}
+			i++
+			n, err := strconv.ParseUint(args[i], 10, 32)
+			if err != nil || n == 0 {
+				fatalErr("aluka: --jit-trace-budget must be a positive integer")
+			}
+			jitTraceBudget = uint32(n)
+		case strings.HasPrefix(a, "--jit-trace-budget="):
+			n, err := strconv.ParseUint(strings.TrimPrefix(a, "--jit-trace-budget="), 10, 32)
+			if err != nil || n == 0 {
+				fatalErr("aluka: --jit-trace-budget must be a positive integer")
+			}
+			jitTraceBudget = uint32(n)
+		case a == "--jit-code-cache":
+			if i+1 >= len(args) {
+				fatalErr("aluka: missing value after --jit-code-cache")
+			}
+			i++
+			n, err := parseMemorySize(args[i])
+			if err != nil || n <= 0 {
+				fatalErr("aluka: --jit-code-cache must be a positive byte size")
+			}
+			jitCodeCacheBytes = uint64(n)
+		case strings.HasPrefix(a, "--jit-code-cache="):
+			n, err := parseMemorySize(strings.TrimPrefix(a, "--jit-code-cache="))
+			if err != nil || n <= 0 {
+				fatalErr("aluka: --jit-code-cache must be a positive byte size")
+			}
+			jitCodeCacheBytes = uint64(n)
+		default:
+			filtered = append(filtered, a)
+		}
+	}
+	args = filtered
+	jitVerify = os.Getenv("ALUKA_JIT_VERIFY") == "1"
+	interpreter.SetDefaultJITConfig(jit.Config{Mode: jitMode, Threshold: jitThreshold, BackedgeThreshold: jitBackedgeThreshold, TraceBudget: jitTraceBudget, CodeCacheBytes: jitCodeCacheBytes, Verify: jitVerify, Stats: jitStatsOut, Dump: jitDumpMode})
 
 	// 监控器与内存上限（全局开关，任意位置）：
 	//   --monitor[=interval]            启用指标监控（interval 如 500ms/1s；默认仅终报）
@@ -420,6 +545,13 @@ func runModule(path string, vm, disableCache bool) error {
 			printICStats(vmv.ICStats())
 		}
 	}
+	if jitStatsOut {
+		if vmv, ok := ctx.(*interpreter.VM); ok {
+			jitLast = vmv.JITStats()
+			jitSeen = true
+			printJITStats(jitLast)
+		}
+	}
 	return nil
 }
 
@@ -436,6 +568,21 @@ func printICStats(s engine.ICStats) {
 		s.GetHit, s.GetHit+s.GetMiss, pct(s.GetHit, s.GetMiss),
 		s.SetHit, s.SetHit+s.SetMiss, pct(s.SetHit, s.SetMiss),
 		s.CallHit, s.CallHit+s.CallMiss, pct(s.CallHit, s.CallMiss))
+}
+
+func printJITStats(s jit.Stats) {
+	fmt.Print(formatJITStatsSummary(s))
+	for _, rejection := range s.RejectionReasons {
+		fmt.Printf("JIT rejection: tier=%s count=%d reason=%q\n", rejection.Tier, rejection.Count, rejection.Reason)
+	}
+	for _, deopt := range s.DeoptExits {
+		fmt.Printf("JIT deopt: function=%q backedgePC=%d exitID=%d resumePC=%d count=%d\n", deopt.Function, deopt.BackedgePC, deopt.ExitID, deopt.ResumePC, deopt.Count)
+	}
+}
+
+func formatJITStatsSummary(s jit.Stats) string {
+	return fmt.Sprintf("JIT stats: mode=%s threshold=%d backedgeThreshold=%d traceBudget=%d codeCacheLimit=%d calls=%d backedges=%d candidates=%d compileNanos=%d compiled=%d rejected=%d executed=%d nativeCompiled=%d nativeCompileNanos=%d nativeRejected=%d nativeExecuted=%d nativeYields=%d nativeCodeBytes=%d nativeEvictions=%d backgroundQueued=%d backgroundCompleted=%d backgroundDiscarded=%d calleeSpecialized=%d calleeInlined=%d calleeExecuted=%d calleeGuardFailures=%d calleePICAdds=%d calleePICHits=%d tracesCompiled=%d traceCompileNanos=%d tracesRejected=%d tracesExecuted=%d traceYields=%d nativeTracesCompiled=%d nativeTraceCompileNanos=%d nativeTracesRejected=%d nativeTracesExecuted=%d nativeTraceYields=%d safepointPolls=%d interruptions=%d noopCallSites=%d methodCallSites=%d arrayPushSites=%d arrayPushYields=%d closureUpvalueSites=%d closureUpvalueYields=%d verifyChecks=%d verifyFailures=%d guardFailures=%d quickGuardDisabled=%d traceGuardDisabled=%d nativeGuardDisabled=%d nativeTraceGuardDisabled=%d calleeGuardDisabled=%d errors=%d lastError=%q lastNativeError=%q\n",
+		s.Mode.String(), s.Threshold, s.BackedgeThreshold, s.TraceBudget, s.CodeCacheLimit, s.Calls, s.Backedges, s.Candidates, s.CompileNanos, s.Compiled, s.Rejected, s.Executed, s.NativeCompiled, s.NativeCompileNanos, s.NativeRejected, s.NativeExecuted, s.NativeYields, s.NativeCodeBytes, s.NativeEvictions, s.BackgroundQueued, s.BackgroundCompleted, s.BackgroundDiscarded, s.CalleeSpecialized, s.CalleeInlined, s.CalleeExecuted, s.CalleeGuardFailures, s.CalleePICAdds, s.CalleePICHits, s.TracesCompiled, s.TraceCompileNanos, s.TracesRejected, s.TracesExecuted, s.TraceYields, s.NativeTracesCompiled, s.NativeTraceCompileNanos, s.NativeTracesRejected, s.NativeTracesExecuted, s.NativeTraceYields, s.SafepointPolls, s.Interruptions, s.NoopCallSites, s.MethodCallSites, s.ArrayPushSites, s.ArrayPushYields, s.ClosureUpvalueSites, s.ClosureUpvalueYields, s.VerifyChecks, s.VerifyFailures, s.GuardFailures, s.QuickGuardDisabled, s.TraceGuardDisabled, s.NativeGuardDisabled, s.NativeTraceGuardDisabled, s.CalleeGuardDisabled, s.Errors, s.LastError, s.LastNativeError)
 }
 
 // cmdTest 实现 `aluka test` 子命令：发现并运行测试文件（node:test）。
@@ -1326,6 +1473,13 @@ func execute(code string, filename string, vm bool) error {
 	if vmCtx, ok := ctx.(interface{ RunLoop() }); ok {
 		vmCtx.RunLoop()
 	}
+	if jitStatsOut {
+		if vmv, ok := ctx.(*interpreter.VM); ok {
+			jitLast = vmv.JITStats()
+			jitSeen = true
+			printJITStats(jitLast)
+		}
+	}
 
 	// 打印非 undefined 的求值结果（-e 模式）
 	if !result.IsUndefined() {
@@ -1361,6 +1515,13 @@ OPTIONS:
     --no-cache           Disable bytecode disk cache
     --profile <path>     Write CPU profile (heap dump to <path>.heap)
     --ic-stats           Print inline-cache hit rates on exit
+    --jit=off|quick|auto Enable JIT tier (default off)
+    --jit-threshold=<n>  Compile a hot leaf after n calls (default 1000)
+    --jit-backedge-threshold=<n> Compile a numeric loop after n backedges (default 10000)
+    --jit-trace-budget=<n> Yield JIT loops after n backedges (default 65536)
+    --jit-code-cache=<size> Native code cache budget (default 4MB)
+    --jit-stats           Print JIT candidate/compile/guard statistics
+    --jit-dump=ir|asm     Dump verified IR or generated native bytes
     --monitor[=interval] Monitor performance/memory/runtime metrics
                          (interval e.g. 500ms/1s for periodic samples;
                          default: final report only)

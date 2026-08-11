@@ -55,11 +55,47 @@ func TestVMArithmetic(t *testing.T) {
 		{"-5", "-5"},
 		{"+5", "5"},
 		{"10 / 3", "3.3333333333333335"},
+		{"1 / -0", "-Infinity"},
+		{"-1 / -0", "Infinity"},
+		{"0 / -0", "NaN"},
 	}
 	for _, c := range cases {
 		got := vmEvalStr(t, c.code)
 		if got != c.want {
 			t.Errorf("VM.Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
+func TestVMNaNUsesJavaScriptFalsySemantics(t *testing.T) {
+	for code, want := range map[string]string{
+		"!NaN":               "true",
+		"Boolean(NaN)":       "false",
+		"NaN ? 'yes' : 'no'": "no",
+		"NaN || 'fallback'":  "fallback",
+	} {
+		if got := vmEvalStr(t, code); got != want {
+			t.Errorf("%s = %q, want %q", code, got, want)
+		}
+	}
+}
+
+func TestVMBitwiseUsesJavaScript32BitSemantics(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{"2147483648 | 0", "-2147483648"},
+		{"-1 >>> 0", "4294967295"},
+		{"4294967296 | 1", "1"},
+		{"1.9 << 1", "2"},
+		{"NaN | 0", "0"},
+		{"-0 ^ 0", "0"},
+		{"~2147483648", "2147483647"},
+	}
+	for _, tc := range cases {
+		if got := vmEvalStr(t, tc.code); got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.code, got, tc.want)
 		}
 	}
 }

@@ -127,7 +127,7 @@ func (n numberValue) Type() ValueType              { return TypeNumber }
 func (n numberValue) String() string               { return formatNumber(float64(n)) }
 func (n numberValue) Int() (int, bool)             { return int(float64(n)), true }
 func (n numberValue) Float() (float64, bool)       { return float64(n), true }
-func (n numberValue) Bool() (bool, bool)           { return float64(n) != 0, true }
+func (n numberValue) Bool() (bool, bool)           { return float64(n) != 0 && !math.IsNaN(float64(n)), true }
 func (n numberValue) IsUndefined() bool            { return false }
 func (n numberValue) IsNull() bool                 { return false }
 func (n numberValue) IsObject() bool               { return false }
@@ -750,6 +750,26 @@ func (a *ArrayValue) Elems() []Value { return a.elems }
 // Append appends a value to the array and updates the length property.
 func (a *ArrayValue) Append(v Value) {
 	a.elems = append(a.elems, v)
+	a.objectValue.setSlot("length", IntValue(len(a.elems)))
+}
+
+// AppendNumberRange appends count consecutive Number values starting at start
+// and updates length once. It is intentionally narrow: the interpreter JIT
+// uses it only after guarding the ArrayValue receiver and loop semantics.
+func (a *ArrayValue) AppendNumberRange(start float64, count int) {
+	if count <= 0 {
+		return
+	}
+	oldLen := len(a.elems)
+	if cap(a.elems)-oldLen < count {
+		grown := make([]Value, oldLen, oldLen+count)
+		copy(grown, a.elems)
+		a.elems = grown
+	}
+	a.elems = a.elems[:oldLen+count]
+	for i := 0; i < count; i++ {
+		a.elems[oldLen+i] = numberValue(start + float64(i))
+	}
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 

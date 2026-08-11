@@ -1,0 +1,405 @@
+//go:build amd64 && (windows || linux)
+
+package jit
+
+import (
+	"math"
+	"math/rand"
+	"strings"
+	"testing"
+
+	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/bytecode"
+)
+
+func TestNativeRejectsLocalNotAssignedOnEveryPath(t *testing.T) {
+	p := &Program{
+		NumParams: 1,
+		NumLocals: 3,
+		Code: []Instr{
+			{Op: OpLoadLocal, Operand: 1},
+			{Op: OpConst, Value: 0},
+			{Op: OpLt},
+			{Op: OpJumpFalse, Operand: 6},
+			{Op: OpConst, Value: 1},
+			{Op: OpStoreLocal, Operand: 2},
+			{Op: OpLoadLocal, Operand: 2},
+			{Op: OpReturn},
+		},
+	}
+	if err := p.Verify(); err != nil {
+		t.Fatal(err)
+	}
+	err := p.CompileNative()
+	if err == nil || !strings.Contains(err.Error(), "not a proven number") {
+		t.Fatalf("CompileNative error = %v", err)
+	}
+}
+
+func TestNativeSwapAndNeg(t *testing.T) {
+	p := &Program{
+		NumLocals: 1,
+		Code: []Instr{
+			{Op: OpConst, Value: 1},
+			{Op: OpConst, Value: 2},
+			{Op: OpSwap},
+			{Op: OpSub},
+			{Op: OpNeg},
+			{Op: OpReturn},
+		},
+	}
+	if err := p.Verify(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.CompileNative(); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	got, reason, err := p.ExecuteNative(engine.Undefined(), nil)
+	if err != nil || reason != Executed || got.String() != "-1" {
+		t.Fatalf("got=%v reason=%v err=%v", got, reason, err)
+	}
+}
+
+func TestNativeUnaryPlusPreservesNumberAndGuardsOtherTypes(t *testing.T) {
+	p := &Program{
+		NumParams: 1,
+		NumLocals: 2,
+		Code: []Instr{
+			{Op: OpLoadLocal, Operand: 1},
+			{Op: OpUnaryPlus},
+			{Op: OpReturn},
+		},
+	}
+	if err := p.Verify(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.CompileNative(); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	negativeZero := math.Copysign(0, -1)
+	got, reason, err := p.ExecuteNative(engine.Undefined(), []engine.Value{engine.Number(negativeZero)})
+	if err != nil || reason != Executed {
+		t.Fatalf("number result=%v reason=%v err=%v", got, reason, err)
+	}
+	number, _ := got.Float()
+	if math.Float64bits(number) != math.Float64bits(negativeZero) {
+		t.Fatalf("unary plus lost -0: bits=%x", math.Float64bits(number))
+	}
+	if _, reason, err := p.ExecuteNative(engine.Undefined(), []engine.Value{engine.Str("7")}); err != nil || reason != GuardFailed {
+		t.Fatalf("string reason=%v err=%v, want GuardFailed", reason, err)
+	}
+}
+
+func TestNativeLogicalKeepBranchesMatchQuickTruthiness(t *testing.T) {
+	inputs := []float64{0, math.Copysign(0, -1), math.NaN(), 2, -3, math.Inf(1)}
+	for _, tt := range []struct {
+		name string
+		op   Op
+	}{
+		{name: "and", op: OpJumpFalseKeep},
+		{name: "or", op: OpJumpTrueKeep},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Program{
+				NumParams: 1,
+				NumLocals: 2,
+				Code: []Instr{
+					{Op: OpLoadLocal, Operand: 1},
+					{Op: tt.op, Operand: 3},
+					{Op: OpConst, Value: 7},
+					{Op: OpReturn},
+				},
+			}
+			if err := p.Verify(); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.CompileNative(); err != nil {
+				t.Fatal(err)
+			}
+			defer p.Close()
+			for _, input := range inputs {
+				args := []engine.Value{engine.Number(input)}
+				quick, quickReason, quickErr := p.Execute(engine.Undefined(), args)
+				native, nativeReason, nativeErr := p.ExecuteNative(engine.Undefined(), args)
+				if quickErr != nil || nativeErr != nil || quickReason != Executed || nativeReason != Executed {
+					t.Fatalf("input=%v quick=(%v,%v) native=(%v,%v)", input, quickReason, quickErr, nativeReason, nativeErr)
+				}
+				quickNumber, _ := quick.Float()
+				nativeNumber, _ := native.Float()
+				if math.IsNaN(quickNumber) && math.IsNaN(nativeNumber) {
+					continue
+				}
+				if math.Float64bits(quickNumber) != math.Float64bits(nativeNumber) {
+					t.Fatalf("input=%v quick=%v bits=%x native=%v bits=%x", input, quickNumber, math.Float64bits(quickNumber), nativeNumber, math.Float64bits(nativeNumber))
+				}
+			}
+		})
+	}
+}
+
+func TestNativeNullishKeepSpecializesNumbersAndGuardsNullish(t *testing.T) {
+	p := &Program{
+		NumParams: 1,
+		NumLocals: 2,
+		Code: []Instr{
+			{Op: OpLoadLocal, Operand: 1},
+			{Op: OpJumpNullishKeep, Operand: 3},
+			{Op: OpConst, Value: 7},
+			{Op: OpReturn},
+		},
+	}
+	if err := p.Verify(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.CompileNative(); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	for _, input := range []float64{0, math.Copysign(0, -1), math.NaN(), 2, math.Inf(1)} {
+		args := []engine.Value{engine.Number(input)}
+		quick, quickReason, quickErr := p.Execute(engine.Undefined(), args)
+		native, nativeReason, nativeErr := p.ExecuteNative(engine.Undefined(), args)
+		if quickErr != nil || nativeErr != nil || quickReason != Executed || nativeReason != Executed {
+			t.Fatalf("input=%v quick=(%v,%v) native=(%v,%v)", input, quickReason, quickErr, nativeReason, nativeErr)
+		}
+		quickNumber, _ := quick.Float()
+		nativeNumber, _ := native.Float()
+		if math.IsNaN(quickNumber) && math.IsNaN(nativeNumber) {
+			continue
+		}
+		if math.Float64bits(quickNumber) != math.Float64bits(nativeNumber) {
+			t.Fatalf("input=%v quick=%v bits=%x native=%v bits=%x", input, quickNumber, math.Float64bits(quickNumber), nativeNumber, math.Float64bits(nativeNumber))
+		}
+	}
+	for _, input := range []engine.Value{engine.Undefined(), engine.Null()} {
+		quick, quickReason, quickErr := p.Execute(engine.Undefined(), []engine.Value{input})
+		if quickErr != nil || quickReason != Executed || quick.String() != "7" {
+			t.Fatalf("nullish quick input=%v got=%v reason=%v err=%v", input, quick, quickReason, quickErr)
+		}
+		if _, reason, err := p.ExecuteNative(engine.Undefined(), []engine.Value{input}); err != nil || reason != GuardFailed {
+			t.Fatalf("nullish native input=%v reason=%v err=%v, want GuardFailed", input, reason, err)
+		}
+	}
+}
+
+func TestNativeMatchesQuickForRandomNumericIR(t *testing.T) {
+	rng := rand.New(rand.NewSource(0xA11CA))
+	inputs := []float64{0, math.Copysign(0, -1), 1, -1, 0.5, -3.25, math.Inf(1), math.Inf(-1), math.NaN()}
+	for programIndex := 0; programIndex < 40; programIndex++ {
+		code := randomNumericExpression(rng, 3)
+		code = append(code, Instr{Op: OpReturn})
+		p := &Program{NumParams: 2, NumLocals: 3, SelfUpvalue: -1, Code: code}
+		if err := p.Verify(); err != nil {
+			t.Fatalf("program %d verify: %v", programIndex, err)
+		}
+		if err := p.CompileNative(); err != nil {
+			t.Fatalf("program %d native compile: %v", programIndex, err)
+		}
+		for inputIndex := 0; inputIndex < 30; inputIndex++ {
+			a := inputs[rng.Intn(len(inputs))]
+			b := inputs[rng.Intn(len(inputs))]
+			args := []engine.Value{engine.Number(a), engine.Number(b)}
+			quick, quickReason, quickErr := p.Execute(engine.Undefined(), args)
+			native, nativeReason, nativeErr := p.ExecuteNative(engine.Undefined(), args)
+			if quickErr != nil || nativeErr != nil || quickReason != Executed || nativeReason != Executed {
+				t.Fatalf("program=%d input=%d quick=(%v,%v) native=(%v,%v)", programIndex, inputIndex, quickReason, quickErr, nativeReason, nativeErr)
+			}
+			quickNumber, _ := quick.Float()
+			nativeNumber, _ := native.Float()
+			if math.IsNaN(quickNumber) && math.IsNaN(nativeNumber) {
+				continue
+			}
+			if math.Float64bits(quickNumber) != math.Float64bits(nativeNumber) {
+				t.Fatalf("program=%d input=(%v,%v) quick=%v native=%v", programIndex, a, b, quickNumber, nativeNumber)
+			}
+		}
+		if err := p.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestNativeNumericComparisonBranches(t *testing.T) {
+	tests := []struct {
+		op     Op
+		a, b   float64
+		result float64
+	}{
+		{OpEq, 2, 2, 1},
+		{OpEq, math.NaN(), math.NaN(), 0},
+		{OpNe, 2, 2, 0},
+		{OpNe, 2, 3, 1},
+		{OpNe, math.NaN(), math.NaN(), 1},
+		{OpStrictEq, 2, 2, 1},
+		{OpStrictEq, math.NaN(), math.NaN(), 0},
+		{OpStrictNe, 2, 3, 1},
+		{OpStrictNe, math.NaN(), math.NaN(), 1},
+		{OpLt, 1, 2, 1},
+		{OpLt, math.NaN(), 2, 0},
+		{OpLe, 2, 2, 1},
+		{OpLe, 3, 2, 0},
+		{OpGt, 3, 2, 1},
+		{OpGt, math.NaN(), 2, 0},
+		{OpGe, 2, 2, 1},
+		{OpGe, 1, 2, 0},
+	}
+	for _, tt := range tests {
+		p := &Program{
+			NumParams: 2,
+			NumLocals: 3,
+			Code: []Instr{
+				{Op: OpLoadLocal, Operand: 1},
+				{Op: OpLoadLocal, Operand: 2},
+				{Op: tt.op},
+				{Op: OpJumpFalse, Operand: 6},
+				{Op: OpConst, Value: 1},
+				{Op: OpReturn},
+				{Op: OpConst, Value: 0},
+				{Op: OpReturn},
+			},
+		}
+		if err := p.Verify(); err != nil {
+			t.Fatalf("op=%v verify: %v", tt.op, err)
+		}
+		if err := p.CompileNative(); err != nil {
+			t.Fatalf("op=%v compile: %v", tt.op, err)
+		}
+		args := []engine.Value{engine.Number(tt.a), engine.Number(tt.b)}
+		got, reason, err := p.ExecuteNative(engine.Undefined(), args)
+		_ = p.Close()
+		if err != nil || reason != Executed || got.String() != engine.Number(tt.result).String() {
+			t.Fatalf("op=%v input=(%v,%v) got=%v reason=%v err=%v", tt.op, tt.a, tt.b, got, reason, err)
+		}
+	}
+}
+
+func TestNativeTraceReturnsPreciseExitAndDirtyLocals(t *testing.T) {
+	tmpl := template(
+		emit(bytecode.OpLoadLocal, 1), emit(bytecode.OpLoadLocal, 2),
+		emit(bytecode.OpLt, 0), emit(bytecode.OpJmpFalsePop, 36),
+		emit(bytecode.OpLoadLocal, 1), emit(bytecode.OpPushInt, 1),
+		emit(bytecode.OpAdd, 0), emit(bytecode.OpStoreLocal, 1),
+		emit(bytecode.OpLoadLocal, 1), emit(bytecode.OpPushInt, 2),
+		emit(bytecode.OpEq, 0), emit(bytecode.OpJmpTruePop, 8),
+		emit(bytecode.OpJmp, (1<<24)-52),
+		emit(bytecode.OpReturnUndef, 0), emit(bytecode.OpReturnUndef, 0),
+	)
+	trace, err := CompileTrace(tmpl, 0, 48)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trace.CompileNative(); err != nil {
+		t.Fatal(err)
+	}
+	defer trace.Close()
+
+	firstLocals := []engine.Value{engine.Undefined(), engine.Number(10), engine.Number(5)}
+	first, reason, yields, err := trace.ExecuteNativeBudgetDetailed(firstLocals, 3)
+	if err != nil || reason != Executed || yields != 0 || first.ID != 0 || first.ResumePC != 52 || firstLocals[1].String() != "10" {
+		t.Fatalf("first exit=%+v reason=%v yields=%d err=%v locals=%v", first, reason, yields, err, firstLocals)
+	}
+
+	secondLocals := []engine.Value{engine.Undefined(), engine.Number(0), engine.Number(5)}
+	second, reason, yields, err := trace.ExecuteNativeBudgetDetailed(secondLocals, 1)
+	if err != nil || reason != Executed || yields == 0 || second.ID != 1 || second.ResumePC != 56 || secondLocals[1].String() != "2" {
+		t.Fatalf("second exit=%+v reason=%v yields=%d err=%v locals=%v", second, reason, yields, err, secondLocals)
+	}
+}
+
+func TestNativeTraceExitRestoresExternalOperandStack(t *testing.T) {
+	trace, err := CompileTrace(externalStackTraceTemplate(), 0, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trace.CompileNative(); err != nil {
+		t.Fatal(err)
+	}
+	defer trace.Close()
+	for _, input := range []float64{0, math.Copysign(0, -1), math.NaN()} {
+		quickLocals := []engine.Value{engine.Undefined(), engine.Number(input), engine.Number(0)}
+		nativeLocals := append([]engine.Value(nil), quickLocals...)
+		quickExit, quickReason, quickErr := trace.ExecuteBudgetDetailed(quickLocals, 1)
+		nativeExit, nativeReason, _, nativeErr := trace.ExecuteNativeBudgetDetailed(nativeLocals, 1)
+		if quickErr != nil || nativeErr != nil || quickReason != Executed || nativeReason != Executed ||
+			!SameDeoptExit(quickExit, nativeExit) {
+			t.Fatalf("input=%v quick=(%+v,%v,%v) native=(%+v,%v,%v)",
+				input, quickExit, quickReason, quickErr, nativeExit, nativeReason, nativeErr)
+		}
+	}
+}
+
+func TestNativePropertyWriteVerifyRestoresQuickResultOnMismatch(t *testing.T) {
+	p := &Program{
+		NumLocals: 3,
+		Code: []Instr{
+			{Op: OpLoadLocal, Operand: 2},
+			{Op: OpLoadLocal, Operand: 1},
+			{Op: OpSetProp, Name: "a"},
+			{Op: OpLoadLocal, Operand: 2},
+			{Op: OpConst, Value: 1},
+			{Op: OpAdd},
+			{Op: OpStoreLocal, Operand: 2},
+			{Op: OpLoadLocal, Operand: 2},
+			{Op: OpConst, Value: 3},
+			{Op: OpLt},
+			{Op: OpJumpTrue, Operand: 0},
+			{Op: OpTraceExit, Operand: 0},
+		},
+		propertyGuards: make([]propertyGuard, 12),
+	}
+	if err := p.Verify(); err != nil {
+		t.Fatal(err)
+	}
+	trace := &TraceProgram{
+		program: p,
+		written: []bool{false, false, true},
+		exits:   []DeoptExit{{ID: 0, ResumePC: 48, LocalSlots: []uint16{2}}},
+	}
+	if err := trace.CompileNative(); err != nil {
+		t.Fatal(err)
+	}
+	defer trace.Close()
+	if !trace.HasPropertyWrites() || len(p.nativePlan.properties) != 1 {
+		t.Fatalf("unexpected native property plan: %+v", p.nativePlan)
+	}
+
+	// The machine code still uses the original frame slot. Moving only the
+	// writeback plan deliberately creates a verifier mismatch.
+	p.nativePlan.properties[0].frameLocal++
+	obj := engine.NewObject()
+	if err := obj.Set("a", engine.Number(0)); err != nil {
+		t.Fatal(err)
+	}
+	locals := []engine.Value{engine.Undefined(), obj, engine.Number(0)}
+	exit, reason, _, checked, matched, err := trace.ExecuteNativeBudgetVerified(locals, 1)
+	if err != nil || reason != Executed || !checked || matched || exit.ID != 0 || exit.ResumePC != 48 {
+		t.Fatalf("exit=%+v reason=%v checked=%t matched=%t err=%v", exit, reason, checked, matched, err)
+	}
+	property, err := obj.Get("a")
+	if err != nil || property.String() != "2" || locals[2].String() != "3" {
+		t.Fatalf("property=%v local=%v err=%v", property, locals[2], err)
+	}
+}
+
+func randomNumericExpression(rng *rand.Rand, depth int) []Instr {
+	if depth == 0 {
+		switch rng.Intn(3) {
+		case 0:
+			return []Instr{{Op: OpLoadLocal, Operand: 1}}
+		case 1:
+			return []Instr{{Op: OpLoadLocal, Operand: 2}}
+		default:
+			return []Instr{{Op: OpConst, Value: float64(rng.Intn(17)-8) / 2}}
+		}
+	}
+	code := randomNumericExpression(rng, depth-1)
+	code = append(code, randomNumericExpression(rng, depth-1)...)
+	ops := [...]Op{OpAdd, OpSub, OpMul, OpDiv}
+	code = append(code, Instr{Op: ops[rng.Intn(len(ops))]})
+	if rng.Intn(4) == 0 {
+		code = append(code, Instr{Op: OpNeg})
+	}
+	return code
+}

@@ -18,6 +18,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/engine/ast"
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
 	"github.com/aluka-lang/aluka/internal/engine/compiler"
+	"github.com/aluka-lang/aluka/internal/engine/jit"
 	"github.com/aluka-lang/aluka/internal/engine/parser"
 )
 
@@ -46,6 +47,20 @@ type VM struct {
 	// （CLI --max-memory 在创建 VM 前解析）。
 	insnsEnabled bool
 	oomEnabled   bool
+
+	jitConfig      jit.Config
+	jitStates      map[*bytecode.FuncTemplate]*quickJITState
+	jitHotCounts   map[*bytecode.FuncTemplate]jitHotCount
+	jitStats       jit.Stats
+	jitGeneration  uint64
+	jitTraces      map[quickTraceKey]*quickTraceState
+	jitNativeBytes uint64
+	jitNativeClock uint64
+	jitRejections  map[jitRejectionKey]uint64
+	jitDeopts      map[jitDeoptKey]uint64
+	jitCompileDone chan nativeCompileResult
+	jitCompileWG   sync.WaitGroup
+	jitPending     int
 }
 
 // EnableCoverage 启用行级覆盖率统计。
@@ -75,12 +90,18 @@ func (v *VM) CoverageLines() map[string]map[int]bool {
 }
 
 type vmFrame struct {
-	tmpl         *bytecode.FuncTemplate
-	pc           int
-	base         int // index in vm.stack of this frame's slot 0
-	upvalues     []*upvalue
-	tryStack     []*vmTryHandler
-	openUpvalues []*upvalue // open upvalues pointing into this frame's locals
+	tmpl               *bytecode.FuncTemplate
+	pc                 int
+	base               int // index in vm.stack of this frame's slot 0
+	upvalues           []*upvalue
+	tryStack           []*vmTryHandler
+	openUpvalues       []*upvalue // open upvalues pointing into this frame's locals
+	jitState           *quickJITState
+	jitGeneration      uint64
+	jitTrace           *quickTraceState
+	jitTracePC         int
+	jitTraceGeneration uint64
+	jitTraceFailed     bool
 }
 
 // upvalue is a closure capture. Open upvalues point at a stack slot; when the
@@ -105,7 +126,18 @@ func NewVM() (*VM, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &VM{interp: interp, callCountEnabled: engine.MetricsEnabled(), insnsEnabled: engine.MetricsEnabled(), oomEnabled: engine.MemoryLimitBytes() != 0}, nil
+	config := defaultJITConfig()
+	return &VM{
+		interp: interp, callCountEnabled: engine.MetricsEnabled(),
+		insnsEnabled: engine.MetricsEnabled(), oomEnabled: engine.MemoryLimitBytes() != 0,
+		jitConfig:     config,
+		jitStates:     make(map[*bytecode.FuncTemplate]*quickJITState),
+		jitHotCounts:  make(map[*bytecode.FuncTemplate]jitHotCount),
+		jitTraces:     make(map[quickTraceKey]*quickTraceState),
+		jitRejections: make(map[jitRejectionKey]uint64), jitGeneration: 1,
+		jitDeopts:      make(map[jitDeoptKey]uint64),
+		jitCompileDone: make(chan nativeCompileResult, 16),
+	}, nil
 }
 
 // bumpCall 计数一次函数调用。监控关闭（默认）时是普通布尔判断，零原子开销；
@@ -160,7 +192,10 @@ func (v *VM) Stop() {
 }
 
 // Close releases context resources (implements engine.Context).
-func (v *VM) Close() error { return nil }
+func (v *VM) Close() error {
+	v.closeJIT()
+	return nil
+}
 
 // Eval parses, compiles, and executes JS source.
 func (v *VM) Eval(src, filename string) (engine.Value, error) {
@@ -519,17 +554,7 @@ func (v *VM) run() (engine.Value, error) {
 				} else {
 					ln, _ := l.Float()
 					rn, _ := r.Float()
-					if rn == 0 {
-						if ln == 0 {
-							v.push(engine.Number(math.NaN()))
-						} else if ln > 0 {
-							v.push(engine.Number(math.Inf(1)))
-						} else {
-							v.push(engine.Number(math.Inf(-1)))
-						}
-					} else {
-						v.push(engine.Number(ln / rn))
-					}
+					v.push(engine.Number(ln / rn))
 				}
 			case bytecode.OpMod:
 				r := v.pop()
@@ -573,9 +598,9 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Int()
-					rn, _ := r.Int()
-					v.push(engine.Number(float64(ln & rn)))
+					ln, _ := l.Float()
+					rn, _ := r.Float()
+					v.push(engine.Number(float64(jsToInt32(ln) & jsToInt32(rn))))
 				}
 			case bytecode.OpBitOr:
 				r := v.pop()
@@ -587,9 +612,9 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Int()
-					rn, _ := r.Int()
-					v.push(engine.Number(float64(ln | rn)))
+					ln, _ := l.Float()
+					rn, _ := r.Float()
+					v.push(engine.Number(float64(jsToInt32(ln) | jsToInt32(rn))))
 				}
 			case bytecode.OpBitXor:
 				r := v.pop()
@@ -601,9 +626,9 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Int()
-					rn, _ := r.Int()
-					v.push(engine.Number(float64(ln ^ rn)))
+					ln, _ := l.Float()
+					rn, _ := r.Float()
+					v.push(engine.Number(float64(jsToInt32(ln) ^ jsToInt32(rn))))
 				}
 			case bytecode.OpShl:
 				r := v.pop()
@@ -615,9 +640,9 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Int()
-					rn, _ := r.Int()
-					v.push(engine.Number(float64(ln << (uint(rn) & 31))))
+					ln, _ := l.Float()
+					rn, _ := r.Float()
+					v.push(engine.Number(float64(jsToInt32(ln) << (jsToUint32(rn) & 31))))
 				}
 			case bytecode.OpShr:
 				r := v.pop()
@@ -629,9 +654,9 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					ln, _ := l.Int()
-					rn, _ := r.Int()
-					v.push(engine.Number(float64(ln >> (uint(rn) & 31))))
+					ln, _ := l.Float()
+					rn, _ := r.Float()
+					v.push(engine.Number(float64(jsToInt32(ln) >> (jsToUint32(rn) & 31))))
 				}
 			case bytecode.OpUShr:
 				r := v.pop()
@@ -640,9 +665,9 @@ func (v *VM) run() (engine.Value, error) {
 					// BigInt 不支持 >>> （无符号右移），抛 TypeError。
 					return v.handleThrow(fmt.Errorf("%w: BigInts have no unsigned right shift, use >> instead", engine.ErrTypeError))
 				}
-				ln, _ := l.Int()
-				rn, _ := r.Int()
-				v.push(engine.Number(float64(uint32(ln) >> (uint(rn) & 31))))
+				ln, _ := l.Float()
+				rn, _ := r.Float()
+				v.push(engine.Number(float64(jsToUint32(ln) >> (jsToUint32(rn) & 31))))
 
 			// --- Unary ---
 			case bytecode.OpNeg:
@@ -657,8 +682,8 @@ func (v *VM) run() (engine.Value, error) {
 				b, _ := v.pop().Bool()
 				v.push(engine.Boolean(!b))
 			case bytecode.OpBitNot:
-				n, _ := v.pop().Int()
-				v.push(engine.Number(float64(^n)))
+				n, _ := v.pop().Float()
+				v.push(engine.Number(float64(^jsToInt32(n))))
 			case bytecode.OpTypeof:
 				v.push(engine.Str(v.pop().Type().String()))
 			case bytecode.OpTypeofGlobal:
@@ -704,7 +729,21 @@ func (v *VM) run() (engine.Value, error) {
 
 			// --- Control flow ---
 			case bytecode.OpJmp:
-				frame.pc = pc + bytecode.InstrSize + bytecode.SignedOperand(operand)
+				target := pc + bytecode.InstrSize + bytecode.SignedOperand(operand)
+				if target < pc && v.jitConfig.Mode != jit.Off {
+					if result, ok, err := v.tryQuickFrame(frame); err != nil {
+						return v.handleThrow(v.interp.goErrorToJSValue(err))
+					} else if ok {
+						return v.doReturn(result), nil
+					}
+					if exitPC, ok, err := v.tryQuickTrace(frame, target, pc); err != nil {
+						return v.handleThrow(v.interp.goErrorToJSValue(err))
+					} else if ok {
+						frame.pc = exitPC
+						break
+					}
+				}
+				frame.pc = target
 			case bytecode.OpJmpTruePop:
 				val := v.pop()
 				if b, _ := val.Bool(); b {
@@ -1236,6 +1275,14 @@ func (v *VM) canFastCall(cl *vmClosure, numArgs int) bool {
 func (v *VM) fastCallClosure(cl *vmClosure, thisVal engine.Value, numArgs, argStart int) (engine.Value, error) {
 	v.bumpCall()
 	tmpl := cl.tmpl
+	if v.jitConfig.Mode != jit.Off && (cl.jitState == nil || !cl.jitState.rejected) {
+		if result, ok, err := v.tryQuickCall(cl, thisVal, v.stack[argStart:argStart+numArgs]); err != nil {
+			return engine.Undefined(), err
+		} else if ok {
+			v.stack = v.stack[:argStart-1]
+			return result, nil
+		}
+	}
 	// 异步上下文恢复：仅当事件循环外（无 JS 帧）调用 JS 闭包时，恢复该闭包
 	// 创建时捕获的异步上下文（与 callClosure 一致；同步 JS 调用帧存在，跳过）。
 	var savedAsyncCtx interface{}
@@ -1681,6 +1728,14 @@ func (v *VM) constructNative(f engine.Function, callee engine.Value, args []engi
 // The callee and args must already be popped from the stack.
 func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Value, asNew bool) (engine.Value, error) {
 	tmpl := cl.tmpl
+	if v.jitConfig.Mode != jit.Off && !asNew && !tmpl.IsAsync && !tmpl.IsGenerator &&
+		(cl.jitState == nil || !cl.jitState.rejected) {
+		if result, ok, err := v.tryQuickCall(cl, thisVal, args); err != nil {
+			return engine.Undefined(), err
+		} else if ok {
+			return result, nil
+		}
+	}
 	// 异步上下文恢复：仅当事件循环外（无 JS 帧）调用 JS 闭包时，恢复该闭包
 	// 创建时捕获的异步上下文（定时器/微任务/IO 回调等）。同步 JS 调用
 	// （帧存在）不恢复——保持当前执行上下文，对应 Node 的 run()/enterWith
@@ -2371,22 +2426,26 @@ var (
 
 // vmClosure is a function value backed by a bytecode template + captured upvalues.
 type vmClosure struct {
-	obj      engine.Object // function object (name, length, prototype, ...)
-	vm       *VM
-	tmpl     *bytecode.FuncTemplate
-	upvalues []*upvalue
-	module   *bytecode.Module // 定义时的 module（OpMakeClosure 内部创建子闭包时用）
-	asyncCtx interface{}      // 创建时捕获的异步上下文（AsyncLocalStorage 传播用）
+	obj           engine.Object // function object (name, length, prototype, ...)
+	vm            *VM
+	tmpl          *bytecode.FuncTemplate
+	upvalues      []*upvalue
+	module        *bytecode.Module // 定义时的 module（OpMakeClosure 内部创建子闭包时用）
+	asyncCtx      interface{}      // 创建时捕获的异步上下文（AsyncLocalStorage 传播用）
+	jitState      *quickJITState   // VM-local hot state; nil while JIT is disabled/cold
+	jitGeneration uint64
 }
 
 // newVMClosure creates a vmClosure with a fresh function object.
 func newVMClosure(vm *VM, tmpl *bytecode.FuncTemplate, upvalues []*upvalue) *vmClosure {
 	c := &vmClosure{
-		obj:      engine.NewObject(),
-		vm:       vm,
-		tmpl:     tmpl,
-		upvalues: upvalues,
-		module:   vm.module,
+		obj:           engine.NewObject(),
+		vm:            vm,
+		tmpl:          tmpl,
+		upvalues:      upvalues,
+		module:        vm.module,
+		jitState:      vm.jitStateFor(tmpl),
+		jitGeneration: vm.jitGeneration,
 	}
 	if AsyncContextCapture != nil {
 		c.asyncCtx = AsyncContextCapture()

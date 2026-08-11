@@ -36,6 +36,34 @@ func TestAcceptArithmetic(t *testing.T) {
 	}
 }
 
+func TestInterpreterNaNUsesJavaScriptFalsySemantics(t *testing.T) {
+	for code, want := range map[string]string{
+		"!NaN":               "true",
+		"NaN ? 'yes' : 'no'": "no",
+		"NaN || 'fallback'":  "fallback",
+	} {
+		if got := evalStr(t, code); got != want {
+			t.Errorf("%s = %q, want %q", code, got, want)
+		}
+	}
+}
+
+func TestInterpreterBitwiseUsesJavaScript32BitSemantics(t *testing.T) {
+	cases := map[string]string{
+		`2147483648 | 0`: "-2147483648",
+		`-1 >>> 0`:       "4294967295",
+		`4294967296 | 1`: "1",
+		`1.9 << 1`:       "2",
+		`NaN | 0`:        "0",
+		`~2147483648`:    "2147483647",
+	}
+	for code, want := range cases {
+		if got := evalStr(t, code); got != want {
+			t.Errorf("%s = %q, want %q", code, got, want)
+		}
+	}
+}
+
 func TestAcceptArrayMap(t *testing.T) {
 	got := evalStr(t, "[1,2,3].map(x=>x*2)")
 	// Result is [ 2, 4, 6 ] (with spaces, like Node.js console output)
@@ -75,6 +103,9 @@ func TestArithmetic(t *testing.T) {
 		{"(2 + 3) * 4", "20"},
 		{"7 % 3", "1"},
 		{"2 ** 3", "8"}, // if supported
+		{"1 / -0", "-Infinity"},
+		{"-1 / -0", "Infinity"},
+		{"0 / -0", "NaN"},
 	}
 	for _, c := range cases {
 		got := evalStr(t, c.code)

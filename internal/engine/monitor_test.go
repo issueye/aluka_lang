@@ -70,13 +70,13 @@ func TestMemoryLimitDetection(t *testing.T) {
 	if !memOverLimit(1) {
 		t.Fatal("memOverLimit(1) = false, want true (any heap exceeds 1 byte)")
 	}
-	if memOverLimit(1<<62) {
+	if memOverLimit(1 << 62) {
 		t.Fatal("memOverLimit(huge) = true, want false")
 	}
 
 	// 看门狗集成：设置极小上限，分配后等待 OOM 标志。
-	oomStrikeLimit = 1000 // 测试期间不强制退出
-	defer func() { oomStrikeLimit = 5 }()
+	SetOOMStrikeLimitForTest(1000) // 测试期间不强制退出
+	defer SetOOMStrikeLimitForTest(5)
 	SetMemoryLimit(1 << 20) // 1MB
 	defer StopMemoryWatchdog()
 	defer SetMemoryLimit(0)

@@ -1,0 +1,60 @@
+package engine
+
+// NumericOwnProperty returns a Number-valued own data property without
+// invoking accessors or walking the prototype chain. It is the only property
+// primitive exposed to the portable JIT tier; callers must guard the returned
+// shape and slot before reusing a cached access.
+func NumericOwnProperty(value Value, key string) (number float64, shapeID uint64, slot int, ok bool) {
+	obj, isObject := value.(*objectValue)
+	if !isObject || obj.shape == nil || obj.deleted != nil && obj.deleted[key] {
+		return 0, 0, 0, false
+	}
+	idx, exists := obj.shape.lookup(key)
+	if !exists || idx < 0 || idx >= len(obj.slots) {
+		return 0, 0, 0, false
+	}
+	property := obj.slots[idx]
+	if property == nil || property.Type() != TypeNumber {
+		return 0, 0, 0, false
+	}
+	number, _ = property.Float()
+	return number, obj.shape.id, idx, true
+}
+
+// GuardedNumericOwnProperty is the monomorphic fast path after a caller has
+// cached shapeID and slot with NumericOwnProperty.
+func GuardedNumericOwnProperty(value Value, key string, shapeID uint64, slot int) (float64, bool) {
+	obj, isObject := value.(*objectValue)
+	if !isObject || obj.shape == nil || obj.shape.id != shapeID || slot < 0 || slot >= len(obj.slots) ||
+		obj.deleted != nil && obj.deleted[key] {
+		return 0, false
+	}
+	if currentSlot, exists := obj.shape.lookup(key); !exists || currentSlot != slot {
+		return 0, false
+	}
+	property := obj.slots[slot]
+	if property == nil || property.Type() != TypeNumber {
+		return 0, false
+	}
+	number, _ := property.Float()
+	return number, true
+}
+
+// GuardedSetNumericOwnProperty updates an existing Number-valued own data
+// property. It never adds a property, walks prototypes, or invokes accessors.
+func GuardedSetNumericOwnProperty(value Value, key string, shapeID uint64, slot int, number float64) bool {
+	obj, isObject := value.(*objectValue)
+	if !isObject || obj.shape == nil || obj.shape.id != shapeID || slot < 0 || slot >= len(obj.slots) ||
+		obj.deleted != nil && obj.deleted[key] {
+		return false
+	}
+	if currentSlot, exists := obj.shape.lookup(key); !exists || currentSlot != slot {
+		return false
+	}
+	property := obj.slots[slot]
+	if property == nil || property.Type() != TypeNumber {
+		return false
+	}
+	obj.slots[slot] = Number(number)
+	return true
+}

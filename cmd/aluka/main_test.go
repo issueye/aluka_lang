@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/aluka-lang/aluka/internal/engine/jit"
+)
 
 // TestParseMemorySize 验证 --max-memory 大小解析（bytes/KB/MB/GB）。
 func TestParseMemorySize(t *testing.T) {
@@ -30,6 +35,21 @@ func TestParseMemorySize(t *testing.T) {
 		}
 		if !c.ok && err == nil {
 			t.Errorf("parseMemorySize(%q) = %d, nil; want error", c.in, got)
+		}
+	}
+}
+
+func TestFormatJITStatsIncludesGuardDisableCounters(t *testing.T) {
+	text := formatJITStatsSummary(jit.Stats{
+		Mode: jit.Auto, QuickGuardDisabled: 1, TraceGuardDisabled: 2,
+		NativeGuardDisabled: 3, NativeTraceGuardDisabled: 4, CalleeGuardDisabled: 5,
+	})
+	for _, want := range []string{
+		"quickGuardDisabled=1", "traceGuardDisabled=2", "nativeGuardDisabled=3",
+		"nativeTraceGuardDisabled=4", "calleeGuardDisabled=5",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stats output missing %q: %s", want, text)
 		}
 	}
 }

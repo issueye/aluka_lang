@@ -79,8 +79,12 @@ var (
 	oomAt         atomic.Int64  // OOM 触发时刻（unix nano）
 
 	// oomStrikeLimit 是连续超限强制退出的阈值（可被测试调大）。
-	oomStrikeLimit = 5
+	oomStrikeLimit atomic.Int32
 )
+
+func init() {
+	oomStrikeLimit.Store(5)
+}
 
 // SetMemoryLimit 设置进程内存上限（bytes）。0/-1 关闭。
 // 机制：Go debug.SetMemoryLimit 软上限 + 看门狗硬判定。
@@ -137,7 +141,7 @@ func memWatchdog(limit int64, stop <-chan struct{}) {
 			}
 			oomFlag.Store(true)
 			// 宽限期后仍未缓解（VM 抛错被吞/挂死）：强制退出。
-			if strikes >= oomStrikeLimit {
+			if int32(strikes) >= oomStrikeLimit.Load() {
 				fmt.Fprintf(os.Stderr, "aluka: fatal: memory limit %d bytes exceeded; process killed\n", limit)
 				os.Exit(3)
 			}
@@ -164,18 +168,24 @@ func OOMError() error {
 
 // OOMStrikeLimitForTest 返回当前强制退出阈值（测试用）。
 func OOMStrikeLimitForTest() int {
-	return oomStrikeLimit
+	return int(oomStrikeLimit.Load())
 }
 
 // SetOOMStrikeLimitForTest 调整强制退出阈值（测试用）。
 func SetOOMStrikeLimitForTest(n int) {
-	oomStrikeLimit = n
+	oomStrikeLimit.Store(int32(n))
 }
 
 // ResetOOMState 清除 OOM 状态（测试/多文件场景复位）。
 func ResetOOMState() {
 	oomFlag.Store(false)
 	oomAt.Store(0)
+}
+
+// TriggerOOMForTest sets the OOM flag without starting the watchdog.
+func TriggerOOMForTest() {
+	oomFlag.Store(true)
+	oomAt.Store(time.Now().UnixNano())
 }
 
 // OOMAt 返回 OOM 触发时刻（unix nano；未触发为 0）。
