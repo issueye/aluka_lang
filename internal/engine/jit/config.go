@@ -87,6 +87,27 @@ type Config struct {
 	DumpWriter            io.Writer
 	Safepoint             Safepoint
 	InterpreterSafepoints bool
+
+	// R5-3: adaptive threshold model. When Adaptive is set, the static
+	// Threshold/BackedgeThreshold become the base of a feedback loop driven by
+	// counter-based runtime signals (no wall clock): every execution of a
+	// compiled function or trace is a benefit event, every guard failure /
+	// deopt / rejected compile is a failure event. After AdaptiveBoostEvery
+	// consecutive benefit events the effective threshold drops by one half
+	// (promote more eagerly); after AdaptiveCoolEvery failure events it
+	// doubles (cool down). The effective threshold is
+	// static << cool / >> boost, clamped to [1, saturated]. Default (Adaptive
+	// false) preserves the static behavior exactly.
+	Adaptive           bool
+	AdaptiveBoostEvery uint32
+	AdaptiveCoolEvery  uint32
+
+	// R5-4: per-VM compile budget. Zero values keep the legacy behavior
+	// (unlimited time and queue; one background compile at a time is the
+	// explicit concurrency default).
+	CompileBudgetNanos uint64 // cumulative compile-time budget; 0 = unlimited
+	CompileQueueLimit  int    // max admitted background jobs (jitPending); 0 = unlimited
+	CompileWorkers     int    // max concurrent background compiles; 0 = 1
 }
 
 type RejectionReason struct {
@@ -116,8 +137,27 @@ func (c Config) Normalized() Config {
 	if c.CodeCacheBytes == 0 {
 		c.CodeCacheBytes = 4 << 20
 	}
+	if c.Adaptive {
+		if c.AdaptiveBoostEvery == 0 {
+			c.AdaptiveBoostEvery = 64
+		}
+		if c.AdaptiveCoolEvery == 0 {
+			c.AdaptiveCoolEvery = 8
+		}
+	}
+	if c.CompileWorkers <= 0 {
+		c.CompileWorkers = 1
+	}
 	return c
 }
+
+// R5-3 adaptive level caps: the effective threshold never drops below
+// Threshold>>MaxAdaptiveBoost and never rises above Threshold<<MaxAdaptiveCool,
+// so a pathological feedback signal cannot make the model unbounded.
+const (
+	MaxAdaptiveBoost = 4
+	MaxAdaptiveCool  = 4
+)
 
 type Stats struct {
 	Mode              Mode
@@ -217,4 +257,27 @@ type Stats struct {
 	DeoptExits                []DeoptStat
 	LastError                 string
 	LastNativeError           string
+
+	// R5-3 adaptive threshold observability. With Adaptive disabled the
+	// effective thresholds equal the configured static ones and the level
+	// counters stay zero, so a snapshot is comparable to the pre-R5 behavior.
+	AdaptiveEnabled           bool
+	AdaptiveBoost             uint64 // current boost level (threshold halvings)
+	AdaptiveCool              uint64 // current cool level (threshold doublings)
+	AdaptiveThreshold         uint32 // effective call threshold at snapshot
+	AdaptiveBackedgeThreshold uint32 // effective backedge threshold at snapshot
+	AdaptiveBenefits          uint64 // compiled executions observed
+	AdaptiveFailures          uint64 // guard failures / deopts / rejected compiles observed
+	// R5-4 compile budget observability. BudgetSpent accumulates across all
+	// compile tiers (leaf, trace, native sync and background) whether or not a
+	// limit is configured; the denied counters are non-zero only when a limit
+	// actually rejected an admission.
+	CompileBudgetNanos uint64 // configured cumulative compile-time limit (0 = unlimited)
+	CompileQueueLimit  uint64 // configured background queue limit (0 = unlimited)
+	CompileWorkers     uint64 // configured concurrent background compiles
+	BudgetSpent        uint64 // cumulative compile time spent
+	BudgetDenied       uint64 // compile admissions denied by the time budget
+	QueueDenied        uint64 // background queue admissions denied by the queue limit
+	QueueDepth         uint64 // pending background jobs at snapshot (jitPending)
+	QueueDepthMax      uint64 // maximum pending background jobs observed
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/engine/jit"
 )
 
@@ -696,5 +697,90 @@ func TestArrayFixedCasesHitQuick(t *testing.T) {
 				t.Fatalf("case %d did not enter the array trace specialization: %+v", c.ID, quick)
 			}
 		})
+	}
+}
+
+// runTierWithConfig executes one case in one mode inside a fresh VM with a
+// caller-adjusted JIT config (thresholds pinned to 1 like RunTier, so every
+// candidate is immediately hot). It mirrors RunTier's result extraction.
+func runTierWithConfig(t *testing.T, c *Case, mode jit.Mode, adjust func(*jit.Config)) TierResult {
+	t.Helper()
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vm.Close()
+	config := jit.Config{
+		Mode: mode, Threshold: 1, BackedgeThreshold: 1,
+		TraceBudget: c.Params.Normalized().TraceBudget,
+		Stats:       true, InterpreterSafepoints: true,
+	}
+	adjust(&config)
+	vm.ConfigureJIT(config)
+	_, err = vm.Eval(c.Source, "jitdiff-budget.js")
+	result := TierResult{Tier: mode.String()}
+	if err != nil {
+		result.EvalErr = err.Error()
+	}
+	value, gerr := vm.Global().Get("JITDIFF_RESULT")
+	if gerr == nil && !value.IsUndefined() {
+		result.Result = value.String()
+	} else if err == nil {
+		if gerr != nil {
+			t.Fatal(gerr)
+		}
+		t.Fatal("jitdiff: result global was not initialized")
+	}
+	result.Stats = vm.JITStats()
+	return result
+}
+
+// TestR5BudgetFixedCases proves the R5-4 contract on the deterministic storm
+// case (-91): under a 1ns per-VM compile budget the Auto tier still produces
+// the exact off-mode event log (budget exhaustion only changes compile
+// policy, never semantics), the budget fields are observable, and the VM
+// closes cleanly with queued work still pending.
+func TestR5BudgetFixedCases(t *testing.T) {
+	var candidate *Case
+	for _, c := range FixedCases() {
+		if c.ID == -91 {
+			candidate = c
+			break
+		}
+	}
+	if candidate == nil {
+		t.Fatal("fixed case -91 not found")
+	}
+	candidate.applySource()
+	off, err := RunTier(candidate, Tiers[0], candidate.Params, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adjust := func(config *jit.Config) {
+		config.CompileBudgetNanos = 1
+		config.CompileQueueLimit = 2
+		config.CompileWorkers = 1
+	}
+	quick := runTierWithConfig(t, candidate, jit.Quick, adjust)
+	auto := runTierWithConfig(t, candidate, jit.Auto, adjust)
+	for name, res := range map[string]TierResult{"quick": quick, "auto": auto} {
+		if res.EvalErr != "" {
+			t.Fatalf("tier %s eval error: %s", name, res.EvalErr)
+		}
+		if res.Result != off.Result {
+			t.Fatalf("tier %s event log differs from off under budget:\noff=%q\n%s=%q",
+				name, off.Result, name, res.Result)
+		}
+		if res.Stats.BudgetDenied == 0 {
+			t.Fatalf("tier %s: 1ns budget did not deny later compiles: %+v", name, res.Stats)
+		}
+		if res.Stats.CompileBudgetNanos != 1 || res.Stats.BudgetSpent == 0 {
+			t.Fatalf("tier %s: budget fields not observable: %+v", name, res.Stats)
+		}
+	}
+	// Both budgeted tiers must have actually compiled (the storm is real):
+	// the off oracle cannot be produced by Tier 0 sleight of hand.
+	if quick.Stats.Candidates == 0 || auto.Stats.Candidates == 0 {
+		t.Fatalf("budgeted tiers never attempted a compile: quick=%+v auto=%+v", quick.Stats, auto.Stats)
 	}
 }

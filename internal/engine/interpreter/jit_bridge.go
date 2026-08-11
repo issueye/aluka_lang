@@ -70,6 +70,23 @@ type jitHotCount struct {
 	backedges uint32
 }
 
+// jitAdaptiveState is the R5-3 feedback loop: counter-based, no wall clock.
+// Every execution of a compiled function/trace is a benefit event; every
+// guard failure / deopt / rejected compile is a failure event. After
+// AdaptiveBoostEvery consecutive benefits the boost level rises (effective
+// threshold halves, promoting borderline functions eagerly); after
+// AdaptiveCoolEvery consecutive failures the cool level rises (effective
+// threshold doubles, cooling down a VM whose compiles yield nothing). Levels
+// are capped at jit.MaxAdaptiveBoost / jit.MaxAdaptiveCool.
+type jitAdaptiveState struct {
+	boostLevel uint8
+	coolLevel  uint8
+	benefits   uint64
+	failures   uint64
+	sinceBoost uint32
+	sinceCool  uint32
+}
+
 type quickTraceKey struct {
 	tmpl       *bytecode.FuncTemplate
 	backedgePC int
@@ -193,6 +210,24 @@ func (v *VM) JITStats() jit.Stats {
 	stats.TraceBudget = v.jitConfig.TraceBudget
 	stats.CodeCacheLimit = v.jitConfig.CodeCacheBytes
 	stats.NativeCodeBytes = v.jitNativeBytes
+	// R5-3: adaptive feedback-loop snapshot. With Adaptive disabled the
+	// effective thresholds equal the configured static ones and the level
+	// counters stay zero.
+	stats.AdaptiveEnabled = v.jitConfig.Adaptive
+	stats.AdaptiveBoost = uint64(v.jitAdaptive.boostLevel)
+	stats.AdaptiveCool = uint64(v.jitAdaptive.coolLevel)
+	stats.AdaptiveThreshold = v.callThreshold()
+	stats.AdaptiveBackedgeThreshold = v.backedgeThreshold()
+	stats.AdaptiveBenefits = v.jitAdaptive.benefits
+	stats.AdaptiveFailures = v.jitAdaptive.failures
+	// R5-4: compile-budget snapshot. BudgetSpent accumulates whether or not a
+	// limit is configured; the denied counters are non-zero only when a limit
+	// rejected an admission.
+	stats.CompileBudgetNanos = v.jitConfig.CompileBudgetNanos
+	stats.CompileQueueLimit = uint64(v.jitConfig.CompileQueueLimit)
+	stats.CompileWorkers = uint64(v.jitConfig.CompileWorkers)
+	stats.BudgetSpent = v.jitBudgetSpent
+	stats.QueueDepth = uint64(v.jitPending)
 	// R4-4: aggregate the live property-PIC counters (function guards, native
 	// input-plan guards and trace guards). Counters are cumulative, so a
 	// repeated JITStats snapshot reports the same totals.
@@ -318,6 +353,9 @@ func (v *VM) noteJITGuardFailure(state *quickJITState) {
 	if state == nil || state.rejected {
 		return
 	}
+	// R5-3: a guard failure on compiled code is a negative feedback signal
+	// (deopt); consecutive failures cool the effective threshold.
+	v.noteAdaptiveFailure()
 	// R4-3: a failed execution that absorbed a beyond-baseline shape is the
 	// confirmation step of polymorphic learning (the guard grew); reset the
 	// failure chain so a multi-property site can absorb one shape per guard
@@ -343,6 +381,7 @@ func (v *VM) noteTraceGuardFailure(state *quickTraceState) {
 	if state == nil || state.rejected {
 		return
 	}
+	v.noteAdaptiveFailure()
 	// R4-3: see noteJITGuardFailure — a trace with several property guards
 	// (e.g. writeBoth writes o.a and o.b) needs one confirmation observation
 	// per guard; each admission resets the chain instead of accumulating
@@ -366,6 +405,7 @@ func (v *VM) noteNativeGuardFailure(state *quickJITState) {
 	if state == nil || state.nativeDisabled || state.rejected {
 		return
 	}
+	v.noteAdaptiveFailure()
 	if state.nativeGuardFailures < jitGuardFailureLimit {
 		state.nativeGuardFailures++
 	}
@@ -382,6 +422,7 @@ func (v *VM) noteNativeTraceGuardFailure(state *quickTraceState) {
 	if state == nil || state.nativeDisabled || state.rejected {
 		return
 	}
+	v.noteAdaptiveFailure()
 	if state.nativeGuardFailures < jitGuardFailureLimit {
 		state.nativeGuardFailures++
 	}
@@ -398,6 +439,7 @@ func (v *VM) noteCalleeGuardFailure(state *quickJITState) {
 	if state == nil || state.calleeDisabled || state.rejected {
 		return
 	}
+	v.noteAdaptiveFailure()
 	if state.calleeGuardFailures < jitGuardFailureLimit {
 		state.calleeGuardFailures++
 	}
@@ -520,6 +562,104 @@ func (v *VM) pollJITSafepoint() error {
 	return nil
 }
 
+// effectiveThreshold applies the R5-3 feedback loop to a static threshold:
+// effective = static >> boost with the cool level shifting back (static <<
+// cool). The result is clamped to [1, saturated] so no feedback level can
+// overflow or zero the threshold. With Adaptive disabled the static value is
+// returned unchanged.
+func (v *VM) effectiveThreshold(static uint32) uint32 {
+	if !v.jitConfig.Adaptive {
+		return static
+	}
+	a := &v.jitAdaptive
+	if a.boostLevel >= a.coolLevel {
+		shift := uint(a.boostLevel - a.coolLevel)
+		if shift >= 31 {
+			return 1
+		}
+		if t := static >> shift; t >= 1 {
+			return t
+		}
+		return 1
+	}
+	shift := uint(a.coolLevel - a.boostLevel)
+	if shift >= 20 || static > ^uint32(0)>>shift {
+		return ^uint32(0)
+	}
+	return static << shift
+}
+
+func (v *VM) callThreshold() uint32 {
+	return v.effectiveThreshold(v.jitConfig.Threshold)
+}
+
+func (v *VM) backedgeThreshold() uint32 {
+	return v.effectiveThreshold(v.jitConfig.BackedgeThreshold)
+}
+
+// noteAdaptiveBenefit records one execution of a compiled function or trace.
+// AdaptiveBoostEvery consecutive benefits raise the boost level (lowering the
+// effective threshold by one half per level), so long hotspots with low deopt
+// rates promote borderline functions more eagerly.
+func (v *VM) noteAdaptiveBenefit() {
+	if !v.jitConfig.Adaptive {
+		return
+	}
+	a := &v.jitAdaptive
+	a.benefits++
+	a.sinceBoost++
+	every := v.jitConfig.AdaptiveBoostEvery
+	if every == 0 {
+		every = 64
+	}
+	if a.sinceBoost >= every && a.boostLevel < jit.MaxAdaptiveBoost {
+		a.boostLevel++
+		a.sinceBoost = 0
+	}
+}
+
+// noteAdaptiveFailure records one guard failure / deopt / rejected compile.
+// AdaptiveCoolEvery consecutive failures raise the cool level (doubling the
+// effective threshold per level), cooling down VMs whose compiles yield no
+// benefit.
+func (v *VM) noteAdaptiveFailure() {
+	if !v.jitConfig.Adaptive {
+		return
+	}
+	a := &v.jitAdaptive
+	a.failures++
+	a.sinceCool++
+	every := v.jitConfig.AdaptiveCoolEvery
+	if every == 0 {
+		every = 8
+	}
+	if a.sinceCool >= every && a.coolLevel < jit.MaxAdaptiveCool {
+		a.coolLevel++
+		a.sinceCool = 0
+	}
+}
+
+// compileAdmitted reports whether a new compile may start under the R5-4
+// cumulative compile-time budget. A zero budget is unlimited (default).
+// Denied admissions are observable via jit.Stats.BudgetDenied.
+func (v *VM) compileAdmitted() bool {
+	limit := v.jitConfig.CompileBudgetNanos
+	if limit != 0 && v.jitBudgetSpent >= limit {
+		if v.jitConfig.Stats {
+			v.jitStats.BudgetDenied++
+		}
+		return false
+	}
+	return true
+}
+
+// spendCompileBudget accounts measured compile time against the R5-4 budget.
+// It is called at every site that measures a compile, whether or not a limit
+// is configured, so jit.Stats.BudgetSpent is always observable.
+func (v *VM) spendCompileBudget(nanos uint64) {
+	v.jitBudgetSpent += nanos
+}
+
 // ConfigureJIT changes this VM's JIT policy and clears compiled state. It is
 // intended for embedders and tests that need per-context control.
 func (v *VM) ConfigureJIT(config jit.Config) {
@@ -536,6 +676,9 @@ func (v *VM) ConfigureJIT(config jit.Config) {
 	v.jitDeopts = make(map[jitDeoptKey]uint64)
 	v.jitCompileDone = make(chan nativeCompileResult, 16)
 	v.jitPending = 0
+	v.jitBudgetSpent = 0
+	v.jitAdaptive = jitAdaptiveState{}
+	v.jitCompileSlots = make(chan struct{}, v.jitConfig.CompileWorkers)
 }
 
 func (v *VM) closeJIT() {
@@ -605,7 +748,7 @@ func (v *VM) noteJITCall(cl *vmClosure) *quickJITState {
 		if count.calls < ^uint32(0) {
 			count.calls++
 		}
-		if count.calls < v.jitConfig.Threshold {
+		if count.calls < v.callThreshold() {
 			v.jitHotCounts[cl.tmpl] = count
 			return nil
 		}
@@ -613,11 +756,11 @@ func (v *VM) noteJITCall(cl *vmClosure) *quickJITState {
 		cl.jitState = state
 	}
 	if state.calls < ^uint32(0) {
-		if state.calls < v.jitConfig.Threshold {
+		if state.calls < v.callThreshold() {
 			state.calls++
 		}
 	}
-	v.maybeCompileJITState(state, cl.tmpl, state.calls >= v.jitConfig.Threshold)
+	v.maybeCompileJITState(state, cl.tmpl, state.calls >= v.callThreshold())
 	v.maybeSpecializeCallee(state, cl)
 	return state
 }
@@ -635,18 +778,18 @@ func (v *VM) noteJITBackedge(tmpl *bytecode.FuncTemplate) *quickJITState {
 		if count.backedges < ^uint32(0) {
 			count.backedges++
 		}
-		if count.backedges < v.jitConfig.BackedgeThreshold {
+		if count.backedges < v.backedgeThreshold() {
 			v.jitHotCounts[tmpl] = count
 			return nil
 		}
 		state = v.promoteJITState(tmpl, count)
 	}
 	if state.backedges < ^uint32(0) {
-		if state.backedges < v.jitConfig.BackedgeThreshold {
+		if state.backedges < v.backedgeThreshold() {
 			state.backedges++
 		}
 	}
-	v.maybeCompileJITState(state, tmpl, state.backedges >= v.jitConfig.BackedgeThreshold)
+	v.maybeCompileJITState(state, tmpl, state.backedges >= v.backedgeThreshold())
 	return state
 }
 
@@ -657,6 +800,12 @@ func (v *VM) maybeCompileJITState(state *quickJITState, tmpl *bytecode.FuncTempl
 			// no compile attempt (and no candidate recount) happens again.
 			v.jitStats.RejectionCacheHits++
 		}
+		return
+	}
+	// R5-4: the cumulative compile-time budget denies new compiles once spent
+	// reaches the limit; the state stays uncompiled and the interpreter
+	// continues on Tier 0 / Quick (the denial is observable via BudgetDenied).
+	if !v.compileAdmitted() {
 		return
 	}
 	if v.jitConfig.Stats {
@@ -678,7 +827,9 @@ func (v *VM) maybeCompileJITState(state *quickJITState, tmpl *bytecode.FuncTempl
 		program = nil
 	}
 	if v.jitConfig.Stats {
-		v.jitStats.CompileNanos += uint64(time.Since(compileStart))
+		elapsed := uint64(time.Since(compileStart))
+		v.jitStats.CompileNanos += elapsed
+		v.spendCompileBudget(elapsed)
 	}
 	if err != nil {
 		v.recordJITRejection("quick", err)
@@ -688,6 +839,7 @@ func (v *VM) maybeCompileJITState(state *quickJITState, tmpl *bytecode.FuncTempl
 		if v.jitConfig.Stats {
 			v.jitStats.Rejected++
 		}
+		v.noteAdaptiveFailure()
 	} else {
 		state.program = program
 		v.dumpJITIR(state)
@@ -702,11 +854,16 @@ func (v *VM) maybeCompileJITState(state *quickJITState, tmpl *bytecode.FuncTempl
 				v.queueNativeCompile(state)
 				return
 			}
+			if !v.compileAdmitted() {
+				return
+			}
 			nativeStart := time.Now()
 			if err := v.installNative(state); err != nil {
 				v.recordJITRejection("native", err)
 				if v.jitConfig.Stats {
-					v.jitStats.NativeCompileNanos += uint64(time.Since(nativeStart))
+					elapsed := uint64(time.Since(nativeStart))
+					v.jitStats.NativeCompileNanos += elapsed
+					v.spendCompileBudget(elapsed)
 				}
 				v.jitStats.LastNativeError = err.Error()
 				if v.jitConfig.Stats {
@@ -715,7 +872,9 @@ func (v *VM) maybeCompileJITState(state *quickJITState, tmpl *bytecode.FuncTempl
 			} else {
 				v.dumpJITASM(state)
 				if v.jitConfig.Stats {
-					v.jitStats.NativeCompileNanos += uint64(time.Since(nativeStart))
+					elapsed := uint64(time.Since(nativeStart))
+					v.jitStats.NativeCompileNanos += elapsed
+					v.spendCompileBudget(elapsed)
 					v.jitStats.NativeCompiled++
 				}
 			}
@@ -745,10 +904,15 @@ func (v *VM) maybeSpecializeCallee(state *quickJITState, cl *vmClosure) {
 		state.callKind = quickCallUnsupported
 		return
 	}
+	// R5-4: the cumulative compile budget denies the callee leaf compile too.
+	if !v.compileAdmitted() {
+		return
+	}
 	targetProgram, err := jit.CompileLeaf(target.tmpl)
 	if err != nil {
 		v.recordJITRejection("callee", err)
 		state.callKind = quickCallUnsupported
+		v.noteAdaptiveFailure()
 		return
 	}
 	baseProgram := state.program.CloneForNative()
@@ -757,6 +921,7 @@ func (v *VM) maybeSpecializeCallee(state *quickJITState, cl *vmClosure) {
 		_ = baseProgram.Close()
 		v.recordJITRejection("callee", err)
 		state.callKind = quickCallUnsupported
+		v.noteAdaptiveFailure()
 		return
 	}
 	state.callKind = quickCallBound
@@ -769,11 +934,16 @@ func (v *VM) maybeSpecializeCallee(state *quickJITState, cl *vmClosure) {
 		}
 	}
 	if inlined && v.jitConfig.Mode == jit.Auto {
+		if !v.compileAdmitted() {
+			return
+		}
 		nativeStart := time.Now()
 		if err := v.installNative(state); err != nil {
 			v.recordJITRejection("native", err)
 			if v.jitConfig.Stats {
-				v.jitStats.NativeCompileNanos += uint64(time.Since(nativeStart))
+				elapsed := uint64(time.Since(nativeStart))
+				v.jitStats.NativeCompileNanos += elapsed
+				v.spendCompileBudget(elapsed)
 			}
 			v.jitStats.LastNativeError = err.Error()
 			if v.jitConfig.Stats {
@@ -782,7 +952,9 @@ func (v *VM) maybeSpecializeCallee(state *quickJITState, cl *vmClosure) {
 		} else {
 			v.dumpJITASM(state)
 			if v.jitConfig.Stats {
-				v.jitStats.NativeCompileNanos += uint64(time.Since(nativeStart))
+				elapsed := uint64(time.Since(nativeStart))
+				v.jitStats.NativeCompileNanos += elapsed
+				v.spendCompileBudget(elapsed)
 				v.jitStats.NativeCompiled++
 			}
 		}
@@ -793,9 +965,13 @@ func (v *VM) specializeAlternateCallee(state *quickJITState, target *vmClosure) 
 	if state == nil || target == nil || target.tmpl == nil || state.baseProgram == nil || state.altProgram != nil {
 		return nil, false
 	}
+	if !v.compileAdmitted() {
+		return nil, false
+	}
 	targetProgram, err := jit.CompileLeaf(target.tmpl)
 	if err != nil {
 		v.recordJITRejection("callee", err)
+		v.noteAdaptiveFailure()
 		return nil, false
 	}
 	program := state.baseProgram.CloneForNative()
@@ -803,6 +979,7 @@ func (v *VM) specializeAlternateCallee(state *quickJITState, target *vmClosure) 
 	if err != nil {
 		v.recordJITRejection("callee", err)
 		_ = program.Close()
+		v.noteAdaptiveFailure()
 		return nil, false
 	}
 	state.altCallee = target
@@ -815,6 +992,9 @@ func (v *VM) specializeAlternateCallee(state *quickJITState, target *vmClosure) 
 		}
 	}
 	if inlined && v.jitConfig.Mode == jit.Auto {
+		if !v.compileAdmitted() {
+			return program, true
+		}
 		nativeStart := time.Now()
 		if v.jitConfig.Dump == jit.DumpASM {
 			err = program.CompileNativeForDump()
@@ -822,7 +1002,9 @@ func (v *VM) specializeAlternateCallee(state *quickJITState, target *vmClosure) 
 			err = program.CompileNative()
 		}
 		if v.jitConfig.Stats {
-			v.jitStats.NativeCompileNanos += uint64(time.Since(nativeStart))
+			elapsed := uint64(time.Since(nativeStart))
+			v.jitStats.NativeCompileNanos += elapsed
+			v.spendCompileBudget(elapsed)
 		}
 		if err == nil {
 			err = v.reserveNative(state, uint64(program.NativeSize()))
@@ -881,12 +1063,29 @@ func (v *VM) queueNativeCompile(state *quickJITState) {
 	if state == nil || state.program == nil || state.nativeCompiling || state.nativeDisabled || state.program.HasNative() {
 		return
 	}
+	// R5-4: the queue-length limit caps admitted background jobs (jitPending).
+	// A rejected candidate stays on the Quick tier; the denial is observable
+	// via QueueDenied and never blocks the interpreter.
+	if v.jitConfig.CompileQueueLimit > 0 && v.jitPending >= v.jitConfig.CompileQueueLimit {
+		if v.jitConfig.Stats {
+			v.jitStats.QueueDenied++
+		}
+		return
+	}
+	// R5-4: the cumulative compile-time budget also gates background native
+	// compiles ("budget reached -> do not start new compiles").
+	if !v.compileAdmitted() {
+		return
+	}
 	program := state.program.CloneForNative()
 	if program == nil {
 		return
 	}
 	state.nativeCompiling = true
 	v.jitPending++
+	if uint64(v.jitPending) > v.jitStats.QueueDepthMax {
+		v.jitStats.QueueDepthMax = uint64(v.jitPending)
+	}
 	if v.jitConfig.Stats {
 		v.jitStats.BackgroundQueued++
 	}
@@ -895,6 +1094,12 @@ func (v *VM) queueNativeCompile(state *quickJITState) {
 	done := v.jitCompileDone
 	v.jitCompileWG.Add(1)
 	go func() {
+		// R5-4: the concurrency semaphore bounds how many of these goroutines
+		// actually compile at once. It is acquired inside the goroutine, so a
+		// full slot pool never blocks the interpreter hot path; the release is
+		// deferred, so a panicking compile still frees its slot.
+		v.jitCompileSlots <- struct{}{}
+		defer func() { <-v.jitCompileSlots }()
 		if v.jitCompileStartHook != nil {
 			v.jitCompileStartHook()
 		}
@@ -936,7 +1141,9 @@ func (v *VM) pollNativeCompiles() {
 				continue
 			}
 			if v.jitConfig.Stats {
-				v.jitStats.NativeCompileNanos += uint64(result.duration)
+				elapsed := uint64(result.duration)
+				v.jitStats.NativeCompileNanos += elapsed
+				v.spendCompileBudget(elapsed)
 				v.jitStats.BackgroundCompleted++
 			}
 			if result.err != nil {
@@ -1188,10 +1395,12 @@ func (v *VM) tryQuickFrame(frame *vmFrame) (engine.Value, bool, error) {
 			if !v.verifyNativeResult(state.program, v.stack[base], v.stack[base+1:end], result) {
 				v.dropNative(state)
 				state.rejected = true
+				v.noteAdaptiveFailure()
 				return engine.Undefined(), false, nil
 			}
 			if v.jitConfig.Stats {
 				v.jitStats.NativeExecuted++
+				v.noteAdaptiveBenefit()
 				if state.callKind == quickCallBound {
 					v.jitStats.CalleeExecuted++
 				}
@@ -1213,6 +1422,7 @@ func (v *VM) tryQuickFrame(frame *vmFrame) (engine.Value, bool, error) {
 		}
 		state.rejected = true
 		state.program = nil
+		v.noteAdaptiveFailure()
 		if v.jitConfig.Stats {
 			v.jitStats.Errors++
 		}
@@ -1222,6 +1432,7 @@ func (v *VM) tryQuickFrame(frame *vmFrame) (engine.Value, bool, error) {
 		resetQuickGuardFailures(state)
 		if v.jitConfig.Stats {
 			v.jitStats.Executed++
+			v.noteAdaptiveBenefit()
 		}
 		return result, true, nil
 	}
@@ -2414,7 +2625,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 		if state.backedges < ^uint32(0) {
 			state.backedges++
 		}
-		if state.backedges < v.jitConfig.BackedgeThreshold {
+		if state.backedges < v.backedgeThreshold() {
 			return 0, false, nil
 		}
 		compileStart := time.Now()
@@ -2426,32 +2637,45 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 		if arrayPush := v.matchArrayPushTrace(frame, startPC, backedgePC); arrayPush != nil {
 			state.arrayPush = arrayPush
 			if v.jitConfig.Stats {
-				v.jitStats.TraceCompileNanos += uint64(time.Since(compileStart))
+				elapsed := uint64(time.Since(compileStart))
+				v.jitStats.TraceCompileNanos += elapsed
+				v.spendCompileBudget(elapsed)
 				v.jitStats.TracesCompiled++
 				v.jitStats.ArrayPushSites++
 			}
 		} else if arrayIndex := v.matchArrayIndexTrace(frame, startPC, backedgePC); arrayIndex != nil {
 			state.arrayIndex = arrayIndex
 			if v.jitConfig.Stats {
-				v.jitStats.TraceCompileNanos += uint64(time.Since(compileStart))
+				elapsed := uint64(time.Since(compileStart))
+				v.jitStats.TraceCompileNanos += elapsed
+				v.spendCompileBudget(elapsed)
 				v.jitStats.TracesCompiled++
 				v.jitStats.ArrayIndexSites++
 			}
 		} else if arrayBatch := v.matchArrayBatchWriteTrace(frame, startPC, backedgePC); arrayBatch != nil {
 			state.arrayBatch = arrayBatch
 			if v.jitConfig.Stats {
-				v.jitStats.TraceCompileNanos += uint64(time.Since(compileStart))
+				elapsed := uint64(time.Since(compileStart))
+				v.jitStats.TraceCompileNanos += elapsed
+				v.spendCompileBudget(elapsed)
 				v.jitStats.TracesCompiled++
 				v.jitStats.ArrayBatchSites++
 			}
 		} else if closureIncrement := v.matchClosureIncrementTrace(frame, startPC, backedgePC); closureIncrement != nil {
 			state.closureIncrement = closureIncrement
 			if v.jitConfig.Stats {
-				v.jitStats.TraceCompileNanos += uint64(time.Since(compileStart))
+				elapsed := uint64(time.Since(compileStart))
+				v.jitStats.TraceCompileNanos += elapsed
+				v.spendCompileBudget(elapsed)
 				v.jitStats.TracesCompiled++
 				v.jitStats.ClosureUpvalueSites++
 			}
 		} else {
+			// R5-4: the cumulative compile budget denies the general trace
+			// compile too; the loop stays on Tier 0 and keeps advancing.
+			if !v.compileAdmitted() {
+				return 0, false, nil
+			}
 			// R3-7 compile-time candidate filter: reject ranges with try/catch
 			// regions or unsupported opcodes before the full trace compiler run.
 			if scanErr := jit.RejectTraceReason(frame.tmpl, startPC, backedgePC); scanErr != nil {
@@ -2462,6 +2686,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 				if v.jitConfig.Stats {
 					v.jitStats.TracesRejected++
 				}
+				v.noteAdaptiveFailure()
 				return 0, false, nil
 			}
 			program, err := jit.CompileTraceWithGuards(
@@ -2469,7 +2694,9 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 				v.traceNoopCallGuards(frame, startPC, backedgePC),
 				v.traceMethodGuards(frame, startPC, backedgePC))
 			if v.jitConfig.Stats {
-				v.jitStats.TraceCompileNanos += uint64(time.Since(compileStart))
+				elapsed := uint64(time.Since(compileStart))
+				v.jitStats.TraceCompileNanos += elapsed
+				v.spendCompileBudget(elapsed)
 			}
 			if err != nil {
 				v.recordJITRejection("trace", err)
@@ -2479,6 +2706,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 				if v.jitConfig.Stats {
 					v.jitStats.TracesRejected++
 				}
+				v.noteAdaptiveFailure()
 				return 0, false, nil
 			}
 			state.program = program
@@ -2492,6 +2720,9 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 				state.dumpedIR = true
 			}
 			if v.jitConfig.Mode == jit.Auto {
+				if !v.compileAdmitted() {
+					return 0, false, nil
+				}
 				nativeStart := time.Now()
 				if v.jitConfig.Dump == jit.DumpASM {
 					err = program.CompileNativeForDump()
@@ -2499,7 +2730,9 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 					err = program.CompileNative()
 				}
 				if v.jitConfig.Stats {
-					v.jitStats.NativeTraceCompileNanos += uint64(time.Since(nativeStart))
+					elapsed := uint64(time.Since(nativeStart))
+					v.jitStats.NativeTraceCompileNanos += elapsed
+					v.spendCompileBudget(elapsed)
 				}
 				if err == nil {
 					err = v.reserveNativeTrace(state, uint64(program.NativeSize()))
@@ -2540,6 +2773,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			resetQuickTraceGuardFailures(state)
 			if v.jitConfig.Stats {
 				v.jitStats.TracesExecuted++
+				v.noteAdaptiveBenefit()
 			}
 			return exitPC, true, nil
 		case jit.Yielded:
@@ -2568,6 +2802,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			resetQuickTraceGuardFailures(state)
 			if v.jitConfig.Stats {
 				v.jitStats.TracesExecuted++
+				v.noteAdaptiveBenefit()
 			}
 			return exitPC, true, nil
 		case jit.Yielded:
@@ -2596,6 +2831,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			resetQuickTraceGuardFailures(state)
 			if v.jitConfig.Stats {
 				v.jitStats.TracesExecuted++
+				v.noteAdaptiveBenefit()
 			}
 			return exitPC, true, nil
 		case jit.Yielded:
@@ -2624,6 +2860,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			resetQuickTraceGuardFailures(state)
 			if v.jitConfig.Stats {
 				v.jitStats.TracesExecuted++
+				v.noteAdaptiveBenefit()
 			}
 			return exitPC, true, nil
 		case jit.Yielded:
@@ -2704,6 +2941,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			}
 			if v.jitConfig.Stats {
 				v.jitStats.NativeTracesExecuted++
+				v.noteAdaptiveBenefit()
 			}
 			resetTraceGuardFailures(state)
 			return v.resumeTraceExit(key, exit)
@@ -2731,6 +2969,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 		}
 		state.rejected = true
 		state.program = nil
+		v.noteAdaptiveFailure()
 		v.jitStats.LastError = err.Error()
 		if v.jitConfig.Stats {
 			v.jitStats.Errors++
@@ -2742,6 +2981,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 		resetQuickTraceGuardFailures(state)
 		if v.jitConfig.Stats {
 			v.jitStats.TracesExecuted++
+			v.noteAdaptiveBenefit()
 		}
 		return v.resumeTraceExit(key, exit)
 	case jit.Yielded:
@@ -2838,6 +3078,7 @@ func (v *VM) tryQuickCall(cl *vmClosure, thisVal engine.Value, args []engine.Val
 	if program.ReturnsUndefined() {
 		if v.jitConfig.Stats {
 			v.jitStats.Executed++
+			v.noteAdaptiveBenefit()
 		}
 		return engine.Undefined(), true, nil
 	}
@@ -2859,10 +3100,12 @@ func (v *VM) tryQuickCall(cl *vmClosure, thisVal engine.Value, args []engine.Val
 			if !v.verifyNativeResult(program, thisVal, args, result) {
 				v.dropNative(state)
 				state.rejected = true
+				v.noteAdaptiveFailure()
 				return engine.Undefined(), false, nil
 			}
 			if v.jitConfig.Stats {
 				v.jitStats.NativeExecuted++
+				v.noteAdaptiveBenefit()
 				if state.callKind == quickCallBound {
 					v.jitStats.CalleeExecuted++
 				}
@@ -2886,6 +3129,7 @@ func (v *VM) tryQuickCall(cl *vmClosure, thisVal engine.Value, args []engine.Val
 			v.jitStats.Errors++
 		}
 		state.rejected = true
+		v.noteAdaptiveFailure()
 		return engine.Undefined(), false, nil
 	}
 	switch reason {
@@ -2893,6 +3137,7 @@ func (v *VM) tryQuickCall(cl *vmClosure, thisVal engine.Value, args []engine.Val
 		resetQuickGuardFailures(state)
 		if v.jitConfig.Stats {
 			v.jitStats.Executed++
+			v.noteAdaptiveBenefit()
 			if state.callKind == quickCallBound {
 				v.jitStats.CalleeExecuted++
 			}

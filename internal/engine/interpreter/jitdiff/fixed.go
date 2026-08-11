@@ -1,6 +1,9 @@
 package jitdiff
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // FixedCases returns deterministic, hand-shaped cases covering the event-log
 // categories the framework must verify: property write, array append, upvalue
@@ -912,7 +915,45 @@ try { LOG("call", "kP3"); LOG("return", SV(kP(-1, 0.5))); } catch (e) { LOG("thr
 try { LOG("call", "kP4"); LOG("return", SV(kP(0, -1))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 `,
 		},
+		{
+			// R5-4: compile storm. 24 distinct functions with 80-term
+			// arithmetic bodies (>= 128-byte programs, so the Auto tier
+			// routes them through the background compile queue) are each
+			// called once. Under a compile budget or queue limit the
+			// cross-tier event log must stay identical: budget exhaustion
+			// only changes compile policy, never observable semantics. Each
+			// function returns x+80 for x=1, so the sum is 24*81 = 1944.
+			ID: -91, Kind: KindCall, Seed: 191, Params: params,
+			Expected: "call:kS\nreturn:n:1944",
+			Body:     r5StormBody(24),
+		},
 	}
+}
+
+// r5StormBody builds the R5-4 compile-storm case: count functions with
+// 80-term arithmetic bodies, each called once, followed by a single event-log
+// record of the summed result.
+func r5StormBody(count int) string {
+	var b strings.Builder
+	for i := 0; i < count; i++ {
+		fmt.Fprintf(&b, "function s%d(x) { return x", i)
+		for j := 0; j < 80; j++ {
+			b.WriteString(" + 1")
+		}
+		b.WriteString("; }\n")
+	}
+	b.WriteString("const SF = [")
+	for i := 0; i < count; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "s%d", i)
+	}
+	b.WriteString("];\nlet acc = 0;\n")
+	b.WriteString("for (let i = 0; i < SF.length; i++) acc += SF[i](1);\n")
+	b.WriteString(`try { LOG("call", "kS"); LOG("return", SV(acc)); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`)
+	return b.String()
 }
 
 // applySource builds the full source for a fixed case.

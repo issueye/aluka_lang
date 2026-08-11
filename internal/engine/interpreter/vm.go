@@ -62,6 +62,18 @@ type VM struct {
 	jitCompileDone chan nativeCompileResult
 	jitCompileWG   sync.WaitGroup
 	jitPending     int
+	// jitCompileSlots is the R5-4 background-compile concurrency semaphore
+	// (capacity = effective CompileWorkers). Every queued job's goroutine
+	// acquires a slot before compiling, so at most CompileWorkers compiles run
+	// concurrently even during a compile storm; the interpreter never blocks
+	// on it (slots are only taken by background goroutines).
+	jitCompileSlots chan struct{}
+	// jitBudgetSpent accumulates measured compile time across every tier
+	// (R5-4). It is only mutated on the interpreter thread.
+	jitBudgetSpent uint64
+	// jitAdaptive holds the R5-3 feedback loop state (boost/cool levels and
+	// window counters). Mutated only on the interpreter thread.
+	jitAdaptive jitAdaptiveState
 	// Package tests use these hooks to pin background-compile lifecycle
 	// interleavings. They are nil in production and are not part of the API.
 	jitCompileStartHook func()
@@ -145,8 +157,9 @@ func NewVM() (*VM, error) {
 		jitHotCounts:  make(map[*bytecode.FuncTemplate]jitHotCount),
 		jitTraces:     make(map[quickTraceKey]*quickTraceState),
 		jitRejections: make(map[jitRejectionKey]uint64), jitGeneration: 1,
-		jitDeopts:      make(map[jitDeoptKey]uint64),
-		jitCompileDone: make(chan nativeCompileResult, 16),
+		jitDeopts:       make(map[jitDeoptKey]uint64),
+		jitCompileDone:  make(chan nativeCompileResult, 16),
+		jitCompileSlots: make(chan struct{}, 1),
 	}, nil
 }
 
