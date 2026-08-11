@@ -215,10 +215,19 @@ func (v *VM) restoreTraceExitStack(exit jit.DeoptExit) error {
 // handleThrow so the existing try/catch/finally machinery consumes it. The
 // exit is recorded for deopt statistics in both cases.
 func (v *VM) resumeTraceExit(key quickTraceKey, exit jit.DeoptExit) (int, bool, error) {
-	v.recordTraceDeopt(key, exit)
 	if exit.PendingException != nil {
+		v.recordTraceDeopt(key, exit)
 		return 0, false, &jsThrow{val: exit.PendingException}
 	}
+	if key.tmpl == nil {
+		return 0, false, fmt.Errorf("jit: deopt exit has no bytecode template")
+	}
+	codeLen := len(key.tmpl.Code)
+	if codeLen%bytecode.InstrSize != 0 || exit.ResumePC < 0 ||
+		exit.ResumePC%bytecode.InstrSize != 0 || exit.ResumePC > codeLen-bytecode.InstrSize {
+		return 0, false, fmt.Errorf("jit: invalid deopt resume PC %d for bytecode length %d", exit.ResumePC, codeLen)
+	}
+	v.recordTraceDeopt(key, exit)
 	if err := v.restoreTraceExitStack(exit); err != nil {
 		return 0, false, err
 	}

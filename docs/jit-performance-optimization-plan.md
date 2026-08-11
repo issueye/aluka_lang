@@ -857,17 +857,27 @@ deleted map，delete own 方法后 IC 仍返回被删闭包而非原型链方法
 100,000 例（5 seed）零差分。该轮未改默认
 `--jit=off`、未扩大 Native ABI 与 W^X 生命周期、不改变任何性能快照口径。
 
+v2.22 完成 R1-7 审查加固：`FuzzCompileTrace` 将输入 code 限制为 256 字节，并在执行编译产物前
+扫描 CFG，仅允许环中的回边为执行器可按 budget 限制的无条件 jump-to-zero；其余产物仍覆盖编译，
+但不进入可能无限循环的执行阶段。正常 deopt 出口现在于记录统计和恢复栈前校验模板非 nil、字节码
+为完整定长指令流、`ResumePC` 非负/对齐且指向流内完整指令；异常出口继续直接进入现有 throw 路径。
+artifact fuzz 改为对 source/seed/case ID 做精确往返比较，明确 seed=0 与 case ID=0 合法。新增 CFG
+门禁与负数、未对齐、等于 code length、越界、截断模板的确定性回归测试。审查复核：5 个 target
+各 fuzz 5s，分别完成 793,598 / 1,033,710 / 852,702 / 24,285 / 633 次执行，均通过；全库测试、
+JIT/interpreter/jitdiff race、vet、Linux amd64 无 CGO 交叉构建通过；nightly 100,000 例（5 seed）
+零差分。该修订不改变默认 `--jit=off`、Native ABI、W^X 生命周期或性能快照口径。
+
 v2.21 完成 R1-7 fuzz 入口与非法输入安全门禁（R1 正确性闭环最后一项）。新增 5 个 Go fuzz
 target：`FuzzVerifyProgram`（随机 IR opcode/operand/跳转目标、deopt map 负/越界/歧义 exit ID、
 exception map nil/对齐/截断/扩展、side-effect protocol 与 guard index——Verify 稳定拒绝或接受、
 不 panic 不挂起；随机 IR 不执行，因随机跳转图可成非回边环，执行覆盖由编译器产物承担）、
 `FuzzCompileTrace`（随机模板含非对齐/截断 code、非对齐/越界 start/backedge、无效 call/method
-guard、unsupported opcode；编译成功产物在 budget=4 下执行必然终止）、`FuzzResumeTraceExit`
+guard、unsupported opcode；编译成功且通过 v2.22 CFG 门禁的产物在 budget=4 下执行）、`FuzzResumeTraceExit`
 （随机 DeoptExit 字段与 PendingException nil/Number/NaN/String/Object，恢复返回受控错误或合法
 resume，VM 每输入新建）、`FuzzNativeLowering`（随机已 Verify 程序过 native planner 失败不得发布
 RX；真实产物 CompileNative→Close 后 `LiveExecutableMemory` 每 case 回基线）、`FuzzArtifactReplay`
 （Body 取自 R1-6 mutation 固定用例池的有界程序，meta/结果/IR 全随机，Save/Load/Replay 错误
-可控且元数据完整）。seed corpus 由 `f.Add` 注册（throwTrace/sideEffectTrace 编码、malformed
+可控且元数据精确往返，零值合法）。seed corpus 由 `f.Add` 注册（throwTrace/sideEffectTrace 编码、malformed
 字节、合法/非法 deopt 状态），`go test ./...` 自动执行全部 seed，确定性可复现；失败输入由 Go
 标准机制写入 `testdata/fuzz/<Target>/`，单命令 `-fuzz=FuzzXxx` 复现。实跑证据：五个 target
 合计约 430 万 execs（30-45s 各），零失败零 panic，NativeLowering 的 RX 基线断言全过。

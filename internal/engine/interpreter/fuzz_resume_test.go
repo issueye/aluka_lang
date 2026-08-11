@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/bytecode"
 	"github.com/aluka-lang/aluka/internal/engine/jit"
 )
 
@@ -44,7 +45,7 @@ func fuzzDeoptValue(rng *rand.Rand) engine.Value {
 func fuzzDeoptExit(rng *rand.Rand) jit.DeoptExit {
 	exit := jit.DeoptExit{
 		ID:         rng.Intn(8) - 1,
-		ResumePC:   int(rng.Uint32() & 0xFFFF),
+		ResumePC:   rng.Intn(64) - 16,
 		StackDepth: rng.Intn(12),
 	}
 	if rng.Intn(2) == 0 {
@@ -90,7 +91,10 @@ func FuzzResumeTraceExit(f *testing.F) {
 		}
 		defer vm.Close()
 		exit := fuzzDeoptExit(rng)
-		key := quickTraceKey{tmpl: nil, backedgePC: int(rng.Uint32() & 0xFFFF)}
+		key := quickTraceKey{
+			tmpl:       &bytecode.FuncTemplate{Code: make([]byte, 4*bytecode.InstrSize)},
+			backedgePC: int(rng.Uint32() & 0xFFFF),
+		}
 		resumePC, ok, err := vm.resumeTraceExit(key, exit)
 		if err != nil {
 			return // controlled error (malformed stack or *jsThrow)
@@ -105,4 +109,40 @@ func FuzzResumeTraceExit(f *testing.F) {
 			t.Fatalf("resume PC = %d, want recorded %d", resumePC, exit.ResumePC)
 		}
 	})
+}
+
+func TestResumeTraceExitRejectsInvalidResumePC(t *testing.T) {
+	validTemplate := &bytecode.FuncTemplate{Code: make([]byte, 4*bytecode.InstrSize)}
+	tests := []struct {
+		name     string
+		tmpl     *bytecode.FuncTemplate
+		resumePC int
+	}{
+		{name: "nil template", resumePC: 0},
+		{name: "negative", tmpl: validTemplate, resumePC: -bytecode.InstrSize},
+		{name: "unaligned", tmpl: validTemplate, resumePC: 1},
+		{name: "at end", tmpl: validTemplate, resumePC: len(validTemplate.Code)},
+		{name: "out of range", tmpl: validTemplate, resumePC: len(validTemplate.Code) + bytecode.InstrSize},
+		{name: "truncated template", tmpl: &bytecode.FuncTemplate{Code: make([]byte, bytecode.InstrSize+1)}, resumePC: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vm, err := NewVM()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer vm.Close()
+			before := len(vm.stack)
+			_, ok, err := vm.resumeTraceExit(
+				quickTraceKey{tmpl: tt.tmpl},
+				jit.DeoptExit{ResumePC: tt.resumePC, StackDepth: 1, StackValues: []engine.Value{engine.Number(1)}},
+			)
+			if err == nil || ok {
+				t.Fatalf("resumeTraceExit(%d) = ok %v, err %v; want controlled error", tt.resumePC, ok, err)
+			}
+			if len(vm.stack) != before {
+				t.Fatalf("invalid resume mutated VM stack: %d -> %d", before, len(vm.stack))
+			}
+		})
+	}
 }

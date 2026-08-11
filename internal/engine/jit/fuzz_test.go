@@ -178,7 +178,8 @@ func FuzzVerifyProgram(f *testing.F) {
 // FuzzCompileTrace fuzzes CompileTraceWithGuards with random bytecode,
 // possibly misaligned/out-of-range trace ranges, malformed call/method guards
 // and unsupported opcodes. Successful compilations are executed under a small
-// budget (bounded backedges), so malformed deopt/exception state must surface
+// budget when a static CFG scan confirms that every cycle uses the executor's
+// budgeted canonical backedge, so malformed deopt/exception state must surface
 // as errors or clean exits — never a panic, hang or OOB access.
 func FuzzCompileTrace(f *testing.F) {
 	tmpl := throwTraceTemplate()
@@ -188,6 +189,10 @@ func FuzzCompileTrace(f *testing.F) {
 	f.Add([]byte{0x11, 0x22}, 3, 4, 8)      // malformed / misaligned
 	f.Add([]byte{}, 1, 0, 0)                // empty code
 	f.Fuzz(func(t *testing.T, code []byte, numLocals, startPC, backedgePC int) {
+		const maxFuzzCodeLen = 256
+		if len(code) > maxFuzzCodeLen {
+			code = code[:maxFuzzCodeLen]
+		}
 		rng := fuzzRand([]byte(code))
 		if numLocals < 1 || numLocals > 16 {
 			numLocals = 1 + (numLocals % 16)
@@ -218,15 +223,56 @@ func FuzzCompileTrace(f *testing.F) {
 		if err != nil {
 			return // stable rejection is the expected outcome for fuzz input
 		}
-		// The compiler product always terminates: backedges target
-		// instruction 0 and are budget-limited, other jumps stay inside the
-		// lowered CFG which ends in exits.
+		// Compilation remains covered for every input. Execute only CFGs whose
+		// cycles are limited by the trace executor's canonical jump-to-zero
+		// budget check; arbitrary bytecode can otherwise lower to an
+		// unbudgeted backward conditional edge or nonzero self-loop.
+		if !fuzzTraceExecutionBounded(trace.program) {
+			return
+		}
 		locals := make([]engine.Value, trace.program.NumLocals)
 		for i := range locals {
 			locals[i] = fuzzValue(rng)
 		}
 		_, _, _ = trace.ExecuteBudgetDetailedWithSafepoint(locals, 4, nil)
 	})
+}
+
+func fuzzTraceExecutionBounded(p *Program) bool {
+	for i, in := range p.Code {
+		target := int(in.Operand)
+		switch in.Op {
+		case OpJump:
+			if target <= i && target != 0 {
+				return false
+			}
+		case OpJumpTrue, OpJumpFalse, OpJumpTrueKeep, OpJumpFalseKeep, OpJumpNullishKeep:
+			if target <= i {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func TestFuzzTraceExecutionBounded(t *testing.T) {
+	tests := []struct {
+		name string
+		code []Instr
+		want bool
+	}{
+		{name: "straight line", code: []Instr{{Op: OpConst}, {Op: OpTraceExit}}, want: true},
+		{name: "canonical backedge", code: []Instr{{Op: OpConst}, {Op: OpJump, Operand: 0}}, want: true},
+		{name: "nonzero self loop", code: []Instr{{Op: OpConst}, {Op: OpJump, Operand: 1}}},
+		{name: "backward conditional", code: []Instr{{Op: OpConst}, {Op: OpJumpTrue, Operand: 0}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := fuzzTraceExecutionBounded(&Program{Code: tt.code}); got != tt.want {
+				t.Fatalf("fuzzTraceExecutionBounded() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 // FuzzNativeLowering fuzzes the Native input planner and RX lifecycle:

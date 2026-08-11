@@ -39,10 +39,18 @@ func fuzzArtifactCase(rng *rand.Rand) (*Case, []TierResult, Params) {
 		TraceBudget: uint32(rng.Intn(5)),
 		Verify:      rng.Intn(2) == 0,
 	}
+	caseID := rng.Intn(4000) - 2000
+	seed := rng.Int63()
+	if rng.Intn(4) == 0 {
+		caseID = 0
+	}
+	if rng.Intn(4) == 0 {
+		seed = 0
+	}
 	c := &Case{
-		ID:          rng.Intn(4000) - 2000,
+		ID:          caseID,
 		Kind:        Kind(rng.Intn(KindCount)),
-		Seed:        rng.Int63(),
+		Seed:        seed,
 		Params:      params,
 		Body:        bodyCase.Body,
 		Source:      bodyCase.Source,
@@ -102,8 +110,9 @@ func FuzzArtifactReplay(f *testing.F) {
 		if err != nil {
 			t.Fatalf("saved artifact must load: %v", err)
 		}
-		if loaded.Source == "" || loaded.Seed == 0 || loaded.CaseID == 0 {
-			t.Fatalf("artifact metadata incomplete: %+v", loaded)
+		if loaded.Source != c.Source || loaded.Seed != c.Seed || loaded.CaseID != c.ID {
+			t.Fatalf("artifact metadata changed: source=%q seed=%d case=%d, want source=%q seed=%d case=%d",
+				loaded.Source, loaded.Seed, loaded.CaseID, c.Source, c.Seed, c.ID)
 		}
 		if !strings.Contains(loaded.Source, "function") {
 			t.Fatalf("artifact source lost the case body: %q", loaded.Source)
