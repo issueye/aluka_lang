@@ -71,3 +71,54 @@ func TestGuardedSetNumericOwnProperty(t *testing.T) {
 		t.Fatal("mismatched property slot accepted by guarded write")
 	}
 }
+
+// TestGuardedMethodLookup covers the R1-6 method primitive: plain
+// object-value chains resolve methods without invoking accessors, Proxy traps
+// or other user code; accessor properties are returned as values (never
+// executed); non-plain receivers and non-plain prototype links fall back.
+func TestGuardedMethodLookup(t *testing.T) {
+	proto := NewObject()
+	if err := proto.Set("protoMethod", Str("from-proto")); err != nil {
+		t.Fatal(err)
+	}
+	obj := NewObject()
+	if err := obj.Set("ownMethod", Str("from-own")); err != nil {
+		t.Fatal(err)
+	}
+	getter := NewFunction("accGetter", func(args []Value) (Value, error) { return Str("executed"), nil })
+	SetAccessor(obj, "acc", getter, nil)
+	plainObj := obj.(*objectValue)
+	plainProto := proto.(*objectValue)
+	plainObj.proto = plainProto
+
+	if v, ok := GuardedMethodLookup(obj, "ownMethod"); !ok || v != Str("from-own") {
+		t.Fatalf("own method lookup = %v, %v", v, ok)
+	}
+	// Prototype-chain resolution on plain object values.
+	if v, ok := GuardedMethodLookup(obj, "protoMethod"); !ok || v != Str("from-proto") {
+		t.Fatalf("prototype method lookup = %v, %v", v, ok)
+	}
+	// An accessor is returned as a value, never invoked.
+	if v, ok := GuardedMethodLookup(obj, "acc"); !ok {
+		t.Fatalf("accessor lookup = %v, %v", v, ok)
+	} else if _, isAccessor := v.(*AccessorValue); !isAccessor {
+		t.Fatalf("accessor value not preserved: %T", v)
+	}
+	if _, ok := GuardedMethodLookup(obj, "missing"); ok {
+		t.Fatal("missing property must not resolve")
+	}
+	// Function objects unbox to their plain object value, whose data lookup is
+	// side-effect free, so method lookup on them is allowed.
+	fn := NewFunction("f", func(args []Value) (Value, error) { return Undefined(), nil })
+	fnObj, _ := fn.AsObject()
+	if v, ok := GuardedMethodLookup(fnObj, "name"); !ok || v != Str("f") {
+		t.Fatalf("function-object method lookup = %v, %v", v, ok)
+	}
+	// A plain object whose prototype is not a plain object value (embedded
+	// type such as an array) must fall back instead of running user code.
+	weird := NewObject().(*objectValue)
+	weird.proto = NewArray(nil)
+	if _, ok := GuardedMethodLookup(weird, "length"); ok {
+		t.Fatal("non-plain prototype link must fall back")
+	}
+}

@@ -84,6 +84,10 @@ const (
 	KindOOM
 	KindCancel
 	KindSafepoint
+	// R1-6 random guard mutation: warmup, then a deterministic mutation at a
+	// call boundary (shape / value type / callee / method / accessor /
+	// prototype / array receiver / closure upvalue), then post-mutation calls.
+	KindGuardMutation
 )
 
 func (k Kind) String() string {
@@ -126,6 +130,8 @@ func (k Kind) String() string {
 		return "cancel"
 	case KindSafepoint:
 		return "safepoint"
+	case KindGuardMutation:
+		return "guardMutation"
 	default:
 		return fmt.Sprintf("kind(%d)", int(k))
 	}
@@ -134,6 +140,9 @@ func (k Kind) String() string {
 // ExpectsQuickHit reports whether this generated shape must execute Quick in
 // the fixed PR corpus. Random expression cases deliberately mix unsupported
 // values, while deoptPrefix currently promotes directly to Native in Auto.
+// Guard-mutation cases are excluded: their purpose is the guard failure itself
+// and the stable fallback, which the dedicated TestGuardMutationFixedCases
+// asserts via per-case stats instead of a blanket execution count.
 func (k Kind) ExpectsQuickHit() bool {
 	switch k {
 	case KindBranch, KindLoop, KindStrictEq, KindPropRead, KindPropWrite,
@@ -200,7 +209,7 @@ func (c *Case) Name() string {
 }
 
 // KindCount is the number of case kinds the generator can produce.
-const KindCount = int(KindSafepoint) + 1
+const KindCount = int(KindGuardMutation) + 1
 
 // AllKinds lists every case kind in canonical order.
 var AllKinds = func() []Kind {

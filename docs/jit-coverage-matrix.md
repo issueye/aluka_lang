@@ -176,6 +176,17 @@ guard 失败被记录、Auto 不产生 verify 失败）。审计后矩阵不存�
 | 方法 guard 不执行用户代码（仅接受普通对象 own data method；accessor/原型/Proxy 明确回退） | engine 包 `TestOwnDataProperty`、interpreter 包 `TestTraceMethodGuardDoesNotProbeProxy`（off/quick/auto trap 次数精确一致） |
 | 属性写 + OOM 中断（已提交前缀完整；`count === last + 1` 不变量进入同一 catch） | jitdiff 固定用例 -23（`TestEventLogFixedCases`） |
 | R1-5 artifact 保存/重放（call guard 失败 + 属性写用例） | `TestArtifactRoundTripSideEffect`（jitdiff，-19 合成 mismatch 经 SaveArtifact/LoadArtifact/Replay） |
+| R1-6 随机 guard 失效：1st/2nd/3rd property shape（两路 PIC 吸收前两个、第三 shape 回退且第一 shape 继续正确） | jitdiff 固定用例 -24（`TestGuardMutationFixedCases`）、interpreter `TestGuardMutationThirdShapeDisablesNativeReleasesRX`（第三 shape 连续失败后 Native 禁用 + RX 回基线） |
+| R1-6 类型 mutation：Number→String/BigInt/nullish/object（BigInt 混用抛同一 TypeError） | jitdiff 固定用例 -25 |
+| R1-6 callee identity mutation（第二 PIC target、第三 target 禁用 callee 特化） | jitdiff 固定用例 -26、interpreter `TestGuardMutationThirdTargetDisablesNativeReleasesRX` |
+| R1-6 trivial method target 替换 | jitdiff 固定用例 -27 |
+| R1-6 own method→accessor（getter 只在 Tier 0 每迭代恰好一次，gget 事件计数） | jitdiff 固定用例 -28 |
+| R1-6 own method→prototype method（delete 后原型链解析） | jitdiff 固定用例 -29、`TestMethodCallICInvalidatesOnDelete`（Tier 0 回归：CallCached 未查 deleted） |
+| R1-6 数组 push 被替换 / receiver 变非数组（push/nopush 事件证明无重复 append、无 JIT 侧调用） | jitdiff 固定用例 -30 |
+| R1-6 closure upvalue 类型 / identity 变化（回退 Tier 0 结果一致） | jitdiff 固定用例 -31 |
+| R1-6 每类 mutation 实际命中目标 guard（非仅 Tier 0）：TracesCompiled/Compiled ≥ 1 且 GuardFailures ≥ 1 | `TestGuardMutationFixedCases`（jitdiff，对 -24..-31 断言 quick/auto stats） |
+| R1-6 随机生成器（warmup/mutation/post 调度内嵌源码，seed/源码/调度随 artifact 重放一致） | `TestGeneratorProducesGuardMutationCases`、`TestArtifactRoundTripGuardMutation`（jitdiff）、`TestGeneratorDeterminism` |
+| R1-6 方法 guard 纯数据查找（不触发 accessor/Proxy trap/用户代码；非 plain receiver/原型链回退） | `TestGuardedMethodLookup`（engine 包）+ 基线 `OwnDataProperty`（0a71963）|
 
 ## 9. 维护约定
 

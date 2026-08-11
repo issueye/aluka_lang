@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aluka-lang/aluka/internal/engine/jit"
 )
 
 // replayArtifact is the -artifact flag used by TestReplayFailure to replay a
@@ -345,6 +347,114 @@ func TestArtifactRoundTripSideEffect(t *testing.T) {
 	}
 	if reproduced {
 		t.Fatalf("side-effect case reported as reproduced mismatch: %+v", results2)
+	}
+	for _, res := range results2 {
+		if res.Result != c.Expected {
+			t.Fatalf("replay tier %s result:\n%s\nwant:\n%s", res.Tier, res.Result, c.Expected)
+		}
+	}
+}
+
+// TestGuardMutationFixedCases is the R1-6 fixed regression gate: every guard
+// mutation family (-24..-31) must produce the exact expected off event log,
+// be identical across off/quick/auto, and — critically — must actually hit
+// its target guard inside the JIT: the warmup compiled and the mutation
+// produced a real GuardFailures count in both quick and auto, proving the
+// case is not merely Tier 0 behavior.
+func TestGuardMutationFixedCases(t *testing.T) {
+	for _, c := range FixedCases() {
+		if c.Kind != KindGuardMutation {
+			continue
+		}
+		c.applySource()
+		t.Run(fmt.Sprintf("%02d", -c.ID), func(t *testing.T) {
+			results, err := RunCase(c, c.Params)
+			if err != nil {
+				if mismatch, ok := err.(*Mismatch); ok {
+					t.Fatalf("cross-tier mismatch: %v", mismatch)
+				}
+				t.Fatalf("infrastructure error: %v", err)
+			}
+			if results[0].Result != c.Expected {
+				t.Fatalf("off event log:\n%s\nwant:\n%s", results[0].Result, c.Expected)
+			}
+			compiled := func(s jit.Stats) bool { return s.TracesCompiled > 0 || s.Compiled > 0 }
+			quick, auto := results[1].Stats, results[2].Stats
+			if !compiled(quick) || quick.GuardFailures == 0 {
+				t.Fatalf("quick did not hit the mutated guard (compiled+warmup required): %+v", quick)
+			}
+			if !compiled(auto) || auto.GuardFailures == 0 {
+				t.Fatalf("auto did not hit the mutated guard (compiled+warmup required): %+v", auto)
+			}
+		})
+	}
+}
+
+// TestGeneratorProducesGuardMutationCases proves the random generator emits
+// guard-mutation cases whose warmup / mutation / post-mutation schedule is
+// embedded in the case source, so seed, source and mutation schedule travel
+// together in the artifact and replay exactly.
+func TestGeneratorProducesGuardMutationCases(t *testing.T) {
+	g := NewGenerator(prSeed, prParams())
+	count := 0
+	for _, c := range g.Generate(200) {
+		if c.Kind != KindGuardMutation {
+			continue
+		}
+		count++
+		// The schedule is fully embedded: warmup call, a mutation statement,
+		// and post-mutation calls are all in the source.
+		if !strings.Contains(c.Source, "LOG(\"call\"") || !strings.Contains(c.Source, "LOG(\"return\"") {
+			t.Fatalf("guard-mutation case %d lost its call schedule:\n%s", c.ID, c.Source)
+		}
+	}
+	if count == 0 {
+		t.Fatal("generator produced no guard-mutation cases in 200 samples")
+	}
+}
+
+// TestArtifactRoundTripGuardMutation proves the R1-6 mutation schedule
+// survives the failure-artifact round trip: a synthetic mismatch on the
+// third-shape case (-24) saves the source with its mutation statements, and
+// the single-command replay reproduces the exact expected event log.
+func TestArtifactRoundTripGuardMutation(t *testing.T) {
+	var c *Case
+	for _, candidate := range FixedCases() {
+		if candidate.ID == -24 {
+			c = candidate
+			break
+		}
+	}
+	if c == nil {
+		t.Fatal("guard-mutation fixed case -24 not found")
+	}
+	c.applySource()
+	results, err := RunCase(c, c.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Result != c.Expected {
+		t.Fatalf("off result:\n%s\nwant:\n%s", results[0].Result, c.Expected)
+	}
+	dir := t.TempDir()
+	results[1].Result = results[1].Result + "\nsynthetic-mismatch"
+	art, err := SaveArtifact(dir, &Mismatch{Case: c, Results: results}, c.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadArtifact(art.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Source, "S3") || !strings.Contains(loaded.Source, "kS(S1") {
+		t.Fatalf("artifact source lost the mutation schedule (third shape / warmup): %q", loaded.Source)
+	}
+	results2, reproduced, err := loaded.Replay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reproduced {
+		t.Fatalf("guard-mutation case reported as reproduced mismatch: %+v", results2)
 	}
 	for _, res := range results2 {
 		if res.Result != c.Expected {

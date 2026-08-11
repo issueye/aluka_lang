@@ -231,6 +231,8 @@ func (g *Generator) genCase(id int, seed int64) *Case {
 		return g.genOOMCase(id, seed)
 	case KindCancel:
 		return g.genCancelCase(id, seed)
+	case KindGuardMutation:
+		return g.genGuardMutationCase(id, seed)
 	default:
 		return g.genSafepointCase(id, seed)
 	}
@@ -539,4 +541,140 @@ LOG("post", SV(INTERRUPT_STATE.count > 0 && INTERRUPT_STATE.count === INTERRUPT_
 	c.Params.TraceBudget = 1
 	c.Hook = &RunHook{CancelAfter: 5, CancelErr: "safepoint interrupted"}
 	return c
+}
+
+// guardMutationKind enumerates the R1-6 mutation families. Each mutation is
+// embedded in the case source at a deterministic call boundary: the case
+// first warms up the JIT, then mutates the guarded input, then calls again so
+// the guard fires inside the JIT and Tier 0 resumes with the mutated state.
+type guardMutationKind int
+
+const (
+	mutShapeThird       guardMutationKind = iota // 1st / 2nd / 3rd property shape
+	mutTypeChange                                // Number -> String / BigInt / nullish / object
+	mutCalleeSwap                                // bound callee identity replacement
+	mutMethodSwap                                // trivial method target replacement
+	mutMethodToAccessor                          // own method -> accessor
+	mutPrototypeMethod                           // own method removed, prototype method
+	mutPushReceiver                              // push replaced / receiver non-array
+	mutUpvalueChange                             // closure upvalue type / identity change
+	guardMutationCount
+)
+
+// guardMutationTemplates returns the eight R1-6 mutation bodies. fn is the
+// hot-function name; n is the loop bound. Bodies are shared by the fixed
+// cases (fixed.go) and the random generator so both exercise the same shapes.
+func guardMutationTemplates(fn string, n int) []string {
+	return []string{
+		// 1st/2nd/3rd shape: the two-way PIC absorbs S1 and S2, the third
+		// shape must fall back and the first shape must keep working.
+		fmt.Sprintf(`function %[1]s(o, n) { let s = 0; for (let i = 0; i < n; i++) { s += o.a; } return s; }
+const S1 = { a: 1, b: 2 };
+const S2 = { a: 3, c: 4 };
+const S3 = { a: 5, d: 6, e: 7 };
+try { LOG("call", "%[1]s1"); LOG("return", SV(%[1]s(S1, %[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "%[1]s2"); LOG("return", SV(%[1]s(S2, %[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "%[1]s3"); LOG("return", SV(%[1]s(S3, %[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "%[1]s4"); LOG("return", SV(%[1]s(S1, %[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`, fn, n),
+		// Number property -> String / BigInt / nullish / object: the type
+		// guard must fire before the JIT touches the new value, and the
+		// BigInt mix must throw the same TypeError in every tier.
+		fmt.Sprintf(`function %[1]s(o, n) { let s = 0; for (let i = 0; i < n; i++) { s += o.a; } return s; }
+const T = { a: 3 };
+try { LOG("call", "%[1]s1"); LOG("return", SV(%[1]s(T, %[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+T.a = "str";
+try { LOG("call", "%[1]s2"); LOG("return", SV(%[1]s(T, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+T.a = 7n;
+try { LOG("call", "%[1]s3"); LOG("return", SV(%[1]s(T, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+T.a = null;
+try { LOG("call", "%[1]s4"); LOG("return", SV(%[1]s(T, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+T.a = OBJ_A;
+try { LOG("call", "%[1]s5"); LOG("return", SV(%[1]s(T, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`, fn, n),
+		// Bound callee identity: leafA warms up, leafB is the second PIC
+		// target, leafC is the third target which must disable the callee
+		// guard; the first callee must keep returning the right value.
+		fmt.Sprintf(`function make%[1]s(fn) { return function(n) { let s = 0; for (let i = 0; i < n; i++) { s += fn(i); } return s; }; }
+function leafA%[1]s(x) { return x + 1; }
+function leafB%[1]s(x) { return x * 10; }
+function leafC%[1]s(x) { return x - 5; }
+const R%[1]s = make%[1]s(leafA%[1]s);
+try { LOG("call", "%[1]s1"); LOG("return", SV(R%[1]s(%[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+const R%[1]sb = make%[1]s(leafB%[1]s);
+try { LOG("call", "%[1]s2"); LOG("return", SV(R%[1]sb(%[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+const R%[1]sc = make%[1]s(leafC%[1]s);
+try { LOG("call", "%[1]s3"); LOG("return", SV(R%[1]sc(%[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "%[1]s4"); LOG("return", SV(R%[1]s(%[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`, fn, n),
+		// Trivial method target: the guarded `return this._a` method is
+		// replaced by another function; the identity guard must fire before
+		// the replacement runs in Tier 0.
+		fmt.Sprintf(`function %[1]s(o, n) { let s = 0; for (let i = 0; i < n; i++) { s += o.getV(); } return s; }
+const M = { _a: 2, getV() { return this._a; } };
+try { LOG("call", "%[1]s1"); LOG("return", SV(%[1]s(M, %[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+M.getV = function() { return 99; };
+try { LOG("call", "%[1]s2"); LOG("return", SV(%[1]s(M, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`, fn, n),
+		// Own method -> accessor. The accessor must never run inside the JIT:
+		// the method guard fails at the first trace iteration after the swap
+		// and the getter runs exactly once per Tier 0 iteration (the gget
+		// events count them; any JIT-side getter call would change the log).
+		fmt.Sprintf(`function %[1]s(o, n) { let s = 0; for (let i = 0; i < n; i++) { s += o.getV(); } return s; }
+const A = { _a: 2, getV() { return this._a; } };
+try { LOG("call", "%[1]s1"); LOG("return", SV(%[1]s(A, %[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+Object.defineProperty(A, "getV", { get: function() { LOG("gget", "x"); return function() { return 50; }; } });
+try { LOG("call", "%[1]s2"); LOG("return", SV(%[1]s(A, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`, fn, n),
+		// Own method -> prototype method: deleting the own method exposes the
+		// prototype one; the guard fires and Tier 0 resolves through the
+		// prototype chain.
+		fmt.Sprintf(`const PROTO%[1]s = { getV() { return 7; } };
+function %[1]s(o, n) { let s = 0; for (let i = 0; i < n; i++) { s += o.getV(); } return s; }
+const P = { _a: 2, getV() { return this._a; } };
+Object.setPrototypeOf(P, PROTO%[1]s);
+try { LOG("call", "%[1]s1"); LOG("return", SV(%[1]s(P, %[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+delete P.getV;
+try { LOG("call", "%[1]s2"); LOG("return", SV(%[1]s(P, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`, fn, n),
+		// Array push receiver: first the push method is replaced, then the
+		// receiver becomes a non-array. Each Tier 0 push must run exactly
+		// once (the LOG events prove no duplicate append and no JIT-side
+		// push before the guard fails).
+		fmt.Sprintf(`function %[1]s(arr, n) { for (let i = 0; i < n; i++) arr.push(i); return arr.length; }
+const B = [];
+try { LOG("call", "%[1]s1"); LOG("return", SV(%[1]s(B, %[2]d))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+B.push = function(v) { LOG("push", SV(v)); Array.prototype.push.call(this, v * 100); };
+try { LOG("call", "%[1]s2"); LOG("return", SV(%[1]s(B, 3))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+const N = { push: function() { LOG("nopush", "x"); } };
+try { LOG("call", "%[1]s3"); LOG("return", SV(%[1]s(N, 2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(B.length) + ":" + SV(B[0]) + ":" + SV(B[1]));
+`, fn, n),
+		// Closure upvalue: first the upvalue becomes a non-Number, then a
+		// different closure instance of the same template runs. Both must
+		// fall back to Tier 0 with identical observable results.
+		fmt.Sprintf(`let U = 0;
+const INC%[1]s = () => ++U;
+function %[1]s(n, fn) { let sum = 0; for (let i = 0; i < n; i++) { sum += fn(); } return sum; }
+try { LOG("call", "%[1]s1"); LOG("return", SV(%[1]s(%[2]d, INC%[1]s))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+U = "str";
+try { LOG("call", "%[1]s2"); LOG("return", SV(%[1]s(2, INC%[1]s))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+const INC%[1]s2 = () => ++U;
+try { LOG("call", "%[1]s3"); LOG("return", SV(%[1]s(2, INC%[1]s2))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(U));
+`, fn, n),
+	}
+}
+
+// genGuardMutationCase builds a warmup / mutation / post-mutation case from a
+// randomly chosen mutation family. The mutation is embedded in the source at
+// a deterministic call boundary, so the seed, the source and the mutation
+// schedule travel together in the artifact and replay exactly.
+func (g *Generator) genGuardMutationCase(id int, seed int64) *Case {
+	rng := rand.New(rand.NewSource(seed ^ 0xF1))
+	fn := callID(id)
+	n := g.loopBound(rng)
+	kind := guardMutationKind(rng.Intn(int(guardMutationCount)))
+	body := guardMutationTemplates(fn, n)[kind]
+	return g.build(id, KindGuardMutation, seed, body)
 }

@@ -317,6 +317,75 @@ try { LOG("call", "kO2"); LOG("return", SV(kO2(1000000, O2))); } catch (e) { LOG
 LOG("post", SV(O2.count > 0 && O2.count === O2.last + 1));
 `,
 		},
+		{
+			// R1-6: 1st/2nd/3rd property shape. The two-way PIC absorbs S1 and
+			// S2; the third shape must fall back to Tier 0 and the first shape
+			// must keep working afterwards.
+			ID: -24, Kind: KindGuardMutation, Seed: 124, Params: params,
+			Expected: "call:kS1\nreturn:n:4\ncall:kS2\nreturn:n:12\ncall:kS3\nreturn:n:20\ncall:kS4\nreturn:n:4",
+			Body:     guardMutationTemplates("kS", 4)[mutShapeThird],
+		},
+		{
+			// R1-6: Number property -> String / BigInt / nullish / object.
+			// The type guard must fire before the JIT touches the new value,
+			// the BigInt mix must throw the same TypeError in every tier, and
+			// the nullish/object cases resume in Tier 0.
+			ID: -25, Kind: KindGuardMutation, Seed: 125, Params: params,
+			Expected: "call:kT1\nreturn:n:12\ncall:kT2\nreturn:s:0strstr\ncall:kT3\nthrow:TypeError:cannot mix BigInt and other types, use explicit conversions\ncall:kT4\nreturn:n:0\ncall:kT5\nreturn:n:0",
+			Body:     guardMutationTemplates("kT", 4)[mutTypeChange],
+		},
+		{
+			// R1-6: bound callee identity. leafA warms up the callee guard,
+			// leafB is the second PIC target, leafC is the third target which
+			// disables the callee specialization; the first callee must keep
+			// returning the right value.
+			ID: -26, Kind: KindGuardMutation, Seed: 126, Params: params,
+			Expected: "call:kC1\nreturn:n:21\ncall:kC2\nreturn:n:150\ncall:kC3\nreturn:n:-15\ncall:kC4\nreturn:n:21",
+			Body:     guardMutationTemplates("kC", 6)[mutCalleeSwap],
+		},
+		{
+			// R1-6: trivial method target replacement. The guarded
+			// `return this._a` method is swapped for another function; the
+			// identity guard must fire before the replacement runs in Tier 0.
+			ID: -27, Kind: KindGuardMutation, Seed: 127, Params: params,
+			Expected: "call:kM1\nreturn:n:8\ncall:kM2\nreturn:n:297",
+			Body:     guardMutationTemplates("kM", 4)[mutMethodSwap],
+		},
+		{
+			// R1-6: own method -> accessor. The accessor must never run inside
+			// the JIT: the method guard fails at the first trace iteration
+			// after the swap and the getter runs exactly once per Tier 0
+			// iteration (the three gget events prove no JIT-side getter call
+			// and no duplicated or lost getter invocation).
+			ID: -28, Kind: KindGuardMutation, Seed: 128, Params: params,
+			Expected: "call:kA1\nreturn:n:8\ncall:kA2\ngget:x\ngget:x\ngget:x\nreturn:n:150",
+			Body:     guardMutationTemplates("kA", 4)[mutMethodToAccessor],
+		},
+		{
+			// R1-6: own method -> prototype method. Deleting the own method
+			// exposes the prototype one; the guard fires and Tier 0 resolves
+			// through the prototype chain.
+			ID: -29, Kind: KindGuardMutation, Seed: 129, Params: params,
+			Expected: "call:kP1\nreturn:n:8\ncall:kP2\nreturn:n:21",
+			Body:     guardMutationTemplates("kP", 4)[mutPrototypeMethod],
+		},
+		{
+			// R1-6: array push receiver. First the push method is replaced,
+			// then the receiver becomes a non-array. Each Tier 0 push must run
+			// exactly once (the push/nopush events prove no duplicate append
+			// and no JIT-side push before the guard fails).
+			ID: -30, Kind: KindGuardMutation, Seed: 130, Params: params,
+			Expected: "call:kB1\nreturn:n:4\ncall:kB2\npush:n:0\npush:n:1\npush:n:2\nreturn:n:7\ncall:kB3\nnopush:x\nnopush:x\nreturn:undefined\npost:n:7:n:0:n:1",
+			Body:     guardMutationTemplates("kB", 4)[mutPushReceiver],
+		},
+		{
+			// R1-6: closure upvalue. First the upvalue becomes a non-Number,
+			// then a different closure instance of the same template runs.
+			// Both must fall back to Tier 0 with identical observable results.
+			ID: -31, Kind: KindGuardMutation, Seed: 131, Params: params,
+			Expected: "call:kU1\nreturn:n:10\ncall:kU2\nreturn:NaN\ncall:kU3\nreturn:NaN\npost:NaN",
+			Body:     guardMutationTemplates("kU", 4)[mutUpvalueChange],
+		},
 	}
 }
 

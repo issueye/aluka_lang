@@ -246,6 +246,10 @@ func (c *ICache) CallCached(pc int, obj Value, key string) (Value, bool) {
 		c.callMiss++
 		return Undefined(), false
 	}
+	if ov.deleted != nil && ov.deleted[key] {
+		c.callMiss++
+		return Undefined(), false // 已删除：槽位未置空，必须失效走完整解析
+	}
 	h := uint32(pc) & (callICSize - 1)
 	e := &c.calls[h]
 	if !e.valid || int(e.pc) != pc || e.shape != ov.shape || e.key != key {

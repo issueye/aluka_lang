@@ -81,3 +81,33 @@ func GuardedSetNumericOwnProperty(value Value, key string, shapeID uint64, slot 
 	obj.slots[slot] = Number(number)
 	return true
 }
+
+// GuardedMethodLookup resolves a method along a plain object-value prototype
+// chain without invoking accessors, Proxy traps or any other user code. It is
+// the only method primitive exposed to the portable JIT tier: the caller must
+// still assert the returned value's identity before calling it. ok is false
+// when the receiver is not a plain object (Proxy, function, embedded types)
+// or when the chain leaves the plain-object world, so unsafe receivers always
+// fall back instead of running user code during profiling or guard checks.
+func GuardedMethodLookup(obj Object, key string) (Value, bool) {
+	cur, isPlain := obj.(*objectValue)
+	if !isPlain {
+		return nil, false
+	}
+	for cur != nil {
+		if v, ok := cur.getSlot(key); ok {
+			return v, true
+		}
+		if cur.proto == nil {
+			return nil, false
+		}
+		next, ok := cur.proto.(*objectValue)
+		if !ok {
+			// A non-plain prototype (function, Proxy, embedded type) could run
+			// user code on Get; the JIT must not touch it.
+			return nil, false
+		}
+		cur = next
+	}
+	return nil, false
+}

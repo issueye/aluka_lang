@@ -840,6 +840,23 @@ Native Verify 的 Quick 预执行不再调用嵌入 safepoint，避免同一切�
 Quick 和 Native 统一使用不走 accessor/原型/Proxy 的普通对象 own data property 读取；不安全
 receiver 明确回退 Tier 0，Proxy trap 计数在 off/quick/auto 精确一致。
 
+v2.20 完成 R1-6 随机 guard 失效与稳定回退。jitdiff 新增 `KindGuardMutation`，8 类 mutation
+（1st/2nd/3rd property shape、Number→String/BigInt/nullish/object、绑定 callee 身份替换、
+trivial method target 替换、own method→accessor、own method→prototype method（delete 后原型链）、
+数组 push 被替换/receiver 变非数组、closure upvalue 类型/身份变化）以
+"warmup 调用 → 调用边界 mutation 语句 → post-mutation 调用"的调度内嵌在 case 源码，
+seed/源码/mutation 调度随 artifact 保存、单命令重放完全一致。固定用例扩至 31 个
+（-24..-31），`TestGuardMutationFixedCases` 断言每类 off/quick/auto 零差分且实际命中目标
+guard（TracesCompiled/Compiled ≥ 1 且 GuardFailures ≥ 1，非仅 Tier 0）；accessor 用例用
+getter 内 LOG 计数证明 getter 只在 Tier 0 每迭代恰好执行一次（JIT 内零调用）；
+interpreter 包断言第三 shape/target 连续失败后 Native 禁用、RX 字节释放、VM 关闭后全局
+可执行内存回基线。差分发现并修复 Tier 0 引擎 bug：方法调用 IC（O1-C4 `CallCached`）未检查
+deleted map，delete own 方法后 IC 仍返回被删闭包而非原型链方法，补独立回归。profiling/guard
+安全审计：基线 `OwnDataProperty` 已保证方法 guard 收集/执行不触发 accessor/Proxy trap；
+本轮补 `engine.GuardedMethodLookup`（纯 objectValue 链数据查找，非 plain receiver/原型链接口
+回退）并覆盖原型链方法解析。PR 1,000 例与 nightly 100,000 例（5 seed）零差分。该轮未改默认
+`--jit=off`、未扩大 Native ABI 与 W^X 生命周期、不改变任何性能快照口径。
+
 ## 17. 下一轮优先级
 
 后续任务拆分、依赖顺序、里程碑和逐项完成条件见
