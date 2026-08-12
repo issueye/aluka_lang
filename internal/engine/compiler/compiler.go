@@ -3777,7 +3777,6 @@ func forLetCapturedNames(body ast.Node, names []string) []string {
 			return
 		}
 		visited[n] = true
-		println("DBG walk node:", reflect.TypeOf(n).String(), "inFunc:", inFunc)
 		if inFunc {
 			if id, ok := n.(*ast.Identifier); ok && want[id.Name] {
 				found[id.Name] = true

@@ -940,8 +940,15 @@ func newClientRequestProto(ctx engine.Context, args []engine.Value, proto string
 				}
 			}
 		}
-		if len(args) > 1 && args[1].IsFunction() {
-			callback = args[1]
+		// Node 语义：http.request(url[, options][, callback]) /
+		// (options[, callback])——callback 可取倒数第一个函数参数。
+		// 此前仅检查 args[1]，三参形式 http.request(url, opts, cb)
+		// 的 callback 被忽略 → nil 接口 panic。
+		for i := len(args) - 1; i >= 1; i-- {
+			if args[i].IsFunction() {
+				callback = args[i]
+				break
+			}
 		}
 	}
 	state.callback = callback
@@ -1102,9 +1109,11 @@ func (s *clientReqState) send() {
 		req, err := http.NewRequestWithContext(ctxCancel, s.method, s.url, bodyReader)
 		if err != nil {
 			s.ctx.PostTask(func() {
-				if f, ok := s.callback.AsFunction(); ok {
-					if _, err := f.Call([]engine.Value{engine.Undefined(), engine.Str(err.Error())}); err != nil {
-						interpreter.ReportUncaught(nil, err)
+				if s.callback != nil {
+					if f, ok := s.callback.AsFunction(); ok {
+						if _, err := f.Call([]engine.Value{engine.Undefined(), engine.Str(err.Error())}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			})
@@ -1140,9 +1149,11 @@ func (s *clientReqState) send() {
 					emitEvent(s.req, "close")
 					return
 				}
-				if f, ok := s.callback.AsFunction(); ok {
-					if _, err := f.Call([]engine.Value{engine.Undefined(), engine.Str(err.Error())}); err != nil {
-						interpreter.ReportUncaught(nil, err)
+				if s.callback != nil {
+					if f, ok := s.callback.AsFunction(); ok {
+						if _, err := f.Call([]engine.Value{engine.Undefined(), engine.Str(err.Error())}); err != nil {
+							interpreter.ReportUncaught(nil, err)
+						}
 					}
 				}
 			})
@@ -1162,9 +1173,11 @@ func (s *clientReqState) send() {
 			_ = resMsg.Set("headers", headersToObj(resp.Header))
 			// trailer 头（Go 在 body 读完时填充 resp.Trailer）。
 			_ = resMsg.Set("trailers", headersToObj(resp.Trailer))
-			if f, ok := s.callback.AsFunction(); ok {
-				if _, err := f.Call([]engine.Value{resMsg}); err != nil {
-					interpreter.ReportUncaught(nil, err)
+			if s.callback != nil {
+				if f, ok := s.callback.AsFunction(); ok {
+					if _, err := f.Call([]engine.Value{resMsg}); err != nil {
+						interpreter.ReportUncaught(nil, err)
+					}
 				}
 			}
 			// 回调注册完监听器后发射响应体事件（'data'/'end'）。
