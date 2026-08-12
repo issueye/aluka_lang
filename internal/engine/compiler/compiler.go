@@ -871,6 +871,34 @@ func (c *Compiler) compileDoWhile(s *ast.DoWhileStmt) error {
 func (c *Compiler) compileFor(s *ast.ForStmt) error {
 	c.pushBlock()
 	defer c.popBlock()
+
+	// ES2015 per-iteration 绑定（`for (let i = 0; ...)` 的闭包语义）：
+	// 每次迭代的闭包必须捕获当次迭代的 i 值（node: 0 1 2，而非 3 3 3）。
+	// 实现（对齐 for...of 的 iterationSlotStart 机制）：
+	//   - 头槽 headSlot：init/update/test 读写，循环外不可见
+	//   - 迭代槽 iterSlot：body 引用；每次迭代开头从 headSlot 复制，
+	//     body 末尾 CloseUpvalues 关闭捕获（闭包拿到当次副本）
+	//   - update 后同步 iterSlot → headSlot 供下次迭代
+	headSlots := map[string]int{}
+	letInit := false
+	if vd, ok := s.Init.(*ast.VarDecl); ok && vd.Kind == "let" {
+		// 仅当 let 变量被循环体中的闭包捕获时才需要 per-iteration 绑定
+		// （每次迭代新副本）；否则保持单槽位，循环指令形状不变
+		// （arrayPush 等 JIT 匹配器与 trace 编译依赖该形状）。
+		var letNames []string
+		for _, d := range vd.Decls {
+			if d.Pattern == nil {
+				letNames = append(letNames, d.Name.Name)
+			}
+		}
+		captured := forLetCapturedNames(s.Body, letNames)
+		if len(captured) > 0 {
+			letInit = true
+			for _, name := range captured {
+				headSlots[name] = c.declareLocal(name)
+			}
+		}
+	}
 	if s.Init != nil {
 		switch init := s.Init.(type) {
 		case *ast.VarDecl:
@@ -894,17 +922,55 @@ func (c *Compiler) compileFor(s *ast.ForStmt) error {
 	}
 	c.pushLoop(loopStart, 0)
 	defer c.popLoop()
-	if err := c.compileStmt(s.Body); err != nil {
-		return err
-	}
-	continuePC := c.curPC()
-	c.topLoop().continueTarget = continuePC
-	c.patchLoopContinues(continuePC)
-	if s.Update != nil {
-		if err := c.compileExpr(s.Update); err != nil {
+
+	if letInit && len(headSlots) > 0 {
+		// 迭代作用域：为每个 let 名字分配迭代槽（遮蔽头槽）。
+		c.pushBlock()
+		defer c.popBlock()
+		iterationSlotStart := c.cur().tmpl.NumLocals
+		iterSlots := make([]int, 0, len(headSlots))
+		headNames := make([]string, 0, len(headSlots))
+		for name := range headSlots {
+			iterSlots = append(iterSlots, c.declareLocal(name))
+			headNames = append(headNames, name)
+		}
+		// 每次迭代开头：headSlot → iterSlot 复制。
+		for i, name := range headNames {
+			c.emit(bytecode.OpLoadLocal, uint32(headSlots[name]))
+			c.emit(bytecode.OpStoreLocal, uint32(iterSlots[i]))
+		}
+		if err := c.compileStmt(s.Body); err != nil {
 			return err
 		}
-		c.emit(bytecode.OpPop, 0)
+		// 迭代结束关闭捕获（continue 跳到这里之后执行 close）。
+		continuePC := c.curPC()
+		c.topLoop().continueTarget = continuePC
+		c.patchLoopContinues(continuePC)
+		c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+		if s.Update != nil {
+			if err := c.compileExpr(s.Update); err != nil {
+				return err
+			}
+			c.emit(bytecode.OpPop, 0)
+		}
+		// update 后同步 iterSlot → headSlot（供下次迭代的 test/复制）。
+		for i, name := range headNames {
+			c.emit(bytecode.OpLoadLocal, uint32(iterSlots[i]))
+			c.emit(bytecode.OpStoreLocal, uint32(headSlots[name]))
+		}
+	} else {
+		if err := c.compileStmt(s.Body); err != nil {
+			return err
+		}
+		continuePC := c.curPC()
+		c.topLoop().continueTarget = continuePC
+		c.patchLoopContinues(continuePC)
+		if s.Update != nil {
+			if err := c.compileExpr(s.Update); err != nil {
+				return err
+			}
+			c.emit(bytecode.OpPop, 0)
+		}
 	}
 	c.emit(bytecode.OpJmp, uint32(loopStart-(c.curPC()+bytecode.InstrSize)))
 	exit := c.curPC()
@@ -3671,11 +3737,14 @@ func walkValue(rv reflect.Value, walk func(ast.Node), visited map[ast.Node]bool)
 		}
 	case reflect.Ptr:
 		if !rv.IsNil() {
+			// 通知访问者后必须继续遍历字段：此前仅 walk(n) 导致嵌套
+			// 子树（函数体/表达式内的引用）永远不被扫描——astBodyReferencesName
+			// 恒 false（NFE 自引用槽从不分配）与 forLetCapturedNames 恒空
+			// （per-iteration 绑定从不启用）均由此引起。
 			if n, ok := rv.Interface().(ast.Node); ok {
 				walk(n)
-			} else {
-				walkValue(rv.Elem(), walk, visited)
 			}
+			walkValue(rv.Elem(), walk, visited)
 		}
 	case reflect.Slice:
 		for i := 0; i < rv.Len(); i++ {
@@ -3686,4 +3755,61 @@ func walkValue(rv reflect.Value, walk func(ast.Node), visited map[ast.Node]bool)
 			walkValue(rv.Elem(), walk, visited)
 		}
 	}
+}
+
+// forLetCapturedNames 返回 body 中嵌套函数（闭包）内引用的名字子集。
+// 用于判断 C 风格 for 的 let 变量是否需要 per-iteration 绑定：仅当
+// 循环体内的闭包捕获该变量时（ES2015 语义要求每次迭代独立副本），
+// 才启用头槽+迭代槽复制；否则保持单槽（JIT 匹配器依赖的指令形状）。
+func forLetCapturedNames(body ast.Node, names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[n] = true
+	}
+	found := map[string]bool{}
+	visited := make(map[ast.Node]bool) // 防共享/循环引用
+	var walkFn func(n ast.Node, inFunc bool)
+	walkFn = func(n ast.Node, inFunc bool) {
+		if n == nil || visited[n] {
+			return
+		}
+		visited[n] = true
+		println("DBG walk node:", reflect.TypeOf(n).String(), "inFunc:", inFunc)
+		if inFunc {
+			if id, ok := n.(*ast.Identifier); ok && want[id.Name] {
+				found[id.Name] = true
+				return // 已找到该名，不必继续下钻
+			}
+		}
+		// 嵌套函数：进入其内部子树（闭包捕获上下文）。
+		switch f := n.(type) {
+		case *ast.FunctionExpr:
+			walkFn(f.Body, true)
+			// 函数默认值/参数中的引用不视为捕获（参数绑定遮蔽）；
+			// 简化实现：仅扫描函数体。返回后不再走反射（防重复）。
+			return
+		case *ast.ArrowFunc:
+			walkFn(f.Body, true)
+			return
+		case *ast.FunctionDecl:
+			walkFn(f.Body, true)
+			return
+		}
+		rv := reflect.ValueOf(n)
+		walkValue(rv, func(child ast.Node) { walkFn(child, inFunc) }, visited)
+	}
+	walkFn(body, false)
+	if len(found) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(found))
+	for _, n := range names {
+		if found[n] {
+			out = append(out, n)
+		}
+	}
+	return out
 }
