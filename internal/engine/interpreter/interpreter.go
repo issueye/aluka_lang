@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,6 +96,22 @@ type Interpreter struct {
 	loopDone bool
 }
 
+// taskQueueSize 返回事件循环任务队列缓冲容量。
+// 环境变量 ALUKA_TASK_QUEUE_SIZE 覆盖默认值（须为正整数，非法值回退默认）。
+func taskQueueSize() int {
+	if v := os.Getenv("ALUKA_TASK_QUEUE_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultTaskQueueSize
+}
+
+// defaultTaskQueueSize 是事件循环任务队列的默认缓冲容量。
+// 高并发 HTTP/IO 场景（express 压测）下 64 会导致 PostTask 阻塞投递方
+// 形成死锁；1024 为实测安全值。可用环境变量 ALUKA_TASK_QUEUE_SIZE 覆盖。
+const defaultTaskQueueSize = 1024
+
 // NewInterpreter creates an interpreter with built-in globals set up.
 func NewInterpreter() (*Interpreter, error) {
 	interp := &Interpreter{
@@ -102,7 +119,7 @@ func NewInterpreter() (*Interpreter, error) {
 		globalObj:          engine.NewObject(),
 		constructors:       make(map[string]engine.Object),
 		argumentsSupported: true,
-		taskCh:             make(chan func(), 1024),
+		taskCh:             make(chan func(), taskQueueSize()),
 		idleCh:             make(chan struct{}, 1),
 		stopCh:             make(chan struct{}),
 	}
