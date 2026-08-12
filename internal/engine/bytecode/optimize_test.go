@@ -240,6 +240,25 @@ func decodeAt(t *testing.T, code []byte, idx int) (bytecode.Opcode, uint32) {
 	return op, operand
 }
 
+// foldedNumberAt 读取第 idx 条指令的数值，统一处理 PUSH_INT/PUSH_NEG_INT/
+// PUSH_CONST 三种编码——因为 numberPush 会按 24 位范围选择最紧凑的形态，
+// 断言折叠结果时不应耦合于具体编码。
+func foldedNumberAt(t *testing.T, fn *bytecode.FuncTemplate, idx int) (float64, bytecode.Opcode) {
+	t.Helper()
+	op, operand := decodeAt(t, fn.Code, idx)
+	switch op {
+	case bytecode.OpPushInt:
+		return float64(operand), op
+	case bytecode.OpPushNegInt:
+		return -float64(operand), op
+	case bytecode.OpPushConst:
+		f, _ := fn.Constants[operand].Float()
+		return f, op
+	}
+	t.Fatalf("instruction %d is %s, not a number push", idx, op)
+	return 0, op
+}
+
 func TestOptimizeFoldsNumberArithmetic(t *testing.T) {
 	fn := &bytecode.FuncTemplate{
 		SourceFile: "fold.js",
@@ -258,16 +277,13 @@ func TestOptimizeFoldsNumberArithmetic(t *testing.T) {
 	if got := len(fn.Code) / bytecode.InstrSize; got != 2 {
 		t.Fatalf("instruction count = %d, want 2", got)
 	}
-	op, operand := decodeAt(t, fn.Code, 0)
-	if op != bytecode.OpPushConst {
-		t.Fatalf("folded instruction = %s, want PUSH_CONST", op)
+	// 结果 3 落在 24 位范围，numberPush 选 PUSH_INT（更紧凑，无常量池）。
+	value, op := foldedNumberAt(t, fn, 0)
+	if op != bytecode.OpPushInt {
+		t.Fatalf("folded instruction = %s, want PUSH_INT (3 fits 24-bit)", op)
 	}
-	if fn.Constants[operand].Type() != engine.TypeNumber {
-		t.Fatalf("folded constant type = %v, want number", fn.Constants[operand].Type())
-	}
-	value, _ := fn.Constants[operand].Float()
 	if value != 3 {
-		t.Fatalf("folded constant = %v, want 3", value)
+		t.Fatalf("folded value = %v, want 3", value)
 	}
 }
 
@@ -302,11 +318,9 @@ func TestOptimizeFoldsNumberEdgeCases(t *testing.T) {
 				Code:       mkCode(append(c.ops, ci{op: bytecode.OpReturn})...),
 			}
 			optimizeFixture(t, fn)
-			op, operand := decodeAt(t, fn.Code, 0)
-			if op != bytecode.OpPushConst {
-				t.Fatalf("folded = %s, want PUSH_CONST", op)
-			}
-			got, _ := fn.Constants[operand].Float()
+			// 整数结果（mod=1、pow=1024）会发 PUSH_INT；NaN/Inf/-0 发 PUSH_CONST。
+			// foldedNumberAt 统一读取，断言不耦合于具体编码。
+			got, _ := foldedNumberAt(t, fn, 0)
 			switch {
 			case math.IsNaN(c.want):
 				if !math.IsNaN(got) {
@@ -526,5 +540,236 @@ func TestOptimizeFoldThenEliminateStatementValue(t *testing.T) {
 	}
 	if got := len(fn.Code) / bytecode.InstrSize; got != 1 {
 		t.Fatalf("instruction count = %d, want 1 (only RETURN_UNDEF)", got)
+	}
+}
+
+// === PUSH_INT/PUSH_NEG_INT 常量折叠 + 单目折叠（Tier 1.1/1.2 扩展）===
+
+// TestOptimizeFoldsPushIntBinary 验证 PUSH_INT;PUSH_INT;binop 折叠为单条
+// PUSH_INT（结果落在 24 位正整数范围）。覆盖 + - * / % ** 六种算术。
+func TestOptimizeFoldsPushIntBinary(t *testing.T) {
+	cases := []struct {
+		name      string
+		a, b      uint32
+		op        bytecode.Opcode
+		want      uint32
+		wantInstr int // 折叠后指令数（仅 push 产物）
+	}{
+		{"add", 1, 2, bytecode.OpAdd, 3, 1},
+		{"sub", 10, 3, bytecode.OpSub, 7, 1},
+		{"mul", 6, 7, bytecode.OpMul, 42, 1},
+		{"div", 8, 2, bytecode.OpDiv, 4, 1},
+		{"mod", 17, 5, bytecode.OpMod, 2, 1},
+		{"pow", 2, 10, bytecode.OpPow, 1024, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fn := &bytecode.FuncTemplate{
+				SourceFile: "fold.js",
+				Code: mkCode(
+					ci{op: bytecode.OpPushInt, operand: c.a},
+					ci{op: bytecode.OpPushInt, operand: c.b},
+					ci{op: c.op},
+				),
+			}
+			optimizeFixture(t, fn)
+			if got := len(fn.Code) / bytecode.InstrSize; got != c.wantInstr {
+				t.Fatalf("instruction count = %d, want %d", got, c.wantInstr)
+			}
+			op, operand := decodeAt(t, fn.Code, 0)
+			if op != bytecode.OpPushInt {
+				t.Fatalf("folded = %s, want PUSH_INT", op)
+			}
+			if operand != c.want {
+				t.Fatalf("folded operand = %d, want %d", operand, c.want)
+			}
+		})
+	}
+}
+
+// TestOptimizeFoldsPushIntResultShape 验证折叠结果按 24 位范围回发为
+// PUSH_INT（正）/ PUSH_NEG_INT（负）/ PUSH_CONST（超出范围）。
+func TestOptimizeFoldsPushIntResultShape(t *testing.T) {
+	cases := []struct {
+		name string
+		ops  []ci
+		// wantOp 为折叠产物的 opcode；wantConst 校验 PUSH_CONST 路径的数值。
+		wantOp       bytecode.Opcode
+		wantOperand  uint32
+		wantConstVal float64
+	}{
+		// 3 - 5 = -2 → PUSH_NEG_INT 2
+		{"neg result", []ci{{op: bytecode.OpPushInt, operand: 3}, {op: bytecode.OpPushInt, operand: 5}, {op: bytecode.OpSub}},
+			bytecode.OpPushNegInt, 2, 0},
+		// 0 - 7 = -7 → PUSH_NEG_INT 7
+		{"neg result 2", []ci{{op: bytecode.OpPushInt, operand: 0}, {op: bytecode.OpPushInt, operand: 7}, {op: bytecode.OpSub}},
+			bytecode.OpPushNegInt, 7, 0},
+		// 100000 * 100000 = 10^10（≥2^24）→ PUSH_CONST(1e10)
+		{"overflow to const", []ci{{op: bytecode.OpPushInt, operand: 100000}, {op: bytecode.OpPushInt, operand: 100000}, {op: bytecode.OpMul}},
+			bytecode.OpPushConst, 0, 1e10},
+		// 5 / 0 = +Inf → PUSH_CONST(+Inf)
+		{"div by zero inf", []ci{{op: bytecode.OpPushInt, operand: 5}, {op: bytecode.OpPushInt, operand: 0}, {op: bytecode.OpDiv}},
+			bytecode.OpPushConst, 0, math.Inf(1)},
+		// 0 / 0 = NaN → PUSH_CONST(NaN)
+		{"nan", []ci{{op: bytecode.OpPushInt, operand: 0}, {op: bytecode.OpPushInt, operand: 0}, {op: bytecode.OpDiv}},
+			bytecode.OpPushConst, 0, math.NaN()},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fn := &bytecode.FuncTemplate{SourceFile: "fold.js", Code: mkCode(c.ops...)}
+			optimizeFixture(t, fn)
+			op, operand := decodeAt(t, fn.Code, 0)
+			if op != c.wantOp {
+				t.Fatalf("folded = %s, want %s", op, c.wantOp)
+			}
+			if c.wantOp == bytecode.OpPushInt || c.wantOp == bytecode.OpPushNegInt {
+				if operand != c.wantOperand {
+					t.Fatalf("operand = %d, want %d", operand, c.wantOperand)
+				}
+				return
+			}
+			// PUSH_CONST 路径：校验常量池数值。
+			got, _ := fn.Constants[operand].Float()
+			switch {
+			case math.IsNaN(c.wantConstVal):
+				if !math.IsNaN(got) {
+					t.Fatalf("const = %v, want NaN", got)
+				}
+			case math.IsInf(c.wantConstVal, 1):
+				if !math.IsInf(got, 1) {
+					t.Fatalf("const = %v, want +Inf", got)
+				}
+			default:
+				if got != c.wantConstVal {
+					t.Fatalf("const = %v, want %v", got, c.wantConstVal)
+				}
+			}
+		})
+	}
+}
+
+// TestOptimizeFoldsMixedPushIntConst 验证 PUSH_INT 与 PUSH_CONST(number)
+// 混搭也能折叠（pushNumber 统一处理三种数值压栈）。
+func TestOptimizeFoldsMixedPushIntConst(t *testing.T) {
+	fn := &bytecode.FuncTemplate{
+		SourceFile: "fold.js",
+		Constants:  []engine.Value{engine.Number(100)}, // 常量池：100
+		Code: mkCode(
+			ci{op: bytecode.OpPushInt, operand: 1},     // 1
+			ci{op: bytecode.OpPushConst, operand: 0},   // 100
+			ci{op: bytecode.OpAdd},                      // → 101
+		),
+	}
+	optimizeFixture(t, fn)
+	if got := len(fn.Code) / bytecode.InstrSize; got != 1 {
+		t.Fatalf("instruction count = %d, want 1", got)
+	}
+	op, operand := decodeAt(t, fn.Code, 0)
+	if op != bytecode.OpPushInt || operand != 101 {
+		t.Fatalf("folded = %s %d, want PUSH_INT 101", op, operand)
+	}
+}
+
+// TestOptimizeFoldsUnary 验证单目折叠：NEG/NOT/BitNot/UnaryPlus。
+func TestOptimizeFoldsUnary(t *testing.T) {
+	cases := []struct {
+		name   string
+		ops    []ci
+		wantOp bytecode.Opcode
+		// wantOperand 用于 PUSH_INT/PUSH_NEG_INT；wantConst 用于 PUSH_CONST(bigint 取反)。
+		wantOperand  uint32
+		wantConstStr string
+	}{
+		{"neg int", []ci{{op: bytecode.OpPushInt, operand: 5}, {op: bytecode.OpNeg}}, bytecode.OpPushNegInt, 5, ""},
+		{"not true", []ci{{op: bytecode.OpPushTrue}, {op: bytecode.OpNot}}, bytecode.OpPushFalse, 0, ""},
+		{"not false", []ci{{op: bytecode.OpPushFalse}, {op: bytecode.OpNot}}, bytecode.OpPushTrue, 0, ""},
+		{"bitnot 5", []ci{{op: bytecode.OpPushInt, operand: 5}, {op: bytecode.OpBitNot}}, bytecode.OpPushNegInt, 6, ""}, // ~5=-6
+		{"bitnot 0", []ci{{op: bytecode.OpPushInt, operand: 0}, {op: bytecode.OpBitNot}}, bytecode.OpPushNegInt, 1, ""}, // ~0=-1
+		{"unary plus", []ci{{op: bytecode.OpPushInt, operand: 7}, {op: bytecode.OpUnaryPlus}}, bytecode.OpPushInt, 7, ""},
+		{"neg bigint", []ci{{op: bytecode.OpPushConst, operand: 0}, {op: bytecode.OpNeg}}, bytecode.OpPushConst, 0, "-5"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fn := &bytecode.FuncTemplate{
+				SourceFile: "fold.js",
+				Constants:  []engine.Value{engine.BigInt(big.NewInt(5))},
+				Code:       mkCode(c.ops...),
+			}
+			optimizeFixture(t, fn)
+			if got := len(fn.Code) / bytecode.InstrSize; got != 1 {
+				t.Fatalf("instruction count = %d, want 1", got)
+			}
+			op, operand := decodeAt(t, fn.Code, 0)
+			if op != c.wantOp {
+				t.Fatalf("folded = %s, want %s", op, c.wantOp)
+			}
+			if c.wantOp == bytecode.OpPushConst {
+				bi, ok := engine.BigIntValue(fn.Constants[operand])
+				if !ok || bi.String() != c.wantConstStr {
+					t.Fatalf("const = %v, want bigint %s", fn.Constants[operand], c.wantConstStr)
+				}
+				return
+			}
+			if operand != c.wantOperand {
+				t.Fatalf("operand = %d, want %d", operand, c.wantOperand)
+			}
+		})
+	}
+}
+
+// TestOptimizeFoldPreservesNegZero 验证折叠保留 IEEE754 负零：
+// JS 中 -0 ≠ +0（1/-0 === -Inf、Object.is(-0,0)===false），故 NEG(0) 与
+// (-0)+(-0) 等产生 -0 的折叠必须经 PUSH_CONST 保留符号位，不能发 PUSH_INT 0。
+func TestOptimizeFoldPreservesNegZero(t *testing.T) {
+	cases := []struct {
+		name string
+		ops  []ci
+	}{
+		// NEG(0) → -0（JS 中 1/-0 === -Inf）。注：0-0=+0、-0+-0=-0 但后者需 -0 操作数。
+		{"neg of zero", []ci{{op: bytecode.OpPushInt, operand: 0}, {op: bytecode.OpNeg}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fn := &bytecode.FuncTemplate{SourceFile: "fold.js", Code: mkCode(c.ops...)}
+			optimizeFixture(t, fn)
+			if got := len(fn.Code) / bytecode.InstrSize; got != 1 {
+				t.Fatalf("instruction count = %d, want 1", got)
+			}
+			op, operand := decodeAt(t, fn.Code, 0)
+			if op != bytecode.OpPushConst {
+				t.Fatalf("folded = %s, want PUSH_CONST (preserve -0)", op)
+			}
+			v, _ := fn.Constants[operand].Float()
+			if v != 0 || !math.Signbit(v) {
+				t.Fatalf("folded value = %v (%v signbit), want -0", v, math.Signbit(v))
+			}
+		})
+	}
+}
+
+// TestOptimizeDoesNotFoldPushIntUnsafe 验证 PUSH_INT 上不可折叠的算术形态
+// 保持原样：位运算（涉及 ToInt32 两步转换但保留双压栈语义——本优化器当前
+// 不折位运算）、比较运算（结果布尔，当前不折）。
+func TestOptimizeDoesNotFoldPushIntUnsafe(t *testing.T) {
+	cases := []struct {
+		name string
+		ops  []ci
+	}{
+		{"shl", []ci{{op: bytecode.OpPushInt, operand: 1}, {op: bytecode.OpPushInt, operand: 3}, {op: bytecode.OpShl}}},
+		{"bitand", []ci{{op: bytecode.OpPushInt, operand: 1}, {op: bytecode.OpPushInt, operand: 2}, {op: bytecode.OpBitAnd}}},
+		{"lt", []ci{{op: bytecode.OpPushInt, operand: 1}, {op: bytecode.OpPushInt, operand: 2}, {op: bytecode.OpLt}}},
+		{"stricteq", []ci{{op: bytecode.OpPushInt, operand: 1}, {op: bytecode.OpPushInt, operand: 2}, {op: bytecode.OpStrictEq}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fn := &bytecode.FuncTemplate{SourceFile: "fold.js", Code: mkCode(c.ops...)}
+			stats := optimizeFixture(t, fn)
+			if got := len(fn.Code) / bytecode.InstrSize; got != len(c.ops) {
+				t.Fatalf("instruction count = %d, want %d (no folding)", got, len(c.ops))
+			}
+			if stats.RemovedInstructions != 0 {
+				t.Fatalf("removed = %d, want 0 (no folding)", stats.RemovedInstructions)
+			}
+		})
 	}
 }

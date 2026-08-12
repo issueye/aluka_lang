@@ -147,8 +147,9 @@ func optimizeFunc(fn *FuncTemplate) (funcStats, error) {
 	remove := make([]bool, len(ins))
 	// fuse[i] 记录以 i 为起点的两指令融合产物序列（第一条 + 后续指令）。
 	fuse := make(map[int][]decodedInstr, 4)
-	// fold[i] 记录常量折叠产物：i 为 PUSH_CONST 起点，三条指令合一。
-	fold := make(map[int]int, 4)
+	// fold[i] 记录常量折叠产物（二元 PUSH a;PUSH b;<binop> 或单目 PUSH a;<unop>）：
+	// out 为合成后的单条压栈指令，consume 为被消费的原指令数（二元 3 / 单目 2）。
+	fold := make(map[int]foldMatch, 4)
 
 	// 不可达代码删除：RETURN/RETURN_UNDEF/THROW（IsTerminal）之后的顺序指令
 	// 若不是控制入口（跳转目标/try 表 PC）则不可达。编译器会发出 return 后
@@ -213,17 +214,26 @@ func optimizeFunc(fn *FuncTemplate) (funcStats, error) {
 			i++
 			continue
 		}
-		// 常量折叠：PUSH_CONST a; PUSH_CONST b; 二元算术 → PUSH_CONST(结果)。
-		// 仅折叠 VM 分派可证明一致的情形（见 foldConstants 注释）。
-		if i+2 < len(ins) && !controlTargets[ins[i+1].pc] && !controlTargets[ins[i+2].pc] {
-			if idx := foldConstants(fn, ins[i], ins[i+1], ins[i+2].op); idx >= 0 {
-				fold[i] = idx
+		// 常量折叠：PUSH a; PUSH b; <binop>（二元）或 PUSH a; <unop>（单目）。
+		// 仅折叠 VM 分派可证明一致的情形（见 tryFoldBinary/tryFoldUnary 注释）。
+		// controlTargets 守卫确保无跳转落入序列中间（i+1 由循环顶部 line 178
+		// 已保证有效且非控制入口；此处仅额外守护二元的 i+2）。
+		if i+2 < len(ins) && !controlTargets[ins[i+2].pc] {
+			if m, ok := tryFoldBinary(fn, ins[i], ins[i+1], ins[i+2].op); ok {
+				fold[i] = m
 				remove[i] = true
 				remove[i+1] = true
 				remove[i+2] = true
 				i += 2
 				continue
 			}
+		}
+		if m, ok := tryFoldUnary(fn, ins[i], ins[i+1].op); ok {
+			fold[i] = m
+			remove[i] = true
+			remove[i+1] = true
+			i++
+			continue
 		}
 	}
 
@@ -241,20 +251,24 @@ func optimizeFunc(fn *FuncTemplate) (funcStats, error) {
 			i += 2
 			continue
 		}
-		if idx, ok := fold[i]; ok {
+		if m, ok := fold[i]; ok {
+			oldPCs := make([]int, m.consume)
+			for k := 0; k < m.consume; k++ {
+				oldPCs[k] = ins[i+k].pc
+			}
 			groups = append(groups, rewriteGroup{
-				oldPCs: []int{ins[i].pc, ins[i+1].pc, ins[i+2].pc},
+				oldPCs: oldPCs,
 				ins: decodedInstr{
 					pc:      ins[i].pc,
-					op:      OpPushConst,
-					operand: uint32(idx),
+					op:      m.out.op,
+					operand: m.out.operand,
 				},
 				emit:    true,
 				oldJump: -1,
 			})
-			// 3 条旧指令合成 1 条：净删 2 条（与融合的净计口径一致）。
-			stats.RemovedInstructions += 2
-			i += 3
+			// consume 条旧指令合成 1 条：净删 consume-1 条。
+			stats.RemovedInstructions += m.consume - 1
+			i += m.consume
 			continue
 		}
 		if remove[i] {
@@ -275,15 +289,15 @@ func optimizeFunc(fn *FuncTemplate) (funcStats, error) {
 	// the second instruction here because the loop above counts each one.
 
 	oldToNew := make(map[int]int, len(ins)+1)
-	emittedAt := make(map[int]bool, len(ins))
 	groupPCs := make([]int, len(groups))
 	newPC := 0
 	for gi := range groups {
 		g := &groups[gi]
 		groupPCs[gi] = newPC
 		for _, oldPC := range g.oldPCs {
+			// 非 emit 组不推进 newPC，故其 oldPC 映射到「下一个 emit 组」的
+			// 起始 newPC——这正是被删指令向后续存活指令的 PC 转移点（行号表用）。
 			oldToNew[oldPC] = newPC
-			emittedAt[oldPC] = g.emit
 		}
 		if g.emit {
 			newPC += InstrSize * (1 + len(g.ins2))
@@ -328,7 +342,7 @@ func optimizeFunc(fn *FuncTemplate) (funcStats, error) {
 		}
 	}
 	fn.Code = newCode
-	if err := relocateMetadata(fn, oldToNew, emittedAt); err != nil {
+	if err := relocateMetadata(fn, oldToNew); err != nil {
 		return stats, err
 	}
 	return stats, nil
@@ -341,82 +355,222 @@ func isPurePush(op Opcode) bool {
 	return m != nil && m.PurePush
 }
 
-// foldConstants 尝试将 PUSH_CONST a; PUSH_CONST b; 二元算术折叠为单个
-// PUSH_CONST，仅在折叠结果与 VM 运行时分派完全一致的情形执行：
+// foldMatch 描述一次常量折叠的产物：out 为合成后的单条压栈指令，
+// consume 为被消费的原指令数（二元=3：PUSH a;PUSH b;<binop>，单目=2：
+// PUSH a;<unop>）。out.op 可能是 PUSH_INT/PUSH_NEG_INT（结果是小整数，
+// 无常量池开销）、PUSH_CONST（结果入池）、PUSH_TRUE/PUSH_FALSE（布尔）。
+type foldMatch struct {
+	out     decodedInstr
+	consume int
+}
+
+// pushNumber 读取一条「数值压栈」指令的 float64 值，覆盖 PUSH_INT /
+// PUSH_NEG_INT / PUSH_CONST(number)。非数值（string/bigint/undefined/nil
+// 或越界常量索引）返回 ok=false。
+func pushNumber(in decodedInstr, fn *FuncTemplate) (float64, bool) {
+	switch in.op {
+	case OpPushInt:
+		return float64(in.operand), true
+	case OpPushNegInt:
+		return -float64(in.operand), true
+	case OpPushConst:
+		if int(in.operand) >= len(fn.Constants) {
+			return 0, false
+		}
+		v := fn.Constants[in.operand]
+		if v == nil || v.Type() != engine.TypeNumber {
+			return 0, false
+		}
+		f, _ := v.Float()
+		return f, true
+	}
+	return 0, false
+}
+
+// numberPush 把 float64 结果封装为最紧凑的压栈指令：
+//   - 整数且落在 24 位有符号范围 [-(2²³-1)? ...]  → PUSH_INT/PUSH_NEG_INT；
+//   - 否则（非整数、|值|≥2²⁴、NaN/Inf）→ 入常量池 PUSH_CONST。
 //
-//   - number × number：IEEE754 double 运算（+ - * / 直接、% 用 math.Mod、
-//     ** 用 math.Pow，均与 JS 数值语义逐位一致，含 -0/NaN/Infinity）；
-//   - string + string（仅 OpAdd）：直接拼接（无类型转换）；
-//   - bigint × bigint：+ - * / %（Quo/Rem 截断语义与 JS BigInt 一致；
-//     除零在 JS 抛 RangeError，故不折叠；** 不折叠——负指数抛错且
-//     结果可能超出合理内存）。
+// 与编译器 NumberLit 的发射口径完全一致（compiler.go:1641-1652），
+// 故折叠产物可被 VM 与后续优化轮当作普通字面量处理。
+func numberPush(fn *FuncTemplate, result float64) decodedInstr {
+	// -0 不能用 PUSH_INT 0 表示：JS 中 -0 ≠ +0（1/-0 === -Inf，Object.is 区分），
+	// VM 的 NEG(0) 产生 IEEE754 -0。故负零必须经 PUSH_CONST 保留符号位。
+	if result == 0 && math.Signbit(result) {
+		idx := fn.AddConst(engine.Number(result))
+		return decodedInstr{op: OpPushConst, operand: uint32(idx)}
+	}
+	const bound = float64(int64(1) << 24) // 2^24
+	if !math.IsNaN(result) && !math.IsInf(result, 0) &&
+		result > -bound && result < bound && result == float64(int64(result)) {
+		iv := int64(result)
+		if iv >= 0 {
+			return decodedInstr{op: OpPushInt, operand: uint32(iv)}
+		}
+		return decodedInstr{op: OpPushNegInt, operand: uint32(-iv)}
+	}
+	idx := fn.AddConst(engine.Number(result))
+	return decodedInstr{op: OpPushConst, operand: uint32(idx)}
+}
+
+// evalNumberBinary 对两个 IEEE754 double 执行算术，返回结果与是否可折。
+// + - * / 直接、% 用 math.Mod、** 用 math.Pow，均与 JS 数值语义逐位一致
+// （含 -0/NaN/Infinity；如 1/0=+Inf、0/0=NaN 均可折叠）。位运算/比较
+// 不在本路径（涉及 ToInt32/类型转换，见 tryFoldUnary 的 BitNot）。
+func evalNumberBinary(lf, rf float64, op Opcode) (float64, bool) {
+	switch op {
+	case OpAdd:
+		return lf + rf, true
+	case OpSub:
+		return lf - rf, true
+	case OpMul:
+		return lf * rf, true
+	case OpDiv:
+		return lf / rf, true
+	case OpMod:
+		return math.Mod(lf, rf), true
+	case OpPow:
+		return math.Pow(lf, rf), true
+	}
+	return 0, false
+}
+
+// tryFoldBinary 尝试折叠 PUSH a; PUSH b; <binop> → 单条 push，仅在结果与
+// VM 运行时分派完全一致时执行：
+//   - number × number（PUSH_INT/PUSH_NEG_INT/PUSH_CONST(number) 任意组合）；
+//   - string + string（仅 OpAdd，两侧 PUSH_CONST 字符串，无类型转换）；
+//   - bigint × bigint（+ - * / %，Quo/Rem 截断语义；除零抛 RangeError 故不折）。
 //
-// 混合类型（string+number 等涉及 ToString/ToNumber 转换）一律不折叠。
-// 返回新常量池索引；不可折叠返回 -1。
-func foldConstants(fn *FuncTemplate, a, b decodedInstr, op Opcode) int {
+// 混合类型（string+number 等）一律不折叠。不可折叠返回 ok=false。
+func tryFoldBinary(fn *FuncTemplate, a, b decodedInstr, op Opcode) (foldMatch, bool) {
+	// number × number：PUSH_INT/PUSH_NEG_INT/PUSH_CONST(number) 任意组合。
+	if af, ok := pushNumber(a, fn); ok {
+		if bf, ok := pushNumber(b, fn); ok {
+			if r, ok := evalNumberBinary(af, bf, op); ok {
+				return foldMatch{out: numberPush(fn, r), consume: 3}, true
+			}
+			return foldMatch{}, false
+		}
+	}
+	// string/bigint 仅经 PUSH_CONST；非 PUSH_CONST 的 a/b 已被 number 路径排除。
 	if a.op != OpPushConst || b.op != OpPushConst {
-		return -1
+		return foldMatch{}, false
 	}
-	la := fn.Constants[a.operand]
-	rb := fn.Constants[b.operand]
+	la, rb := fn.Constants[a.operand], fn.Constants[b.operand]
 	if la == nil || rb == nil {
-		return -1
+		return foldMatch{}, false
 	}
+	// string + string（仅 OpAdd）。
 	if op == OpAdd && la.Type() == engine.TypeString && rb.Type() == engine.TypeString {
-		return fn.AddStringConst(la.String() + rb.String())
+		idx := fn.AddStringConst(la.String() + rb.String())
+		return foldMatch{out: decodedInstr{op: OpPushConst, operand: uint32(idx)}, consume: 3}, true
 	}
-	if la.Type() == engine.TypeNumber && rb.Type() == engine.TypeNumber {
-		lf, _ := la.Float()
-		rf, _ := rb.Float()
-		var result float64
-		switch op {
-		case OpAdd:
-			result = lf + rf
-		case OpSub:
-			result = lf - rf
-		case OpMul:
-			result = lf * rf
-		case OpDiv:
-			result = lf / rf
-		case OpMod:
-			result = math.Mod(lf, rf)
-		case OpPow:
-			result = math.Pow(lf, rf)
-		default:
-			return -1
-		}
-		return fn.AddConst(engine.Number(result))
-	}
+	// bigint × bigint。
 	if la.Type() == engine.TypeBigInt && rb.Type() == engine.TypeBigInt {
-		lb, lbOK := engine.BigIntValue(la)
-		rbv, rbOK := engine.BigIntValue(rb)
-		if !lbOK || !rbOK {
-			return -1
+		if idx, ok := foldBigInt(fn, la, rb, op); ok {
+			return foldMatch{out: decodedInstr{op: OpPushConst, operand: uint32(idx)}, consume: 3}, true
 		}
-		result := new(big.Int)
-		switch op {
-		case OpAdd:
-			result.Add(lb, rbv)
-		case OpSub:
-			result.Sub(lb, rbv)
-		case OpMul:
-			result.Mul(lb, rbv)
-		case OpDiv:
-			if rbv.Sign() == 0 {
-				return -1
-			}
-			result.Quo(lb, rbv)
-		case OpMod:
-			if rbv.Sign() == 0 {
-				return -1
-			}
-			result.Rem(lb, rbv)
-		default:
-			return -1
-		}
-		return fn.AddConst(engine.BigInt(result))
 	}
-	return -1
+	return foldMatch{}, false
+}
+
+// foldBigInt 折叠 bigint × bigint 算术，返回新常量池索引。除零（JS 抛
+// RangeError）与 ** （负指数抛错/结果可能过大）不折叠。
+func foldBigInt(fn *FuncTemplate, la, rb engine.Value, op Opcode) (int, bool) {
+	lb, ok1 := engine.BigIntValue(la)
+	rbv, ok2 := engine.BigIntValue(rb)
+	if !ok1 || !ok2 {
+		return 0, false
+	}
+	result := new(big.Int)
+	switch op {
+	case OpAdd:
+		result.Add(lb, rbv)
+	case OpSub:
+		result.Sub(lb, rbv)
+	case OpMul:
+		result.Mul(lb, rbv)
+	case OpDiv:
+		if rbv.Sign() == 0 {
+			return 0, false
+		}
+		result.Quo(lb, rbv)
+	case OpMod:
+		if rbv.Sign() == 0 {
+			return 0, false
+		}
+		result.Rem(lb, rbv)
+	default:
+		return 0, false
+	}
+	return fn.AddConst(engine.BigInt(result)), true
+}
+
+// tryFoldUnary 尝试折叠 PUSH a; <unop> → 单条 push，仅在结果与 VM 运行时
+// 分派完全一致时执行：
+//   - NEG：number 取负（-5 → PUSH_NEG_INT 5）；bigint 取负 → PUSH_CONST；
+//   - NOT：仅确定布尔（PUSH_TRUE/FALSE）取反 → PUSH_FALSE/TRUE；
+//   - BitNot：number 的 ~ToInt32（JS ToInt32 截断/wrap 语义）；
+//   - UNARY_PLUS：number 的恒等（+5 → 5），消除冗余转换。
+//
+// 涉及 ToBoolean/ToString/ToNumber 转换的（如 !"str"、~undefined）不折叠。
+func tryFoldUnary(fn *FuncTemplate, a decodedInstr, op Opcode) (foldMatch, bool) {
+	switch op {
+	case OpNeg:
+		if f, ok := pushNumber(a, fn); ok {
+			return foldMatch{out: numberPush(fn, -f), consume: 2}, true
+		}
+		// bigint 取反：结果仍 PUSH_CONST。
+		if a.op == OpPushConst {
+			if v := fn.Constants[a.operand]; v != nil && v.Type() == engine.TypeBigInt {
+				if b, ok := engine.BigIntValue(v); ok {
+					idx := fn.AddConst(engine.BigInt(new(big.Int).Neg(b)))
+					return foldMatch{out: decodedInstr{op: OpPushConst, operand: uint32(idx)}, consume: 2}, true
+				}
+			}
+		}
+	case OpNot:
+		// 仅确定布尔；其他类型需 ToBoolean 转换，不折。
+		switch a.op {
+		case OpPushTrue:
+			return foldMatch{out: decodedInstr{op: OpPushFalse}, consume: 2}, true
+		case OpPushFalse:
+			return foldMatch{out: decodedInstr{op: OpPushTrue}, consume: 2}, true
+		}
+	case OpBitNot:
+		// ~x = ^ToInt32(x)；ToInt32 对 NaN/±Inf 返回 0。
+		if f, ok := pushNumber(a, fn); ok {
+			return foldMatch{out: numberPush(fn, float64(^toInt32(f))), consume: 2}, true
+		}
+	case OpUnaryPlus:
+		// +number = number（恒等）；非 number 需 ToNumber 转换，不折。
+		if f, ok := pushNumber(a, fn); ok {
+			return foldMatch{out: numberPush(fn, f), consume: 2}, true
+		}
+	}
+	return foldMatch{}, false
+}
+
+// toInt32 实现 ECMAScript ToInt32（abstract operation）：
+// 截断小数 → 数学 mod 2³² → 落入 [-2³¹, 2³¹) 的带符号 int32。
+// NaN/±Inf 返回 0。供 BitNot 折叠使用。
+func toInt32(f float64) int32 {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0
+	}
+	n := math.Trunc(f)
+	if n == 0 {
+		return 0
+	}
+	const two32 = float64(int64(1) << 32)
+	posInt := math.Mod(n, two32) // math.Mod 结果符号同被除数
+	if posInt < 0 {
+		posInt += two32
+	}
+	if posInt >= float64(int64(1)<<31) {
+		posInt -= two32
+	}
+	return int32(posInt)
 }
 
 // isRelativeJump 报告指令是否为带相对偏移的跳转类指令。
@@ -460,7 +614,7 @@ func followUnconditionalJump(byPC map[int]int, ins []decodedInstr, pc int) int {
 	return pc
 }
 
-func relocateMetadata(fn *FuncTemplate, oldToNew map[int]int, emittedAt map[int]bool) error {
+func relocateMetadata(fn *FuncTemplate, oldToNew map[int]int) error {
 	mapPC := func(oldPC int) (int, error) {
 		newPC, ok := oldToNew[oldPC]
 		if !ok {
@@ -502,9 +656,12 @@ func relocateMetadata(fn *FuncTemplate, oldToNew map[int]int, emittedAt map[int]
 
 	lines := make([]LineEntry, 0, len(fn.LineStarts))
 	for _, line := range fn.LineStarts {
-		if !emittedAt[line.PC] {
-			continue
-		}
+		// 即便该 PC 的指令被删除（折叠/消除/不可达），也保留并重定位行号条目：
+		// 被删 PC 经 mapPC 映射到「下一个存活指令」的 newPC，使行号转移给同行的
+		// 存活指令（如 `1+2; foo()` —— 折叠删掉 1+2 的行起始指令，但同行的 foo()
+		// 存活，仍需正确归因到该行）。若直接丢弃，存活同行动态指令会丢失行号。
+		// 多个条目塌缩到同一 newPC 时「后者覆盖」：源 PC 顺序与 newPC 单调一致，
+		// 存活行起始恒位于被删行起始之后，覆盖结果正确。
 		newPC, err := mapPC(line.PC)
 		if err != nil {
 			return err
