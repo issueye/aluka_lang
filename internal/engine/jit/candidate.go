@@ -44,6 +44,10 @@ func rejectLeafCandidate(tmpl *bytecode.FuncTemplate) error {
 		(tmpl.ArgumentsSlot >= 0 && !tmpl.NoArgumentsObject) {
 		return fmt.Errorf("jit: function is not a leaf candidate")
 	}
+	if tmpl.NFESlot > 0 {
+		// NFE 自引用槽由帧建立时写入（callClosure 等），快速路径不初始化。
+		return fmt.Errorf("jit: function has NFE self-reference slot")
+	}
 	if len(tmpl.Code) == 0 || len(tmpl.Code)%bytecode.InstrSize != 0 {
 		return fmt.Errorf("jit: malformed bytecode")
 	}
@@ -125,6 +129,10 @@ func rejectTraceCandidate(tmpl *bytecode.FuncTemplate, startPC, backedgePC int) 
 		op := bytecode.Opcode(tmpl.Code[pc])
 		arg := uint32(tmpl.Code[pc+1])<<16 | uint32(tmpl.Code[pc+2])<<8 | uint32(tmpl.Code[pc+3])
 		switch op {
+		case bytecode.OpTryExitJmp:
+			// try 展开跳转（break/continue 穿出 try 区域）依赖 VM 的 finally
+			// 运行语义，trace 无法表达，直接拒绝。
+			return fmt.Errorf("jit: trace try-exit jump %d at pc %d", arg, pc)
 		case bytecode.OpPushInt, bytecode.OpPushNegInt:
 		case bytecode.OpPushConst:
 			if int(arg) >= len(tmpl.Constants) {
@@ -164,6 +172,9 @@ func rejectTraceCandidate(tmpl *bytecode.FuncTemplate, startPC, backedgePC int) 
 			// deliberately absent so try/catch regions inside the trace range
 			// are rejected here (CompileTrace cannot represent handler frames).
 		default:
+			// 含 OpReturn/OpReturnUndef：范围内的 return 一律拒绝——若位于 try
+			// 区域内（OpTryEnter 可能在 startPC 之前，循环位于 try 块内）还需
+			// VM 的 finally 展开（v18 语义），trace 无法表达。
 			return fmt.Errorf("jit: trace unsupported opcode %s", op)
 		}
 	}

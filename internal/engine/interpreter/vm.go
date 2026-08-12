@@ -124,6 +124,10 @@ type vmFrame struct {
 	// backedge PC) in the same frame may still use its own trace. −1 means no
 	// failure. It is never cleared within the frame's lifetime.
 	jitTraceFailedPC int
+	// isCtor 标记构造器帧（asNew 调用）：super() 调用原生父类构造（Error 等）
+	// 时返回的全新实例会写回 slot 0；doReturn 对非对象返回以 slot 0 当前值
+	// 作为 `new` 结果（此前用调用时的 thisVal 快照，丢失了 super 初始化）。
+	isCtor bool
 }
 
 // upvalue is a closure capture. Open upvalues point at a stack slot; when the
@@ -140,7 +144,38 @@ type vmTryHandler struct {
 	entry *bytecode.TryEntry
 	exc   engine.Value // pending exception (nil means none)
 	phase int          // 0=in try, 1=in catch, 2=in finally
+
+	// completion 记录 return/break/continue 穿过本 handler 的待办完成
+	// （进入 finally 前挂起，OpTryExitFinally 后恢复）。nil 表示正常完成。
+	completion *vmCompletion
 }
+
+// vmCompletionKind 是 try 展开（exitTry）处理的完成类型。
+type vmCompletionKind uint8
+
+const (
+	compReturn vmCompletionKind = iota // return：值待返回
+	compJump                           // break/continue：跳转到目标 PC
+)
+
+// vmCompletion 描述一次穿过 try/finally 区域的 return 或跳转。
+type vmCompletion struct {
+	kind  vmCompletionKind
+	value engine.Value // compReturn：返回值
+	pc    int          // compJump：跳转目标
+}
+
+// tryExitAction 是 exitTry 的返回结果。
+type tryExitAction uint8
+
+const (
+	// exitContinue：pc 已设置（进入 finally 或跳转完成），run 循环继续。
+	exitContinue tryExitAction = iota
+	// exitRethrow：异常需要重新抛出。
+	exitRethrow
+	// exitReturn：compReturn 已完全解析，调用方执行 doReturn。
+	exitReturn
+)
 
 // NewVM creates a VM backed by a fresh interpreter's builtins.
 func NewVM() (*VM, error) {
@@ -891,9 +926,14 @@ func (v *VM) run() (engine.Value, error) {
 				v.push(result)
 			case bytecode.OpReturn:
 				retVal := v.pop()
-				return v.doReturn(retVal), nil
+				// return 穿出 try/finally 区域时必须先运行 finally。
+				if v.exitTry(&vmCompletion{kind: compReturn, value: retVal}) != exitContinue {
+					return v.doReturn(retVal), nil
+				}
 			case bytecode.OpReturnUndef:
-				return v.doReturn(engine.Undefined()), nil
+				if v.exitTry(&vmCompletion{kind: compReturn, value: engine.Undefined()}) != exitContinue {
+					return v.doReturn(engine.Undefined()), nil
+				}
 
 			// --- Objects & arrays ---
 			case bytecode.OpNewObject:
@@ -1184,9 +1224,17 @@ func (v *VM) run() (engine.Value, error) {
 				v.handleTryExit(tryIdx)
 			case bytecode.OpTryExitFinally:
 				tryIdx := int(operand)
-				if rethrow := v.handleTryExitFinally(tryIdx); rethrow != nil {
-					return v.handleThrow(rethrow)
+				act, val := v.handleTryExitFinally(tryIdx)
+				switch act {
+				case exitRethrow:
+					return v.handleThrow(val)
+				case exitReturn:
+					return v.doReturn(val), nil
 				}
+			case bytecode.OpTryExitJmp:
+				// break/continue 位于 try 区域内：跳转穿出区域前先运行 finally。
+				target := pc + bytecode.InstrSize + bytecode.SignedOperand(operand)
+				v.exitTry(&vmCompletion{kind: compJump, pc: target})
 			case bytecode.OpThrow:
 				exc := v.pop()
 				return v.handleThrow(exc)
@@ -1309,6 +1357,10 @@ func (v *VM) doCall(numArgs int, thisVal engine.Value) (engine.Value, error) {
 func (v *VM) canFastCall(cl *vmClosure, numArgs int) bool {
 	tmpl := cl.tmpl
 	if tmpl.IsGenerator || tmpl.IsAsync || tmpl.IsVarArgs {
+		return false
+	}
+	if tmpl.NFESlot > 0 {
+		// NFE 自引用槽由 callClosure 帧建立时写入，快速路径不初始化。
 		return false
 	}
 	if tmpl.ArgumentsSlot >= 0 && !tmpl.NoArgumentsObject {
@@ -1666,13 +1718,41 @@ func (v *VM) constructThis(callee engine.Value, thisVal engine.Value, args []eng
 	if cl, ok := callee.(*vmClosure); ok {
 		return v.callClosureThis(cl, thisVal, args)
 	}
-	// Native/non-closure parent: fall back to regular construct. This creates
-	// a new `this` instead of reusing the current one — an MVP limitation for
-	// extending built-in constructors via super().
+	// 原生/非闭包父类（Error 等内建构造）：其构造返回全新实例对象。
+	// ES 语义：super() 的构造结果即派生实例——替换当前帧 this 槽，使
+	// 构造器后续的字段初始化/方法调用在该对象上进行（此前返回结果被
+	// 丢弃，导致 `class X extends Error` 的实例 message/stack 等从未
+	// 初始化——@babel/core 等广泛使用此模式）。
+	var result engine.Value
+	var err error
 	if ac, ok := callee.(*Closure); ok {
-		return ac.construct(args)
+		result, err = ac.construct(args)
+	} else {
+		result, err = v.invoke(callee, engine.Undefined(), args, true)
 	}
-	return v.invoke(callee, engine.Undefined(), args, true)
+	if err != nil {
+		return engine.Undefined(), err
+	}
+	if result.IsObject() {
+		// ES 语义：super() 的构造结果（原生父类新实例）的 [[Prototype]]
+		// 必须是 newTarget.prototype（派生类），而非父类构造器默认的
+		// callee.prototype——否则派生类的实例方法（类体中的方法）丢失。
+		frame := v.cur()
+		if frame.tmpl.NewTargetSlot >= 0 {
+			nt := v.stack[frame.base+frame.tmpl.NewTargetSlot]
+			if !nt.IsUndefined() {
+				if proto, err := v.getProperty(nt, "prototype"); err == nil && !proto.IsUndefined() {
+					if protoObj, ok := proto.(engine.Object); ok {
+						if resObj, ok := result.(engine.Object); ok {
+							engine.SetProto(resObj, protoObj)
+						}
+					}
+				}
+			}
+		}
+		*v.local(0) = result
+	}
+	return result, nil
 }
 
 // callClosureThis sets up a new VM frame for a bytecode closure, reusing the
@@ -1810,9 +1890,12 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 	// executing the body. The body runs lazily on each .next() call.
 	if tmpl.IsGenerator {
 		if tmpl.IsAsync {
-			return NewAsyncGeneratorValue(v, tmpl, cl.module, cl.upvalues, thisVal, args), nil
+			ag := NewAsyncGeneratorValue(v, tmpl, cl.module, cl.upvalues, thisVal, args)
+			ag.self = cl
+			return ag, nil
 		}
 		gen := NewGeneratorValue(v, tmpl, cl.module, cl.upvalues, thisVal, args)
+		gen.self = cl
 		return gen, nil
 	}
 	// Async function: calling it returns a Promise. The body runs with
@@ -1820,6 +1903,7 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 	// Promise when the body completes or throws.
 	if tmpl.IsAsync {
 		ar := newAsyncRunner(v, tmpl, cl.module, cl.upvalues, thisVal, args)
+		ar.self = cl
 		return ar.start(), nil
 	}
 	// 切换到闭包定义时的 module，使函数体内 OpMakeClosure/OpMakeClass 的
@@ -1847,10 +1931,16 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 		tmpl:     tmpl,
 		base:     len(v.stack),
 		upvalues: cl.upvalues,
+		isCtor:   asNew,
 	}
 	// Reserve local slots: slot 0 = this, 1..N = params, rest = undefined.
 	v.reserveUndefined(tmpl.NumLocals)
 	v.stack[frame.base] = thisVal
+	// 具名函数表达式（NFE）自引用槽：写入闭包自身（`const f = function
+	// named() {...}` 的函数体内 `named` 引用）。
+	if tmpl.NFESlot > 0 {
+		v.stack[frame.base+tmpl.NFESlot] = cl
+	}
 	// new.target 槽位：new 调用时填入构造器函数（vmClosure 值本身，
 	// 与全局绑定身份一致），普通调用保持 undefined。
 	if tmpl.NewTargetSlot >= 0 && asNew {
@@ -1907,6 +1997,12 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 // caller's OpCall handler pushes it).
 func (v *VM) doReturn(retVal engine.Value) engine.Value {
 	frame := v.cur()
+	// 构造器语义：返回非对象时以 this（slot 0）为 `new` 结果。必须从栈槽
+	// 读取当前值——super() 调用原生父类构造（Error 等）时 constructThis
+	// 会把父类构造的新实例写回 slot 0，此处快照 thisVal 已过期。
+	if frame.isCtor && !retVal.IsObject() {
+		retVal = v.stack[frame.base]
+	}
 	// 无开 upvalue 的普通函数（绝大多数）跳过 closeUpvalues 调用。
 	if len(frame.openUpvalues) > 0 {
 		// Close ALL open upvalues pointing into this frame's slots (locals +
@@ -2406,6 +2502,70 @@ func (v *VM) findHandlerInFrame(excVal engine.Value) (*vmTryHandler, bool) {
 	return nil, false
 }
 
+// jumpInsideRegion reports whether the jump target lies within the handler's
+// currently-active region. Region bounds come from the compiled TryEntry:
+// try 块 [StartPC, EndPC]、catch 块 [CatchPC, CatchEndPC]、finally 块
+// [FinallyPC, FinallyEndPC]，均含区域末尾的 OpTryExit/OpTryExitFinally 指令
+// （跳转到该指令等价于从区域正常退出，handler 交由其收尾）。
+func jumpInsideRegion(h *vmTryHandler, target int) bool {
+	switch h.phase {
+	case 0:
+		return target >= h.entry.StartPC && target <= h.entry.EndPC
+	case 1:
+		return target >= h.entry.CatchPC && target <= h.entry.CatchEndPC
+	default: // 2（finally 内）
+		return target >= h.entry.FinallyPC && target <= h.entry.FinallyEndPC
+	}
+}
+
+// exitTry 沿当前帧 try 栈处理一次"穿过 try 区域"的完成（return 或跳转）。
+//
+// 语义（与 ECMA-262 一致）：
+//   - 目标仍在 handler 区域内（仅跳转判定，return 总是穿出）→ 保留 handler，
+//     直接跳转；区域末尾的 OpTryExit 会自行收尾。
+//   - handler 有 finally 且未进入 finally（phase <= 1）→ 记录 completion，
+//     phase=2，pc 指向 finally 块；finally 结束（OpTryExitFinally）后恢复。
+//   - handler 无 finally → 弹出丢弃（return/break 绕过 catch）。
+//   - 已处于 finally（phase==2）→ 新 completion 覆盖旧值（finally 内的
+//     return/break/throw 覆盖 try 的待办完成），继续向外查找。
+//
+// 返回值：exitContinue=pc 已设置（进入 finally 或完成跳转），exitReturn=
+// compReturn 完全解析（调用方执行 doReturn）。
+func (v *VM) exitTry(c *vmCompletion) tryExitAction {
+	frame := v.cur()
+	for i := len(frame.tryStack) - 1; i >= 0; i-- {
+		h := frame.tryStack[i]
+		if c.kind == compJump && jumpInsideRegion(h, c.pc) {
+			// 跳转目标仍在当前 handler 区域内：保留 handler 及其下方的所有
+			// handler，仅弹出其上方的（跳转从它们的区域穿出，已处理）。
+			frame.tryStack = frame.tryStack[:i+1]
+			frame.pc = c.pc
+			return exitContinue
+		}
+		if !h.entry.HasFinally {
+			// 无 finally：直接丢弃（return/break/continue 绕过 catch）。
+			frame.tryStack = frame.tryStack[:i]
+			continue
+		}
+		if h.phase <= 1 {
+			// 记录 completion，进入 finally 块。
+			h.completion = c
+			h.phase = 2
+			frame.tryStack = frame.tryStack[:i+1]
+			frame.pc = h.entry.FinallyPC
+			return exitContinue
+		}
+		// phase == 2：已在 finally 内，新 completion 覆盖旧的。
+		h.completion = nil
+		frame.tryStack = frame.tryStack[:i]
+	}
+	if c.kind == compJump {
+		frame.pc = c.pc
+		return exitContinue
+	}
+	return exitReturn
+}
+
 // handleTryExit is called for OpTryExit (normal exit from try or catch).
 func (v *VM) handleTryExit(tryIdx int) {
 	frame := v.cur()
@@ -2429,20 +2589,32 @@ func (v *VM) handleTryExit(tryIdx int) {
 }
 
 // handleTryExitFinally is called for OpTryExitFinally. It pops the handler
-// and returns a non-nil error if the exception should be re-thrown.
-func (v *VM) handleTryExitFinally(tryIdx int) error {
+// and resumes any pending completion (return/jump) or rethrows a pending
+// exception. Returns (exitContinue, nil) to keep running, (exitRethrow, exc)
+// to rethrow, or (exitReturn, value) when a pending return can complete.
+func (v *VM) handleTryExitFinally(tryIdx int) (tryExitAction, engine.Value) {
 	frame := v.cur()
 	for i := len(frame.tryStack) - 1; i >= 0; i-- {
 		h := frame.tryStack[i]
 		if h.entry == &frame.tmpl.TryTable[tryIdx] {
 			frame.tryStack = frame.tryStack[:i]
-			if h.exc != nil {
-				return &jsThrow{val: h.exc}
+			if h.completion != nil {
+				c := h.completion
+				h.completion = nil
+				// 恢复被 finally 挂起的 return/break/continue：继续向外展开
+				// （可能还有外层 finally 待运行）。
+				if v.exitTry(c) == exitReturn {
+					return exitReturn, c.value
+				}
+				return exitContinue, nil
 			}
-			return nil
+			if h.exc != nil {
+				return exitRethrow, h.exc
+			}
+			return exitContinue, nil
 		}
 	}
-	return nil
+	return exitContinue, nil
 }
 
 // normalizeException converts a thrown value (engine.Value or Go error) into

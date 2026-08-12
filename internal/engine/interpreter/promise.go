@@ -266,6 +266,12 @@ func (p *PromiseValue) Finally(onFinally engine.Value) *PromiseValue {
 
 // === engine.Value interface ================================================
 
+// SetProto/Proto 转发到内部对象（class extends Promise 的实例方法查找
+// 依赖 [[Prototype]] 链；此前缺失使 engine.SetProto 对 Promise 为 no-op，
+// openai SDK 的 APIPromise.withResponse 等派生方法全部丢失）。
+func (p *PromiseValue) SetProto(proto engine.Object) { engine.SetProto(p.obj, proto) }
+func (p *PromiseValue) Proto() engine.Object         { return engine.GetProto(p.obj) }
+
 func (p *PromiseValue) Type() engine.ValueType { return engine.TypeObject }
 
 func (p *PromiseValue) String() string { return "[object Promise]" }

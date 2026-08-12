@@ -27,6 +27,7 @@ type GeneratorValue struct {
 	upvalues []*upvalue
 	thisVal  engine.Value
 	args     []engine.Value
+	self     *vmClosure // NFE 自引用（具名函数表达式；非 NFE 为 nil）
 
 	// Saved state when suspended.
 	savedStack []engine.Value // stack segment [base..top) at suspend time
@@ -170,6 +171,9 @@ func (g *GeneratorValue) resume(sendVal engine.Value) (engine.Value, error) {
 		}
 		g.vm.reserveUndefined(g.tmpl.NumLocals)
 		g.vm.stack[frame.base] = g.thisVal
+		if g.tmpl.NFESlot > 0 && g.self != nil {
+			g.vm.stack[frame.base+g.tmpl.NFESlot] = g.self
+		}
 		for i := 0; i < g.tmpl.NumParams && i < len(g.args); i++ {
 			g.vm.stack[frame.base+1+i] = g.args[i]
 		}
@@ -258,6 +262,9 @@ func (v *VM) doYield(yieldVal engine.Value) (engine.Value, error) {
 }
 
 // === engine.Value interface ================================================
+
+func (g *GeneratorValue) SetProto(proto engine.Object) { engine.SetProto(g.obj, proto) }
+func (g *GeneratorValue) Proto() engine.Object         { return engine.GetProto(g.obj) }
 
 func (g *GeneratorValue) Type() engine.ValueType { return engine.TypeObject }
 

@@ -527,7 +527,11 @@ func (p *Parser) parseFunctionDecl(isExpr bool) (*ast.FunctionDecl, error) {
 		// 函数表达式：可选名称
 	}
 	var name *ast.Identifier
-	if p.peek().Type == lexer.TokenIdent {
+	// 函数名是 IdentifierName：允许上下文关键字（async/of/let 等），
+	// 与 expectName（变量/参数名）一致。此前只认 TokenIdent，导致
+	// `function async() {}` / `const f = function async() {}` 语法错误
+	// （@babel/core 等 esbuild/minify 产物常见此写法）。
+	if p.peek().Type == lexer.TokenIdent || p.peek().Type == lexer.TokenKeyword {
 		nameTok := p.next()
 		name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
 	} else if !isExpr {
@@ -2247,7 +2251,9 @@ func (p *Parser) parseFunctionExpr() (ast.Expression, error) {
 	t := p.next() // function
 	isGenerator := p.matchPunct("*")
 	var name *ast.Identifier
-	if p.peek().Type == lexer.TokenIdent {
+	// 函数名是 IdentifierName：允许上下文关键字（async/of/let 等），与
+	// parseFunctionDecl 一致（`const f = function async() {}` 等写法）。
+	if p.peek().Type == lexer.TokenIdent || p.peek().Type == lexer.TokenKeyword {
 		nameTok := p.next()
 		name = &ast.Identifier{Name: nameTok.Value, Loc: posOf(nameTok)}
 	}
@@ -2602,8 +2608,13 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 			if p.matchIdent("as") {
 				exportedTok, err := p.expect(lexer.TokenIdent, "")
 				if err != nil {
-					// export { X as default }：default 关键字作为导出名
 					if p.peek().Type == lexer.TokenKeyword {
+						// export { X as default }：default 关键字作为导出名
+						p.next()
+						exportedTok = lexer.Token{Type: lexer.TokenIdent, Value: p.tokens[p.pos-1].Value}
+					} else if p.peek().Type == lexer.TokenString {
+						// ES2022：导出名可为字符串字面量——
+						// export { jsTokens as "module.exports" }（js-tokens 等库使用）
 						p.next()
 						exportedTok = lexer.Token{Type: lexer.TokenIdent, Value: p.tokens[p.pos-1].Value}
 					} else {

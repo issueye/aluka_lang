@@ -127,6 +127,10 @@ const (
 	OpTryEnter       // A: try-table index; pushes an exception handler frame
 	OpTryExit        // A: try-table index; pops the handler frame (normal exit)
 	OpTryExitFinally // A: try-table index; finally block finished
+	// OpTryExitJmp：带 try 展开的跳转（break/continue 位于 try 区域内时由编译器
+	// 发出）。操作数与 OpJmp 相同（相对偏移）。执行时先沿 try 栈向外找需运行的
+	// finally 块；目标仍落在当前 handler 区域内则等价于普通跳转。
+	OpTryExitJmp // operand: relative jump offset (like OpJmp)
 
 	// --- throw / instanceof / in ---
 	OpThrow
@@ -275,6 +279,7 @@ var opNames = [...]string{
 	OpTryEnter:       "TRY_ENTER",
 	OpTryExit:        "TRY_EXIT",
 	OpTryExitFinally: "TRY_EXIT_FINALLY",
+	OpTryExitJmp:     "TRY_EXIT_JMP",
 
 	OpThrow:      "THROW",
 	OpInstanceof: "INSTANCEOF",
@@ -325,7 +330,7 @@ func (op Opcode) HasOperand() bool {
 		return true
 	case OpLoadUpvalue, OpStoreUpvalue, OpMakeClosure:
 		return true
-	case OpJmp, OpJmpTruePop, OpJmpFalsePop, OpJmpTrueKeep, OpJmpFalseKeep, OpJmpNullishKeep, OpOptionalJump:
+	case OpJmp, OpJmpTruePop, OpJmpFalsePop, OpJmpTrueKeep, OpJmpFalseKeep, OpJmpNullishKeep, OpOptionalJump, OpTryExitJmp:
 		return true
 	case OpCall, OpCallMethod, OpCallWithThis, OpNew:
 		return true

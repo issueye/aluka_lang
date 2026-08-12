@@ -1925,6 +1925,13 @@ func (interp *Interpreter) setupGlobalFuncs() {
 		f, ok := args[0].Float()
 		return engine.Boolean(ok && !math.IsNaN(f) && !math.IsInf(f, 0)), nil
 	}))
+	// Node/V8 把 Object.prototype.hasOwnProperty 暴露为全局属性（babel 等
+	// 库的编译产物常以自由变量 `hasOwnProperty.call(...)` 形式引用，严格
+	// 模式下未声明标识符回退到全局查找——Aluka 缺此全局导致
+	// "Cannot read properties of undefined (reading 'call')"）。
+	if hp, ok := interp.objectProto.Get("hasOwnProperty"); ok == nil {
+		_ = interp.globalObj.Set("hasOwnProperty", hp)
+	}
 	_ = interp.globalObj.Set("String", interp.constructors["String"])
 }
 

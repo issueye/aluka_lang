@@ -31,6 +31,9 @@ func NewRegexpValue(interp *Interpreter, compiled *regex.Compiled, source, flags
 	return r
 }
 
+func (r *RegexpValue) SetProto(proto engine.Object)     { engine.SetProto(r.obj, proto) }
+func (r *RegexpValue) Proto() engine.Object             { return engine.GetProto(r.obj) }
+
 func (r *RegexpValue) Type() engine.ValueType             { return engine.TypeObject }
 func (r *RegexpValue) String() string                     { return "/" + escapeRegExpSource(r.source) + "/" + r.flags }
 func (r *RegexpValue) Int() (int, bool)                   { return 0, false }

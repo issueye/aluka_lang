@@ -56,11 +56,65 @@ type activeTimer struct {
 
 // timerState 持有当前 Context 的定时器状态。
 type timerState struct {
+	ctx       engine.Context
+	mu        sync.Mutex
+	nextID    int
+	timers    map[int]*activeTimer
+	maxTimers int
+}
+
+// timerHandle 管理定时器的活跃引用，实现 Node 的 unref/ref/hasRef 语义：
+// 定时器创建时持有 1 个活跃引用（ref'd，阻止进程退出）；unref() 释放该
+// 引用；ref() 重新持有；单次触发或 clear 时若仍持有则最终释放。
+type timerHandle struct {
 	ctx     engine.Context
 	mu      sync.Mutex
-	nextID  int
-	timers  map[int]*activeTimer
-	maxTimers int
+	refd    bool
+	release func() // 当前持有的引用释放函数（refd 为 true 时有效）
+}
+
+func newTimerHandle(ctx engine.Context) *timerHandle {
+	h := &timerHandle{ctx: ctx, refd: true}
+	h.release = ctx.AddRef()
+	return h
+}
+
+func (h *timerHandle) unref() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.refd && h.release != nil {
+		r := h.release
+		h.release = nil
+		h.refd = false
+		r()
+	}
+}
+
+func (h *timerHandle) ref() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.refd && h.release == nil {
+		h.release = h.ctx.AddRef()
+		h.refd = true
+	}
+}
+
+func (h *timerHandle) hasRef() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.refd
+}
+
+// done 在定时器触发（单次）或 clear 时调用：确保不再持有活跃引用。
+func (h *timerHandle) done() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.release != nil {
+		r := h.release
+		h.release = nil
+		h.refd = false
+		r()
+	}
 }
 
 // setTimeout(fn, ms, ...args)：延迟 ms 毫秒后调用 fn。
@@ -79,6 +133,8 @@ func (s *timerState) setImmediate(args []engine.Value) (engine.Value, error) {
 }
 
 // schedule 创建定时器。interval 为 true 时重复调度；delay 默认 1ms（setImmediate 用 0）。
+// 返回 Node 风格 Timeout 对象：unref()/ref()/hasRef() 控制句柄是否计入事件
+// 循环活跃度；Symbol.toPrimitive 返回定时器 id，供 clearTimeout 数字兼容。
 func (s *timerState) schedule(args []engine.Value, interval bool, forcedDelay ...int) (engine.Value, error) {
 	if len(args) == 0 {
 		return engine.IntValue(0), nil
@@ -113,9 +169,9 @@ func (s *timerState) schedule(args []engine.Value, interval bool, forcedDelay ..
 
 	ctx := s.ctx
 
-	// 计时器句柄：计入事件循环活跃度（进程在定时器存活期间不退出）。
-	// 单次定时器触发后释放；interval 在 clear 时释放。
-	releaseHandle := ctx.AddRef()
+	// 计时器句柄：默认计入事件循环活跃度（进程在定时器存活期间不退出）；
+	// unref() 可释放。单次定时器触发后释放；interval 在 clear 时释放。
+	handle := newTimerHandle(ctx)
 
 	// 调度函数：到期后 PostTask 到 JS 线程执行回调。
 	run := func() {
@@ -142,7 +198,7 @@ func (s *timerState) schedule(args []engine.Value, interval bool, forcedDelay ..
 			stopOnce.Do(func() {
 				timer.Stop()
 				close(stopped)
-				releaseHandle() // 释放 interval 句柄
+				handle.done() // 释放 interval 句柄
 			})
 		}
 		// 在独立 goroutine 持续投递（进程存活由 handle 保证）。
@@ -162,20 +218,13 @@ func (s *timerState) schedule(args []engine.Value, interval bool, forcedDelay ..
 	} else {
 		// setTimeout/setImmediate：单次。
 		delayDur := time.Duration(delay) * time.Millisecond
-		released := false
 		t := time.AfterFunc(delayDur, func() {
 			run()
-			if !released {
-				released = true
-				releaseHandle() // 单次触发后释放句柄
-			}
+			handle.done() // 单次触发后释放句柄
 		})
 		stopFn = func() {
 			t.Stop()
-			if !released {
-				released = true
-				releaseHandle()
-			}
+			handle.done()
 		}
 	}
 
@@ -183,7 +232,25 @@ func (s *timerState) schedule(args []engine.Value, interval bool, forcedDelay ..
 	s.timers[id] = &activeTimer{id: id, stopFn: stopFn}
 	s.mu.Unlock()
 
-	return engine.IntValue(id), nil
+	// Node 风格 Timeout 对象。unref()/ref() 返回对象本身（可链式调用）。
+	timeout := engine.NewObject()
+	_ = timeout.Set("unref", engine.NewFunction("unref", func(args []engine.Value) (engine.Value, error) {
+		handle.unref()
+		return timeout, nil
+	}))
+	_ = timeout.Set("ref", engine.NewFunction("ref", func(args []engine.Value) (engine.Value, error) {
+		handle.ref()
+		return timeout, nil
+	}))
+	_ = timeout.Set("hasRef", engine.NewFunction("hasRef", func(args []engine.Value) (engine.Value, error) {
+		return engine.Boolean(handle.hasRef()), nil
+	}))
+	// 数字转换：clearTimeout(setTimeout(...)) 与 `+timeout` 均可用。
+	_ = timeout.Set(engine.SymbolToPrimitive.SymbolKey(), engine.NewFunction("[Symbol.toPrimitive]", func(args []engine.Value) (engine.Value, error) {
+		return engine.IntValue(id), nil
+	}))
+
+	return timeout, nil
 }
 
 // clearTimeout(id) / clearInterval(id) / clearImmediate(id)：取消定时器。
@@ -202,12 +269,12 @@ func (s *timerState) clearImmediate(args []engine.Value) (engine.Value, error) {
 	return engine.Undefined(), nil
 }
 
-// clear 取消定时器。
+// clear 取消定时器。参数支持 number 或 Timeout 对象（Node 语义）。
 func (s *timerState) clear(args []engine.Value) {
 	if len(args) == 0 {
 		return
 	}
-	id, ok := args[0].Int()
+	id, ok := timerIDOf(args[0])
 	if !ok {
 		return
 	}
@@ -220,6 +287,31 @@ func (s *timerState) clear(args []engine.Value) {
 	if exists && t != nil && t.stopFn != nil {
 		t.stopFn()
 	}
+}
+
+// timerIDOf 从 clear 参数提取定时器 id：数字直接返回；Timeout 对象经
+// Symbol.toPrimitive 转换（与 Node 一致）。
+func timerIDOf(v engine.Value) (int, bool) {
+	if n, ok := v.Int(); ok {
+		return n, true
+	}
+	obj, ok := v.AsObject()
+	if !ok {
+		return 0, false
+	}
+	fv, err := obj.Get(engine.SymbolToPrimitive.SymbolKey())
+	if err != nil || !fv.IsFunction() {
+		return 0, false
+	}
+	f, ok := fv.AsFunction()
+	if !ok {
+		return 0, false
+	}
+	res, err := f.Call([]engine.Value{engine.Str("number")})
+	if err != nil {
+		return 0, false
+	}
+	return res.Int()
 }
 
 // intArg2 取第 i 个参数为 int；不存在返回 def 与 false。

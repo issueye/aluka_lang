@@ -14,6 +14,7 @@ package compiler
 import (
 	"fmt"
 	"math/big"
+	"reflect"
 	"strconv"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -29,6 +30,18 @@ type Compiler struct {
 
 	// loopStack tracks break/continue targets for the innermost loops.
 	loopStack []*loopCtx
+
+	// tryStack 统计当前函数内活动的 try 区域索引栈（compileTry/compileTryValue
+	// 进入时压入、退出时弹出）。break/continue 编译时若 tryStack 非空则发出
+	// OpTryExitJmp，让 VM 在跳转穿出 try 区域前先运行 finally；patch 时若
+	// 目标仍在区域内则降级回 OpJmp。
+	tryStack []int
+
+	// tryFinalized 标记各 try 区域是否已完成边界记录（compileTry 末尾）。
+	// OpTryExitJmp 的降级判定需要「operand 已 patch（循环结束）且区域边界已
+	// 齐全（try 结束）」两者都满足；try 与循环的编译顺序双向都可能，故用
+	// 该标记在 patch 与 finalize 两侧互相触发。
+	tryFinalized map[int]bool
 
 	// pendingBreaks collects forward break jumps that must be patched when
 	// their enclosing loop exits. Each entry records the loop depth at which
@@ -62,6 +75,17 @@ type pendingJump struct {
 	pc    int
 	depth int
 	label string
+
+	// tryRegions 是跳转指令发射时处于活动状态的 try 区域索引（tryStack 快照）。
+	// tryPending/tryAllInside 配合 compileTry 末尾的 finalizeTryExitJmps：
+	// 每个区域边界确定后逐一判定，目标落在全部区域内时把 OpTryExitJmp
+	// 降级回 OpJmp（等价跳转，保留循环的 JIT 可编译性）。
+	// patched 标记 operand 已由 patchLoopBreaks/patchLoopContinues 填充；
+	// 条目在 finalize 完成后才会从 pending 列表移除。
+	tryRegions   []int
+	tryPending   int
+	tryAllInside bool
+	patched      bool
 }
 
 type loopCtx struct {
@@ -107,15 +131,21 @@ func (c *Compiler) isolateControlFlow() func() {
 	savedBreaks := c.pendingBreaks
 	savedContinues := c.pendingContinues
 	savedLabel := c.curLabel
+	savedTryStack := c.tryStack
+	savedTryFinalized := c.tryFinalized
 	c.loopStack = nil
 	c.pendingBreaks = nil
 	c.pendingContinues = nil
 	c.curLabel = ""
+	c.tryStack = nil
+	c.tryFinalized = nil
 	return func() {
 		c.loopStack = savedLoops
 		c.pendingBreaks = savedBreaks
 		c.pendingContinues = savedContinues
 		c.curLabel = savedLabel
+		c.tryStack = savedTryStack
+		c.tryFinalized = savedTryFinalized
 	}
 }
 
@@ -579,7 +609,9 @@ func (c *Compiler) compileVarDecl(d *ast.VarDecl) error {
 					if err := c.compileExpr(decl.Init); err != nil {
 						return err
 					}
-					if fe.IsAsync || fe.IsGenerator {
+					if fe.IsAsync || fe.IsGenerator || fe.Name != nil {
+						// NFE（具名函数表达式）体内引用自身，内联展开后
+						// 自引用绑定丢失，不可内联。
 						c.cur().inlineCandidates[decl.Name.Name] = -1
 					} else {
 						c.cur().inlineCandidates[decl.Name.Name] = c.lastFuncExprIdx
@@ -1098,9 +1130,20 @@ func (c *Compiler) compileBreak(s *ast.BreakStmt) error {
 	if len(c.loopStack) == 0 && s.Label == "" {
 		return fmt.Errorf("illegal break statement")
 	}
-	pc := c.emit(bytecode.OpJmp, 0)
+	op := bytecode.OpJmp
+	var tryRegions []int
+	if len(c.tryStack) > 0 {
+		// 位于 try 区域内：跳转可能穿出区域，先发 OpTryExitJmp（区域边界确定
+		// 后 finalize 时若目标仍在区域内会降级回 OpJmp）。
+		op = bytecode.OpTryExitJmp
+		tryRegions = append([]int(nil), c.tryStack...)
+	}
+	pc := c.emit(op, 0)
 	depth := len(c.loopStack) - 1
-	c.pendingBreaks = append(c.pendingBreaks, pendingJump{pc: pc, depth: depth, label: s.Label})
+	c.pendingBreaks = append(c.pendingBreaks, pendingJump{
+		pc: pc, depth: depth, label: s.Label,
+		tryRegions: tryRegions, tryPending: len(tryRegions), tryAllInside: true,
+	})
 	return nil
 }
 
@@ -1108,10 +1151,129 @@ func (c *Compiler) compileContinue(s *ast.ContinueStmt) error {
 	if len(c.loopStack) == 0 {
 		return fmt.Errorf("illegal continue statement")
 	}
-	pc := c.emit(bytecode.OpJmp, 0)
+	op := bytecode.OpJmp
+	var tryRegions []int
+	if len(c.tryStack) > 0 {
+		op = bytecode.OpTryExitJmp
+		tryRegions = append([]int(nil), c.tryStack...)
+	}
+	pc := c.emit(op, 0)
 	depth := len(c.loopStack) - 1
-	c.pendingContinues = append(c.pendingContinues, pendingJump{pc: pc, depth: depth, label: s.Label})
+	c.pendingContinues = append(c.pendingContinues, pendingJump{
+		pc: pc, depth: depth, label: s.Label,
+		tryRegions: tryRegions, tryPending: len(tryRegions), tryAllInside: true,
+	})
 	return nil
+}
+
+// jumpTargetInsideTryRegion 判定跳转目标是否仍落在 try 区域的活动范围内
+// （与 VM 运行期 jumpInsideRegion 判定一致：site 所在 phase 的区域边界）。
+// site 的 phase 由编译位置静态决定（site 在 try 块 → phase 0；catch 块 →
+// phase 1；finally 块 → phase 2），与运行期 handler 状态一致。
+func jumpTargetInsideTryRegion(te *bytecode.TryEntry, sitePC, targetPC int) bool {
+	if sitePC >= te.StartPC && sitePC <= te.EndPC {
+		return targetPC >= te.StartPC && targetPC <= te.EndPC
+	}
+	if te.HasCatch && sitePC >= te.CatchPC && sitePC <= te.CatchEndPC {
+		return targetPC >= te.CatchPC && targetPC <= te.CatchEndPC
+	}
+	if te.HasFinally && sitePC >= te.FinallyPC && sitePC <= te.FinallyEndPC {
+		return targetPC >= te.FinallyPC && targetPC <= te.FinallyEndPC
+	}
+	// site 不在该区域的活动范围内（理论上不发生）：保守保持 OpTryExitJmp。
+	return false
+}
+
+// finalizeTryExitJmps 在 try 区域边界齐全后（compileTry 末尾）对穿越本区域
+// 的待定跳转做最终判定：目标落在全部相关区域内 → 降级回 OpJmp（等价跳转，
+// 保留 JIT 可编译性）；任一区域穿出 → 保持 OpTryExitJmp（VM 负责运行 finally）。
+// tryExitJmpAllRegionsFinalized 报告条目的所有相关区域是否都已记录完边界。
+func (c *Compiler) tryExitJmpAllRegionsFinalized(pj *pendingJump) bool {
+	for _, idx := range pj.tryRegions {
+		if !c.tryFinalized[idx] {
+			return false
+		}
+	}
+	return true
+}
+
+// tryExitJmpJudge 对 operand 已 patch、区域边界已齐全的条目做最终判定：
+// 目标落在全部区域内 → 降级回 OpJmp；任一区域穿出 → 保持 OpTryExitJmp
+// （VM 负责运行 finally）。调用方负责从 pending 列表移除条目。
+func (c *Compiler) tryExitJmpJudge(pj *pendingJump) {
+	for _, idx := range pj.tryRegions {
+		te := &c.cur().tmpl.TryTable[idx]
+		target := jumpTargetFromCode(c.cur().tmpl.Code, pj.pc)
+		if !jumpTargetInsideTryRegion(te, pj.pc, target) {
+			pj.tryAllInside = false
+		}
+	}
+	pj.tryPending = 0
+	if pj.tryAllInside {
+		// 目标仍在所有区域的活动范围内：OpTryExitJmp 等价于 OpJmp。
+		c.cur().tmpl.Code[pj.pc] = byte(bytecode.OpJmp)
+	}
+}
+
+// finalizeTryExitJmps 在 try 区域边界齐全后（compileTry 末尾）处理穿越本区域
+// 的待定跳转：operand 已 patch 且所有区域已齐 → 立即判定并移除；operand 未
+// patch（try 在循环体内，patch 尚未发生）→ 保留，由 patch 侧二次触发。
+func (c *Compiler) finalizeTryExitJmps(tryIdx int) {
+	if c.tryFinalized == nil {
+		c.tryFinalized = make(map[int]bool)
+	}
+	c.tryFinalized[tryIdx] = true
+	finalize := func(list []pendingJump) []pendingJump {
+		kept := list[:0]
+		for i := range list {
+			pj := &list[i]
+			if len(pj.tryRegions) == 0 {
+				kept = append(kept, list[i])
+				continue
+			}
+			found := false
+			for _, idx := range pj.tryRegions {
+				if idx == tryIdx {
+					found = true
+					break
+				}
+			}
+			if !found {
+				kept = append(kept, list[i])
+				continue
+			}
+			if pj.patched && c.tryExitJmpAllRegionsFinalized(pj) {
+				c.tryExitJmpJudge(pj)
+				continue // 判定完成：移除
+			}
+			kept = append(kept, list[i])
+		}
+		return kept
+	}
+	c.pendingBreaks = finalize(c.pendingBreaks)
+	c.pendingContinues = finalize(c.pendingContinues)
+}
+
+// tryExitJmpOnPatched 在 patch 侧触发判定：条目已 patch 且所有相关区域已
+// 记录完边界 → 立即判定（不再等待后续 finalize）。
+// 返回 true 表示条目已处理完毕（调用方不应保留）；无 tryRegions 的普通
+// 跳转（非 OpTryExitJmp）同样视为已处理，不得保留在 pending 列表中——
+// 否则外层循环 patch 时会再次匹配并改写其 operand。
+func (c *Compiler) tryExitJmpOnPatched(pj *pendingJump) bool {
+	if len(pj.tryRegions) == 0 {
+		return true
+	}
+	if !c.tryExitJmpAllRegionsFinalized(pj) {
+		return false
+	}
+	c.tryExitJmpJudge(pj)
+	return true
+}
+
+// jumpTargetFromCode 读取跳转指令的目标 PC（operand 为相对偏移）。
+func jumpTargetFromCode(code []byte, pc int) int {
+	operand := uint32(code[pc+1])<<16 | uint32(code[pc+2])<<8 | uint32(code[pc+3])
+	return pc + bytecode.InstrSize + bytecode.SignedOperand(operand)
 }
 
 // patchLoopBreaks patches all pending break jumps at the current loop depth.
@@ -1119,15 +1281,22 @@ func (c *Compiler) patchLoopBreaks(exitPC int) {
 	curDepth := len(c.loopStack) // topLoop is about to be popped; use current depth
 	topLabel := c.topLoop().hasLabel
 	kept := c.pendingBreaks[:0]
-	for _, pj := range c.pendingBreaks {
+	for i := range c.pendingBreaks {
+		pj := &c.pendingBreaks[i]
 		// 无标签：匹配当前循环深度；带标签：匹配当前循环的标签（忽略深度，
 		// 因为 `break label` 可能出现在标签循环的任意嵌套深度）。
 		if (pj.label == "" && pj.depth == curDepth-1) ||
 			(pj.label != "" && pj.label == topLabel) {
 			delta := exitPC - (pj.pc + bytecode.InstrSize)
 			bytecode.PatchOperand(c.cur().tmpl.Code, pj.pc, uint32(delta))
+			pj.patched = true
+			// OpTryExitJmp 的降级判定需等区域边界确定（compileTry 末尾
+			// finalize）；区域已齐则立即判定移除，否则保留待 finalize。
+			if !c.tryExitJmpOnPatched(pj) {
+				kept = append(kept, *pj)
+			}
 		} else {
-			kept = append(kept, pj)
+			kept = append(kept, *pj)
 		}
 	}
 	c.pendingBreaks = kept
@@ -1138,13 +1307,18 @@ func (c *Compiler) patchLoopContinues(targetPC int) {
 	curDepth := len(c.loopStack)
 	topLabel := c.topLoop().hasLabel
 	kept := c.pendingContinues[:0]
-	for _, pj := range c.pendingContinues {
+	for i := range c.pendingContinues {
+		pj := &c.pendingContinues[i]
 		if (pj.label == "" && pj.depth == curDepth-1) ||
 			(pj.label != "" && pj.label == topLabel) {
 			delta := targetPC - (pj.pc + bytecode.InstrSize)
 			bytecode.PatchOperand(c.cur().tmpl.Code, pj.pc, uint32(delta))
+			pj.patched = true
+			if !c.tryExitJmpOnPatched(pj) {
+				kept = append(kept, *pj)
+			}
 		} else {
-			kept = append(kept, pj)
+			kept = append(kept, *pj)
 		}
 	}
 	c.pendingContinues = kept
@@ -1164,11 +1338,15 @@ func (c *Compiler) compileTry(s *ast.TryStmt) error {
 	entry := bytecode.TryEntry{StartPC: c.curPC(), HasCatch: s.Handler != nil, HasFinally: s.Finally != nil}
 	tmpl.TryTable = append(tmpl.TryTable, entry)
 
+	c.tryStack = append(c.tryStack, tryIdx)
+	defer func() { c.tryStack = c.tryStack[:len(c.tryStack)-1] }()
+
 	c.emit(bytecode.OpTryEnter, uint32(tryIdx))
 	if err := c.compileBlock(s.Block); err != nil {
 		return err
 	}
-	c.emit(bytecode.OpTryExit, uint32(tryIdx))
+	// try 块末尾：记录区域边界（try 内 return/break/continue 的目标区域判定）。
+	tmpl.TryTable[tryIdx].EndPC = c.emit(bytecode.OpTryExit, uint32(tryIdx))
 
 	jmpAfter := c.emit(bytecode.OpJmp, 0)
 
@@ -1187,7 +1365,7 @@ func (c *Compiler) compileTry(s *ast.TryStmt) error {
 			return err
 		}
 		c.popBlock()
-		c.emit(bytecode.OpTryExit, uint32(tryIdx))
+		tmpl.TryTable[tryIdx].CatchEndPC = c.emit(bytecode.OpTryExit, uint32(tryIdx))
 	}
 
 	endPC := c.curPC()
@@ -1201,8 +1379,10 @@ func (c *Compiler) compileTry(s *ast.TryStmt) error {
 			return err
 		}
 		c.popBlock()
-		c.emit(bytecode.OpTryExitFinally, uint32(tryIdx))
+		tmpl.TryTable[tryIdx].FinallyEndPC = c.emit(bytecode.OpTryExitFinally, uint32(tryIdx))
 	}
+	// 区域边界已齐全：对穿越本区域的待定跳转做最终判定（降级 OpTryExitJmp）。
+	c.finalizeTryExitJmps(tryIdx)
 	return nil
 }
 
@@ -1219,12 +1399,15 @@ func (c *Compiler) compileTryValue(s *ast.TryStmt) error {
 	entry := bytecode.TryEntry{StartPC: c.curPC(), HasCatch: s.Handler != nil, HasFinally: s.Finally != nil}
 	tmpl.TryTable = append(tmpl.TryTable, entry)
 
+	c.tryStack = append(c.tryStack, tryIdx)
+	defer func() { c.tryStack = c.tryStack[:len(c.tryStack)-1] }()
+
 	// try 块用值模式编译（保留最后表达式值）。
 	c.emit(bytecode.OpTryEnter, uint32(tryIdx))
 	if err := c.compileBlockValue(s.Block); err != nil {
 		return err
 	}
-	c.emit(bytecode.OpTryExit, uint32(tryIdx))
+	tmpl.TryTable[tryIdx].EndPC = c.emit(bytecode.OpTryExit, uint32(tryIdx))
 
 	jmpAfter := c.emit(bytecode.OpJmp, 0)
 
@@ -1243,7 +1426,7 @@ func (c *Compiler) compileTryValue(s *ast.TryStmt) error {
 			return err
 		}
 		c.popBlock()
-		c.emit(bytecode.OpTryExit, uint32(tryIdx))
+		tmpl.TryTable[tryIdx].CatchEndPC = c.emit(bytecode.OpTryExit, uint32(tryIdx))
 	}
 
 	endPC := c.curPC()
@@ -1260,8 +1443,9 @@ func (c *Compiler) compileTryValue(s *ast.TryStmt) error {
 			return err
 		}
 		c.popBlock()
-		c.emit(bytecode.OpTryExitFinally, uint32(tryIdx))
+		tmpl.TryTable[tryIdx].FinallyEndPC = c.emit(bytecode.OpTryExitFinally, uint32(tryIdx))
 	}
+	c.finalizeTryExitJmps(tryIdx)
 	return nil
 }
 
@@ -1358,12 +1542,17 @@ func (c *Compiler) compileLabeled(s *ast.LabeledStmt) error {
 	// 标签包裹块（非循环）时：`break label` 跳到标签语句末尾。
 	endPC := c.curPC()
 	kept := c.pendingBreaks[:0]
-	for _, pj := range c.pendingBreaks {
+	for i := range c.pendingBreaks {
+		pj := &c.pendingBreaks[i]
 		if pj.label == s.Label {
 			delta := endPC - (pj.pc + bytecode.InstrSize)
 			bytecode.PatchOperand(c.cur().tmpl.Code, pj.pc, uint32(delta))
+			pj.patched = true
+			if !c.tryExitJmpOnPatched(pj) {
+				kept = append(kept, *pj)
+			}
 		} else {
-			kept = append(kept, pj)
+			kept = append(kept, *pj)
 		}
 	}
 	c.pendingBreaks = kept
@@ -1572,9 +1761,10 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 	case *ast.MemberExpr:
 		return c.compileMember(n)
 	case *ast.FunctionExpr:
-		return c.compileFunction(funcNameFromExpr(n), n.Params, n.ParamPatterns, n.Defaults, n.RestParam, n.Body, n.IsAsync, n.IsGenerator, false)
+		// 具名函数表达式（NFE）：名字在函数体内绑定为不可变自引用。
+		return c.compileFunction(funcNameFromExpr(n), n.Params, n.ParamPatterns, n.Defaults, n.RestParam, n.Body, n.IsAsync, n.IsGenerator, false, n.Name != nil)
 	case *ast.ArrowFunc:
-		return c.compileFunction("", n.Params, n.ParamPatterns, n.Defaults, n.RestParam, n.Body, n.IsAsync, false, true)
+		return c.compileFunction("", n.Params, n.ParamPatterns, n.Defaults, n.RestParam, n.Body, n.IsAsync, false, true, false)
 	case *ast.ClassExpr:
 		return c.compileClassExpr(n)
 	case *ast.ConditionalExpr:
@@ -2591,7 +2781,7 @@ func (c *Compiler) compileConditional(n *ast.ConditionalExpr) error {
 // `rest` is the ES2015 rest parameter name (or "" if none).
 // `isArrow` 为 true 时编译箭头函数：不声明本函数级 `this` 槽位，
 // `this` 经 upvalue 链解析为外层函数的 `this`（P0-2）。
-func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patterns []ast.Pattern, defaults []ast.Expression, rest *ast.Identifier, body ast.Node, isAsync, isGenerator, isArrow bool) error {
+func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patterns []ast.Pattern, defaults []ast.Expression, rest *ast.Identifier, body ast.Node, isAsync, isGenerator, isArrow bool, bindSelf bool) error {
 	restoreControlFlow := c.isolateControlFlow()
 	defer restoreControlFlow()
 
@@ -2630,6 +2820,7 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 		IsGenerator:   isGenerator,
 		IsArrow:       isArrow,
 		ArgumentsSlot: -1,
+		NFESlot:       -1,
 		SourceFile:    c.cur().tmpl.SourceFile,
 	}
 	funcIdx := c.module.AddFunction(tmpl)
@@ -2653,6 +2844,15 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 	// 箭头函数不绑定 own arguments（词法继承外层），与 JS 语义一致。
 	if rest != nil {
 		fc.scopes[0].decls[rest.Name] = 1 + len(params)
+	}
+	if bindSelf && astBodyReferencesName(body, name) {
+		// 具名函数表达式（NFE）：仅当函数体内实际引用名字时分配自引用槽
+		// （运行时帧建立时写入闭包自身）。未引用的带名函数表达式
+		// （如 `add1 = function add1(x) {...}`）不分配，避免 JIT 误拒绝。
+		nfeSlot := tmpl.NumLocals
+		tmpl.NFESlot = nfeSlot
+		tmpl.NumLocals++
+		fc.scopes[0].decls[name] = nfeSlot
 	}
 	if !isArrow {
 		argsSlot := tmpl.NumLocals
@@ -2843,7 +3043,7 @@ func (c *Compiler) hoistFunctionDecls(stmts []ast.Statement) {
 	for _, s := range stmts {
 		if fd, ok := s.(*ast.FunctionDecl); ok && fd.Name != nil {
 			slot := c.declareVar(fd.Name.Name)
-			if err := c.compileFunction(fd.Name.Name, fd.Params, fd.ParamPatterns, fd.Defaults, fd.RestParam, fd.Body, fd.IsAsync, fd.IsGenerator, false); err != nil {
+			if err := c.compileFunction(fd.Name.Name, fd.Params, fd.ParamPatterns, fd.Defaults, fd.RestParam, fd.Body, fd.IsAsync, fd.IsGenerator, false, false); err != nil {
 				// 提升编译出错：推迟到正常编译路径报错（这里不中断）。
 				_ = err
 				_ = slot
@@ -3402,12 +3602,14 @@ func (c *Compiler) compileDefaultDerivedCtor() (int, error) {
 	tmpl := &bytecode.FuncTemplate{
 		Name:       "constructor",
 		NumParams:  0,
-		NumLocals:  2, // slot 0 = this, slot 1 = rest "args"
+		NumLocals:  3, // slot 0 = this, slot 1 = rest "args", slot 2 = new.target
 		IsVarArgs:  true,
 		SourceFile: c.cur().tmpl.SourceFile,
-		// 合成派生构造器通过 rest 转发 super，不引用 `arguments`/`new.target`：置 -1。
+		// 合成派生构造器通过 rest 转发 super，不引用 `arguments`：置 -1。
+		// new.target 槽必须分配：super() 调用原生父类构造（Error/DOMException
+		// 等）时，constructThis 需要 newTarget.prototype 修正实例原型。
 		ArgumentsSlot: -1,
-		NewTargetSlot: -1,
+		NewTargetSlot: 2,
 	}
 	funcIdx := c.module.AddFunction(tmpl)
 	fc := &funcCtx{
@@ -3418,6 +3620,7 @@ func (c *Compiler) compileDefaultDerivedCtor() (int, error) {
 	fc.scopes = []*scope{{decls: make(map[string]int), isFunc: true}}
 	fc.scopes[0].decls["__this__"] = 0
 	fc.scopes[0].decls["args"] = 1
+	fc.scopes[0].decls["__newTarget__"] = 2
 	c.funcStack = append(c.funcStack, fc)
 
 	// super(...args): load home-ctor, load rest args, construct with this.
@@ -3429,4 +3632,58 @@ func (c *Compiler) compileDefaultDerivedCtor() (int, error) {
 	c.emit(bytecode.OpReturnUndef, 0)
 	c.funcStack = c.funcStack[:len(c.funcStack)-1]
 	return funcIdx, nil
+}
+
+// astBodyReferencesName 扫描函数体（含嵌套函数）是否引用了指定标识符。
+// 用于 NFE 自引用槽的按需分配：仅当体内实际引用名字时才需要槽位。
+// 简化实现：同名 Identifier（引用或声明）即视为引用——遮蔽等罕见场景
+// 只会多分配一个槽位（语义正确，仅 JIT 拒绝的轻微性能损失）。
+func astBodyReferencesName(body ast.Node, name string) bool {
+	found := false
+	visited := make(map[ast.Node]bool) // 防共享/循环引用导致无限递归
+	var walk func(n ast.Node)
+	walk = func(n ast.Node) {
+		if found || n == nil || visited[n] {
+			return
+		}
+		visited[n] = true
+		if id, ok := n.(*ast.Identifier); ok && id.Name == name {
+			found = true
+			return
+		}
+		// 反射遍历子节点（ast 节点均为结构体/切片/指针）。
+		rv := reflect.ValueOf(n)
+		walkValue(rv, walk, visited)
+	}
+	walk(body)
+	return found
+}
+
+func walkValue(rv reflect.Value, walk func(ast.Node), visited map[ast.Node]bool) {
+	switch rv.Kind() {
+	case reflect.Struct:
+		t := rv.Type()
+		for i := 0; i < rv.NumField(); i++ {
+			if t.Field(i).PkgPath != "" {
+				continue // 未导出字段
+			}
+			walkValue(rv.Field(i), walk, visited)
+		}
+	case reflect.Ptr:
+		if !rv.IsNil() {
+			if n, ok := rv.Interface().(ast.Node); ok {
+				walk(n)
+			} else {
+				walkValue(rv.Elem(), walk, visited)
+			}
+		}
+	case reflect.Slice:
+		for i := 0; i < rv.Len(); i++ {
+			walkValue(rv.Index(i), walk, visited)
+		}
+	case reflect.Interface:
+		if !rv.IsNil() {
+			walkValue(rv.Elem(), walk, visited)
+		}
+	}
 }

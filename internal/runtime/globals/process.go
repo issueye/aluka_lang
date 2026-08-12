@@ -286,10 +286,6 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 	_ = stdin.Set("isTTY", engine.Boolean(stdinTTY))
 	_ = stdin.Set("isRaw", engine.Boolean(false))
 	_ = stdin.Set("readableEnded", engine.Boolean(false))
-	type stdinListener struct {
-		callback engine.Value
-		once     bool
-	}
 	var stdinMu sync.Mutex
 	stdinListeners := map[string][]stdinListener{}
 	stdinEncoding := ""
@@ -302,23 +298,25 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 			stdinMu.Lock()
 			event := args[0].String()
 			stdinListeners[event] = append(stdinListeners[event], stdinListener{callback: args[1], once: once})
+			// Node 流语义：添加 data 监听器即进入 flowing 模式（隐式 resume）。
+			// 此前仅显式 resume() 才启动读 goroutine，readline/TUI 等只调
+			// on("data") 的代码永远收不到输入（表现为输入后长时间无响应）。
+			if event == "data" && !stdinEnded {
+				if stdinPaused {
+					stdinPaused = false
+					if stdinRelease == nil {
+						stdinRelease = ctx.AddRef()
+					}
+				}
+				stdinReader.Do(func() {
+					go stdinReadLoop(ctx, stdin, &stdinMu, &stdinPaused, &stdinEnded, &stdinRelease, stdinListeners, &stdinEncoding)
+				})
+			}
 			stdinMu.Unlock()
 		}
 		return stdin
 	}
-	takeStdinListenersLocked := func(event string) []engine.Value {
-		listeners := stdinListeners[event]
-		callbacks := make([]engine.Value, 0, len(listeners))
-		kept := listeners[:0]
-		for _, listener := range listeners {
-			callbacks = append(callbacks, listener.callback)
-			if !listener.once {
-				kept = append(kept, listener)
-			}
-		}
-		stdinListeners[event] = kept
-		return callbacks
-	}
+
 	_ = stdin.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
 		return addStdinListener(args, false), nil
 	}))
@@ -392,71 +390,7 @@ func NewProcess(ctx engine.Context, cfg ProcessConfig) error {
 		}
 		stdinMu.Unlock()
 		stdinReader.Do(func() {
-			go func() {
-				buf := make([]byte, 4096)
-				for {
-					n, readErr := os.Stdin.Read(buf)
-					if n > 0 {
-						data := append([]byte(nil), buf[:n]...)
-						ctx.PostTask(func() {
-							stdinMu.Lock()
-							if stdinPaused || stdinEnded {
-								stdinMu.Unlock()
-								return
-							}
-							callbacks := takeStdinListenersLocked("data")
-							encoding := stdinEncoding
-							stdinMu.Unlock()
-							chunk := engine.Value(NewBufferInstance(data))
-							if encoding != "" {
-								chunk = engine.Str(string(data))
-							}
-							for _, cb := range callbacks {
-								if f, ok := cb.AsFunction(); ok {
-									if _, callErr := f.Call([]engine.Value{chunk}); callErr != nil {
-										// stdin 监听器抛出 → uncaughtException。
-										interpreter.ReportUncaught(ctx, callErr)
-									}
-								}
-							}
-						})
-					}
-					if readErr != nil {
-						ctx.PostTask(func() {
-							stdinMu.Lock()
-							stdinEnded = true
-							stdinPaused = true
-							release := stdinRelease
-							stdinRelease = nil
-							endCallbacks := takeStdinListenersLocked("end")
-							errorCallbacks := takeStdinListenersLocked("error")
-							stdinMu.Unlock()
-							_ = stdin.Set("readable", engine.Boolean(false))
-							_ = stdin.Set("readableEnded", engine.Boolean(true))
-							if release != nil {
-								release()
-							}
-							if readErr != io.EOF {
-								for _, cb := range errorCallbacks {
-									if f, ok := cb.AsFunction(); ok {
-										if _, callErr := f.Call([]engine.Value{engine.Str(readErr.Error())}); callErr != nil {
-											interpreter.ReportUncaught(ctx, callErr)
-										}
-									}
-								}
-							}
-							for _, cb := range endCallbacks {
-								if f, ok := cb.AsFunction(); ok {
-									if _, callErr := f.Call(nil); callErr != nil {
-										interpreter.ReportUncaught(ctx, callErr)
-									}
-								}
-							}
-						})
-						return
-					}
-				}
-			}()
+			go stdinReadLoop(ctx, stdin, &stdinMu, &stdinPaused, &stdinEnded, &stdinRelease, stdinListeners, &stdinEncoding)
 		})
 		return stdin, nil
 	}))
@@ -1136,4 +1070,94 @@ func archName() string {
 	default:
 		return runtime.GOARCH
 	}
+}
+
+// stdinReadLoop 持续读取 os.Stdin 并把数据经 PostTask 投递到 JS 线程。
+// 由 resume() 与 on("data")（Node flowing 模式隐式 resume）共享启动。
+func stdinReadLoop(ctx engine.Context, stdin engine.Object, stdinMu *sync.Mutex, stdinPaused, stdinEnded *bool, stdinRelease *func(), stdinListeners map[string][]stdinListener, stdinEncoding *string) {
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := os.Stdin.Read(buf)
+		if n > 0 {
+			data := append([]byte(nil), buf[:n]...)
+			ctx.PostTask(func() {
+				stdinMu.Lock()
+				if *stdinPaused || *stdinEnded {
+					stdinMu.Unlock()
+					return
+				}
+				callbacks := takeStdinListenersLocked(&stdinListeners, "data")
+				encoding := *stdinEncoding
+				stdinMu.Unlock()
+				chunk := engine.Value(NewBufferInstance(data))
+				if encoding != "" {
+					chunk = engine.Str(string(data))
+				}
+				for _, cb := range callbacks {
+					if f, ok := cb.AsFunction(); ok {
+						if _, callErr := f.Call([]engine.Value{chunk}); callErr != nil {
+							// stdin 监听器抛出 → uncaughtException。
+							interpreter.ReportUncaught(ctx, callErr)
+						}
+					}
+				}
+			})
+		}
+		if readErr != nil {
+			ctx.PostTask(func() {
+				stdinMu.Lock()
+				*stdinEnded = true
+				*stdinPaused = true
+				release := *stdinRelease
+				*stdinRelease = nil
+				endCallbacks := takeStdinListenersLocked(&stdinListeners, "end")
+				errorCallbacks := takeStdinListenersLocked(&stdinListeners, "error")
+				stdinMu.Unlock()
+				_ = stdin.Set("readable", engine.Boolean(false))
+				_ = stdin.Set("readableEnded", engine.Boolean(true))
+				if release != nil {
+					release()
+				}
+				if readErr != io.EOF {
+					for _, cb := range errorCallbacks {
+						if f, ok := cb.AsFunction(); ok {
+							if _, callErr := f.Call([]engine.Value{engine.Str(readErr.Error())}); callErr != nil {
+								interpreter.ReportUncaught(ctx, callErr)
+							}
+						}
+					}
+				}
+				for _, cb := range endCallbacks {
+					if f, ok := cb.AsFunction(); ok {
+						if _, callErr := f.Call(nil); callErr != nil {
+							interpreter.ReportUncaught(ctx, callErr)
+						}
+					}
+				}
+			})
+			return
+		}
+	}
+}
+
+// stdinListener 是 process.stdin 的一个事件监听器。
+type stdinListener struct {
+	callback engine.Value
+	once     bool
+}
+
+// takeStdinListenersLocked 取出并移除某事件的全部监听器（once 监听器
+// 触发后移除）。须在持有 stdinMu 时调用。
+func takeStdinListenersLocked(listeners *map[string][]stdinListener, event string) []engine.Value {
+	list := (*listeners)[event]
+	callbacks := make([]engine.Value, 0, len(list))
+	kept := list[:0]
+	for _, listener := range list {
+		callbacks = append(callbacks, listener.callback)
+		if !listener.once {
+			kept = append(kept, listener)
+		}
+	}
+	(*listeners)[event] = kept
+	return callbacks
 }

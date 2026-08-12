@@ -1,6 +1,9 @@
 package regex
 
-import "errors"
+import (
+	"errors"
+	"unicode"
+)
 
 // Backtracking regex engine (fallback).
 //
@@ -841,14 +844,24 @@ func (p *btParser) parseClass() (btNode, error) {
 	for p.i < len(p.src) {
 		c := p.src[p.i]
 		if c == ']' {
-			if first {
-				// ']' as first char is literal.
+			if first && hasClosingBracket(p.src, p.i+1) {
+				// 类首 ']' 且其后还有闭合括号：字面 ]（如 []a] 匹配 ] 或 a，
+				// 与 translate 路径的既有语义一致）。
 				p.i++
 				node.parts = append(node.parts, btClassPart{ranges: []btRange{{']', ']'}}})
 				first = false
 				continue
 			}
 			p.i++
+			if !first {
+				return node, nil
+			}
+			// 类立即闭合为空类（JS 语义）：[^] 匹配任意字符，[] 永不匹配。
+			// （此前无条件把类首 ] 当字面，导致 [^] 扫描不到闭合而报
+			// unterminated——js-tokens 的 StringLiteral 正则依赖此语义。）
+			if negated {
+				node.parts = append(node.parts, btClassPart{ranges: []btRange{{0, unicode.MaxRune}}})
+			}
 			return node, nil
 		}
 		// Parse a character or escape, then optional range '-' high.

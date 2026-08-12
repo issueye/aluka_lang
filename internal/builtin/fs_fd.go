@@ -1008,7 +1008,12 @@ func fsTimeArgs(args []engine.Value) (time.Time, time.Time, error) {
 			return time.UnixMilli(int64(dv.TimeMs())), nil
 		}
 		if n, ok := v.Float(); ok {
-			return time.UnixMilli(int64(n)), nil
+			// Node 语义：Number 为 POSIX 秒（可含小数）。此前误按毫秒处理，
+			// 导致 fs.utimes 写入 1970 年附近的 mtime（Windows 下 os.Chtimes
+			// 报 ERROR_INVALID_PARAMETER，且 proper-lockfile 误判 lock stale）。
+			sec := int64(n)
+			nsec := int64((n - float64(sec)) * 1e9)
+			return time.Unix(sec, nsec), nil
 		}
 		return time.Now(), fmt.Errorf("ERR_INVALID_ARG_TYPE: time")
 	}

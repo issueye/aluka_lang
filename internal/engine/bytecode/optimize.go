@@ -260,7 +260,7 @@ func isPurePush(op Opcode) bool {
 
 func isRelativeJump(op Opcode) bool {
 	switch op {
-	case OpJmp, OpJmpTruePop, OpJmpFalsePop, OpJmpTrueKeep, OpJmpFalseKeep, OpJmpNullishKeep, OpOptionalJump, OpForInNext:
+	case OpJmp, OpJmpTruePop, OpJmpFalsePop, OpJmpTrueKeep, OpJmpFalseKeep, OpJmpNullishKeep, OpOptionalJump, OpForInNext, OpTryExitJmp:
 		return true
 	default:
 		return false
@@ -322,6 +322,20 @@ func relocateMetadata(fn *FuncTemplate, oldToNew map[int]int, emittedAt map[int]
 		}
 		if te.HasFinally {
 			if te.FinallyPC, err = mapPC(te.FinallyPC); err != nil {
+				return err
+			}
+		}
+		// 区域边界 PC（v18 起参与 try 展开判定）必须一并重定位。
+		if te.EndPC, err = mapPC(te.EndPC); err != nil {
+			return err
+		}
+		if te.HasCatch && te.CatchEndPC != 0 {
+			if te.CatchEndPC, err = mapPC(te.CatchEndPC); err != nil {
+				return err
+			}
+		}
+		if te.HasFinally && te.FinallyEndPC != 0 {
+			if te.FinallyEndPC, err = mapPC(te.FinallyEndPC); err != nil {
 				return err
 			}
 		}

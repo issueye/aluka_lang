@@ -30,6 +30,7 @@ type AsyncGeneratorValue struct {
 	upvalues []*upvalue
 	thisVal  engine.Value
 	args     []engine.Value
+	self     *vmClosure // NFE 自引用（具名函数表达式；非 NFE 为 nil）
 
 	savedStack    []engine.Value
 	savedPC       int
@@ -171,6 +172,9 @@ func (g *AsyncGeneratorValue) setupFrame() {
 	frame := vmFrame{tmpl: g.tmpl, base: len(g.vm.stack), upvalues: g.upvalues}
 	g.vm.reserveUndefined(g.tmpl.NumLocals)
 	g.vm.stack[frame.base] = g.thisVal
+	if g.tmpl.NFESlot > 0 && g.self != nil {
+		g.vm.stack[frame.base+g.tmpl.NFESlot] = g.self
+	}
 	for i := 0; i < g.tmpl.NumParams && i < len(g.args); i++ {
 		g.vm.stack[frame.base+1+i] = g.args[i]
 	}

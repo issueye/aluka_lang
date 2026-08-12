@@ -36,7 +36,19 @@ import (
 //
 //	返回后登记 lastFuncExprIdx；修复前函数体含嵌套函数表达式时登记到内层
 //	模板（调用点错误内联内层函数体）。旧缓存含错误内联产物，必须失效。
-const FormatVersion = 17
+//
+// v17 → v18：try/finally 语义修复——return/break/continue 穿出 try 区域时
+//
+//	现在会先运行 finally（此前被跳过）。TryEntry 增加区域边界字段
+//	（EndPC/CatchEndPC/FinallyEndPC），新增 OpTryExitJmp 指令。旧缓存含
+//	跳过 finally 的错误产物，必须失效。
+//
+// v18 → v19：具名函数表达式（NFE）自引用绑定——`const f = function
+//
+//	named() {...}` 的函数体内 `named` 现在绑定到函数自身（此前未绑定，
+//	递归 NFE 报 "undefined is not a function"）。FuncTemplate 新增
+//	NFESlot 字段。旧缓存含未绑定产物，必须失效。
+const FormatVersion = 19
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
@@ -118,7 +130,7 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 	}
 	// NumParams, NumLocals, IsVarArgs, IsGenerator, IsAsync, IsArrow,
 	// len(Code), ArgumentsSlot, NoArgumentsObject, NewTargetSlot, Inlinable
-	var scalars [11 * 4]byte
+	var scalars [12 * 4]byte
 	binary.LittleEndian.PutUint32(scalars[0:4], uint32(fn.NumParams))
 	binary.LittleEndian.PutUint32(scalars[4:8], uint32(fn.NumLocals))
 	binary.LittleEndian.PutUint32(scalars[8:12], boolToU32(fn.IsVarArgs))
@@ -130,6 +142,7 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 	binary.LittleEndian.PutUint32(scalars[32:36], boolToU32(fn.NoArgumentsObject))
 	binary.LittleEndian.PutUint32(scalars[36:40], uint32(fn.NewTargetSlot))
 	binary.LittleEndian.PutUint32(scalars[40:44], boolToU32(fn.Inlinable))
+	binary.LittleEndian.PutUint32(scalars[44:48], uint32(fn.NFESlot))
 	if _, err := w.Write(scalars[:]); err != nil {
 		return err
 	}
@@ -195,12 +208,15 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 		return err
 	}
 	for _, te := range fn.TryTable {
-		var buf [5 * 4]byte
+		var buf [8 * 4]byte
 		binary.LittleEndian.PutUint32(buf[0:4], uint32(te.StartPC))
 		binary.LittleEndian.PutUint32(buf[4:8], uint32(te.CatchPC))
 		binary.LittleEndian.PutUint32(buf[8:12], uint32(te.FinallyPC))
 		binary.LittleEndian.PutUint32(buf[12:16], boolToU32(te.HasCatch))
 		binary.LittleEndian.PutUint32(buf[16:20], boolToU32(te.HasFinally))
+		binary.LittleEndian.PutUint32(buf[20:24], uint32(te.EndPC))
+		binary.LittleEndian.PutUint32(buf[24:28], uint32(te.CatchEndPC))
+		binary.LittleEndian.PutUint32(buf[28:32], uint32(te.FinallyEndPC))
 		if _, err := w.Write(buf[:]); err != nil {
 			return err
 		}
@@ -225,7 +241,7 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 	if err != nil {
 		return nil, err
 	}
-	var scalars [11 * 4]byte
+	var scalars [12 * 4]byte
 	if _, err := io.ReadFull(r, scalars[:]); err != nil {
 		return nil, err
 	}
@@ -244,6 +260,7 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 		NoArgumentsObject: u32ToBool(binary.LittleEndian.Uint32(scalars[32:36])),
 		NewTargetSlot:     int(int32(binary.LittleEndian.Uint32(scalars[36:40]))),
 		Inlinable:         u32ToBool(binary.LittleEndian.Uint32(scalars[40:44])),
+		NFESlot:           int(int32(binary.LittleEndian.Uint32(scalars[44:48]))),
 	}
 	codeLen := binary.LittleEndian.Uint32(scalars[24:28])
 	if codeLen > 0 {
@@ -326,16 +343,19 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 	if tryCount > 0 {
 		fn.TryTable = make([]TryEntry, tryCount)
 		for i := uint32(0); i < tryCount; i++ {
-			var buf [5 * 4]byte
+			var buf [8 * 4]byte
 			if _, err := io.ReadFull(r, buf[:]); err != nil {
 				return nil, err
 			}
 			fn.TryTable[i] = TryEntry{
-				StartPC:    int(binary.LittleEndian.Uint32(buf[0:4])),
-				CatchPC:    int(binary.LittleEndian.Uint32(buf[4:8])),
-				FinallyPC:  int(binary.LittleEndian.Uint32(buf[8:12])),
-				HasCatch:   u32ToBool(binary.LittleEndian.Uint32(buf[12:16])),
-				HasFinally: u32ToBool(binary.LittleEndian.Uint32(buf[16:20])),
+				StartPC:       int(binary.LittleEndian.Uint32(buf[0:4])),
+				CatchPC:       int(binary.LittleEndian.Uint32(buf[4:8])),
+				FinallyPC:     int(binary.LittleEndian.Uint32(buf[8:12])),
+				HasCatch:      u32ToBool(binary.LittleEndian.Uint32(buf[12:16])),
+				HasFinally:    u32ToBool(binary.LittleEndian.Uint32(buf[16:20])),
+				EndPC:         int(binary.LittleEndian.Uint32(buf[20:24])),
+				CatchEndPC:    int(binary.LittleEndian.Uint32(buf[24:28])),
+				FinallyEndPC:  int(binary.LittleEndian.Uint32(buf[28:32])),
 			}
 		}
 	}

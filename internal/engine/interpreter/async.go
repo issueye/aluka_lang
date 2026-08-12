@@ -25,6 +25,7 @@ type asyncRunner struct {
 	upvalues []*upvalue
 	thisVal  engine.Value
 	args     []engine.Value
+	self     *vmClosure // NFE 自引用（具名函数表达式；非 NFE 为 nil）
 	promise  *PromiseValue
 
 	// Saved frame state when suspended at an await.
@@ -139,6 +140,9 @@ func (ar *asyncRunner) setupFrame() {
 	}
 	ar.vm.reserveUndefined(ar.tmpl.NumLocals)
 	ar.vm.stack[frame.base] = ar.thisVal
+	if ar.tmpl.NFESlot > 0 && ar.self != nil {
+		ar.vm.stack[frame.base+ar.tmpl.NFESlot] = ar.self
+	}
 	for i := 0; i < ar.tmpl.NumParams && i < len(ar.args); i++ {
 		ar.vm.stack[frame.base+1+i] = ar.args[i]
 	}

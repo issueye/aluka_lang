@@ -40,6 +40,11 @@ type FuncTemplate struct {
 	// arguments 对象创建（O-5 调用快速路径；编译器在函数体扫描后置位）。
 	NoArgumentsObject bool
 
+	// NFESlot 是具名函数表达式（NFE）自引用槽位：`const f = function
+	// factorial() { ... }` 的函数体内 `factorial` 绑定到函数自身（不可变）。
+	// 运行时在帧建立时把闭包值写入该槽。-1 表示非 NFE（无槽位）。
+	NFESlot int
+
 	// NativeCallback 是 O-6 简单回调描述：箭头函数体为单表达式且参数
 	// ≤2、无闭包依赖时，编译器生成该描述，数组高阶方法（map/filter/…）
 	// 在 Go 侧直接执行表达式，跳过每元素完整调用链（帧 + 解释）。nil 表示
@@ -111,6 +116,13 @@ type TryEntry struct {
 	HasFinally bool
 	CatchPC    int // PC to jump to when an exception is thrown
 	FinallyPC  int // PC of the finally block (run on both normal and exceptional exit)
+
+	// 区域边界（return/break/continue 穿过 try 时判定目标是否仍在区域内，
+	// 决定是否必须先运行 finally）。EndPC/CatchEndPC/FinallyEndPC 分别是
+	// try 块、catch 块、finally 块末尾的 OpTryExit/OpTryExitFinally 指令 PC。
+	EndPC         int
+	CatchEndPC    int
+	FinallyEndPC  int
 }
 
 // UpvalueCapture describes one upvalue slot in a closure.
