@@ -102,7 +102,7 @@ func NewInterpreter() (*Interpreter, error) {
 		globalObj:          engine.NewObject(),
 		constructors:       make(map[string]engine.Object),
 		argumentsSupported: true,
-		taskCh:             make(chan func(), 64),
+		taskCh:             make(chan func(), 1024),
 		idleCh:             make(chan struct{}, 1),
 		stopCh:             make(chan struct{}),
 	}
