@@ -81,6 +81,10 @@ R2 平台与运行时门禁 ---> R4 Tier 3 热点扩展
 R1 与 R2 的部分任务可以并行，但 R1、R2 未完成前不得开始默认 auto；R3/R4 的新能力必须复用
 R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，避免用性能数据固化错误语义。
 
+> **2026-08-12 决策**：Linux 侧的实机测试与功能验证暂不推进，仅保留对应口子（CI workflow
+> `jit-linux` job、平台分文件与平台门禁测试）供后续 Linux runner 启用。默认 auto 的 R2 前置
+> 以 Windows amd64 实机门禁为准；Linux 验证项在检查表中标记为「口子保留」，不阻塞默认切换。
+
 工作量以单名熟悉代码库的工程师日估算，仅用于排序，不是交付日期承诺。
 
 | 里程碑 | 主题 | 预计工作量 | 前置依赖 |
@@ -99,11 +103,11 @@ R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，�
 |--------|----------|------|
 | R0 | 交付物齐备，验收未过 | R0-1 至 R0-5 交付物均已产出（2026-08-11）；但 §5.3 稳定性验收（连续两轮中位数偏差 ≤5%）在本机未通过，需安静/固定电源环境复核后才可宣称 R0 完成 |
 | R1 | 全部条目完成 | R1-1/R1-2/R1-3/R1-4/R1-5/R1-6/R1-7/R1-8 已落地（2026-08-11）：生成式差分框架（PR 1,000 例 + nightly 100,000 例无差分）、值域组合、异常差分（BigInt 除零/getter-setter/回调/OOM/取消/中断）、deopt 状态模型（含 pending exception 正式恢复映射与 verifier 拒绝）、副作用 prepare/validate/commit 两阶段提交协议、随机 guard 失效（8 类 mutation，warmup-mutation-post 调度入 artifact，第三 shape/target 降级与 RX 释放断言）、fuzz 入口（verifier/trace compiler/deopt-exception/Native lowering/artifact replay 五个 Go fuzz target，seed corpus 确定性可复现，fuzz 运行无 panic/hang/RX 泄漏）、失败产物与单命令重放 |
-| R2 | 部分完成 | Linux 后端和 CI job 已写入，尚无 Linux runner 成功记录和长期 soak |
+| R2 | 部分完成（Windows 门禁 + Linux 口子） | Linux 后端和 CI job 已写入并保留为口子（见 §11.3 决策注记）；按 2026-08-12 决策，Linux 实机 runner 与 soak 暂不推进，Windows amd64 实机验证作为默认 auto 的 R2 前置 |
 | R3 | 全部条目完成 | R3-1/R3-2/R3-4/R3-5/R3-6/R3-7 已落地（2026-08-12）：Symbol truthiness/nullish 与严格相等建模、String 拼接与关系比较、BigInt 算术/位运算/比较（异常 guard 回退 Tier 0 一致）、ternary/switch/嵌套短路控制流（OpConstString 常量池）、编译期候选过滤与结构化拒绝缓存；R3-3 宽松相等（共享 `engine.LooseEquals` helper，下沉 `internal/engine` 包，对象按 identity 不走 ToPrimitive）在 R4 集成期间补做完成（见 §6.5）；差分发现并修复 Tier 0 `~` BigInt 语义 |
 | R4 | 完成 | R4-1..R4-8 全部落地（2026-08-12，见 §6.5 实施记录）：调用约定扩展（0-4 参数、Boolean 返回、多调用点、局部转发内联）、闭包扩展（多 numeric upvalue、只读捕获、非逃逸闭包）、属性 PIC 2-4 shape 自适应上限、未命中成本削减、packed Number 数组索引读写、map/filter/reduce 数值纯度路径、Native opcode 逐项评估（% 与位运算 Native 化、** 保留 Quick）、side-exit 成本削减（同 frame 按 backedge 阻止已失败版本重试） |
-| R5 | 全部条目完成 | R5-1..R5-7 已落地（2026-08-12，见 §10.4 实施记录）：IR 优化 pass（常量折叠/冗余 store-load 消除/不可达块删除，OptimizeIR 开关差分验证）、保守 LICM 范围（const-only 循环不变量折叠）、自适应编译阈值（boost/cool 反馈模型）、编译预算（时间/队列/并发上限，风暴下解释执行可前进）、LRU 热度权重与两路 PIC 合计计费、TraceBudget 联合校准（默认 65536 数据驱动保持）与取消/OOM 响应上界、`--jit-stats` 聚合观测（guard/deopt/eviction 率与晋级降级判据）。**范围说明**：此处"全部条目完成"指代码与测试层面；§10.3 要求的 Windows/Linux 正式 5 次中位数报告与 release soak 作为性能门禁，待真实 Linux CI 与正式报告补齐后方视为通过 |
-| R6 | 未开始 | 默认仍为 off，尚未满足默认 auto 检查表 |
+| R5 | 全部条目完成 | R5-1..R5-7 已落地（2026-08-12，见 §10.4 实施记录）：IR 优化 pass（常量折叠/冗余 store-load 消除/不可达块删除，OptimizeIR 开关差分验证）、保守 LICM 范围（const-only 循环不变量折叠）、自适应编译阈值（boost/cool 反馈模型）、编译预算（时间/队列/并发上限，风暴下解释执行可前进）、LRU 热度权重与两路 PIC 合计计费、TraceBudget 联合校准（默认 65536 数据驱动保持）与取消/OOM 响应上界、`--jit-stats` 聚合观测（guard/deopt/eviction 率与晋级降级判据）。**范围说明**：此处"全部条目完成"指代码与测试层面；§10.3 要求的正式 5 次中位数报告与 release soak 作为性能门禁。按 2026-08-12 决策，性能门禁以 Windows amd64 实机报告为准，Linux 报告经口子后续补齐 |
+| R6 | 未开始 | 默认仍为 off；检查表已按 2026-08-12 决策调整（Linux 实机验证降级为口子保留，Windows 门禁先行） |
 
 “部分完成”只描述启动基线，不代表通过该里程碑；每个里程碑仍以对应章节的完整完成条件为准。
 
@@ -535,18 +539,19 @@ Compiled + TracesCompiled；NativeCompiled/NativeTracesCompiled 是其子集，
 ### 11.3 默认 auto 最终检查表
 
 - [ ] R1 所有正确性和 deopt 条目完成；
-- [ ] Windows/Linux amd64 连续 5 次 CI 通过；
-- [ ] 两个平台 release soak 至少 8 小时通过；
-- [ ] 正式 5 次中位数性能报告满足全部硬门禁；
-- [ ] race、GC、抢占、LRU、关闭和重配置测试通过；
-- [ ] 不支持平台降级测试通过；
+- [ ] Windows amd64 连续 5 次 CI 通过（Linux 口子保留：`.github/workflows/ci.yml` `jit-linux` job 已就绪，待 runner 启用）；
+- [ ] Windows amd64 release soak 至少 8 小时通过（Linux soak 经口子后续执行，不阻塞）；
+- [ ] 正式 5 次中位数性能报告满足全部硬门禁（Windows amd64 实机为准）；
+- [ ] race、GC、抢占、LRU、关闭和重配置测试通过（race 在本机 Windows 受 TSan 限制，经 Linux 口子覆盖；其余在本机执行）；
+- [ ] 不支持平台降级测试通过（Quick/off 降级路径平台无关，Windows 实机验证）；
 - [ ] `--jit=off` 可完全关闭热点状态和 executable memory；
 - [ ] verify mismatch 能释放 Native 并安装正确 Quick 结果；
 - [ ] 文档、CLI help、嵌入 API 和 release note 已更新；
 - [ ] 回滚负责人和触发条件明确。
 
-**完成条件**：检查表无未完成项，并在默认 auto 构建上重新执行全量测试、跨平台 CI、正式基准和
-release soak。默认切换本身不允许与新的 opcode/快路径同批进行，便于单独回滚。
+**完成条件**：检查表无未完成项，并在默认 auto 构建上重新执行全量测试、Windows amd64 实机
+CI/正式基准与 release soak（Linux 侧经 CI 口子 `jit-linux` 后续覆盖，不阻塞）。默认切换本身
+不允许与新的 opcode/快路径同批进行，便于单独回滚。
 
 ## 12. 统一验证矩阵
 
@@ -570,7 +575,10 @@ go test -race ./internal/engine/jit/... ./internal/engine/interpreter -count=1
 | 平台 | Quick | Native | race | W^X | soak | 发布要求 |
 |------|-------|--------|------|-----|------|----------|
 | Windows amd64 | 必须 | 必须 | 必须 | VirtualProtect 验证 | 8h | 完整 |
-| Linux amd64 | 必须 | 必须 | 必须 | mmap/mprotect + maps | 8h | 完整 |
+| Linux amd64 | 必须 | 必须 | 必须 | mmap/mprotect + maps | 8h | 口子保留* |
+
+> *2026-08-12 决策：Linux 实机验证暂不推进，`jit-linux` CI job 与平台分文件保留为口子，
+> 待 runner 启用后补齐。默认 auto 不因 Linux 未验证而阻塞。
 | Linux arm64 | 必须 | 不要求 | Quick race | 不申请 RX | 1h | 降级 |
 | macOS amd64/arm64 | 必须 | 不要求 | Quick race | 不申请 RX | 1h | 降级 |
 
@@ -620,7 +628,7 @@ go test -race ./internal/engine/jit/... ./internal/engine/interpreter -count=1
 近期迭代严格按以下顺序推进：
 
 1. R0-1 至 R0-4：先建立结果和覆盖证据；
-2. R1-1、R1-2、R1-8：建立可复现生成式差分；
+2. R1-1、R1-2、R1-8：建立可复现生成式差分（Linux 相关验证经 CI 口子保留，不阻塞）；
 3. R1-5 至 R1-6：补副作用提交协议与随机 guard 失效；
 4. 并行完成 R2 Linux CI、W^X 和短/长 soak；
 5. 在差分框架保护下实施 R3 原始值与控制流覆盖；
