@@ -906,14 +906,26 @@ func newClientRequestProto(ctx engine.Context, args []engine.Value, proto string
 			state.url = opt.String()
 		default:
 			if o, ok := opt.AsObject(); ok {
+				// URL 对象（new URL(...)）：href 含完整地址（含协议/端口/路径），
+				// 直接使用——此前走 host+port 拼接，host 已含端口时产生
+				// 双端口 URL（http://host:port:port）导致 dial 失败。
+				if href, err := o.Get("href"); err == nil && !href.IsUndefined() && !href.IsNull() && href.String() != "" {
+					state.url = href.String()
+				}
 				if m, err := o.Get("method"); err == nil && !m.IsUndefined() && !m.IsNull() && m.String() != "" {
 					state.method = m.String()
 				}
-				if h, err := o.Get("host"); err == nil && !h.IsUndefined() && !h.IsNull() && h.String() != "" {
-					state.url = proto + "://" + h.String()
-				}
-				if p, err := o.Get("port"); err == nil && !p.IsUndefined() && !p.IsNull() && p.String() != "" {
-					state.url = strings.TrimSuffix(state.url, "/") + ":" + p.String()
+				// 对象字面量 {host, port, path}（非 URL 对象，无 href）。
+				if state.url == "" {
+					if h, err := o.Get("host"); err == nil && !h.IsUndefined() && !h.IsNull() && h.String() != "" {
+						state.url = proto + "://" + h.String()
+					}
+					if p, err := o.Get("port"); err == nil && !p.IsUndefined() && !p.IsNull() && p.String() != "" {
+						state.url = strings.TrimSuffix(state.url, "/") + ":" + p.String()
+					}
+					if pa, err := o.Get("path"); err == nil && !pa.IsUndefined() && !pa.IsNull() && pa.String() != "" {
+						state.url = strings.TrimSuffix(state.url, "/") + pa.String()
+					}
 				}
 				if pa, err := o.Get("path"); err == nil && !pa.IsUndefined() && !pa.IsNull() && pa.String() != "" {
 					state.url = strings.TrimSuffix(state.url, "/") + pa.String()

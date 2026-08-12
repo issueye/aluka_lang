@@ -26,9 +26,12 @@ var httpGlobalTransport *http.Transport
 // getHttpGlobalTransport 惰性构造全局 Transport。
 func getHttpGlobalTransport() *http.Transport {
 	if httpGlobalTransport == nil {
+		// MaxIdleConnsPerHost 提高：流水线（完成即发下一个）场景下并发
+		// 连接需要持续复用，10 的上限导致活跃连接频繁关闭重建——每秒
+		// 大量新建连接 → Windows 临时端口 TIME_WAIT 耗尽 → dial 超时。
 		httpGlobalTransport = &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
+			MaxIdleConns:        1000,
+			MaxIdleConnsPerHost: 500,
 			IdleConnTimeout:     60 * time.Second,
 		}
 	}
