@@ -191,8 +191,10 @@ func NewVM() (*VM, error) {
 		interp: interp, callCountEnabled: engine.MetricsEnabled(),
 		insnsEnabled: engine.MetricsEnabled(), oomEnabled: engine.MemoryLimitBytes() != 0,
 		jitConfig:     config,
-		jitStates:     make(map[*bytecode.FuncTemplate]*quickJITState),
-		jitHotCounts:  make(map[*bytecode.FuncTemplate]jitHotCount),
+		// JIT 状态表预分配：冷启动（256 函数各调用一次）时 map 写入避免
+		// 反复扩容分配（auto 相对 off 的 allocs 差 ~13/VM 主要来源）。
+		jitStates:     make(map[*bytecode.FuncTemplate]*quickJITState, 64),
+		jitHotCounts:  make(map[*bytecode.FuncTemplate]jitHotCount, 64),
 		jitTraces:     make(map[quickTraceKey]*quickTraceState),
 		jitRejections: make(map[jitRejectionKey]uint64), jitGeneration: 1,
 		jitDeopts:       make(map[jitDeoptKey]uint64),

@@ -42,13 +42,16 @@ JIT 开发的最终完成定义同时包含以下六项，缺一不可：
 
 ### 2.2 剩余关键缺口
 
+> 本表随里程碑推进持续刷新。R1（生成式差分/deopt 闭环）、R3（Quick 语义覆盖）、
+> R4（Tier 3 热点）、R5（优化 pass/预算调优，代码与测试层面）均已完成；
+> 截至 2026-08-12 的剩余缺口如下：
+
 | 类别 | 缺口 | 风险 |
 |------|------|------|
-| 正确性 | 更广语法生成式差分、异常/副作用 deopt、String/BigInt/Symbol 完整状态 | 错误结果或重复副作用 |
-| 平台 | Linux 实机 CI 尚无成功记录，缺少长期抢占和 RX 生命周期 soak | 崩溃、RWX、释放泄漏 |
-| 覆盖 | 更多调用约定、数组访问、闭包形态、属性未命中成本 | 性能只对固定基准有效 |
-| 优化 | 阈值自动调优、优化 pass、编译/代码预算校准 | 冷负载倒退或编译风暴 |
-| 产品化 | 默认 auto、跨平台门禁、回滚策略、正式性能报告 | 无法安全发布 |
+| 验收 | R0 稳定性验收（连续两轮中位数偏差 ≤5%）本机未通过，需安静环境复核 | 性能结论不可复现 |
+| 平台 | Linux 实机 CI/soak 口子保留（按 2026-08-12 决策暂不推进）；Windows release soak ≥8h 未执行 | 崩溃、RWX、释放泄漏 |
+| 性能门禁 | auto 冷启动门禁数据在本机不可靠（多轮 50x5 在 -11% ~ +31% 间波动，系环境噪声）；正式 5 次中位数报告未成档 | 冷负载倒退或门禁不达标 |
+| 产品化 | 默认 auto、Windows 门禁签署、回滚负责人、release note | 无法安全发布 |
 
 ## 3. 实施原则
 
@@ -101,7 +104,7 @@ R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，�
 
 | 里程碑 | 启动状态 | 说明 |
 |--------|----------|------|
-| R0 | 交付物齐备，验收未过 | R0-1 至 R0-5 交付物均已产出（2026-08-11）；但 §5.3 稳定性验收（连续两轮中位数偏差 ≤5%）在本机未通过，需安静/固定电源环境复核后才可宣称 R0 完成 |
+| R0 | 交付物齐备，验收未过 | R0-1 至 R0-5 交付物均已产出（2026-08-11）；§5.3 稳定性验收（连续两轮中位数偏差 ≤5%）在本机复核两次（2026-08-12）均未通过——两轮 JITColdStart 50x5 中位数偏差 +30.6% / -11.0%（符号相反），确认系本机负载/温度噪声主导而非代码回归；需安静/固定电源环境复核后才可宣称 R0 完成 |
 | R1 | 全部条目完成 | R1-1/R1-2/R1-3/R1-4/R1-5/R1-6/R1-7/R1-8 已落地（2026-08-11）：生成式差分框架（PR 1,000 例 + nightly 100,000 例无差分）、值域组合、异常差分（BigInt 除零/getter-setter/回调/OOM/取消/中断）、deopt 状态模型（含 pending exception 正式恢复映射与 verifier 拒绝）、副作用 prepare/validate/commit 两阶段提交协议、随机 guard 失效（8 类 mutation，warmup-mutation-post 调度入 artifact，第三 shape/target 降级与 RX 释放断言）、fuzz 入口（verifier/trace compiler/deopt-exception/Native lowering/artifact replay 五个 Go fuzz target，seed corpus 确定性可复现，fuzz 运行无 panic/hang/RX 泄漏）、失败产物与单命令重放 |
 | R2 | 部分完成（Windows 门禁 + Linux 口子） | Linux 后端和 CI job 已写入并保留为口子（见 §11.3 决策注记）；按 2026-08-12 决策，Linux 实机 runner 与 soak 暂不推进，Windows amd64 实机验证作为默认 auto 的 R2 前置 |
 | R3 | 全部条目完成 | R3-1/R3-2/R3-4/R3-5/R3-6/R3-7 已落地（2026-08-12）：Symbol truthiness/nullish 与严格相等建模、String 拼接与关系比较、BigInt 算术/位运算/比较（异常 guard 回退 Tier 0 一致）、ternary/switch/嵌套短路控制流（OpConstString 常量池）、编译期候选过滤与结构化拒绝缓存；R3-3 宽松相等（共享 `engine.LooseEquals` helper，下沉 `internal/engine` 包，对象按 identity 不走 ToPrimitive）在 R4 集成期间补做完成（见 §6.5）；差分发现并修复 Tier 0 `~` BigInt 语义 |
