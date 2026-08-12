@@ -40,6 +40,15 @@ func TestInlineBehavior(t *testing.T) {
 		{"recursive-fallback", `const rec = (n) => n <= 0 ? 0 : rec(n - 1); globalThis.__r = rec(3);`, "0"},
 		// 真实调用其他函数（函数值传递，不内联）
 		{"pass-as-value", `const add = (a, b) => a + b; function apply(f, x, y) { return f(x, y); } globalThis.__r = apply(add, 1, 2);`, "3"},
+		// 回归：const 绑定函数体含嵌套函数表达式时，调用点不得错误内联
+		// 内层函数体（lastFuncExprIdx 被嵌套编译覆盖，I-2 登记错误）。
+		// 修复前：a2(0) 内联内层 `(x) => x*2` 体对实参 0 → 0；应为 42。
+		{"nested-arrow-iife", `const a2 = (r) => ((x) => x * 2)(21); globalThis.__r = a2(0);`, "42"},
+		// 修复前：a6(0) 内联内层 `(x) => x` 体对实参 0 → 0；应为 1。
+		{"nested-arrow-arg", `const f = (cb) => cb(1); const a6 = (r) => f((x) => x); globalThis.__r = a6(0);`, "1"},
+		// 修复前：g(arr) 内联内层 `(x) => x.enabled` 体对实参 arr →
+		// arr.enabled（undefined）；应为过滤后数组长度 1。
+		{"nested-arrow-filter", `const g = (r) => { return r.filter((x) => x.enabled); }; globalThis.__r = g([{ enabled: true }, { enabled: false }]).length;`, "1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

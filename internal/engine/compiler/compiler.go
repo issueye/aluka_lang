@@ -2748,6 +2748,12 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 	}
 	c.funcStack = c.funcStack[:len(c.funcStack)-1]
 
+	// I-2：恢复 lastFuncExprIdx 为本函数模板索引。const 绑定的内联候选登记
+	// 在 compileExpr(init) 返回后读取该字段；若函数体含嵌套函数表达式，
+	// 嵌套编译会把字段覆盖为内层模板索引，导致外层 const 登记到错误模板
+	// （调用点错误内联内层函数体）。
+	c.lastFuncExprIdx = funcIdx
+
 	// Emit OpMakeClosure in the enclosing function.
 	c.emit(bytecode.OpMakeClosure, uint32(funcIdx))
 	return nil

@@ -31,7 +31,12 @@ import (
 //
 //	单指令 OpInc/OpDec（BigInt 保持类型）。旧缓存产物与 JIT 的 arrayPush /
 //	closureIncrement 匹配器（依赖 OpInc 形态）不兼容，必须使旧缓存失效。
-const FormatVersion = 16
+//
+// v16 → v17：I-2 内联候选登记修复——const 绑定的函数表达式在 compileExpr
+//
+//	返回后登记 lastFuncExprIdx；修复前函数体含嵌套函数表达式时登记到内层
+//	模板（调用点错误内联内层函数体）。旧缓存含错误内联产物，必须失效。
+const FormatVersion = 17
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
