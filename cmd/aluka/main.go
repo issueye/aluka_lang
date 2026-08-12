@@ -14,7 +14,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -104,10 +103,11 @@ func main() {
 
 	// NODE_OPTIONS 解析（Node 22 语义）：环境变量中的白名单 flags。
 	// 测试运行器参数注入到 `aluka test` 子命令；其余子命令忽略。
-	nodeOpts := nodeOptionsFlags()
+	nodeOpts = nodeOptionsFlags()
 
 	// O1-C1：--profile <path> 全局开关——CPU profile 写 <path>，
 	// 命令结束（或错误退出）时追加内存堆快照到 <path>.heap。
+	// 仅允许位于第一个参数（现状语义，保持兼容）。
 	if len(args) >= 2 && args[0] == "--profile" {
 		profileStop = startProfile(args[1])
 		args = args[2:]
@@ -115,125 +115,14 @@ func main() {
 		profileStop = startProfile(strings.TrimPrefix(args[0], "--profile="))
 		args = args[1:]
 	}
-	// O1 验收：--ic-stats 在运行结束后输出内联缓存命中率（任意位置）。
-	filtered := args[:0]
-	for _, a := range args {
-		if a == "--ic-stats" {
-			icStats = true
-		} else {
-			filtered = append(filtered, a)
-		}
+
+	// 全局 flags（--ic-stats/--jit*/--monitor*/--max-memory）从任意位置剥离，
+	// 分发与用法错误由 internal/cli 框架统一处理。
+	app := buildCLI()
+	rest, err := app.ParseGlobals(args)
+	if err != nil {
+		fatalErr(err.Error())
 	}
-	args = filtered
-	// JIT controls are global switches and are removed before subcommand/file
-	// arguments are handed to the loader.
-	filtered = args[:0]
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--jit-stats":
-			jitStatsOut = true
-		case a == "--jit-dump":
-			if i+1 >= len(args) {
-				fatalErr("aluka: missing value after --jit-dump")
-			}
-			i++
-			dump, err := jit.ParseDumpMode(args[i])
-			if err != nil {
-				fatalErr("aluka: " + err.Error())
-			}
-			jitDumpMode = dump
-		case strings.HasPrefix(a, "--jit-dump="):
-			dump, err := jit.ParseDumpMode(strings.TrimPrefix(a, "--jit-dump="))
-			if err != nil {
-				fatalErr("aluka: " + err.Error())
-			}
-			jitDumpMode = dump
-		case a == "--jit":
-			if i+1 >= len(args) {
-				fatalErr("aluka: missing value after --jit")
-			}
-			i++
-			mode, err := jit.ParseMode(args[i])
-			if err != nil {
-				fatalErr("aluka: " + err.Error())
-			}
-			jitMode = mode
-		case strings.HasPrefix(a, "--jit="):
-			mode, err := jit.ParseMode(strings.TrimPrefix(a, "--jit="))
-			if err != nil {
-				fatalErr("aluka: " + err.Error())
-			}
-			jitMode = mode
-		case a == "--jit-threshold":
-			if i+1 >= len(args) {
-				fatalErr("aluka: missing value after --jit-threshold")
-			}
-			i++
-			n, err := strconv.ParseUint(args[i], 10, 32)
-			if err != nil || n == 0 {
-				fatalErr("aluka: --jit-threshold must be a positive integer")
-			}
-			jitThreshold = uint32(n)
-		case strings.HasPrefix(a, "--jit-threshold="):
-			n, err := strconv.ParseUint(strings.TrimPrefix(a, "--jit-threshold="), 10, 32)
-			if err != nil || n == 0 {
-				fatalErr("aluka: --jit-threshold must be a positive integer")
-			}
-			jitThreshold = uint32(n)
-		case a == "--jit-backedge-threshold":
-			if i+1 >= len(args) {
-				fatalErr("aluka: missing value after --jit-backedge-threshold")
-			}
-			i++
-			n, err := strconv.ParseUint(args[i], 10, 32)
-			if err != nil || n == 0 {
-				fatalErr("aluka: --jit-backedge-threshold must be a positive integer")
-			}
-			jitBackedgeThreshold = uint32(n)
-		case strings.HasPrefix(a, "--jit-backedge-threshold="):
-			n, err := strconv.ParseUint(strings.TrimPrefix(a, "--jit-backedge-threshold="), 10, 32)
-			if err != nil || n == 0 {
-				fatalErr("aluka: --jit-backedge-threshold must be a positive integer")
-			}
-			jitBackedgeThreshold = uint32(n)
-		case a == "--jit-trace-budget":
-			if i+1 >= len(args) {
-				fatalErr("aluka: missing value after --jit-trace-budget")
-			}
-			i++
-			n, err := strconv.ParseUint(args[i], 10, 32)
-			if err != nil || n == 0 {
-				fatalErr("aluka: --jit-trace-budget must be a positive integer")
-			}
-			jitTraceBudget = uint32(n)
-		case strings.HasPrefix(a, "--jit-trace-budget="):
-			n, err := strconv.ParseUint(strings.TrimPrefix(a, "--jit-trace-budget="), 10, 32)
-			if err != nil || n == 0 {
-				fatalErr("aluka: --jit-trace-budget must be a positive integer")
-			}
-			jitTraceBudget = uint32(n)
-		case a == "--jit-code-cache":
-			if i+1 >= len(args) {
-				fatalErr("aluka: missing value after --jit-code-cache")
-			}
-			i++
-			n, err := parseMemorySize(args[i])
-			if err != nil || n <= 0 {
-				fatalErr("aluka: --jit-code-cache must be a positive byte size")
-			}
-			jitCodeCacheBytes = uint64(n)
-		case strings.HasPrefix(a, "--jit-code-cache="):
-			n, err := parseMemorySize(strings.TrimPrefix(a, "--jit-code-cache="))
-			if err != nil || n <= 0 {
-				fatalErr("aluka: --jit-code-cache must be a positive byte size")
-			}
-			jitCodeCacheBytes = uint64(n)
-		default:
-			filtered = append(filtered, a)
-		}
-	}
-	args = filtered
 	jitVerify = os.Getenv("ALUKA_JIT_VERIFY") == "1"
 	interpreter.SetDefaultJITConfig(jit.Config{Mode: jitMode, Threshold: jitThreshold, BackedgeThreshold: jitBackedgeThreshold, TraceBudget: jitTraceBudget, CodeCacheBytes: jitCodeCacheBytes, Verify: jitVerify, Stats: jitStatsOut, Dump: jitDumpMode})
 
@@ -242,52 +131,9 @@ func main() {
 	//   --monitor-format=text|json      输出格式
 	//   --monitor-out=<path>            输出目标（默认 stderr，避免污染程序 stdout）
 	//   --max-memory=<bytes|NMB|NGB>    进程内存上限（env ALUKA_MAX_MEMORY 兜底）
-	monitorEnabled := false
-	monitorInterval := time.Duration(0)
-	monitorFormat := monitor.FormatText
-	monitorOutPath := ""
-	maxMemory := parseMaxMemoryEnv()
-	filtered = args[:0]
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--monitor":
-			monitorEnabled = true
-		case strings.HasPrefix(a, "--monitor="):
-			monitorEnabled = true
-			if d, err := time.ParseDuration(strings.TrimPrefix(a, "--monitor=")); err == nil && d > 0 {
-				monitorInterval = d
-			}
-		case strings.HasPrefix(a, "--monitor-format="):
-			f := strings.TrimPrefix(a, "--monitor-format=")
-			if f == "json" {
-				monitorFormat = monitor.FormatJSON
-			} else {
-				monitorFormat = monitor.FormatText
-			}
-		case a == "--monitor-out":
-			if i+1 < len(args) {
-				i++
-				monitorOutPath = args[i]
-			}
-		case strings.HasPrefix(a, "--monitor-out="):
-			monitorOutPath = strings.TrimPrefix(a, "--monitor-out=")
-		case a == "--max-memory":
-			if i+1 < len(args) {
-				i++
-				if n, err := parseMemorySize(args[i]); err == nil && n > 0 {
-					maxMemory = n
-				}
-			}
-		case strings.HasPrefix(a, "--max-memory="):
-			if n, err := parseMemorySize(strings.TrimPrefix(a, "--max-memory=")); err == nil && n > 0 {
-				maxMemory = n
-			}
-		default:
-			filtered = append(filtered, a)
-		}
+	if maxMemory == 0 {
+		maxMemory = parseMaxMemoryEnv()
 	}
-	args = filtered
 	if maxMemory > 0 {
 		engine.SetMemoryLimit(maxMemory)
 	}
@@ -313,56 +159,8 @@ func main() {
 		go monitorInstance.Run(monitorStopCh)
 	}
 
-	// 无参数 → 显示帮助
-	if len(args) == 0 {
-		printHelp(os.Stdout)
-		return
-	}
-
-	// 按第一个参数分发
-	first := args[0]
-	switch {
-	case first == "-v" || first == "--version":
-		fmt.Println("aluka " + version)
-	case first == "-h" || first == "--help":
-		printHelp(os.Stdout)
-	case first == "-e" || first == "--eval":
-		if len(args) < 2 {
-			fatalErr("aluka: missing code after " + first)
-		}
-		runCode(args[1], "[eval]", useVM(args[1:]))
-	case first == "--check" || first == "check":
-		if len(args) < 2 {
-			fatalErr("aluka: missing file after --check")
-		}
-		os.Exit(checkSyntax(args[1]))
-	case first == "run":
-		if len(args) < 2 {
-			fatalErr("aluka: missing file after 'run'")
-		}
-		runFile(args[1], useVM(args[1:]), noCache(args[1:]))
-	case first == "repl":
-		startREPL(useVM(args[1:]))
-	case first == "install" || first == "add" || first == "remove" || first == "update":
-		cmdPkg(first, args[1:])
-	case first == "test" || first == "--test":
-		// NODE_OPTIONS 中的测试运行器 flags 合并进 test 子命令。
-		cmdTest(append(nodeOpts, args[1:]...))
-	case first == "build":
-		cmdBuild(args[1:])
-	case strings.HasPrefix(first, "-"):
-		fatalErr("aluka: unknown option " + first)
-	default:
-		// 简写：aluka <file>
-		runFile(first, useVM(args), noCache(args))
-	}
-
-	// 正常结束：flush profile（CPU profile 数据在 StopCPUProfile 时落盘）。
-	if profileStop != nil {
-		profileStop()
-		profileStop = nil
-	}
-	finishMonitor()
+	// 分发子命令/文件；帮助、版本与用法错误由框架统一处理。
+	osExit(app.Dispatch(rest))
 }
 
 // flushProfile 供 REPL 等长时间运行的命令在退出点调用。
@@ -613,125 +411,25 @@ func formatJITStatsSummary(s jit.Stats) string {
 // cmdTest 实现 `aluka test` 子命令：发现并运行测试文件（node:test）。
 // 无参数时按 Node 约定发现测试：cwd 下递归匹配 *.test.{js,ts,mjs,cjs}。
 func cmdTest(args []string) {
-	// 标志解析：--coverage / --experimental-test-coverage /
+	// 标志解析（internal/cli 框架）：--coverage / --experimental-test-coverage /
 	// --test-update-snapshots / --test-name-pattern / --test-skip-pattern /
 	// --test-only / --test-reporter / --test-concurrency（其余为测试文件/目录）。
-	coverage := false
-	updateSnaps := false
-	only := false
-	reporter := "spec" // spec | tap | dot | junit | lcov | <custom path>
-	reporterDest := "stdout"
-	concurrency := 1
-	watch := false
-	shardSpec := "" // index/total
-	timeoutMs := int64(0)
-	var namePattern *regexp.Regexp
-	var skipPattern *regexp.Regexp
-	var paths []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--coverage" || a == "--experimental-test-coverage":
-			coverage = true
-		case a == "--test-update-snapshots" || a == "--update-snapshots":
-			updateSnaps = true
-		case a == "--test-only":
-			only = true
-		case a == "--watch":
-			watch = true
-		case a == "--test-reporter":
-			if i+1 < len(args) {
-				i++
-				reporter = args[i]
-			}
-		case strings.HasPrefix(a, "--test-reporter="):
-			reporter = strings.TrimPrefix(a, "--test-reporter=")
-		case a == "--test-reporter-destination":
-			if i+1 < len(args) {
-				i++
-				reporterDest = args[i]
-			}
-		case strings.HasPrefix(a, "--test-reporter-destination="):
-			reporterDest = strings.TrimPrefix(a, "--test-reporter-destination=")
-		case a == "--test-shard":
-			if i+1 < len(args) {
-				i++
-				shardSpec = args[i]
-			}
-		case strings.HasPrefix(a, "--test-shard="):
-			shardSpec = strings.TrimPrefix(a, "--test-shard=")
-		case a == "--test-timeout":
-			if i+1 < len(args) {
-				i++
-				if n, err := strconv.ParseInt(args[i], 10, 64); err == nil && n >= 0 {
-					timeoutMs = n
-				}
-			}
-		case strings.HasPrefix(a, "--test-timeout="):
-			if n, err := strconv.ParseInt(strings.TrimPrefix(a, "--test-timeout="), 10, 64); err == nil && n >= 0 {
-				timeoutMs = n
-			}
-		case a == "--test-concurrency":
-			if i+1 < len(args) {
-				i++
-				if n, err := strconv.Atoi(args[i]); err == nil && n > 0 {
-					concurrency = n
-				}
-			}
-		case strings.HasPrefix(a, "--test-concurrency="):
-			if n, err := strconv.Atoi(strings.TrimPrefix(a, "--test-concurrency=")); err == nil && n > 0 {
-				concurrency = n
-			}
-		case a == "--test-name-pattern":
-			if i+1 < len(args) {
-				i++
-				re, err := regexp.Compile(args[i])
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "aluka: invalid --test-name-pattern %q: %v\n", args[i], err)
-					osExit(1)
-				}
-				namePattern = re
-			}
-		case strings.HasPrefix(a, "--test-name-pattern="):
-			re, err := regexp.Compile(strings.TrimPrefix(a, "--test-name-pattern="))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "aluka: invalid --test-name-pattern %q: %v\n", a, err)
-				osExit(1)
-			}
-			namePattern = re
-		case a == "--test-skip-pattern":
-			if i+1 < len(args) {
-				i++
-				re, err := regexp.Compile(args[i])
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "aluka: invalid --test-skip-pattern %q: %v\n", args[i], err)
-					osExit(1)
-				}
-				skipPattern = re
-			}
-		case strings.HasPrefix(a, "--test-skip-pattern="):
-			re, err := regexp.Compile(strings.TrimPrefix(a, "--test-skip-pattern="))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "aluka: invalid --test-skip-pattern %q: %v\n", a, err)
-				osExit(1)
-			}
-			skipPattern = re
-		default:
-			paths = append(paths, a)
-		}
+	paths, o, err := parseTestFlags(args)
+	if err != nil {
+		fatalErr(err.Error())
 	}
-	builtin.TestNamePattern = namePattern
-	builtin.TestSkipPattern = skipPattern
-	builtin.TestOnly = only
+	builtin.TestNamePattern = o.namePattern
+	builtin.TestSkipPattern = o.skipPattern
+	builtin.TestOnly = o.only
 	builtin.TestProgrammaticRun = false
-	builtin.TestDefaultTimeout = time.Duration(timeoutMs) * time.Millisecond
-	_ = concurrency // 接受 --test-concurrency（执行仍按注册顺序串行；见 knownDifference）
+	builtin.TestDefaultTimeout = time.Duration(o.timeoutMs) * time.Millisecond
+	_ = o.concurrency // 接受 --test-concurrency（执行仍按注册顺序串行；见 knownDifference）
 	files := discoverTestFiles(paths)
 
 	// --test-shard=index/total：按文件路径哈希分片（Node 语义：文件级分片）。
-	if shardSpec != "" {
+	if o.shardSpec != "" {
 		idx, total := 0, 0
-		if _, err := fmt.Sscanf(shardSpec, "%d/%d", &idx, &total); err == nil && total > 0 && idx >= 0 && idx < total {
+		if _, err := fmt.Sscanf(o.shardSpec, "%d/%d", &idx, &total); err == nil && total > 0 && idx >= 0 && idx < total {
 			var sharded []string
 			for _, f := range files {
 				h := fnv.New32a()
@@ -742,7 +440,7 @@ func cmdTest(args []string) {
 			}
 			files = sharded
 		} else {
-			fmt.Fprintf(os.Stderr, "aluka: invalid --test-shard %q (expected index/total)\n", shardSpec)
+			fmt.Fprintf(os.Stderr, "aluka: invalid --test-shard %q (expected index/total)\n", o.shardSpec)
 			osExit(1)
 		}
 	}
@@ -756,10 +454,10 @@ func cmdTest(args []string) {
 	// 近似实现：destination 为文件时，运行期全部 stdout（含用例输出）写入文件
 	//（node 仅报告器输出入文件，见 knownDifference）。
 	var destFile *os.File
-	if reporterDest != "stdout" {
-		f, err := os.Create(reporterDest)
+	if o.reporterDest != "stdout" {
+		f, err := os.Create(o.reporterDest)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "aluka: --test-reporter-destination %s: %v\n", reporterDest, err)
+			fmt.Fprintf(os.Stderr, "aluka: --test-reporter-destination %s: %v\n", o.reporterDest, err)
 			osExit(1)
 		}
 		defer f.Close()
@@ -769,9 +467,9 @@ func cmdTest(args []string) {
 		defer func() { os.Stdout = oldOut }()
 	}
 	// 执行测试文件集合并输出报告（--watch 重跑复用 runTestFilesOnce）。
-	passed, failed := runTestFilesOnce(files, reporter, reporterDest == "stdout", coverage, updateSnaps, only, namePattern, skipPattern)
+	passed, failed := runTestFilesOnce(files, o.reporter, o.reporterDest == "stdout", o.coverage, o.updateSnaps, o.only, o.namePattern, o.skipPattern)
 	// --watch：监听测试文件变更并重跑（基础轮询实现）。
-	if watch {
+	if o.watch {
 		fmt.Println("\n[watch] waiting for changes... (Ctrl+C to quit)")
 		for {
 			changed := waitForFileChange(files, 500*time.Millisecond)
@@ -779,7 +477,7 @@ func cmdTest(args []string) {
 				continue
 			}
 			fmt.Println("\n[watch] change detected, re-running...")
-			passed, failed = runTestFilesOnce(files, reporter, reporterDest == "stdout", coverage, updateSnaps, only, namePattern, skipPattern)
+			passed, failed = runTestFilesOnce(files, o.reporter, o.reporterDest == "stdout", o.coverage, o.updateSnaps, o.only, o.namePattern, o.skipPattern)
 			_ = passed
 			_ = failed
 		}
@@ -1648,6 +1346,3 @@ func startProfile(path string) func() {
 		}
 	}
 }
-
-// 触发未使用 import 错误检测，防止 errors 在未来扩展时遗漏。
-var _ = errors.New

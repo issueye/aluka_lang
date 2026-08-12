@@ -18,6 +18,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -30,6 +31,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/bundler/graph"
 	"github.com/aluka-lang/aluka/internal/bundler/minify"
 	"github.com/aluka-lang/aluka/internal/bundler/shake"
+	"github.com/aluka-lang/aluka/internal/cli"
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/engine/parser"
@@ -59,6 +61,31 @@ type buildResult struct {
 	budgetExceeded bool
 }
 
+// buildFlags 声明 `aluka build` 的 flag 集合（internal/cli 框架）。
+// 错误消息与现状一致：缺值/非法值/未知选项均带 "aluka build: " 前缀。
+func buildFlags(opts *buildOptions, optimize *bool) *cli.FlagSet {
+	fs := cli.NewFlagSet("aluka build: ")
+	fs.StrictUnknown = true
+	fs.Bool("compile", "Compile a single-file executable", &opts.compileOnly)
+	fs.String("outfile", "Output executable path", &opts.outfile).MissingMsg("--outfile requires a path")
+	fs.String("outdir", "Output directory (required for multiple entries)", &opts.outdir).MissingMsg("--outdir requires a path")
+	fs.String("base", "Base binary path (cross-platform artifact)", &opts.basePath).MissingMsg("--base requires a path")
+	fs.Var(cli.ActionValue{Fn: func() error { opts.treeShake = true; opts.noTreeShake = false; return nil }}, "tree-shake", "Enable module-level tree-shaking")
+	fs.Var(cli.ActionValue{Fn: func() error { opts.treeShake = false; opts.noTreeShake = true; return nil }}, "no-tree-shake", "Disable tree-shaking")
+	fs.Bool("minify", "Enable dead-code elimination and minification", &opts.minify)
+	fs.Var(cli.ActionValue{Fn: func() error { opts.bytecodeOpt = true; opts.noBytecodeOpt = false; return nil }}, "bytecode-opt", "Enable VM bytecode optimization")
+	fs.Var(cli.ActionValue{Fn: func() error { opts.bytecodeOpt = false; opts.noBytecodeOpt = true; return nil }}, "no-bytecode-opt", "Disable bytecode optimization")
+	fs.Bool("optimize", "Enable tree-shake + minify + bytecode-opt", optimize)
+	fs.Var(cli.FuncValue{Fn: func(s string) error { opts.analyzeFormat = s; return nil }}, "analyze", "Report payload hotspots (text|json)").OptionalValue().Implicit("text")
+	fs.String("analyze-out", "Write analysis report to a file", &opts.analyzeOut).MissingMsg("--analyze-out requires a path")
+	fs.Bool("analyze-only", "Analyze payload without writing an executable", &opts.analyzeOnly)
+	fs.Var(cli.FuncValue{Fn: func(s string) error { opts.analyzeTop = parseAnalyzeTop(s); return nil }}, "analyze-top", "Top N hotspots in the analysis report").MissingMsg("--analyze-top requires a number")
+	fs.Var(cli.FuncValue{Fn: func(s string) error { opts.maxPayload = parsePayloadBudget(s); return nil }}, "max-payload", "Fail with exit code 2 when payload exceeds the budget").MissingMsg("--max-payload requires a size")
+	fs.Var(cli.ActionValue{Fn: func() error { return errors.New("--sourcemap not implemented (scope: --compile only)") }}, "sourcemap", "Source map generation (not implemented)")
+	fs.Var(cli.ActionValue{Fn: func() error { return errors.New("--target not implemented (scope: --compile only)") }}, "target", "Target platform (not implemented)")
+	return fs
+}
+
 // stripBOM 剥离开头的 UTF-8 BOM。
 func stripBOM(src []byte) []byte {
 	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
@@ -72,90 +99,10 @@ func stripBOM(src []byte) []byte {
 func cmdBuild(args []string) {
 	opts := buildOptions{treeShake: true, analyzeTop: 10}
 	optimize := false
-	var entries []string
-
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--compile":
-			opts.compileOnly = true
-		case arg == "--outfile":
-			if i+1 >= len(args) {
-				fatalErr("aluka build: --outfile requires a path")
-			}
-			i++
-			opts.outfile = args[i]
-		case strings.HasPrefix(arg, "--outfile="):
-			opts.outfile = strings.TrimPrefix(arg, "--outfile=")
-		case arg == "--outdir":
-			if i+1 >= len(args) {
-				fatalErr("aluka build: --outdir requires a path")
-			}
-			i++
-			opts.outdir = args[i]
-		case strings.HasPrefix(arg, "--outdir="):
-			opts.outdir = strings.TrimPrefix(arg, "--outdir=")
-		case arg == "--base":
-			if i+1 >= len(args) {
-				fatalErr("aluka build: --base requires a path")
-			}
-			i++
-			opts.basePath = args[i]
-		case strings.HasPrefix(arg, "--base="):
-			opts.basePath = strings.TrimPrefix(arg, "--base=")
-		case arg == "--tree-shake":
-			opts.treeShake = true
-			opts.noTreeShake = false
-		case arg == "--no-tree-shake":
-			opts.treeShake = false
-			opts.noTreeShake = true
-		case arg == "--minify":
-			opts.minify = true
-		case arg == "--bytecode-opt":
-			opts.bytecodeOpt = true
-			opts.noBytecodeOpt = false
-		case arg == "--no-bytecode-opt":
-			opts.bytecodeOpt = false
-			opts.noBytecodeOpt = true
-		case arg == "--optimize":
-			optimize = true
-		case arg == "--analyze":
-			opts.analyzeFormat = "text"
-		case strings.HasPrefix(arg, "--analyze="):
-			opts.analyzeFormat = strings.TrimPrefix(arg, "--analyze=")
-		case arg == "--analyze-out":
-			if i+1 >= len(args) {
-				fatalErr("aluka build: --analyze-out requires a path")
-			}
-			i++
-			opts.analyzeOut = args[i]
-		case strings.HasPrefix(arg, "--analyze-out="):
-			opts.analyzeOut = strings.TrimPrefix(arg, "--analyze-out=")
-		case arg == "--analyze-only":
-			opts.analyzeOnly = true
-		case arg == "--analyze-top":
-			if i+1 >= len(args) {
-				fatalErr("aluka build: --analyze-top requires a number")
-			}
-			i++
-			opts.analyzeTop = parseAnalyzeTop(args[i])
-		case strings.HasPrefix(arg, "--analyze-top="):
-			opts.analyzeTop = parseAnalyzeTop(strings.TrimPrefix(arg, "--analyze-top="))
-		case arg == "--max-payload":
-			if i+1 >= len(args) {
-				fatalErr("aluka build: --max-payload requires a size")
-			}
-			i++
-			opts.maxPayload = parsePayloadBudget(args[i])
-		case strings.HasPrefix(arg, "--max-payload="):
-			opts.maxPayload = parsePayloadBudget(strings.TrimPrefix(arg, "--max-payload="))
-		case arg == "--sourcemap" || arg == "--target":
-			fatalErr("aluka build: " + arg + " not implemented (scope: --compile only)")
-		case strings.HasPrefix(arg, "-"):
-			fatalErr("aluka build: unknown option " + arg)
-		default:
-			entries = append(entries, arg)
-		}
+	// flag 解析（internal/cli 框架）：未知 flag 报错，风格与现状一致。
+	entries, err := buildFlags(&opts, &optimize).Parse(args)
+	if err != nil {
+		fatalErr(err.Error())
 	}
 
 	if optimize {
