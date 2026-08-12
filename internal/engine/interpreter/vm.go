@@ -927,10 +927,18 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpReturn:
 				retVal := v.pop()
 				// return 穿出 try/finally 区域时必须先运行 finally。
+				// 快速路径：无活跃 try handler（绝大多数函数）直接返回，
+				// 避免每次 return 都进入 exitTry 展开 walk。
+				if len(v.cur().tryStack) == 0 {
+					return v.doReturn(retVal), nil
+				}
 				if v.exitTry(&vmCompletion{kind: compReturn, value: retVal}) != exitContinue {
 					return v.doReturn(retVal), nil
 				}
 			case bytecode.OpReturnUndef:
+				if len(v.cur().tryStack) == 0 {
+					return v.doReturn(engine.Undefined()), nil
+				}
 				if v.exitTry(&vmCompletion{kind: compReturn, value: engine.Undefined()}) != exitContinue {
 					return v.doReturn(engine.Undefined()), nil
 				}
