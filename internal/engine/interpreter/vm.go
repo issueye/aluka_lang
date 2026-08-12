@@ -185,6 +185,9 @@ func NewVM() (*VM, error) {
 	}
 	config := defaultJITConfig()
 	return &VM{
+		// 预分配值栈：fib(30) 峰值约 60 槽、常见程序几十槽，避免启动时
+		// 反复扩容（分配 + 锁 + duffcopy，pprof 合计 ~10%）。
+		stack: make([]engine.Value, 0, 64),
 		interp: interp, callCountEnabled: engine.MetricsEnabled(),
 		insnsEnabled: engine.MetricsEnabled(), oomEnabled: engine.MemoryLimitBytes() != 0,
 		jitConfig:     config,
@@ -572,9 +575,15 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpAdd:
 				r := v.pop()
 				l := v.pop()
-				// BigInt 与非 BigInt 的加法必须显式转换；保持运行时
-				// 对混合 String/BigInt 的 TypeError 约定，避免静默拼接。
-				if isBigInt(l) || isBigInt(r) {
+				// 数字快路径：双 Number 直接 Float 运算（fib 等数值密集
+				// 代码跳过 isBigInt/jsToNumber 分派）。
+				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
+					lf, _ := l.Float()
+					rf, _ := r.Float()
+					v.push(engine.Number(lf + rf))
+				} else if isBigInt(l) || isBigInt(r) {
+					// BigInt 与非 BigInt 的加法必须显式转换；保持运行时
+					// 对混合 String/BigInt 的 TypeError 约定，避免静默拼接。
 					result, err := bigintArith2(l, r, '+')
 					if err != nil {
 						return v.handleThrow(err)
@@ -588,7 +597,11 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpSub:
 				r := v.pop()
 				l := v.pop()
-				if isBigInt(l) || isBigInt(r) {
+				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
+					lf, _ := l.Float()
+					rf, _ := r.Float()
+					v.push(engine.Number(lf - rf))
+				} else if isBigInt(l) || isBigInt(r) {
 					result, err := bigintArith2(l, r, '-')
 					if err != nil {
 						return v.handleThrow(err)
@@ -600,7 +613,11 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpMul:
 				r := v.pop()
 				l := v.pop()
-				if isBigInt(l) || isBigInt(r) {
+				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
+					lf, _ := l.Float()
+					rf, _ := r.Float()
+					v.push(engine.Number(lf * rf))
+				} else if isBigInt(l) || isBigInt(r) {
 					result, err := bigintArith2(l, r, '*')
 					if err != nil {
 						return v.handleThrow(err)
@@ -612,7 +629,11 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpDiv:
 				r := v.pop()
 				l := v.pop()
-				if isBigInt(l) || isBigInt(r) {
+				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
+					lf, _ := l.Float()
+					rf, _ := r.Float()
+					v.push(engine.Number(lf / rf))
+				} else if isBigInt(l) || isBigInt(r) {
 					result, err := bigintArith2(l, r, '/')
 					if err != nil {
 						return v.handleThrow(err)
@@ -624,7 +645,11 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpMod:
 				r := v.pop()
 				l := v.pop()
-				if isBigInt(l) || isBigInt(r) {
+				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
+					lf, _ := l.Float()
+					rf, _ := r.Float()
+					v.push(engine.Number(math.Mod(lf, rf)))
+				} else if isBigInt(l) || isBigInt(r) {
 					result, err := bigintArith2(l, r, '%')
 					if err != nil {
 						return v.handleThrow(err)
@@ -642,7 +667,11 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpPow:
 				r := v.pop()
 				l := v.pop()
-				if isBigInt(l) || isBigInt(r) {
+				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
+					lf, _ := l.Float()
+					rf, _ := r.Float()
+					v.push(engine.Number(math.Pow(lf, rf)))
+				} else if isBigInt(l) || isBigInt(r) {
 					result, err := bigintPow(l, r)
 					if err != nil {
 						return v.handleThrow(err)
@@ -762,7 +791,12 @@ func (v *VM) run() (engine.Value, error) {
 				val, _ := v.interp.globalObj.Get(name)
 				v.push(engine.Str(val.Type().String()))
 			case bytecode.OpUnaryPlus:
-				v.push(engine.Number(jsToNumber(v.pop())))
+				val := v.pop()
+				if val.Type() == engine.TypeNumber {
+					v.push(val)
+				} else {
+					v.push(engine.Number(jsToNumber(val)))
+				}
 
 			// --- Comparisons ---
 			case bytecode.OpEq:
@@ -784,19 +818,43 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpLt:
 				r := v.pop()
 				l := v.pop()
-				v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c < 0 })))
+				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
+					lf, _ := l.Float()
+					rf, _ := r.Float()
+					v.push(engine.Boolean(!math.IsNaN(lf) && !math.IsNaN(rf) && lf < rf))
+				} else {
+					v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c < 0 })))
+				}
 			case bytecode.OpLe:
 				r := v.pop()
 				l := v.pop()
-				v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c <= 0 })))
+				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
+					lf, _ := l.Float()
+					rf, _ := r.Float()
+					v.push(engine.Boolean(!math.IsNaN(lf) && !math.IsNaN(rf) && lf <= rf))
+				} else {
+					v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c <= 0 })))
+				}
 			case bytecode.OpGt:
 				r := v.pop()
 				l := v.pop()
-				v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c > 0 })))
+				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
+					lf, _ := l.Float()
+					rf, _ := r.Float()
+					v.push(engine.Boolean(!math.IsNaN(lf) && !math.IsNaN(rf) && lf > rf))
+				} else {
+					v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c > 0 })))
+				}
 			case bytecode.OpGe:
 				r := v.pop()
 				l := v.pop()
-				v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c >= 0 })))
+				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
+					lf, _ := l.Float()
+					rf, _ := r.Float()
+					v.push(engine.Boolean(!math.IsNaN(lf) && !math.IsNaN(rf) && lf >= rf))
+				} else {
+					v.push(engine.Boolean(compareBool(l, r, func(c int) bool { return c >= 0 })))
+				}
 
 			// --- Control flow ---
 			case bytecode.OpJmp:
