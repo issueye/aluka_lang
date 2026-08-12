@@ -97,13 +97,13 @@ func TestSerializeCodeAndTryTable(t *testing.T) {
 	mod := &Module{
 		Functions: []*FuncTemplate{
 			{
-				Name:       "g",
-				NumParams:  2,
-				NumLocals:  5,
-				IsVarArgs:  true,
+				Name:        "g",
+				NumParams:   2,
+				NumLocals:   5,
+				IsVarArgs:   true,
 				IsGenerator: true,
-				IsAsync:    false,
-				Code:       []byte{1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0},
+				IsAsync:     false,
+				Code:        []byte{1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0},
 				Upvalues: []UpvalueCapture{
 					{IsLocal: true, Index: 0},
 					{IsLocal: false, Index: 1},
@@ -206,7 +206,7 @@ func TestSerializeNativeCallback(t *testing.T) {
 					ParamCount: 1,
 					Instrs: []CBInstr{
 						{Op: CBPushProp0, Operand: 0}, // x.v
-						{Op: CBPushConst, Operand: 1},  // 3
+						{Op: CBPushConst, Operand: 1}, // 3
 						{Op: CBBinOp, Operand: uint32(OpMod)},
 						{Op: CBPushConst, Operand: 2}, // 0
 						{Op: CBCmp, Operand: uint32(OpStrictEq)},

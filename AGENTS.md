@@ -53,6 +53,7 @@ make release
 ./bin/aluka --vm  app.js    # 字节码 VM（默认）
 ./bin/aluka --ast app.js    # AST 解释器
 ./bin/aluka --no-cache app.js   # 禁用磁盘字节码缓存
+./bin/aluka --no-bytecode-opt app.js   # 禁用编译管线默认的字节码优化
 
 # JIT 相关（amd64 平台，默认 --jit=auto；--jit=off 关闭）
 ./bin/aluka --jit=auto --jit-threshold=1 --jit-backedge-threshold=2 app.js
@@ -164,6 +165,7 @@ docs/adr/                  架构决策记录（ADR）
 
 - **双引擎**：AST-walking 解释器（`--ast`）与字节码 VM（`--vm`，**默认**）。两者共享 lexer/parser/ast/compiler/bytecode。抽象层在 `internal/engine/engine.go`（`Engine/Context/Value` 接口）。
 - **字节码磁盘缓存**：VM 默认把编译产物缓存到 `.aluka-cache/`。**改动字节码布局/常量编码/编译器输出时，必须同步 bump `internal/engine/bytecode/serialize.go` 的 `FormatVersion`**，否则旧缓存会被误读或报 version mismatch。
+- **字节码元数据与优化**：指令集规范见 `docs/bytecode-spec.md`——`internal/engine/bytecode/meta.go` 是操作数语义/栈效果的**单一事实来源**（String/HasOperand/优化器分类均由它派生，**新增指令必须登记元数据**）。`OptimizeModule`（optimize.go：常量折叠/不可达删除/融合/跳转穿透，多轮迭代）是 `vm.Compile/CompileAST` 编译管线默认步骤（`--no-bytecode-opt` 关闭；build 按 `--bytecode-opt` 显式对齐）。**改动优化器/指令形态后必须跑 `internal/engine/interpreter/optimize_equivalence_test.go` 对拍与 jitdiff 三 tier 零失配**。
 - **隐藏类 + 内联缓存（IC）**：`internal/engine/shape.go`。`--ic-stats` 可看命中率。
 - **JIT 分层**：`internal/engine/jit/`。**默认 auto**（Windows amd64 实机门禁通过；`--jit=off` 一键回滚，Linux 验证经 CI 口子后续补齐）。分两层：Quick（类型化 IR，跨平台，可执行 Go 代码）与 Native（amd64 原生机器码，W^X/崩溃隔离/safepoint/OSR，无 Go 指针 Frame）；guard 失败与异常经 `DeoptExit`（含 pending exception）恢复完整 VM 状态回 Tier 0；**不支持平台自动 fallback**（结果与 JIT Off 一致）。改动 JIT 需跑差分/fuzz（见「测试约定」）。平台分文件用构建标签：`*_amd64.go` / `*_linux.go` / `*_windows.go` / `*_unsupported.go`。
 - **GC**：自研标记-清除（`internal/engine/gc.go`），与 JIT 协同（safepoint、异步抢占）。

@@ -49,6 +49,11 @@ type VM struct {
 	insnsEnabled bool
 	oomEnabled   bool
 
+	// optimizeBytecode 控制 vm.Compile/CompileAST 是否在编译后运行字节码
+	// 优化器（默认 true）。run/缓存路径受益；build 路径按 --bytecode-opt
+	// 显式设置；REPL（EvalProgram）不优化。
+	optimizeBytecode bool
+
 	jitConfig      jit.Config
 	jitStates      map[*bytecode.FuncTemplate]*quickJITState
 	jitHotCounts   map[*bytecode.FuncTemplate]jitHotCount
@@ -187,10 +192,11 @@ func NewVM() (*VM, error) {
 	return &VM{
 		// 预分配值栈：fib(30) 峰值约 60 槽、常见程序几十槽，避免启动时
 		// 反复扩容（分配 + 锁 + duffcopy，pprof 合计 ~10%）。
-		stack: make([]engine.Value, 0, 64),
+		stack:  make([]engine.Value, 0, 64),
 		interp: interp, callCountEnabled: engine.MetricsEnabled(),
 		insnsEnabled: engine.MetricsEnabled(), oomEnabled: engine.MemoryLimitBytes() != 0,
-		jitConfig:     config,
+		optimizeBytecode: true,
+		jitConfig:        config,
 		// JIT 状态表预分配：冷启动（256 函数各调用一次）时 map 写入避免
 		// 反复扩容分配（auto 相对 off 的 allocs 差 ~13/VM 主要来源）。
 		jitStates:     make(map[*bytecode.FuncTemplate]*quickJITState, 64),
@@ -292,6 +298,9 @@ func (v *VM) Compile(src, filename string) (*bytecode.Module, error) {
 	if err != nil {
 		return nil, fmt.Errorf("aluka: compile error: %w", err)
 	}
+	if err := v.optimizeModule(mod); err != nil {
+		return nil, err
+	}
 	return mod, nil
 }
 
@@ -302,7 +311,28 @@ func (v *VM) CompileAST(prog *ast.Program, filename string) (*bytecode.Module, e
 	if err != nil {
 		return nil, fmt.Errorf("aluka: compile error: %w", err)
 	}
+	if err := v.optimizeModule(mod); err != nil {
+		return nil, err
+	}
 	return mod, nil
+}
+
+// optimizeModule 按 VM 开关对编译产物运行字节码优化器。
+// 优化出错视为编译错误（validateFunc 先行校验，出错概率极低且表示编译器 bug）。
+func (v *VM) optimizeModule(mod *bytecode.Module) error {
+	if !v.optimizeBytecode {
+		return nil
+	}
+	if _, err := bytecode.OptimizeModule(mod); err != nil {
+		return fmt.Errorf("aluka: bytecode optimize error: %w", err)
+	}
+	return nil
+}
+
+// SetOptimizeBytecode 控制后续 Compile/CompileAST 是否执行字节码优化
+// （默认开启）。build 路径用它对齐 --bytecode-opt/--no-bytecode-opt 语义。
+func (v *VM) SetOptimizeBytecode(enabled bool) {
+	v.optimizeBytecode = enabled
 }
 
 // RunModule 执行已编译的字节码 Module（公开版，供缓存恢复后执行）。

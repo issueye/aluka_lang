@@ -45,6 +45,16 @@ var profileStop func()
 // icStats 启用 IC 命中统计输出（--ic-stats，O1 验收）。
 var icStats bool
 
+// 引擎/缓存/优化选择 flags：注册为全局剥离型 flag，任意位置（文件前后均可）
+// 生效，对齐 Bun/Node 的「flags before script」惯例。VM 为默认引擎，--vm 仅作
+// 前置识别（绑变量但不读取，选择逻辑由 astFlag 决定）。
+var (
+	astFlag           bool // --ast：改用 AST 解释器（默认 VM）。
+	vmFlag            bool // --vm：显式选择 VM（默认，注册以便前置识别/不报错）。
+	noCacheFlag       bool // --no-cache：禁用字节码磁盘缓存。
+	noBytecodeOptFlag bool // --no-bytecode-opt：禁用编译管线默认字节码优化。
+)
+
 var (
 	jitMode                     = jit.Auto
 	jitThreshold         uint32 = 1000
@@ -171,27 +181,6 @@ func flushProfile() {
 	}
 }
 
-// noCache scans args for the --no-cache flag.
-func noCache(args []string) bool {
-	for _, a := range args {
-		if a == "--no-cache" {
-			return true
-		}
-	}
-	return false
-}
-
-// useVM scans args for --ast/--vm flags. Default is VM (Phase 1B).
-// Returns true to use the VM, false to use the AST interpreter.
-func useVM(args []string) bool {
-	for _, a := range args {
-		if a == "--ast" {
-			return false
-		}
-	}
-	return true
-}
-
 // nodeOptionsFlags 解析 NODE_OPTIONS 环境变量，返回 aluka 支持的 flags 列表。
 // Node 22 语义：空格分隔的 token；含空格的 token 忽略；仅白名单 flags 生效
 // （测试运行器参数与 --no-warnings 等）。带值的 flag 支持 `--flag=value`
@@ -284,8 +273,8 @@ func runCode(code string, filename string, vm bool) {
 }
 
 // runFile 读取并执行一个文件。
-func runFile(path string, vm, disableCache bool) {
-	if err := runModule(path, vm, disableCache); err != nil {
+func runFile(path string, vm, disableCache, optimizeBytecode bool) {
+	if err := runModule(path, vm, disableCache, optimizeBytecode); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		osExit(1)
 	}
@@ -293,7 +282,7 @@ func runFile(path string, vm, disableCache bool) {
 
 // runModule creates a context, registers globals, and runs the file through
 // the module loader (supports ESM, CJS, and JSON).
-func runModule(path string, vm, disableCache bool) error {
+func runModule(path string, vm, disableCache, optimizeBytecode bool) error {
 	var eng engine.Engine
 	if vm {
 		eng = interpreter.NewVMEngine()
@@ -307,6 +296,11 @@ func runModule(path string, vm, disableCache bool) error {
 		return err
 	}
 	defer ctx.Close()
+
+	// --no-bytecode-opt 关闭编译管线默认的字节码优化（VM 模式；AST 解释器无字节码）。
+	if vmv, ok := ctx.(*interpreter.VM); ok {
+		vmv.SetOptimizeBytecode(optimizeBytecode)
+	}
 
 	// 注册全局对象（console/process/timers/Buffer/Web API 等）。
 	if err := registerRuntimeGlobals(ctx); err != nil {
@@ -1236,6 +1230,7 @@ OPTIONS:
     --vm                 Use bytecode VM (default, Phase 1B)
     --ast                Use AST-walking interpreter (Phase 1A)
     --no-cache           Disable bytecode disk cache
+    --no-bytecode-opt    Disable bytecode optimization (default: enabled)
     --profile <path>     Write CPU profile (heap dump to <path>.heap)
     --ic-stats           Print inline-cache hit rates on exit
     --jit=off|quick|auto Enable JIT tier (default auto; --jit=off to disable)

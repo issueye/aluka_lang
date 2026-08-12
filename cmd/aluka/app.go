@@ -211,6 +211,12 @@ func buildCLI() *cli.App {
 	g.Var(monitorFormatValue{v: &monitorFormat}, "monitor-format", "Monitor output format (text|json)").OptionalValue()
 	g.String("monitor-out", "Write monitor output to file (default stderr)", &monitorOutPath).LenientMissing()
 	g.Var(maxMemoryValue{v: &maxMemory}, "max-memory", "Process memory limit (bytes or KB/MB/GB suffix)").LenientMissing()
+	// 引擎/缓存/优化选择：注册为全局 flag，文件前后任意位置均可识别
+	// （对齐 Bun/Node「flags before script」惯例）。VM 为默认，--vm 仅作识别。
+	g.Bool("vm", "Use bytecode VM (default)", &vmFlag)
+	g.Bool("ast", "Use AST-walking interpreter", &astFlag)
+	g.Bool("no-cache", "Disable bytecode disk cache", &noCacheFlag)
+	g.Bool("no-bytecode-opt", "Disable bytecode optimization (default: enabled)", &noBytecodeOptFlag)
 
 	app.AddCommand(&cli.Command{
 		Name:    "-e",
@@ -286,7 +292,7 @@ func runEval(pos []string, invoked string) error {
 	if len(pos) == 0 {
 		return fmt.Errorf("aluka: missing code after %s", invoked)
 	}
-	runCode(pos[0], "[eval]", useVM(pos[1:]))
+	runCode(pos[0], "[eval]", !astFlag)
 	return nil
 }
 
@@ -306,13 +312,13 @@ func runFileCmd(pos []string, _ string) error {
 	if len(pos) == 0 {
 		return fmt.Errorf("aluka: missing file after 'run'")
 	}
-	runFile(pos[0], useVM(pos[1:]), noCache(pos[1:]))
+	runFile(pos[0], !astFlag, noCacheFlag, !noBytecodeOptFlag)
 	return nil
 }
 
 // runREPL 实现 `aluka repl`。
 func runREPL(pos []string, _ string) error {
-	startREPL(useVM(pos))
+	startREPL(!astFlag)
 	return nil
 }
 
@@ -336,6 +342,6 @@ func runBuild(pos []string, _ string) error {
 
 // runFileShortcut 实现 aluka <file>（run 的简写）。
 func runFileShortcut(pos []string, _ string) error {
-	runFile(pos[0], useVM(pos), noCache(pos))
+	runFile(pos[0], !astFlag, noCacheFlag, !noBytecodeOptFlag)
 	return nil
 }

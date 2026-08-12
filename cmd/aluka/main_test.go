@@ -99,6 +99,10 @@ func resetGlobalFlags() {
 	monitorOutPath = ""
 	maxMemory = 0
 	nodeOpts = nil
+	astFlag = false
+	vmFlag = false
+	noCacheFlag = false
+	noBytecodeOptFlag = false
 }
 
 // TestGlobalFlagParsing 验证全局 flags：任意位置剥离 + --flag=value /
@@ -226,24 +230,32 @@ func TestGlobalFlagsLenient(t *testing.T) {
 	}
 }
 
-// TestAstNoCacheNotGlobal 验证 --ast/--vm/--no-cache 不是剥离型全局 flag：
-// 现状语义为“必须位于子命令/文件之后”，由 useVM/noCache 在位置参数上扫描。
-func TestAstNoCacheNotGlobal(t *testing.T) {
+// TestEngineFlagsAreGlobal 验证 --ast/--vm/--no-cache/--no-bytecode-opt 是
+// 剥离型全局 flag：ParseGlobals 从任意位置剥离并写入绑定变量，剩余参数不含它们。
+// 这样「flags before script」（如 `aluka --no-cache app.js`）与文件后置形式均可用，
+// 对齐 Bun/Node 惯例。
+func TestEngineFlagsAreGlobal(t *testing.T) {
 	resetGlobalFlags()
 	app := buildCLI()
-	pos, err := app.ParseGlobals([]string{"run", "app.js", "--no-cache", "--ast"})
+	pos, err := app.ParseGlobals([]string{"--no-cache", "run", "app.js", "--ast", "--no-bytecode-opt", "--vm"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"run", "app.js", "--no-cache", "--ast"}
-	if len(pos) != len(want) {
+	want := []string{"run", "app.js"}
+	if len(pos) != len(want) || pos[0] != want[0] || pos[1] != want[1] {
 		t.Fatalf("positionals = %v; want %v", pos, want)
 	}
-	if useVM(pos[1:]) {
-		t.Error("useVM should return false with --ast present")
+	if !astFlag {
+		t.Error("astFlag should be true with --ast present")
 	}
-	if !noCache(pos[1:]) {
-		t.Error("noCache should return true with --no-cache present")
+	if !vmFlag {
+		t.Error("vmFlag should be true with --vm present")
+	}
+	if !noCacheFlag {
+		t.Error("noCacheFlag should be true with --no-cache present")
+	}
+	if !noBytecodeOptFlag {
+		t.Error("noBytecodeOptFlag should be true with --no-bytecode-opt present")
 	}
 }
 

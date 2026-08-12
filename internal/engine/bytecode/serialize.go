@@ -48,7 +48,12 @@ import (
 //	named() {...}` 的函数体内 `named` 现在绑定到函数自身（此前未绑定，
 //	递归 NFE 报 "undefined is not a function"）。FuncTemplate 新增
 //	NFESlot 字段。旧缓存含未绑定产物，必须失效。
-const FormatVersion = 19
+//
+// v19 → v20：字节码优化器（OptimizeModule）成为 vm.Compile/CompileAST
+//
+//	编译管线默认步骤（常量折叠/不可达删除/融合扩展，--no-bytecode-opt
+//	可关闭）。旧缓存为未优化产物，必须失效。
+const FormatVersion = 20
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
@@ -246,13 +251,13 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 		return nil, err
 	}
 	fn := &FuncTemplate{
-		Name:              name,
-		NumParams:         int(binary.LittleEndian.Uint32(scalars[0:4])),
-		NumLocals:         int(binary.LittleEndian.Uint32(scalars[4:8])),
-		IsVarArgs:         u32ToBool(binary.LittleEndian.Uint32(scalars[8:12])),
-		IsGenerator:       u32ToBool(binary.LittleEndian.Uint32(scalars[12:16])),
-		IsAsync:           u32ToBool(binary.LittleEndian.Uint32(scalars[16:20])),
-		IsArrow:           u32ToBool(binary.LittleEndian.Uint32(scalars[20:24])),
+		Name:        name,
+		NumParams:   int(binary.LittleEndian.Uint32(scalars[0:4])),
+		NumLocals:   int(binary.LittleEndian.Uint32(scalars[4:8])),
+		IsVarArgs:   u32ToBool(binary.LittleEndian.Uint32(scalars[8:12])),
+		IsGenerator: u32ToBool(binary.LittleEndian.Uint32(scalars[12:16])),
+		IsAsync:     u32ToBool(binary.LittleEndian.Uint32(scalars[16:20])),
+		IsArrow:     u32ToBool(binary.LittleEndian.Uint32(scalars[20:24])),
 		// ArgumentsSlot 是带符号的哨兵槽：-1 表示箭头函数（无 own arguments）。
 		// 序列化时经 uint32 存储，反序列化必须按 int32 解释，否则 -1 变成
 		// 4294967295（正数），绕过 callClosure 的 `>= 0` 检查导致栈越界 panic。
@@ -348,14 +353,14 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 				return nil, err
 			}
 			fn.TryTable[i] = TryEntry{
-				StartPC:       int(binary.LittleEndian.Uint32(buf[0:4])),
-				CatchPC:       int(binary.LittleEndian.Uint32(buf[4:8])),
-				FinallyPC:     int(binary.LittleEndian.Uint32(buf[8:12])),
-				HasCatch:      u32ToBool(binary.LittleEndian.Uint32(buf[12:16])),
-				HasFinally:    u32ToBool(binary.LittleEndian.Uint32(buf[16:20])),
-				EndPC:         int(binary.LittleEndian.Uint32(buf[20:24])),
-				CatchEndPC:    int(binary.LittleEndian.Uint32(buf[24:28])),
-				FinallyEndPC:  int(binary.LittleEndian.Uint32(buf[28:32])),
+				StartPC:      int(binary.LittleEndian.Uint32(buf[0:4])),
+				CatchPC:      int(binary.LittleEndian.Uint32(buf[4:8])),
+				FinallyPC:    int(binary.LittleEndian.Uint32(buf[8:12])),
+				HasCatch:     u32ToBool(binary.LittleEndian.Uint32(buf[12:16])),
+				HasFinally:   u32ToBool(binary.LittleEndian.Uint32(buf[16:20])),
+				EndPC:        int(binary.LittleEndian.Uint32(buf[20:24])),
+				CatchEndPC:   int(binary.LittleEndian.Uint32(buf[24:28])),
+				FinallyEndPC: int(binary.LittleEndian.Uint32(buf[28:32])),
 			}
 		}
 	}

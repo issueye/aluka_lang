@@ -90,9 +90,9 @@ const (
 	CBPushConst                  // operand = 常量池索引
 	CBPushProp0                  // 压入 param0.属性（operand = 属性名常量索引）
 	CBPushProp1                  // 压入 param1.属性
-	CBNeg                         // 栈顶取负
-	CBBinOp                       // operand = bytecode.Opcode（算术/位）
-	CBCmp                         // operand = bytecode.Opcode（比较）
+	CBNeg                        // 栈顶取负
+	CBBinOp                      // operand = bytecode.Opcode（算术/位）
+	CBCmp                        // operand = bytecode.Opcode（比较）
 )
 
 // cbInstr 是一条简单回调微指令。
@@ -120,9 +120,9 @@ type TryEntry struct {
 	// 区域边界（return/break/continue 穿过 try 时判定目标是否仍在区域内，
 	// 决定是否必须先运行 finally）。EndPC/CatchEndPC/FinallyEndPC 分别是
 	// try 块、catch 块、finally 块末尾的 OpTryExit/OpTryExitFinally 指令 PC。
-	EndPC         int
-	CatchEndPC    int
-	FinallyEndPC  int
+	EndPC        int
+	CatchEndPC   int
+	FinallyEndPC int
 }
 
 // UpvalueCapture describes one upvalue slot in a closure.

@@ -142,6 +142,10 @@ func cmdBuild(args []string) {
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
 	}
+	// 编译管线默认开启字节码优化；build 显式对齐 --bytecode-opt 开关语义
+	// （默认关闭，保持 build 历史行为；开启时 CompileAST 内已优化，
+	// 下方显式 OptimizeModule 调用为幂等兜底）。
+	vm.SetOptimizeBytecode(opts.bytecodeOpt)
 	resolver := module.NewResolver()
 
 	// 基座：--base 指定（跨平台产物 = 目标平台基座 + 同一 payload，

@@ -151,6 +151,7 @@ $ aluka -e "var q = Aluka.SQL\`CREATE TABLE t (x INTEGER)\`.run().then(function(
 | `aluka build --compile --max-payload=<size> <entry>` | 设置 payload 体积预算；超限退出码为 `2` |
 | `aluka --vm` / `--ast` | 选择字节码 VM（默认）或 AST 解释器 |
 | `aluka --no-cache` | 禁用字节码磁盘缓存 |
+| `aluka --no-bytecode-opt` | 禁用编译管线默认的字节码优化（常量折叠/不可达删除等） |
 | `aluka --jit=off\|quick\|auto` | JIT 分层开关（**默认 auto**；off = 完全关闭，回滚开关） |
 | `aluka --jit-threshold=<n>` | 热叶函数编译阈值（默认 1000 次调用） |
 | `aluka --jit-backedge-threshold=<n>` | 数值循环编译阈值（默认 10000 次回边） |
