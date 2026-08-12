@@ -488,6 +488,11 @@ func newIncomingMessage(r *http.Request, body []byte) engine.Value {
 	_ = msg.Set("destroy", engine.NewFunction("destroy", func(args []engine.Value) (engine.Value, error) {
 		return msg, nil
 	}))
+	// unpipe：Node Readable 流方法（finalhandler 错误路径调用 req.unpipe()）。
+	// aluka 的请求体一次性给出，unpipe 为空操作。
+	_ = msg.Set("unpipe", engine.NewFunction("unpipe", func(args []engine.Value) (engine.Value, error) {
+		return msg, nil
+	}))
 	if r != nil {
 		h := headersToObj(r.Header)
 		// Go 的 http.Request 把 content-length 存在 ContentLength 字段而非
