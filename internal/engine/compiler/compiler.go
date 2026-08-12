@@ -189,6 +189,9 @@ func (c *Compiler) Compile(prog *ast.Program, filename string) (*bytecode.Module
 				return nil, err
 			}
 			c.emit(bytecode.OpReturn, 0)
+			if err := c.finalizeMaxStack(); err != nil {
+				return nil, err
+			}
 			return c.module, nil
 		}
 		if err := c.compileStmt(s); err != nil {
@@ -197,7 +200,27 @@ func (c *Compiler) Compile(prog *ast.Program, filename string) (*bytecode.Module
 	}
 	// Implicit return undefined at end of program.
 	c.emit(bytecode.OpReturnUndef, 0)
+	if err := c.finalizeMaxStack(); err != nil {
+		return nil, err
+	}
 	return c.module, nil
+}
+
+// finalizeMaxStack 为模块内每个函数模板填充 MaxStack（操作数栈峰值上界），
+// 供 VM 按帧预分配栈、使 push 无分支。在 Compile 的所有返回路径前调用，
+// 覆盖 Compile/CompileAST/EvalProgram（含 REPL、缓存未命中重编译）全路径。
+func (c *Compiler) finalizeMaxStack() error {
+	for _, fn := range c.module.Functions {
+		if fn == nil {
+			continue
+		}
+		ms, err := bytecode.ComputeMaxStack(c.module, fn)
+		if err != nil {
+			return fmt.Errorf("aluka: compile %s: %w", fn.SourceFile, err)
+		}
+		fn.MaxStack = ms
+	}
+	return nil
 }
 
 // compileStmtValue compiles a statement in "value mode": it leaves the

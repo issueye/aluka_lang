@@ -148,14 +148,14 @@ var opMeta = [256]*OpMeta{
 	OpNewArray:           {Name: "NEW_ARRAY", Operand: OperandCount, Pushes: 1, VarStack: true},
 	OpGetProp:            {Name: "GET_PROP", Operand: OperandConstIdx, Pops: 1, Pushes: 1},
 	OpSetProp:            {Name: "SET_PROP", Operand: OperandConstIdx, Pops: 2, Pushes: 1},
-	OpSetPropObj:         {Name: "SET_PROP_OBJ", Operand: OperandConstIdx, Pops: 2},
+	OpSetPropObj:         {Name: "SET_PROP_OBJ", Operand: OperandConstIdx, Pops: 1}, // 弹 value，保留 obj（对象字面量连续 set）
 	OpSetPropTop:         {Name: "SET_PROP_TOP", Operand: OperandConstIdx, Pops: 2},
 	OpGetElem:            {Name: "GET_ELEM", Pops: 2, Pushes: 1},
 	OpSetElem:            {Name: "SET_ELEM", Pops: 3, Pushes: 1},
 	OpSetElemTop:         {Name: "SET_ELEM_TOP", Pops: 3},
 	OpDelProp:            {Name: "DEL_PROP", Operand: OperandConstIdx, Pops: 1, Pushes: 1},
 	OpDelElem:            {Name: "DEL_ELEM", Pops: 2, Pushes: 1},
-	OpSetPropComputedObj: {Name: "SET_PROP_COMPUTED_OBJ", Pops: 3},
+	OpSetPropComputedObj: {Name: "SET_PROP_COMPUTED_OBJ", Pops: 2}, // 弹 key+value，保留 obj
 
 	// --- Spread (ES2015) ---
 	OpBuildArray:     {Name: "BUILD_ARRAY", Pushes: 1},

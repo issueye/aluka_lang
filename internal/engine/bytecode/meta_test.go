@@ -139,7 +139,7 @@ func TestMetaStackEffect(t *testing.T) {
 		{bytecode.OpGetProp, 1, 1, true},
 		{bytecode.OpGetPropLocal, 0, 1, true},
 		{bytecode.OpSetProp, 2, 1, true},
-		{bytecode.OpSetPropObj, 2, 0, true},
+		{bytecode.OpSetPropObj, 1, 0, true}, // 弹 value，保留 obj（对象字面量连续 set）
 		{bytecode.OpSetElem, 3, 1, true},
 		{bytecode.OpSetElemTop, 3, 0, true},
 		{bytecode.OpDelProp, 1, 1, true},

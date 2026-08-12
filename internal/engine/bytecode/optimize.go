@@ -65,6 +65,14 @@ func OptimizeModule(mod *Module) (OptimizationStats, error) {
 			}
 		}
 		stats.InstructionsAfter += len(fn.Code) / InstrSize
+		// 优化改变指令形态（如 STORE_LOCAL;LOAD_LOCAL→DUP;STORE_LOCAL 使峰值 +1），
+		// 须在最终字节码上重算 MaxStack，覆盖 compiler.Compile 末尾基于优化前
+		// 产物算出的值。EvalProgram 路径不经 OptimizeModule，沿用编译器算的值。
+		ms, err := ComputeMaxStack(mod, fn)
+		if err != nil {
+			return stats, err
+		}
+		fn.MaxStack = ms
 	}
 	return stats, ValidateModule(mod)
 }

@@ -356,11 +356,13 @@ func (v *VM) runModule(mod *bytecode.Module) (engine.Value, error) {
 	v.module = mod
 	v.interp.currentVM = v
 	main := mod.Functions[0]
-	// Reserve locals for the top-level frame (fresh stack for this module).
+	// Reserve locals for the top-level frame (fresh stack for this module),
+	// 并按 main.MaxStack 预留操作数栈（帧内 push 永不扩容）。
 	v.stack = make([]engine.Value, 0, main.NumLocals+16)
 	for i := 0; i < main.NumLocals; i++ {
 		v.stack = append(v.stack, engine.Undefined())
 	}
+	v.ensureFrameStack(main)
 	// Fresh frames slice — never mutate savedFrames. Preallocate capacity so
 	// hot-path call frames (fastCallClosure/callClosure append) rarely grow.
 	v.frames = make([]vmFrame, 1, 128)
@@ -396,13 +398,39 @@ func (v *VM) cur() *vmFrame {
 
 // === Stack helpers ========================================================
 
-func (v *VM) push(val engine.Value) {
-	// 容量不足时才走 ensureStack（扩容并重绑 upvalue 槽指针）；容量足够时
-	// 只做一次 len/cap 比较，省去 ensureStack 的函数调用。
-	if len(v.stack) == cap(v.stack) {
-		v.ensureStack(1)
+// push 把 val 压入操作数栈。实现见 stack_push*.go（按构建标签分文件）：
+//
+//   - 生产构建：裸 append——帧入口的 ensureFrameStack 已按 tmpl.MaxStack
+//     预留足够槽位，帧内 push 永不扩容，从而无分支、可内联进 run 分派循环。
+//   - vmstackcheck 构建：保留越界断言，用于校验 MaxStack 的 soundness。
+//
+// run 主循环之外的调用方（throw/resume 路径）用 pushSafe（自带容量检查）。
+
+// ensureFrameStack 在帧局部槽预留完成后，按 tmpl.MaxStack 一次性预留该帧的
+// 操作数栈空间，使帧内 push 永不扩容（cap >= base+NumLocals+MaxStack）。
+// 调用前置：len(v.stack) == frame.base + NumLocals（即局部已填满）。
+// MaxStack 由编译器静态算出；max(MaxStack,8) 下限兜底手搓 FuncTemplate。
+// frameHeadroom 返回帧操作数栈预留槽数：编译器产出的函数用 tmpl.MaxStack
+// （严格）；手搓 FuncTemplate（MaxStack==0，如 JIT 测试）退化为 8 兜底。
+// ensureFrameStack 与 stackLimit（vmstackcheck）共用，保证「实际预留」与
+// 「断言上界」一致。
+func frameHeadroom(tmpl *bytecode.FuncTemplate) int {
+	if tmpl.MaxStack == 0 {
+		return 8
 	}
-	v.stack = append(v.stack, val)
+	return tmpl.MaxStack
+}
+
+func (v *VM) ensureFrameStack(tmpl *bytecode.FuncTemplate) {
+	v.ensureStack(frameHeadroom(tmpl))
+}
+
+// stackLimit 返回当前帧的操作数栈上界 base+NumLocals+frameHeadroom，供
+// vmstackcheck 构建的 push 越界断言使用（与 ensureFrameStack 实际预留一致）。
+// 生产构建不调用。
+func (v *VM) stackLimit() int {
+	f := v.cur()
+	return f.base + f.tmpl.NumLocals + frameHeadroom(f.tmpl)
 }
 
 // ensureStack grows the value stack without leaving open upvalues pointing at
@@ -1509,6 +1537,8 @@ func (v *VM) fastCallClosure(cl *vmClosure, thisVal engine.Value, numArgs, argSt
 	if extra := tmpl.NumLocals - 1 - numArgs; extra > 0 {
 		v.reserveUndefined(extra)
 	}
+	// 按 tmpl.MaxStack 预留该帧操作数栈，使帧内 push 永不扩容。
+	v.ensureFrameStack(tmpl)
 
 	frame := vmFrame{tmpl: tmpl, base: frameBase, upvalues: cl.upvalues}
 	v.frames = append(v.frames, frame)
@@ -1868,6 +1898,7 @@ func (v *VM) callClosureThis(cl *vmClosure, thisVal engine.Value, args []engine.
 	for i := 0; i < tmpl.NumParams && i < len(args); i++ {
 		v.stack[frame.base+1+i] = args[i]
 	}
+	v.ensureFrameStack(tmpl)
 	if tmpl.IsVarArgs {
 		restSlot := frame.base + 1 + tmpl.NumParams
 		var restElems []engine.Value
@@ -2033,6 +2064,7 @@ func (v *VM) callClosure(cl *vmClosure, thisVal engine.Value, args []engine.Valu
 	}
 	// Reserve local slots: slot 0 = this, 1..N = params, rest = undefined.
 	v.reserveUndefined(tmpl.NumLocals)
+	v.ensureFrameStack(tmpl)
 	v.stack[frame.base] = thisVal
 	// 具名函数表达式（NFE）自引用槽：写入闭包自身（`const f = function
 	// named() {...}` 的函数体内 `named` 引用）。
@@ -2584,7 +2616,8 @@ func (v *VM) findHandlerInFrame(excVal engine.Value) (*vmTryHandler, bool) {
 			h.phase = 1
 			h.exc = excVal
 			// Push the exception value; the catch code does OpStoreLocal into the param.
-			v.push(excVal)
+			// 异常分发在 run 主循环之外，无栈预留保证，用 pushSafe。
+			v.pushSafe(excVal)
 			frame.pc = h.entry.CatchPC
 			return h, true
 		}

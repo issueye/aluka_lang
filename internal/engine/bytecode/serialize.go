@@ -53,7 +53,11 @@ import (
 //
 //	编译管线默认步骤（常量折叠/不可达删除/融合扩展，--no-bytecode-opt
 //	可关闭）。旧缓存为未优化产物，必须失效。
-const FormatVersion = 20
+//
+// v20 → v21：FuncTemplate 新增 MaxStack 字段（操作数栈峰值上界，供按帧
+//
+//	预分配栈使用）。旧缓存无该字段，必须失效。
+const FormatVersion = 21
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
@@ -134,8 +138,9 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 		return err
 	}
 	// NumParams, NumLocals, IsVarArgs, IsGenerator, IsAsync, IsArrow,
-	// len(Code), ArgumentsSlot, NoArgumentsObject, NewTargetSlot, Inlinable
-	var scalars [12 * 4]byte
+	// len(Code), ArgumentsSlot, NoArgumentsObject, NewTargetSlot, Inlinable,
+	// NFESlot, MaxStack
+	var scalars [13 * 4]byte
 	binary.LittleEndian.PutUint32(scalars[0:4], uint32(fn.NumParams))
 	binary.LittleEndian.PutUint32(scalars[4:8], uint32(fn.NumLocals))
 	binary.LittleEndian.PutUint32(scalars[8:12], boolToU32(fn.IsVarArgs))
@@ -148,6 +153,7 @@ func serializeFuncTemplate(w io.Writer, fn *FuncTemplate) error {
 	binary.LittleEndian.PutUint32(scalars[36:40], uint32(fn.NewTargetSlot))
 	binary.LittleEndian.PutUint32(scalars[40:44], boolToU32(fn.Inlinable))
 	binary.LittleEndian.PutUint32(scalars[44:48], uint32(fn.NFESlot))
+	binary.LittleEndian.PutUint32(scalars[48:52], uint32(fn.MaxStack))
 	if _, err := w.Write(scalars[:]); err != nil {
 		return err
 	}
@@ -246,7 +252,7 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 	if err != nil {
 		return nil, err
 	}
-	var scalars [12 * 4]byte
+	var scalars [13 * 4]byte
 	if _, err := io.ReadFull(r, scalars[:]); err != nil {
 		return nil, err
 	}
@@ -266,6 +272,7 @@ func deserializeFuncTemplate(r io.Reader) (*FuncTemplate, error) {
 		NewTargetSlot:     int(int32(binary.LittleEndian.Uint32(scalars[36:40]))),
 		Inlinable:         u32ToBool(binary.LittleEndian.Uint32(scalars[40:44])),
 		NFESlot:           int(int32(binary.LittleEndian.Uint32(scalars[44:48]))),
+		MaxStack:          int(binary.LittleEndian.Uint32(scalars[48:52])),
 	}
 	codeLen := binary.LittleEndian.Uint32(scalars[24:28])
 	if codeLen > 0 {

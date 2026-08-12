@@ -93,7 +93,10 @@ func (ar *asyncRunner) runStep(resumeVal engine.Value, isThrow bool) {
 			return
 		}
 		// Push the resolved value as the result of the await expression.
-		ar.vm.push(resumeVal)
+		// resume 路径在 run 主循环之外，用 pushSafe。
+		ar.vm.pushSafe(resumeVal)
+		// resume 重分配 base（挂起后栈被截断），须重新按 MaxStack 预留操作数栈。
+		ar.vm.ensureFrameStack(ar.tmpl)
 	}
 
 	result, err := ar.vm.run()
@@ -139,6 +142,7 @@ func (ar *asyncRunner) setupFrame() {
 		upvalues: ar.upvalues,
 	}
 	ar.vm.reserveUndefined(ar.tmpl.NumLocals)
+	ar.vm.ensureFrameStack(ar.tmpl)
 	ar.vm.stack[frame.base] = ar.thisVal
 	if ar.tmpl.NFESlot > 0 && ar.self != nil {
 		ar.vm.stack[frame.base+ar.tmpl.NFESlot] = ar.self

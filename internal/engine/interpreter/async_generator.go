@@ -143,7 +143,10 @@ func (g *AsyncGeneratorValue) runStep(resumeVal engine.Value, isThrow bool) {
 			g.processResult(result, err)
 			return
 		}
-		g.vm.push(resumeVal)
+		// resume 路径在 run 主循环之外，用 pushSafe。
+		g.vm.pushSafe(resumeVal)
+		// resume 重分配 base（挂起后栈被截断），须重新按 MaxStack 预留操作数栈。
+		g.vm.ensureFrameStack(g.tmpl)
 	}
 
 	result, err := g.vm.run()
@@ -171,6 +174,7 @@ func (g *AsyncGeneratorValue) processResult(result engine.Value, err error) {
 func (g *AsyncGeneratorValue) setupFrame() {
 	frame := vmFrame{tmpl: g.tmpl, base: len(g.vm.stack), upvalues: g.upvalues}
 	g.vm.reserveUndefined(g.tmpl.NumLocals)
+	g.vm.ensureFrameStack(g.tmpl)
 	g.vm.stack[frame.base] = g.thisVal
 	if g.tmpl.NFESlot > 0 && g.self != nil {
 		g.vm.stack[frame.base+g.tmpl.NFESlot] = g.self

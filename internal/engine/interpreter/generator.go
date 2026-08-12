@@ -170,6 +170,7 @@ func (g *GeneratorValue) resume(sendVal engine.Value) (engine.Value, error) {
 			upvalues: g.upvalues,
 		}
 		g.vm.reserveUndefined(g.tmpl.NumLocals)
+		g.vm.ensureFrameStack(g.tmpl)
 		g.vm.stack[frame.base] = g.thisVal
 		if g.tmpl.NFESlot > 0 && g.self != nil {
 			g.vm.stack[frame.base+g.tmpl.NFESlot] = g.self
@@ -206,7 +207,11 @@ func (g *GeneratorValue) resume(sendVal engine.Value) (engine.Value, error) {
 		g.vm.frames = append(g.vm.frames, frame)
 		// Push the send value — it becomes the result of the suspended
 		// `yield` expression. The instruction after OpYield consumes it.
-		g.vm.push(sendVal)
+		// resume 路径在 run 主循环之外，用 pushSafe。
+		g.vm.pushSafe(sendVal)
+		// 帧的 base 在 resume 时重分配（挂起后栈被截断），须重新按 MaxStack
+		// 预留操作数栈，否则续跑的 push 越界。
+		g.vm.ensureFrameStack(g.tmpl)
 	}
 
 	// Run until yield or return.

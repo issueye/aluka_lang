@@ -76,6 +76,11 @@ type FuncTemplate struct {
 	// Referenced by OpTryEnter/OpTryExit/OpTryExitFinally operands.
 	TryTable []TryEntry
 
+	// MaxStack 是该函数执行期操作数栈相对 base+NumLocals 的峰值上界（由
+	// ComputeMaxStack 静态分析得出，sound）。VM 在帧入口一次性预留
+	// NumLocals+MaxStack 个槽，使帧内 push 永不扩容、可走无分支直写。
+	MaxStack int
+
 	// SourceFile / Line table for error reporting (best-effort).
 	SourceFile string
 	LineStarts []LineEntry // sorted by PC; sparse
