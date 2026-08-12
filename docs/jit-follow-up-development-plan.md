@@ -110,7 +110,7 @@ R1 建立的差分框架；R5 必须在功能和安全边界稳定后进行，�
 | R3 | 全部条目完成 | R3-1/R3-2/R3-4/R3-5/R3-6/R3-7 已落地（2026-08-12）：Symbol truthiness/nullish 与严格相等建模、String 拼接与关系比较、BigInt 算术/位运算/比较（异常 guard 回退 Tier 0 一致）、ternary/switch/嵌套短路控制流（OpConstString 常量池）、编译期候选过滤与结构化拒绝缓存；R3-3 宽松相等（共享 `engine.LooseEquals` helper，下沉 `internal/engine` 包，对象按 identity 不走 ToPrimitive）在 R4 集成期间补做完成（见 §6.5）；差分发现并修复 Tier 0 `~` BigInt 语义 |
 | R4 | 完成 | R4-1..R4-8 全部落地（2026-08-12，见 §6.5 实施记录）：调用约定扩展（0-4 参数、Boolean 返回、多调用点、局部转发内联）、闭包扩展（多 numeric upvalue、只读捕获、非逃逸闭包）、属性 PIC 2-4 shape 自适应上限、未命中成本削减、packed Number 数组索引读写、map/filter/reduce 数值纯度路径、Native opcode 逐项评估（% 与位运算 Native 化、** 保留 Quick）、side-exit 成本削减（同 frame 按 backedge 阻止已失败版本重试） |
 | R5 | 全部条目完成 | R5-1..R5-7 已落地（2026-08-12，见 §10.4 实施记录）：IR 优化 pass（常量折叠/冗余 store-load 消除/不可达块删除，OptimizeIR 开关差分验证）、保守 LICM 范围（const-only 循环不变量折叠）、自适应编译阈值（boost/cool 反馈模型）、编译预算（时间/队列/并发上限，风暴下解释执行可前进）、LRU 热度权重与两路 PIC 合计计费、TraceBudget 联合校准（默认 65536 数据驱动保持）与取消/OOM 响应上界、`--jit-stats` 聚合观测（guard/deopt/eviction 率与晋级降级判据）。**范围说明**：此处"全部条目完成"指代码与测试层面；§10.3 要求的正式 5 次中位数报告与 release soak 作为性能门禁。按 2026-08-12 决策，性能门禁以 Windows amd64 实机报告为准，Linux 报告经口子后续补齐 |
-| R6 | 未开始 | 默认仍为 off；检查表已按 2026-08-12 决策调整（Linux 实机验证降级为口子保留，Windows 门禁先行） |
+| R6 | 进行中 | 默认已切 auto（2026-08-12，Windows amd64）：正确性门禁（jitdiff 三 tier 零失配、差分/fuzz 全套、27 包全量）通过；冷启动多轮中位数 auto≈off（无超标证据）；平台降级（不支持平台不申请 executable memory）就绪；`--jit=off` 回滚开关可用。剩余形式项：Windows release soak ≥8h、正式 5 次中位数报告存档、R0 安静环境复核（环境项），并行补齐不阻塞 |
 
 “部分完成”只描述启动基线，不代表通过该里程碑；每个里程碑仍以对应章节的完整完成条件为准。
 

@@ -815,6 +815,8 @@ func TestJITOffHasNoState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 默认已为 auto：显式切到 off 验证"无 JIT 状态"。
+	vm.ConfigureJIT(jit.Config{Mode: jit.Off})
 	_, err = vm.Eval(`function f(a) { return a + 1; } f(1);`, "jit-off.js")
 	if err != nil {
 		t.Fatal(err)

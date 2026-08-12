@@ -17,7 +17,7 @@ import (
 var defaultJIT = struct {
 	sync.RWMutex
 	config jit.Config
-}{config: jit.Config{Mode: jit.Off, Threshold: 1000}}
+}{config: jit.Config{Mode: jit.Auto, Threshold: 1000}}
 
 // SetDefaultJITConfig configures subsequently-created VMs. The CLI calls it
 // before constructing contexts; existing VMs retain their own configuration.

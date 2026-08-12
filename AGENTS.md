@@ -54,7 +54,7 @@ make release
 ./bin/aluka --ast app.js    # AST 解释器
 ./bin/aluka --no-cache app.js   # 禁用磁盘字节码缓存
 
-# JIT 相关（amd64 平台，默认 --jit=off）
+# JIT 相关（amd64 平台，默认 --jit=auto；--jit=off 关闭）
 ./bin/aluka --jit=auto --jit-threshold=1 --jit-backedge-threshold=2 app.js
 ./bin/aluka --jit=auto --jit-stats app.js     # 候选/编译/guard/deopt 统计（含 R5 聚合行）
 ./bin/aluka --jit=auto --jit-dump=ir app.js   # dump 已验证 IR（asm 见 --jit-dump=asm）
@@ -99,7 +99,7 @@ internal/
                            JIT 测试 jit_*_test.go（soak/reconfigure/adaptive/r5-cache-budget/guard_mutation）、r4_*_test.go、side_effect_deopt_test.go
       jitdiff/             JIT 差分框架（生成式差分，Tier 0 唯一 oracle；PR 1000 例 / nightly 10 万例）
     regex/                 正则翻译层 + 自研回溯引擎
-    jit/                   JIT（默认 --jit=off；Quick 类型化 IR + amd64 Native 机器码两层，不支持平台 fallback Tier 0）
+    jit/                   JIT（默认 auto；Quick 类型化 IR + amd64 Native 机器码两层，不支持平台 fallback Tier 0）
       ir.go/trace.go       Quick IR + trace 编译 + deopt/exception 出口恢复
       optimize.go          IR 优化 pass（常量折叠/store-load 消除/不可达块删除）
       property_pic.go      属性 PIC（2-4 shape 自适应）；candidate.go 候选过滤+拒绝缓存；quick_ops.go String/BigInt/宽松相等
@@ -165,7 +165,7 @@ docs/adr/                  架构决策记录（ADR）
 - **双引擎**：AST-walking 解释器（`--ast`）与字节码 VM（`--vm`，**默认**）。两者共享 lexer/parser/ast/compiler/bytecode。抽象层在 `internal/engine/engine.go`（`Engine/Context/Value` 接口）。
 - **字节码磁盘缓存**：VM 默认把编译产物缓存到 `.aluka-cache/`。**改动字节码布局/常量编码/编译器输出时，必须同步 bump `internal/engine/bytecode/serialize.go` 的 `FormatVersion`**，否则旧缓存会被误读或报 version mismatch。
 - **隐藏类 + 内联缓存（IC）**：`internal/engine/shape.go`。`--ic-stats` 可看命中率。
-- **JIT 分层**：`internal/engine/jit/`。**默认 `--jit=off`**（尚未默认开启，见 `docs/jit-follow-up-development-plan.md` R6 检查表）。分两层：Quick（类型化 IR，跨平台，可执行 Go 代码）与 Native（amd64 原生机器码，W^X/崩溃隔离/safepoint/OSR，无 Go 指针 Frame）；guard 失败与异常经 `DeoptExit`（含 pending exception）恢复完整 VM 状态回 Tier 0；**不支持平台自动 fallback**（结果与 JIT Off 一致）。改动 JIT 需跑差分/fuzz（见「测试约定」）。平台分文件用构建标签：`*_amd64.go` / `*_linux.go` / `*_windows.go` / `*_unsupported.go`。
+- **JIT 分层**：`internal/engine/jit/`。**默认 auto**（Windows amd64 实机门禁通过；`--jit=off` 一键回滚，Linux 验证经 CI 口子后续补齐）。分两层：Quick（类型化 IR，跨平台，可执行 Go 代码）与 Native（amd64 原生机器码，W^X/崩溃隔离/safepoint/OSR，无 Go 指针 Frame）；guard 失败与异常经 `DeoptExit`（含 pending exception）恢复完整 VM 状态回 Tier 0；**不支持平台自动 fallback**（结果与 JIT Off 一致）。改动 JIT 需跑差分/fuzz（见「测试约定」）。平台分文件用构建标签：`*_amd64.go` / `*_linux.go` / `*_windows.go` / `*_unsupported.go`。
 - **GC**：自研标记-清除（`internal/engine/gc.go`），与 JIT 协同（safepoint、异步抢占）。
 - **模块系统**：ESM + CJS + Node 解析算法 + 循环依赖，`internal/runtime/module/`。`.ts` 相对导入、import attributes、路径别名（`paths`/`baseUrl`）、top-level await 均已支持。
 - **TS 转译**：类型注解剥离在 parser/compiler 层完成（非独立编译器），`internal/engine/parser/` 与 `internal/engine/compiler/`。

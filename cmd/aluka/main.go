@@ -46,7 +46,7 @@ var profileStop func()
 var icStats bool
 
 var (
-	jitMode                     = jit.Off
+	jitMode                     = jit.Auto
 	jitThreshold         uint32 = 1000
 	jitBackedgeThreshold uint32 = 10000
 	jitTraceBudget       uint32 = 65536
@@ -1238,7 +1238,7 @@ OPTIONS:
     --no-cache           Disable bytecode disk cache
     --profile <path>     Write CPU profile (heap dump to <path>.heap)
     --ic-stats           Print inline-cache hit rates on exit
-    --jit=off|quick|auto Enable JIT tier (default off)
+    --jit=off|quick|auto Enable JIT tier (default auto; --jit=off to disable)
     --jit-threshold=<n>  Compile a hot leaf after n calls (default 1000)
     --jit-backedge-threshold=<n> Compile a numeric loop after n backedges (default 10000)
     --jit-trace-budget=<n> Yield JIT loops after n backedges (default 65536)
