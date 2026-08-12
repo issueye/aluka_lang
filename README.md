@@ -32,7 +32,7 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 | 4 | Aluka 特有 API（兼容 Bun） | ✅ P0+P1+P2 完成 | ~100% |
 | 5 | 包管理器 | ✅ P0 完成（含 workspace、.npmrc） | ~95% |
 | Pi | 真实世界兼容（Pi Agent Harness 靶标） | ✅ 阶段 A/B/C 完成 | ~90% |
-| 6-8 | 测试器 / 打包器 / 优化 | 🔨 Phase 6 启动（node:test）；**Phase 7 `--compile` 单文件可执行完成**（bundle 模式未开始） | ~15% |
+| 6-8 | 测试器 / 打包器 / 优化 | Phase 6 `node:test` 完成；**Phase 7 `--compile` 单文件可执行完成**（bundle 模式未开始）；Phase 8 JIT 优化 pass/预算调优完成，**JIT 默认 auto** | ~30% |
 
 ### 核心能力一览
 
@@ -45,6 +45,7 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 - **Aluka API（兼容 Bun）**：`Aluka.serve`、`Aluka.file`/`write`、`Aluka.$`、`Aluka.env`、`Aluka.sleep`、`Aluka.hash`/`password`、`Aluka.deflate`/`inflate`、`Aluka.spawn`、`Bun.peek`/`deepEquals` 等（`Bun` 为兼容别名）
 - **外部服务驱动（P2）**：`Aluka.SQL`（SQLite 零配置 + Postgres 经 `DATABASE_URL`，支持 tagged template 参数绑定）、`Aluka.Redis`（get/set/hget/hset...）、`Aluka.S3`（自研 AWS SigV4，get/put/delete/list/exists）
 - **包管理器**：`aluka install/add/remove/update`、npm registry 客户端、自研 semver 解析（含 `">= x < y"` 空格形式）、依赖树解析 + hoisting、并发下载解压、`aluka.lock` lockfile、workspace 支持、.npmrc（registry + 鉴权 token）——**express 依赖树可完整安装并运行**
+- **JIT（默认开启，--jit=off 回滚）**：Quick 类型化 IR（跨平台，可执行 Go 代码）+ amd64 Native 机器码两层（W^X/崩溃隔离/safepoint/OSR）；guard 失败与异常经 DeoptExit 恢复完整 VM 状态回 Tier 0；生成式差分（jitdiff 三 tier 零失配）+ 5 个 Go fuzz target；不支持平台自动 fallback 到 Quick/Tier 0
 - **RegExp**：基于 Go regexp 翻译层 + 自研回溯引擎（反向引用、前瞻/后行断言、lazy 量词）、`/v` unicodeSets（`\p{...}`）、g/y lastIndex 状态机、命名捕获组、`$` 替换串、Symbol.match/replace/split
 - **测试运行器**：`aluka test`（node:test 兼容：describe/it/test + mock + assert）
 
@@ -150,6 +151,13 @@ $ aluka -e "var q = Aluka.SQL\`CREATE TABLE t (x INTEGER)\`.run().then(function(
 | `aluka build --compile --max-payload=<size> <entry>` | 设置 payload 体积预算；超限退出码为 `2` |
 | `aluka --vm` / `--ast` | 选择字节码 VM（默认）或 AST 解释器 |
 | `aluka --no-cache` | 禁用字节码磁盘缓存 |
+| `aluka --jit=off\|quick\|auto` | JIT 分层开关（**默认 auto**；off = 完全关闭，回滚开关） |
+| `aluka --jit-threshold=<n>` | 热叶函数编译阈值（默认 1000 次调用） |
+| `aluka --jit-backedge-threshold=<n>` | 数值循环编译阈值（默认 10000 次回边） |
+| `aluka --jit-trace-budget=<n>` | JIT 循环 yield 回边预算（默认 65536） |
+| `aluka --jit-code-cache=<size>` | Native 代码缓存预算（默认 4MB） |
+| `aluka --jit-stats` | 输出候选/编译/guard/deopt/淘汰聚合统计 |
+| `aluka --jit-dump=ir\|asm` | dump 已验证 IR / amd64 汇编 |
 | `aluka --monitor[=interval]` | 性能/内存/运行时指标监控（interval 如 `500ms`/`1s` 周期采样；默认仅终报；`--monitor-format=json`、`--monitor-out=<path>` 可选） |
 | `aluka --max-memory=<n>` | 进程内存上限（`n` = 字节或 `KB`/`MB`/`GB` 后缀，如 `256MB`；环境变量 `ALUKA_MAX_MEMORY` 等效）。超限流程：先 GC → 仍超限则抛可捕获的 JS `RangeError: JavaScript heap out of memory`（V8 同款）→ 持续超限约 0.5s 后强制退出（码 3），防内存爆掉 |
 
@@ -176,15 +184,16 @@ aluka --monitor --monitor-out=metrics.json app.js
 ```
 aluka_lang/
 ├── cmd/
-│   └── aluka/                 # CLI 入口（run/repl/test/install + 包管理子命令）
+│   └── aluka/                 # CLI 入口（run/repl/test/install/build + 包管理子命令）
 ├── internal/
+│   ├── cli/                   # 自研轻量 CLI 框架（注册式命令/flag 解析/帮助/错误/退出码）
 │   ├── engine/                # JS 引擎（自研）
 │   │   ├── lexer/             # 词法分析器
 │   │   ├── parser/            # 递归下降 + Pratt 解析器
 │   │   ├── ast/               # AST 节点定义
 │   │   ├── compiler/          # AST → 字节码
 │   │   ├── bytecode/          # 指令集 / 序列化
-│   │   ├── interpreter/       # AST 解释器 + 字节码 VM（Date/URI/structuredClone/V8 堆栈）
+│   │   ├── interpreter/       # AST 解释器 + 字节码 VM（Date/URI/structuredClone/V8 堆栈/JIT 桥接）
 │   │   ├── regex/             # 正则翻译层 + 自研回溯引擎（反向引用/前瞻/后行，/v unicodeSets）
 │   │   ├── engine.go          # Engine/Context/Value 接口
 │   │   ├── shape.go           # 隐藏类 + 内联缓存
