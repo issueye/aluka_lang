@@ -123,3 +123,127 @@ func analyzeHotLocals(p *Program) ([]uint64, hotLocalReport, error) {
 	}
 	return live, rep, nil
 }
+
+// loopInfo 描述一个自然循环：header 是回边目标，backedge 是回跳指令下标。
+type loopInfo struct {
+	header   int
+	backedge int
+}
+
+// findLoop 识别程序中的第一个回边循环（backedge = 跳转到前面指令的控制流）。
+// 数值循环 `for(i<n) sum+=...` 在 lowering 后呈现为 header（循环体入口）+ 尾部
+// 条件回跳。多循环/嵌套循环暂不处理（返回第一个，后续可扩展）。
+func findLoop(p *Program) (loopInfo, bool) {
+	for i, in := range p.Code {
+		var target int
+		switch in.Op {
+		case OpJump, OpJumpTrue, OpJumpFalse, OpJumpTrueKeep, OpJumpFalseKeep, OpJumpNullishKeep:
+			target = int(in.Operand)
+		default:
+			continue
+		}
+		if target >= 0 && target < i {
+			return loopInfo{header: target, backedge: i}, true
+		}
+	}
+	return loopInfo{}, false
+}
+
+// selectHotLocals 选出循环体内值得寄存器化的热 local：
+//   - proven Number（assigned 位图，来自 nativeAssignedLocals）——Native 只处理数值；
+//   - 循环体内被读取（useCounts > 0）；
+//   - 最多 maxRegs 个（XMM8-XMM15 共 8 个），按读取次数降序。
+//
+// 返回热 local 的 slot 列表（按热度降序）。
+func selectHotLocals(p *Program, assigned []uint64, loop loopInfo, maxRegs int) []int {
+	type candidate struct {
+		slot int
+		uses int
+	}
+	var cands []candidate
+	for slot := 1; slot < p.NumLocals; slot++ {
+		if slot > 63 {
+			break
+		}
+		// 循环体内至少有一条指令证明该 slot 是 Number 且被读取。
+		proven := false
+		uses := 0
+		for i := loop.header; i <= loop.backedge; i++ {
+			if i >= len(assigned) {
+				break
+			}
+			if assigned[i]&(uint64(1)<<slot) != 0 {
+				proven = true
+			}
+			if p.Code[i].Op == OpLoadLocal && int(p.Code[i].Operand) == slot {
+				uses++
+			}
+		}
+		if proven && uses > 0 {
+			cands = append(cands, candidate{slot: slot, uses: uses})
+		}
+	}
+	// 按 uses 降序排序（简单插入排序，候选数 ≤ 64）。
+	for i := 1; i < len(cands); i++ {
+		for j := i; j > 0 && cands[j].uses > cands[j-1].uses; j-- {
+			cands[j], cands[j-1] = cands[j-1], cands[j]
+		}
+	}
+	if len(cands) > maxRegs {
+		cands = cands[:maxRegs]
+	}
+	out := make([]int, 0, len(cands))
+	for _, c := range cands {
+		out = append(out, c.slot)
+	}
+	return out
+}
+
+// regallocPlan 描述一次寄存器分配的结果：循环 + 热 local 到 XMM8-15 的映射。
+type regallocPlan struct {
+	loop        loopInfo
+	hot         []int       // 热 local slot 列表（按热度降序）
+	reg         map[int]int // slot → XMM 寄存器号（8-15）
+	reloadStart int         // loop header 前 reload 块的机器码起始 offset
+	reloadSize  int         // reload 块字节数（backedge 跳转需跳过）
+}
+
+// tryPlanRegalloc 尝试为程序规划寄存器分配。返回 nil 表示不适用：
+//   - 无回边循环；
+//   - 循环体内有内部分支（break/continue/if）——本阶段仅支持 straight-line
+//     循环体（数值累加/计数循环的典型形态），多出口 spill 留后续；
+//   - 无 proven-Number 热 local。
+func tryPlanRegalloc(p *Program, assigned []uint64) *regallocPlan {
+	loop, ok := findLoop(p)
+	if !ok {
+		return nil
+	}
+	// 循环体 straight-line 检查：除 backedge 本身外无跳转指令。
+	for i := loop.header; i <= loop.backedge; i++ {
+		switch p.Code[i].Op {
+		case OpJump, OpJumpTrue, OpJumpFalse, OpJumpTrueKeep, OpJumpFalseKeep, OpJumpNullishKeep:
+			if i != loop.backedge {
+				return nil
+			}
+		}
+	}
+	hot := selectHotLocals(p, assigned, loop, 8)
+	if len(hot) == 0 {
+		return nil
+	}
+	reg := make(map[int]int, len(hot))
+	for k, slot := range hot {
+		reg[slot] = 8 + k
+	}
+	return &regallocPlan{loop: loop, hot: hot, reg: reg}
+}
+
+// regFor 返回 slot 在指令 i 处的寄存器号（若该 slot 被寄存器化且 i 位于循环
+// 体内）。plan 为 nil 或 slot 未寄存器化/在循环体外时返回 ok=false。
+func (plan *regallocPlan) regFor(slot, i int) (int, bool) {
+	if plan == nil {
+		return 0, false
+	}
+	reg, ok := plan.reg[slot]
+	return reg, ok && i >= plan.loop.header && i <= plan.loop.backedge
+}

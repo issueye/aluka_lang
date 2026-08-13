@@ -32,6 +32,8 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 	if err != nil {
 		return nil, err
 	}
+	// M2 寄存器分配：识别 straight-line 单循环内的热 local，映射到 XMM8-15。
+	plan := tryPlanRegalloc(p, assigned)
 	// The compiler now lowers whole functions, so unreachable tails (e.g. the
 	// implicit return_undef the bytecode compiler emits after the final
 	// return) are part of the IR. Native code only needs reachable
@@ -62,6 +64,17 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 		if !reachable[i] {
 			continue
 		}
+		// loop header reload：在 header 指令的 offset 之前插入 reload 块，把热
+		// local 从 Frame 加载到 XMM8-15。offsets[header] 指向 reload 块之后
+		// （循环体开头），故 backedge 跳转自动跳过 reload；首次进入（fall-through）
+		// 与 yield 恢复（resumeOffset 指向 reload 块开头）都会执行 reload。
+		if plan != nil && i == plan.loop.header && plan.reloadSize == 0 {
+			plan.reloadStart = len(code)
+			for k, slot := range plan.hot {
+				code = emitLoadF64(code, 8+k, nativeLocalOffset(slot, p.NumParams))
+			}
+			plan.reloadSize = len(code) - plan.reloadStart
+		}
 		offsets[i] = len(code)
 		depths[i] = depth
 		in := p.Code[i]
@@ -74,7 +87,11 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 			if slot <= 0 || slot >= p.NumLocals || assigned[i]&(uint64(1)<<slot) == 0 {
 				return nil, fmt.Errorf("jit: native local %d is not a proven number", slot)
 			}
-			code = emitLoadF64(code, depth, nativeLocalOffset(slot, p.NumParams))
+			if reg, ok := plan.regFor(slot, i); ok {
+				code = emitMoveF64(code, depth, reg) // 寄存器 → 操作数栈
+			} else {
+				code = emitLoadF64(code, depth, nativeLocalOffset(slot, p.NumParams))
+			}
 			depth++
 		case OpStoreLocal:
 			depth--
@@ -82,7 +99,11 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 			if slot <= 0 || slot >= p.NumLocals {
 				return nil, fmt.Errorf("jit: native local out of range")
 			}
-			code = emitStoreF64(code, depth, nativeLocalOffset(slot, p.NumParams))
+			if reg, ok := plan.regFor(slot, i); ok {
+				code = emitMoveF64(code, reg, depth) // 操作数栈 → 寄存器
+			} else {
+				code = emitStoreF64(code, depth, nativeLocalOffset(slot, p.NumParams))
+			}
 			if p.nativeTrace {
 				code = emitNativeDirtyLocal(code, slot)
 			}
@@ -152,15 +173,36 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 				if depth != 0 || depths[target] != 0 {
 					return nil, fmt.Errorf("jit: native backedge has live operand stack")
 				}
-				code = append(code, 0x0F, condition^1)
-				skipFixup := len(code)
-				code = append(code, 0, 0, 0, 0)
-				code = emitNativeBudgetPoll(code, offsets[target])
-				code = append(code, 0xE9)
-				fixups = append(fixups, nativeFixup{displacement: len(code), target: target})
-				code = append(code, 0, 0, 0, 0)
-				relative := len(code) - (skipFixup + 4)
-				binary.LittleEndian.PutUint32(code[skipFixup:skipFixup+4], uint32(int32(relative)))
+				// 回边 spill 移到冷路径（yield 分支 + 循环退出块），不每迭代执行。
+				if plan != nil && i+1 == plan.loop.backedge {
+					// 退出路径：Jcc 跳到 exit_spill 块（稍后 patch）。
+					code = append(code, 0x0F, condition^1)
+					exitSpillFixup := len(code)
+					code = append(code, 0, 0, 0, 0)
+					code = emitNativeBudgetPollWithSpill(code, plan.reloadStart, plan.hot, p.NumParams)
+					code = append(code, 0xE9)
+					fixups = append(fixups, nativeFixup{displacement: len(code), target: target})
+					code = append(code, 0, 0, 0, 0)
+					// exit_spill 块：spill 热 local 后跳到循环退出代码（i+2）。
+					exitSpill := len(code)
+					binary.LittleEndian.PutUint32(code[exitSpillFixup:exitSpillFixup+4], uint32(int32(exitSpill-(exitSpillFixup+4))))
+					for k, slot := range plan.hot {
+						code = emitStoreF64(code, 8+k, nativeLocalOffset(slot, p.NumParams))
+					}
+					code = append(code, 0xE9)
+					fixups = append(fixups, nativeFixup{displacement: len(code), target: i + 2})
+					code = append(code, 0, 0, 0, 0)
+				} else {
+					code = append(code, 0x0F, condition^1)
+					skipFixup := len(code)
+					code = append(code, 0, 0, 0, 0)
+					code = emitNativeBudgetPoll(code, offsets[target])
+					code = append(code, 0xE9)
+					fixups = append(fixups, nativeFixup{displacement: len(code), target: target})
+					code = append(code, 0, 0, 0, 0)
+					relative := len(code) - (skipFixup + 4)
+					binary.LittleEndian.PutUint32(code[skipFixup:skipFixup+4], uint32(int32(relative)))
+				}
 			} else {
 				code = append(code, 0x0F, condition)
 				fixups = append(fixups, nativeFixup{displacement: len(code), target: target})
@@ -173,7 +215,11 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 				if depth != 0 || depths[target] != 0 {
 					return nil, fmt.Errorf("jit: native backedge has live operand stack")
 				}
-				code = emitNativeBudgetPoll(code, offsets[target])
+				if plan != nil && i == plan.loop.backedge {
+					code = emitNativeBudgetPollWithSpill(code, plan.reloadStart, plan.hot, p.NumParams)
+				} else {
+					code = emitNativeBudgetPoll(code, offsets[target])
+				}
 			}
 			code = append(code, 0xE9)
 			fixups = append(fixups, nativeFixup{displacement: len(code), target: target})
@@ -342,12 +388,21 @@ func nativeLocalOffset(slot, numParams int) int {
 }
 
 func emitLoadF64(code []byte, xmm, offset int) []byte {
-	code = append(code, 0xF2, 0x41, 0x0F, 0x10, byte(0x82|(xmm<<3)))
+	// movsd xmmN, [r10+disp32]。r10 需要 REX.B（0x41），xmm8-15 需要 REX.R（0x04）。
+	rex := byte(0x41)
+	if xmm >= 8 {
+		rex |= 0x04
+	}
+	code = append(code, 0xF2, rex, 0x0F, 0x10, byte(0x82|((xmm&7)<<3)))
 	return appendInt32(code, int32(offset))
 }
 
 func emitStoreF64(code []byte, xmm, offset int) []byte {
-	code = append(code, 0xF2, 0x41, 0x0F, 0x11, byte(0x82|(xmm<<3)))
+	rex := byte(0x41)
+	if xmm >= 8 {
+		rex |= 0x04
+	}
+	code = append(code, 0xF2, rex, 0x0F, 0x11, byte(0x82|((xmm&7)<<3)))
 	return appendInt32(code, int32(offset))
 }
 
@@ -376,6 +431,17 @@ func emitBinaryF64(code []byte, op Op, left, right int) []byte {
 }
 
 func emitMoveF64(code []byte, dst, src int) []byte {
+	// movapd xmm[dst], xmm[src]。dst 需要 REX.R，src 需要 REX.B（0-7 无 REX 前缀）。
+	if dst >= 8 || src >= 8 {
+		rex := byte(0x40)
+		if dst >= 8 {
+			rex |= 0x04
+		}
+		if src >= 8 {
+			rex |= 0x01
+		}
+		return append(code, 0x66, rex, 0x0F, 0x28, byte(0xC0|((dst&7)<<3)|(src&7)))
+	}
 	return append(code, 0x66, 0x0F, 0x28, byte(0xC0|(dst<<3)|src))
 }
 
@@ -438,6 +504,31 @@ func emitNativeBudgetPoll(code []byte, resumeOffset int) []byte {
 	code = append(code, 0x01, 0x0F, 0x85)
 	continueFixup := len(code)
 	code = append(code, 0, 0, 0, 0)
+	// MOV QWORD PTR [R10+Resume],resumeOffset; MOV EAX,2; RET.
+	code = append(code, 0x49, 0xC7, 0x82)
+	code = appendInt32(code, nativeResumeOffset)
+	code = appendInt32(code, int32(resumeOffset))
+	code = append(code, 0xB8, 0x02, 0x00, 0x00, 0x00, 0xC3)
+	relative := len(code) - (continueFixup + 4)
+	binary.LittleEndian.PutUint32(code[continueFixup:continueFixup+4], uint32(int32(relative)))
+	return code
+}
+
+// emitNativeBudgetPollWithSpill 是带寄存器 spill 的预算轮询：yield 分支在返回
+// Go 前先把 hot[0..]（寄存器化在 XMM8-15）写回 Frame，保证 Go 侧恢复时读到
+// 最新 local 值。continue 分支（预算未耗尽）不 spill，故 spill 仅在每 65536 次
+// 迭代的 yield 时执行一次，不抵消寄存器化的收益。
+func emitNativeBudgetPollWithSpill(code []byte, resumeOffset int, hot []int, numParams int) []byte {
+	// SUB QWORD PTR [R10+Budget],1; JNZ continue.
+	code = append(code, 0x49, 0x83, 0xAA)
+	code = appendInt32(code, nativeBudgetOffset)
+	code = append(code, 0x01, 0x0F, 0x85)
+	continueFixup := len(code)
+	code = append(code, 0, 0, 0, 0)
+	// yield 分支：先 spill 热 local 到 Frame。
+	for k, slot := range hot {
+		code = emitStoreF64(code, 8+k, nativeLocalOffset(slot, numParams))
+	}
 	// MOV QWORD PTR [R10+Resume],resumeOffset; MOV EAX,2; RET.
 	code = append(code, 0x49, 0xC7, 0x82)
 	code = appendInt32(code, nativeResumeOffset)

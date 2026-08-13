@@ -103,3 +103,48 @@ func TestAnalyzeHotLocals(t *testing.T) {
 		t.Errorf("useCounts[1] = %d, want 1", rep.useCounts[1])
 	}
 }
+
+func TestFindLoop(t *testing.T) {
+	p := mkProg([]Instr{
+		{Op: OpLoadLocal, Operand: 0},
+		{Op: OpAdd},
+		{Op: OpStoreLocal, Operand: 0},
+		{Op: OpJump, Operand: 0}, // 回边到 0
+	}, 1)
+	loop, ok := findLoop(p)
+	if !ok {
+		t.Fatal("expected a loop")
+	}
+	if loop.header != 0 || loop.backedge != 3 {
+		t.Errorf("got header=%d backedge=%d, want 0/3", loop.header, loop.backedge)
+	}
+}
+
+func TestFindLoopNone(t *testing.T) {
+	p := mkProg([]Instr{
+		{Op: OpLoadLocal, Operand: 0},
+		{Op: OpReturn},
+	}, 1)
+	if _, ok := findLoop(p); ok {
+		t.Fatal("unexpected loop in straight-line program")
+	}
+}
+
+func TestSelectHotLocals(t *testing.T) {
+	// 循环：LOAD 1; LOAD 1; ADD; STORE 2; JUMP 0（slot 0 是 this，跳过）
+	p := mkProg([]Instr{
+		{Op: OpLoadLocal, Operand: 1},
+		{Op: OpLoadLocal, Operand: 1},
+		{Op: OpAdd},
+		{Op: OpStoreLocal, Operand: 2},
+		{Op: OpJump, Operand: 0},
+	}, 3)
+	// 所有指令都证明 slot 1/2 是 Number。
+	assigned := []uint64{6, 6, 6, 6, 6}
+	loop, _ := findLoop(p)
+	hot := selectHotLocals(p, assigned, loop, 8)
+	// slot 1 被读 2 次，slot 2 只被写不被读 → 只选 slot 1。
+	if len(hot) != 1 || hot[0] != 1 {
+		t.Errorf("hot = %v, want [1]", hot)
+	}
+}

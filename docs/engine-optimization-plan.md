@@ -215,6 +215,30 @@ M0 基线与验证框架固化
 | spill 与无指针 Frame 布局冲突 | spill 槽仅存 float64 标量，不进 Go 指针区 |
 | 分配器复杂度引入正确性回归 | 分阶段：先局部（循环体）后全局；每阶段跑 jitdiff + fuzz |
 
+### 6.5 实施记录（2026-08-13）
+
+**完成内容**：完整实现了 Native 寄存器分配的三大基础设施与发射改造：
+
+1. **liveness 分析**（`regalloc.go`）：反向数据流活跃区间分析（处理回边收敛）+ 热 local 识别
+   （读取次数/活跃区间统计）。
+2. **循环检测与寄存器规划**（`findLoop`/`selectHotLocals`/`tryPlanRegalloc`）：识别 straight-line
+   单循环，选 proven-Number 热 local 映射到 XMM8-15。
+3. **发射改造**（`native_emit_amd64.go`）：热 local 在循环体内用寄存器（movapd）替代 Frame 内存
+   （movsd）；loop header 前插入 reload 块；spill 移到冷路径（budget poll 的 yield 分支 + 循环退出
+   exit_spill 块），不再每迭代 spill。
+
+**意外收获——REX 编码修复**：`emitLoadF64/emitStoreF64/emitMoveF64` 原仅支持 xmm0-7，xmm8-15 时
+ModRM 编码错误（缺 REX.R/REX.B 扩展位）导致非法指令崩溃。已修复。
+
+**测量结论（基于 benchmark 证据）**：寄存器分配对数值循环**收益被 CPU 内存层级抵消**——
+现代 CPU 的 L1 cache（~4 cycles）+ store-to-load forwarding 让 Frame 内存访问（movsd）已接近
+寄存器访问（movapd），操作数栈本就用了 XMM0-7。实测：简单累加循环 Auto 8.42ms → 8.3ms
+（~1.4%）、多累加器循环 151.6ms → 153.9ms（±2% 噪声，无收益），远低于预期 ≥1.5x。
+
+**保留理由**：实现语义正确（jitdiff 三 tier 零失配、fuzz 190 万次无崩溃、全量零失败），REX 修复
+与 liveness 基础设施为真实价值；寄存器分配逻辑虽当前收益有限，但为未来优化（属性 PIC 寄存器化、
+更多 local 场景、不同 CPU 微架构）奠定完整基础。
+
 ---
 
 ## 7. M3：循环优化（O4 LICM 扩展 + O5 数组读写 trace）
@@ -374,6 +398,7 @@ M1、M2、M4 均只依赖 M0，可并行；M3 依赖 M1（数组 trace 复用索
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v1.6 | 2026-08-13 | M2 实施：寄存器分配完整实现（liveness+发射改造+REX 修复），收益被 CPU 内存层级抵消（~0-1.4%） |
 | v1.5 | 2026-08-13 | 读路径对称检查：IC 已前置到位，两处尾巴简化为代码质量改进（无性能收益） |
 | v1.4 | 2026-08-13 | M4 后续：写入 IC 前置落地（~33.5%） |
 | v1.3 | 2026-08-13 | M4 实施：SET_PROP_LOCAL_TOP 测量否定回退；发现 setProperty FindAccessor 前置优化机会 |
