@@ -210,14 +210,17 @@ P2-3 决策：**保留字符串 wrapper**（`WrapCJSSource`），契约化记录
 | P3-3 ✅ | payload round-trip | compiled artifact 保存并恢复 SourceKind/ModuleKind/TLA；entry 与依赖分类一致 | conformance build 套件（含 `.mts/.cts`、大小写扩展）通过 |
 | P3-4 ✅ | conformance 扩展 | `tests/conformance/build` 与 `tests/compat/node22` 增加扩展名/TS 策略差分用例 | 与 Node/Bun 行为一致或按文档记录差异 |
 
-### 5.5 P4：TS strip 独立与产品化
+### 5.5 P4：TS strip 独立与产品化（已完成）
+
+> 2026-08-13 实施记录：P4-1/P4-2 按渐进式决策保留 parser 内 strip-only（文档化边界），
+> P4-3/P4-4 落地并验证。
 
 | ID | 工作项 | 交付物 | 完成条件 |
 |----|--------|--------|----------|
-| P4-1 | parser 产物分离（可选） | 评估并实现 parser 输出带 `SyntaxMode`/type-only 节点或显式 `ParseTS` API | 不破坏既有 `Parse/ParseModule` 调用；TS 语法回归通过 |
-| P4-2 | 独立 tsstrip pass | 类型注解/泛型/`as`/`satisfies`/interface/type 擦除从 JS 语法解析中拆出（或文档化保留 strip-only 边界） | run/build/cache 三路径行为一致；test262 + coding-agent 回归 |
-| P4-3 | coding-agent 全量打包 | 从 `src/aluka/cli.ts` 直接构建普通/tree-shake/`--optimize` 产物并复制资产 | `--version`/`--help`/offline 非交互路径通过；动态 import/worker 功能边界记录 |
-| P4-4 | 文档与 ADR | `docs/adr/` 记录分层决策（单一分类权威、阶段单向流、扩展名优先）；更新本计划状态表 | ADR 与实现一致；CI 门禁无回归 |
+| P4-1 ✅ | parser 产物分离（可选） | 评估结论：保留 `Parse/ParseModule` 与 parser 内 strip-only，不引入完整 TS 类型 AST（ADR 记录非目标） | 不破坏既有调用；TS 语法回归通过 |
+| P4-2 ✅ | 独立 tsstrip pass | 文档化 strip-only 边界（`StageTypeStripped` 记录擦除事实，独立 pass 标记为未来工作） | run/build/cache 三路径行为一致；test262 + coding-agent 回归 |
+| P4-3 ✅ | coding-agent 全量打包 | 从 `src/aluka/cli.ts` 直接构建 plain/tree-shake/`--optimize` 三档产物并复制资产 | `--version`/`--help`/offline 非交互路径通过；动态 import/worker 功能边界记录 |
+| P4-4 ✅ | 文档与 ADR | `docs/adr/module-pipeline-layers.md` 记录单一分类权威、单向阶段流、扩展名优先决策 | ADR 与实现一致；CI 门禁无回归 |
 
 ## 6. 测试矩阵（贯穿全部里程碑）
 
@@ -244,8 +247,9 @@ P2-3 决策：**保留字符串 wrapper**（`WrapCJSSource`），契约化记录
 
 ## 8. 验收顺序
 
-1. P1 交付后跑 `go test ./...` + `tests/conformance/build/run.sh` + jitdiff；
-2. P2 交付后跑 `--optimize` 组合产物与 shake/minify 单独对拍；
-3. P3 交付后跑 payload round-trip 与 compiled artifact 执行；
-4. P4 交付后跑 coding-agent 真实产物（普通/tree-shake/optimize）与资产 smoke；
-5. 每阶段完成时更新本计划「当前基线」与完成状态，作为 CI 可追踪证据。
+1. ✅ P1：`go test ./...` + jitdiff 通过（分类单一化/TS 策略/缓存 key/payload v2/矩阵测试）；
+2. ✅ P2：`--optimize` 组合与 shake/minify 单独对拍通过（共享 AST/minify/ESM lower 幂等/
+   AST clone/阶段校验）；
+3. ✅ P3：loader 统一管线、文本回退移除、payload round-trip 与 run-vs-build 诊断一致；
+4. ✅ P4：coding-agent 真实产物（plain/shaken/optimize）与资产 smoke 通过，ADR 落地；
+5. 每个里程碑完成时更新本计划「当前基线」与完成状态，作为 CI 可追踪证据。
