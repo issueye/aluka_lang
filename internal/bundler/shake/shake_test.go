@@ -170,3 +170,24 @@ func TestShakeNamedNamespaceReExport(t *testing.T) {
 		}
 	}
 }
+
+func TestShakeMarksRecompiledModules(t *testing.T) {
+	gr := buildFixture(t, map[string]string{
+		"main.js": "import { used } from './lib.js';\nconsole.log(used());\n",
+		"lib.js":  "export function used() { return 'U'; }\nexport function unused() { return 'X'; }\n",
+	}, "main.js")
+	vm, _ := interpreter.NewVM()
+	res, err := Shake(vm, gr, gr.Entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range res.Modules {
+		if m.Path == "lib.js" {
+			if !m.Transformed {
+				t.Fatal("tree-shaken module not marked Transformed")
+			}
+			return
+		}
+	}
+	t.Fatal("lib.js missing from result")
+}

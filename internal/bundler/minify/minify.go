@@ -29,6 +29,12 @@ func minimizeBlock(body []ast.Statement) []ast.Statement {
 	refs := astutil.CollectRefs(blockNode(body))
 	for _, stmt := range body {
 		stmt = foldStmt(stmt)
+		// ESM 导出的声明即使在本模块内没有引用，也属于公开 API，不能按
+		// “未使用局部声明”删除。re-export 没有 Declaration，保持原样。
+		if _, exported := stmt.(*ast.ExportDecl); exported {
+			out = append(out, stmt)
+			continue
+		}
 		switch n := stmt.(type) {
 		case *ast.FunctionDecl:
 			if n.Name != nil && refs[n.Name.Name] == 0 {

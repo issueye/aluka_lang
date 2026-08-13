@@ -142,6 +142,27 @@ console.log(f());
 	}
 }
 
+func TestMinifyPreservesExportedDeclarations(t *testing.T) {
+	prog, err := parser.ParseModule(`
+export const value = 42;
+export function helper() { return value; }
+export class Box {}
+export * as NativeGuard from "./native.mjs";
+`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	Program(prog)
+	if len(prog.Body) != 4 {
+		t.Fatalf("minified body length = %d, want 4", len(prog.Body))
+	}
+	for i, stmt := range prog.Body {
+		if _, ok := stmt.(*ast.ExportDecl); !ok {
+			t.Errorf("body[%d] = %T, want *ast.ExportDecl", i, stmt)
+		}
+	}
+}
+
 // TestFoldTemplate 无插值模板字符串折叠。
 func TestFoldTemplate(t *testing.T) {
 	src := "console.log(`plain`);\n"

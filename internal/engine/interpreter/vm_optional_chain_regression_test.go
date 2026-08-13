@@ -27,6 +27,10 @@ func TestVMOptionalChainResidualRegression(t *testing.T) {
 		// obj.method 链（this 绑定走 temp slot）。
 		{`const o = { m: { n: (x) => x * 2 } }; o?.m?.n(21) ?? -1`, "42"},
 		{`const o = { m: null }; o?.m?.n(21) ?? -1`, "-1"},
+		// 成员调用结果继续可选取属性：调用结果已计入链栈，父 MemberExpr
+		// 不得重复计数，否则短路清理会多 POP 一个 local 槽。
+		{`const m = new Map(); function f(k) { return m.get(k)?.provider; } f("missing") ?? "none"`, "none"},
+		{`const m = new Map([["x", { provider: "ok" }]]); function f(k) { return m.get(k)?.provider; } f("x")`, "ok"},
 		// 计算属性链。
 		{`const o = { k: 5 }; o?.["k"] ?? -1`, "5"},
 		{`const o = { k: 5 }; o?.["z"] ?? -1`, "-1"},

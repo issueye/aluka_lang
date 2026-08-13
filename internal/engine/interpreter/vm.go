@@ -1524,6 +1524,9 @@ func (v *VM) canFastCall(cl *vmClosure, numArgs int) bool {
 func (v *VM) fastCallClosure(cl *vmClosure, thisVal engine.Value, numArgs, argStart int) (engine.Value, error) {
 	v.bumpCall()
 	tmpl := cl.tmpl
+	if numArgs < 0 || argStart < 1 || argStart+numArgs > len(v.stack) {
+		return engine.Undefined(), fmt.Errorf("aluka: invalid fast-call stack layout: args=%d argStart=%d len=%d", numArgs, argStart, len(v.stack))
+	}
 	if v.jitConfig.Mode != jit.Off && (cl.jitState == nil || !cl.jitState.rejected) {
 		if result, ok, err := v.tryQuickCall(cl, thisVal, v.stack[argStart:argStart+numArgs]); err != nil {
 			return engine.Undefined(), err
@@ -1551,9 +1554,11 @@ func (v *VM) fastCallClosure(cl *vmClosure, thisVal engine.Value, numArgs, argSt
 	// [frameBase+1, frameBase+1+numArgs)，零拷贝。
 	frameBase := argStart - 1
 	v.stack[frameBase] = thisVal
-	// 补齐未传形参与局部变量为 undefined（追加在参数之后）。
-	if extra := tmpl.NumLocals - 1 - numArgs; extra > 0 {
-		v.reserveUndefined(extra)
+	// 补齐局部变量到完整帧长度。参数原地复用时，不能只依赖调用方的
+	// `frameBase+1+numArgs` 假设；绝对终点保证 slot [0, NumLocals) 都可访问。
+	need := frameBase + tmpl.NumLocals - len(v.stack)
+	if need > 0 {
+		v.reserveUndefined(need)
 	}
 	// 按 tmpl.MaxStack 预留该帧操作数栈，使帧内 push 永不扩容。
 	v.ensureFrameStack(tmpl)

@@ -365,9 +365,15 @@ func (c *Compiler) hoistTopLevel(stmts []ast.Statement) {
 				if vd, ok := st.Left.(*ast.VarDecl); ok && vd.Kind == "var" {
 					c.hoistVarDeclarators(vd.Decls)
 				}
+				if st.Body != nil {
+					walk([]ast.Statement{st.Body})
+				}
 			case *ast.ForOfStmt:
 				if vd, ok := st.Left.(*ast.VarDecl); ok && vd.Kind == "var" {
 					c.hoistVarDeclarators(vd.Decls)
+				}
+				if st.Body != nil {
+					walk([]ast.Statement{st.Body})
 				}
 			}
 		}
@@ -869,15 +875,31 @@ func (c *Compiler) compileWhile(s *ast.WhileStmt) error {
 		return err
 	}
 	jumpExit := c.emit(bytecode.OpJmpFalsePop, 0)
+
+	// ES2015 per-iteration 绑定：体块内被闭包捕获的 let/const 每轮封存。
+	captured := loopBodyCapturedBlockNames(s.Body)
+	iterationSlotStart := 0
+	if len(captured) > 0 {
+		iterationSlotStart = c.cur().tmpl.NumLocals
+	}
 	if err := c.compileStmt(s.Body); err != nil {
 		return err
 	}
-	c.patchLoopContinues(loopStart)
+	continuePC := c.curPC()
+	c.topLoop().continueTarget = continuePC
+	c.patchLoopContinues(continuePC)
+	if len(captured) > 0 {
+		c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+	}
 	c.emit(bytecode.OpJmp, uint32(loopStart-(c.curPC()+bytecode.InstrSize)))
+	breakCleanupPC := c.curPC()
+	if len(captured) > 0 {
+		c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+	}
 	exit := c.curPC()
 	c.patchJumpToHere(jumpExit)
 	c.topLoop().breakTarget = exit
-	c.patchLoopBreaks(exit)
+	c.patchLoopBreaks(breakCleanupPC)
 	return nil
 }
 
@@ -885,19 +907,32 @@ func (c *Compiler) compileDoWhile(s *ast.DoWhileStmt) error {
 	loopStart := c.curPC()
 	c.pushLoop(0, 0) // continue target patched later
 	defer c.popLoop()
+
+	captured := loopBodyCapturedBlockNames(s.Body)
+	iterationSlotStart := 0
+	if len(captured) > 0 {
+		iterationSlotStart = c.cur().tmpl.NumLocals
+	}
 	if err := c.compileStmt(s.Body); err != nil {
 		return err
 	}
 	continuePC := c.curPC()
 	c.topLoop().continueTarget = continuePC
 	c.patchLoopContinues(continuePC)
+	if len(captured) > 0 {
+		c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+	}
 	if err := c.compileExpr(s.Test); err != nil {
 		return err
 	}
 	c.emit(bytecode.OpJmpTruePop, uint32(loopStart-(c.curPC()+bytecode.InstrSize)))
+	breakCleanupPC := c.curPC()
+	if len(captured) > 0 {
+		c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+	}
 	exit := c.curPC()
 	c.topLoop().breakTarget = exit
-	c.patchLoopBreaks(exit)
+	c.patchLoopBreaks(breakCleanupPC)
 	return nil
 }
 
@@ -991,27 +1026,50 @@ func (c *Compiler) compileFor(s *ast.ForStmt) error {
 			c.emit(bytecode.OpLoadLocal, uint32(iterSlots[i]))
 			c.emit(bytecode.OpStoreLocal, uint32(headSlots[name]))
 		}
-	} else {
-		if err := c.compileStmt(s.Body); err != nil {
+		c.emit(bytecode.OpJmp, uint32(loopStart-(c.curPC()+bytecode.InstrSize)))
+		breakCleanupPC := c.curPC()
+		c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+		exit := c.curPC()
+		if s.Test != nil {
+			c.patchJumpToHere(jumpExit)
+		}
+		c.topLoop().breakTarget = exit
+		c.patchLoopBreaks(breakCleanupPC)
+		return nil
+	}
+
+	// per-iteration 块级绑定：体块内被闭包捕获的 let/const 每轮封存。
+	captured := loopBodyCapturedBlockNames(s.Body)
+	bodyIterationSlotStart := 0
+	if len(captured) > 0 {
+		bodyIterationSlotStart = c.cur().tmpl.NumLocals
+	}
+	if err := c.compileStmt(s.Body); err != nil {
+		return err
+	}
+	continuePC := c.curPC()
+	c.topLoop().continueTarget = continuePC
+	c.patchLoopContinues(continuePC)
+	if len(captured) > 0 {
+		c.emit(bytecode.OpCloseUpvalues, uint32(bodyIterationSlotStart))
+	}
+	if s.Update != nil {
+		if err := c.compileExpr(s.Update); err != nil {
 			return err
 		}
-		continuePC := c.curPC()
-		c.topLoop().continueTarget = continuePC
-		c.patchLoopContinues(continuePC)
-		if s.Update != nil {
-			if err := c.compileExpr(s.Update); err != nil {
-				return err
-			}
-			c.emit(bytecode.OpPop, 0)
-		}
+		c.emit(bytecode.OpPop, 0)
 	}
 	c.emit(bytecode.OpJmp, uint32(loopStart-(c.curPC()+bytecode.InstrSize)))
+	breakCleanupPC := c.curPC()
+	if len(captured) > 0 {
+		c.emit(bytecode.OpCloseUpvalues, uint32(bodyIterationSlotStart))
+	}
 	exit := c.curPC()
 	if s.Test != nil {
 		c.patchJumpToHere(jumpExit)
 	}
 	c.topLoop().breakTarget = exit
-	c.patchLoopBreaks(exit)
+	c.patchLoopBreaks(breakCleanupPC)
 	return nil
 }
 
@@ -1159,6 +1217,21 @@ func (c *Compiler) compileForIn(left ast.Node, right ast.Expression, body ast.St
 	c.pushLoop(loopStart, 0)
 	defer c.popLoop()
 
+	// ES2015 per-iteration 绑定：
+	//   - 头变量（`for (const/let k in ...)`）每次迭代独立副本；
+	//   - 体块内被闭包捕获的 let/const 同样按迭代封存。
+	// 两类绑定若存在，共同使用 iterationSlotStart 作为关闭下界，continue/break
+	// 目标处 OpCloseUpvalues 封存本轮 upvalue，下一轮重开（对齐 for-of 机制）。
+	headIsLetConst := false
+	if vd, ok := left.(*ast.VarDecl); ok {
+		headIsLetConst = (vd.Kind == "let" || vd.Kind == "const") && len(vd.Decls) > 0
+	}
+	bodyCaptured := loopBodyCapturedBlockNames(body)
+	needClose := headIsLetConst || len(bodyCaptured) > 0
+	c.pushBlock()
+	defer c.popBlock()
+	iterationSlotStart := c.cur().tmpl.NumLocals
+
 	// Load current key.
 	c.emit(bytecode.OpLoadLocal, uint32(tmpKeys))
 	c.emit(bytecode.OpLoadLocal, uint32(tmpIdx))
@@ -1186,15 +1259,22 @@ func (c *Compiler) compileForIn(left ast.Node, right ast.Expression, body ast.St
 	continuePC := c.curPC()
 	c.topLoop().continueTarget = continuePC
 	c.patchLoopContinues(continuePC)
+	if needClose {
+		c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+	}
 	c.emit(bytecode.OpLoadLocal, uint32(tmpIdx))
 	c.emit(bytecode.OpPushInt, 1)
 	c.emit(bytecode.OpAdd, 0)
 	c.emit(bytecode.OpStoreLocal, uint32(tmpIdx))
 	c.emit(bytecode.OpJmp, uint32(loopStart-(c.curPC()+bytecode.InstrSize)))
+	breakCleanupPC := c.curPC()
+	if needClose {
+		c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+	}
 	exit := c.curPC()
 	c.patchJumpToHere(jumpExit)
 	c.topLoop().breakTarget = exit
-	c.patchLoopBreaks(exit)
+	c.patchLoopBreaks(breakCleanupPC)
 	return nil
 }
 
@@ -2612,7 +2692,7 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 			}
 			// receiver 压入；m.Object 若是 member（a.b / o?.x?.y），链首已在
 			// 最内层计数（member 级联 GET_PROP 净 0），不重复 +1。
-			if _, isMember := m.Object.(*ast.MemberExpr); !isMember {
+			if !optionalExprTracksResult(m.Object) {
 				c.optPushValue()
 			}
 			// 2. If m.Optional, check if receiver is nullish (short-circuit)
@@ -2658,8 +2738,8 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 		if err := c.compileExpr(n.Callee); err != nil {
 			return err
 		}
-		if _, isMember := n.Callee.(*ast.MemberExpr); !isMember {
-			c.optPushValue() // callee 压入（member 链首已在最内层计数）
+		if !optionalExprTracksResult(n.Callee) {
+			c.optPushValue() // callee 压入（已计数的子链不重复）
 		}
 		c.emitOptionalJump()
 		if !hasSpread {
@@ -2691,14 +2771,14 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 			if err := c.compileExpr(m.Object); err != nil {
 				return err
 			}
-			if _, isMember := m.Object.(*ast.MemberExpr); !isMember {
-				c.optPushValue() // obj 压入（member 链首已在最内层计数）
+			if !optionalExprTracksResult(m.Object) {
+				c.optPushValue() // obj 压入（已计数的子链不重复）
 			}
 			if m.Optional {
 				c.emitOptionalJump()
 			}
 			c.emit(bytecode.OpDup, 0) // [obj, obj]
-			c.optPushValue()         // obj 副本
+			c.optPushValue()          // obj 副本
 			if err := c.compileExpr(m.Property); err != nil {
 				return err
 			}
@@ -2730,8 +2810,8 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 		if err := c.compileExpr(m.Object); err != nil {
 			return err
 		}
-		if _, isMember := m.Object.(*ast.MemberExpr); !isMember {
-			c.optPushValue() // receiver 压入（member 链首已在最内层计数）
+		if !optionalExprTracksResult(m.Object) {
+			c.optPushValue() // receiver 压入（已计数的子链不重复）
 		}
 		// If m.Optional, check if receiver is nullish (short-circuit)
 		if m.Optional {
@@ -2876,9 +2956,10 @@ func (c *Compiler) compileMember(n *ast.MemberExpr) error {
 	if err := c.compileExpr(n.Object); err != nil {
 		return err
 	}
-	// 链值压入（对象）：n.Object 若是 member（this.settings / o?.x），链首
-	// 已在最内层计数（member 级联 GET_PROP 净 0），不重复 +1。
-	if _, isMember := n.Object.(*ast.MemberExpr); !isMember {
+	// 链值压入（对象）：member 以及成员/可选 call 已在子表达式中维护链栈
+	// 计数，不重复 +1。否则 `map.get(k)?.prop` 会把调用结果计两次，短路
+	// 清理块多发一个 POP，把临时 local 槽误当操作数弹掉。
+	if !optionalExprTracksResult(n.Object) {
 		c.optPushValue()
 	}
 
@@ -2905,6 +2986,25 @@ func (c *Compiler) compileMember(n *ast.MemberExpr) error {
 		c.endOptionalChain()
 	}
 	return nil
+}
+
+// optionalExprTracksResult reports whether a child expression already accounts
+// for its result in the active optional-chain stack counter.
+func optionalExprTracksResult(expr ast.Expression) bool {
+	switch n := expr.(type) {
+	case *ast.MemberExpr:
+		return true
+	case *ast.CallExpr:
+		if n.Optional {
+			return true
+		}
+		_, isMethodCall := n.Callee.(*ast.MemberExpr)
+		return isMethodCall
+	case *ast.AwaitExpr:
+		return optionalExprTracksResult(n.Argument)
+	default:
+		return false
+	}
 }
 
 func (c *Compiler) compileConditional(n *ast.ConditionalExpr) error {
@@ -3179,9 +3279,15 @@ func (c *Compiler) hoistFunc(body *ast.BlockStmt) {
 				if vd, ok := st.Left.(*ast.VarDecl); ok && vd.Kind == "var" {
 					c.hoistVarDeclarators(vd.Decls)
 				}
+				if st.Body != nil {
+					walk([]ast.Statement{st.Body})
+				}
 			case *ast.ForOfStmt:
 				if vd, ok := st.Left.(*ast.VarDecl); ok && vd.Kind == "var" {
 					c.hoistVarDeclarators(vd.Decls)
+				}
+				if st.Body != nil {
+					walk([]ast.Statement{st.Body})
 				}
 			case *ast.TryStmt:
 				walk(st.Block.Body)
@@ -3984,4 +4090,60 @@ func forLetCapturedNames(body ast.Node, names []string) []string {
 		}
 	}
 	return out
+}
+
+// collectLoopBodyBlockNames 收集循环体内块级作用域（let/const）声明的绑定名。
+// 不进入嵌套函数体（嵌套函数内部的声明属于该函数自己的作用域，不共享本循环
+// 的迭代作用域）；var/function/class 声明经 hoistFunc 提升到函数作用域（槽在
+// 循环前分配），不在此列。
+func collectLoopBodyBlockNames(body ast.Statement) []string {
+	seen := map[string]bool{}
+	var names []string
+	visited := make(map[ast.Node]bool) // 防共享/循环引用
+	var walk func(n ast.Node)
+	walk = func(n ast.Node) {
+		if n == nil || visited[n] {
+			return
+		}
+		visited[n] = true
+		switch f := n.(type) {
+		case *ast.FunctionExpr, *ast.ArrowFunc, *ast.FunctionDecl:
+			return // 嵌套函数体：内部声明不属于本循环迭代作用域
+		case *ast.VarDecl:
+			if f.Kind == "let" || f.Kind == "const" {
+				for _, d := range f.Decls {
+					if d.Pattern != nil {
+						for _, name := range patternNames(d.Pattern) {
+							if !seen[name] {
+								seen[name] = true
+								names = append(names, name)
+							}
+						}
+					} else if d.Name != nil {
+						if !seen[d.Name.Name] {
+							seen[d.Name.Name] = true
+							names = append(names, d.Name.Name)
+						}
+					}
+				}
+			}
+			return // init 内无新的块级绑定名，不深入
+		}
+		rv := reflect.ValueOf(n)
+		walkValue(rv, func(child ast.Node) { walk(child) }, visited)
+	}
+	walk(body)
+	return names
+}
+
+// loopBodyCapturedBlockNames 返回循环体内被嵌套函数（闭包）捕获的块级
+// let/const 绑定名。用于判断 classic for / while / do-while / for-in 的循环体
+// 是否需要 per-iteration 封存（ES2015 语义：每次迭代的块级声明是独立副本，
+// 闭包应捕获当次迭代的值，而非共享同一槽位的终值）。
+func loopBodyCapturedBlockNames(body ast.Statement) []string {
+	names := collectLoopBodyBlockNames(body)
+	if len(names) == 0 {
+		return nil
+	}
+	return forLetCapturedNames(body, names)
 }

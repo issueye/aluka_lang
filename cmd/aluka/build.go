@@ -421,7 +421,10 @@ func writeAnalysisReports(opts buildOptions, reports []*analyze.Report) error {
 // minifyModule 重新解析并最小化 ESM 模块（CJS 保守跳过——字符串包装
 // 无法在 AST 层重编译，保持原样）。
 func minifyModule(vm *interpreter.VM, rootDir string, m *compile.EntryData) (*compile.EntryData, error) {
-	if m.ModuleType != compile.ModuleTypeESM {
+	if m.ModuleType != compile.ModuleTypeESM || m.Transformed {
+		// tree-shake 已从 AST 重编译过该模块；再次从原始源码 parse 会把
+		// 已剪除的导出恢复，随后 resolutions 仍指向已删模块，产物运行时报
+		// "not found in payload"。当前无 AST 持久化，故保守跳过二次变换。
 		return m, nil
 	}
 	src, err := os.ReadFile(filepath.Join(rootDir, m.Path))

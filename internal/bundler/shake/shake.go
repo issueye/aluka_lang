@@ -274,6 +274,7 @@ func Shake(vm *interpreter.VM, gr *graph.Result, entry string) (*Result, error) 
 		if err != nil {
 			return nil, fmt.Errorf("shake: recompile %q: %w", m.Path, err)
 		}
+		nd.Transformed = true
 		res.Modules = append(res.Modules, nd)
 	}
 	return res, nil

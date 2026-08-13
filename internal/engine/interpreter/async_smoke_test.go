@@ -53,6 +53,18 @@ foo().then(function(v) { globalThis.__r = v });
 	}
 }
 
+func TestAsyncAwaitOptionalMethodCall(t *testing.T) {
+	got := vmEvalPromise(t, `
+async function resolve(ctx) {
+  return (await ctx.env("X"))?.trim();
+}
+resolve({ env: async () => undefined }).then(function(v) { globalThis.__r = v ?? "none"; });
+`)
+	if got != "none" {
+		t.Errorf("await optional method = %q, want none", got)
+	}
+}
+
 // TestAsyncMultipleAwaits: multiple sequential awaits in one function.
 func TestAsyncMultipleAwaits(t *testing.T) {
 	got := vmEvalPromise(t, `
