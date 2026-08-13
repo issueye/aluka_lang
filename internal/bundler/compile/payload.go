@@ -27,7 +27,9 @@ import (
 )
 
 // PayloadVersion 是 payload 布局版本。布局变更（header/manifest 字段）时递增。
-const PayloadVersion = 1
+// v2：EntryInfo 增加 SourceKind/ModuleKind（分类上下文持久化），与
+// bc_cache pipelineVersion 对齐，旧产物（v1）不再兼容。
+const PayloadVersion = 2
 
 // payloadMagic 是 payload 数据段的起始魔数。
 var payloadMagic = []byte("ALUKABDL")
@@ -51,6 +53,8 @@ const (
 type EntryInfo struct {
 	Path       string `json:"path"`       // 模块标识（构建时路径，产物模式作为虚拟路径）
 	ModuleType string `json:"moduleType"` // "esm" | "cjs"
+	SourceKind string `json:"sourceKind"` // "javascript" | "typescript" | "json"
+	ModuleKind string `json:"moduleKind"` // "esm" | "cjs" | "script"
 	Offset     uint32 `json:"offset"`     // 相对数据区起始的偏移
 	Length     uint32 `json:"length"`     // 序列化字节数
 }
@@ -77,6 +81,7 @@ type EntryData struct {
 	Path       string
 	ModuleType string // ModuleTypeESM | ModuleTypeCJS
 	SourceKind module.SourceKind
+	ModuleKind module.ModuleKind
 	Stage      module.TransformStage
 	Module     *bytecode.Module
 }
@@ -100,6 +105,8 @@ func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[str
 		entries = append(entries, EntryInfo{
 			Path:       m.Path,
 			ModuleType: m.ModuleType,
+			SourceKind: m.SourceKind.String(),
+			ModuleKind: m.ModuleKind.String(),
 			Offset:     offset,
 			Length:     uint32(data.Len()) - offset,
 		})
@@ -187,6 +194,32 @@ func (m *Manifest) LoadModule(data []byte, path string) (*bytecode.Module, error
 func (m *Manifest) ModuleTypeOf(path string) string {
 	for _, e := range m.Modules {
 		if e.Path == path {
+			return e.ModuleType
+		}
+	}
+	return ""
+}
+
+// SourceKindOf 返回模块的源码语言分类；旧产物（v1）无该字段时按扩展名回推。
+func (m *Manifest) SourceKindOf(path string) string {
+	for _, e := range m.Modules {
+		if e.Path == path {
+			if e.SourceKind != "" {
+				return e.SourceKind
+			}
+			return module.DetectSourceKind(path).String()
+		}
+	}
+	return ""
+}
+
+// ModuleKindOf 返回模块协议分类；旧产物（v1）无该字段时回退到 ModuleType。
+func (m *Manifest) ModuleKindOf(path string) string {
+	for _, e := range m.Modules {
+		if e.Path == path {
+			if e.ModuleKind != "" {
+				return e.ModuleKind
+			}
 			return e.ModuleType
 		}
 	}

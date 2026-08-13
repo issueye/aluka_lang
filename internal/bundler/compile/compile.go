@@ -32,12 +32,18 @@ func CompileSourceUnit(vm *interpreter.VM, unit *module.SourceUnit) (*EntryData,
 	}
 	isESM := unit.ModuleKind == module.ModuleESM
 	if !isESM {
+		// 显式 CJS（.cjs/.cts 或 package type commonjs）中出现 ESM-only 语法
+		// 属于源文件错误：CJS wrapper 无法承载 import/export，给明确诊断而非
+		// 含糊的 "unsupported statement"。
+		if module.HasESMDecls(unit.Program) {
+			return nil, fmt.Errorf("compile: %q: module type is commonjs but source contains ESM import/export syntax", unit.Path)
+		}
 		wrapped := module.WrapCJSSource(string(unit.Source))
 		mod, err := vm.Compile(wrapped, unit.Path)
 		if err != nil {
 			return nil, fmt.Errorf("compile: %q: %w", unit.Path, err)
 		}
-		return &EntryData{Path: unit.Path, ModuleType: ModuleTypeCJS, SourceKind: unit.SourceKind, Stage: unit.Stage | module.StageWrapped, Module: mod}, nil
+		return &EntryData{Path: unit.Path, ModuleType: ModuleTypeCJS, SourceKind: unit.SourceKind, ModuleKind: unit.ModuleKind, Stage: unit.Stage | module.StageWrapped, Module: mod}, nil
 	}
 	transformed := module.TransformESMToCJS(unit.Program, unit.Path)
 	prog := module.WrapESMAST(transformed, unit.Path)
@@ -45,7 +51,7 @@ func CompileSourceUnit(vm *interpreter.VM, unit *module.SourceUnit) (*EntryData,
 	if err != nil {
 		return nil, fmt.Errorf("compile: %q: %w", unit.Path, err)
 	}
-	return &EntryData{Path: unit.Path, ModuleType: ModuleTypeESM, SourceKind: unit.SourceKind, Stage: unit.Stage | module.StageESMLowered | module.StageWrapped, Module: mod}, nil
+	return &EntryData{Path: unit.Path, ModuleType: ModuleTypeESM, SourceKind: unit.SourceKind, ModuleKind: unit.ModuleKind, Stage: unit.Stage | module.StageESMLowered | module.StageWrapped, Module: mod}, nil
 }
 
 // ParseFileUnit 读取并解析一个源码文件，不执行模块 lower 或 bytecode 编译。
@@ -86,7 +92,7 @@ func CompileFile(vm *interpreter.VM, path, key string) (*EntryData, error) {
 // 复用同一编译管线）。src 为原始源码（CJS 包装需要）；key 为模块标识。
 // 模块类型自动判定（与 CompileFile 一致）。
 func CompileProgram(vm *interpreter.VM, prog *ast.Program, src []byte, key string) (*EntryData, error) {
-	return CompileProgramType(vm, prog, src, key, module.HasESMDecls(prog) || ast.HasTopLevelAwait(prog) || filepath.Ext(key) == ".mjs")
+	return CompileProgramType(vm, prog, src, key, module.HasESMDecls(prog) || ast.HasTopLevelAwait(prog) || strings.EqualFold(filepath.Ext(key), ".mjs"))
 }
 
 // CompileProgramType 按显式模块类型编译。isESM=true 走 ESM 转换路径；
@@ -100,7 +106,7 @@ func CompileProgramType(vm *interpreter.VM, prog *ast.Program, src []byte, key s
 		if err != nil {
 			return nil, fmt.Errorf("compile: %q: %w", key, err)
 		}
-		return &EntryData{Path: key, ModuleType: ModuleTypeCJS, Module: mod}, nil
+		return &EntryData{Path: key, ModuleType: ModuleTypeCJS, SourceKind: module.DetectSourceKind(key), ModuleKind: module.ModuleCommonJS, Stage: module.StageWrapped, Module: mod}, nil
 	}
 
 	transformed := module.TransformESMToCJS(prog, key)
@@ -109,5 +115,5 @@ func CompileProgramType(vm *interpreter.VM, prog *ast.Program, src []byte, key s
 	if err != nil {
 		return nil, fmt.Errorf("compile: %q: %w", key, err)
 	}
-	return &EntryData{Path: key, ModuleType: ModuleTypeESM, Module: mod}, nil
+	return &EntryData{Path: key, ModuleType: ModuleTypeESM, SourceKind: module.DetectSourceKind(key), ModuleKind: module.ModuleESM, Stage: module.StageESMLowered | module.StageWrapped, Module: mod}, nil
 }

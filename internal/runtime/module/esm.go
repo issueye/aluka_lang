@@ -64,7 +64,7 @@ func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
 	if !ok {
 		return engine.Undefined(), fmt.Errorf("module: ESM requires the bytecode VM engine")
 	}
-	mod, compileErr := l.bcCache.compileOrLoad(absPath, "esm", func() (*bytecode.Module, error) {
+	mod, compileErr := l.bcCache.compileOrLoad(absPath, DetectSourceKind(absPath), ModuleESM, func() (*bytecode.Module, error) {
 		return vm.CompileAST(prog2, absPath)
 	})
 	if compileErr != nil {

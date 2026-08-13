@@ -23,16 +23,21 @@ import (
 // bcCacheDirName 是缓存目录名（相对 node_modules）。
 const bcCacheDirName = ".aluka/cache"
 
+// pipelineVersion 是模块管线分层版本。前端分类、ESM/CJS 判定、lower/wrapper
+// 语义变化时递增，使旧字节码缓存失效（不依赖 FormatVersion——字节码布局
+// 未变时 FormatVersion 不变，但分类/阶段语义可能已变）。
+const pipelineVersion = 1
+
 // bytecodeCache 提供字节码 Module 的磁盘读写。
 type bytecodeCache struct {
 	disabled bool // true 时禁用缓存（对应 --no-cache）
 }
 
-// cacheKey 计算缓存键：基于源文件路径、mtime、size、字节码格式版本与
-// 编译形态（kind："esm"/"cjs"）。
-func (bc *bytecodeCache) cacheKey(absPath string, info os.FileInfo, kind string) string {
+// cacheKey 计算缓存键：基于源文件路径、mtime、size、字节码格式版本、
+// 管线版本与分类（SourceKind + ModuleKind）。
+func (bc *bytecodeCache) cacheKey(absPath string, info os.FileInfo, sourceKind SourceKind, kind ModuleKind) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s|%d|%d|%d|%s", absPath, info.ModTime().UnixNano(), info.Size(), bytecode.FormatVersion, kind)
+	fmt.Fprintf(h, "%s|%d|%d|%d|%d|%s|%s", absPath, info.ModTime().UnixNano(), info.Size(), bytecode.FormatVersion, pipelineVersion, sourceKind, kind)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -108,17 +113,15 @@ func (bc *bytecodeCache) cacheFilePath(srcPath, key string) string {
 }
 
 // compileOrLoad 尝试从缓存加载字节码；未命中则调用 compile 闭包编译并写盘。
-// kind 标识编译形态（"esm"/"cjs"），参与缓存键——同一源文件两种形态的
-// 模块函数签名不同，必须隔离。
-// compile 闭包封装了具体的编译逻辑（CJS 直接编译源码；ESM 先 AST 转换再编译），
-// 使缓存逻辑与编译方式解耦。
-func (bc *bytecodeCache) compileOrLoad(absPath, kind string, compile func() (*bytecode.Module, error)) (*bytecode.Module, error) {
+// sourceKind/kind 标识源码语言与模块协议，参与缓存键——同源不同分类的模块
+// 函数签名不同（ESM 8 参 vs CJS 6 参），必须隔离。
+func (bc *bytecodeCache) compileOrLoad(absPath string, sourceKind SourceKind, kind ModuleKind, compile func() (*bytecode.Module, error)) (*bytecode.Module, error) {
 	info, err := os.Stat(absPath)
 	if err != nil {
 		// 无法 stat 文件，退化为直接编译（不缓存）。
 		return compile()
 	}
-	key := bc.cacheKey(absPath, info, kind)
+	key := bc.cacheKey(absPath, info, sourceKind, kind)
 	if mod, err := bc.load(absPath, key); err == nil && mod != nil {
 		return mod, nil
 	}

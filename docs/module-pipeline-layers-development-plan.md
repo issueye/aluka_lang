@@ -80,14 +80,16 @@ runtime 执行（compiled / cached / fresh）
 
 | 类别 | 缺口 | 风险 |
 |------|------|------|
-| payload | Manifest/`EntryInfo` 尚未持久化 SourceKind 与 ModuleKind；`PayloadVersion` 未 bump | 产物无法自证分类上下文，旧 payload 与未来语义漂移 |
 | runtime | loader 仍自行组合 TS check、HasESMDecls 判定、ESM 回退、transform、wrapper，未迁移到 `SourceUnit` | run 与 build 分类不一致的现状保留 |
 | 优化阶段 | minify 尚未成为共享 AST 上的独立阶段（对 shake 后模块保护性跳过） | shake+minify 组合优化收益未恢复 |
 | ESM lower | `TransformESMToCJS` 非纯函数：`rewriteImportedIdentifiers` 反射原地改写嵌套节点 | 重复调用/并行/缓存存在状态污染风险 |
 | CJS wrapper | 仍是 `WrapCJSSource` 字符串拼接，未走 AST wrapper | 与 ESM AST wrapper 两套形态，`hasESMSyntax` 文本扫描误判 |
-| 缓存 | 字节码缓存 key 未纳入 SourceKind/ModuleKind/pipeline version | 同源不同分类语义复用旧字节码 |
-| TS 策略 | `checkUnsupportedTS` 仅 runtime loader 调用，build graph/compile 未调用 | 同一 `.ts` 文件 run 拒绝而 build 接受 |
 | AST 复用 | 无 clone API，模块 IR 无法并行/复用 | 多入口去重、阶段幂等与并发编译受限 |
+
+P1（2026-08-13 已落地）：模块分类单一化（loader 改用 `SourceModuleKind`/`DetectSourceKind`）、TS 策略
+统一（`ParseSourceUnit` 与 runtime 一致，compile 对显式 CJS 含 ESM 语法给明确诊断）、缓存 key
+纳入 `pipelineVersion` + SourceKind + ModuleKind、payload v2 持久化 SourceKind/ModuleKind、
+分类矩阵测试（扩展名 × package type × 内容 × 大写变体）。
 
 ## 3. 实施原则
 
@@ -162,15 +164,17 @@ P1 与 P2 可部分并行（依赖关系仅在 shake/minify 顺序与 lower/wrap
 
 完成条件（已达）：全量 `go test ./...`、vmstackcheck、jitdiff、`go build ./...` 通过。
 
-### 5.2 P1：统一前端与编译 artifact
+### 5.2 P1：统一前端与编译 artifact（已完成）
+
+> 2026-08-13 实施记录：P1-1 至 P1-5 全部落地并验证。
 
 | ID | 工作项 | 交付物 | 完成条件 |
 |----|--------|--------|----------|
-| P1-1 | 模块分类单一化 | 删除 `Resolver.ModuleType` 字符串权威，改为统一走 `SourceModuleKind`；`compile.go` 移除 `HasESMDecls`/`filepath.Ext(key)==".mjs"` 重复判定，只保留隐式 `.js/.ts` 一次提升 | build 与 runtime 对同一路径得到相同 ModuleKind；分类矩阵测试覆盖 |
-| P1-2 | TS 策略统一 | `checkUnsupportedTS` 纳入 `ParseSourceUnit`（已部分实现），并在 graph/compile 路径确认调用 | 同一 `.ts/.mts/.cts` 在 run 与 build 中诊断一致；新增 run-vs-build 对拍用例 |
-| P1-3 | 缓存 key 版本化 | 字节码缓存 key 纳入规范化 SourceKind、ModuleKind 与管线/编译版本（常量） | 同路径在不同分类/版本下不复用旧字节码；冷/热路径测试覆盖 |
-| P1-4 | payload 持久化 | `EntryInfo`/Manifest 增加 SourceKind、ModuleKind；bump `PayloadVersion`；deserialize/compiled 运行读取 | payload round-trip 保持分类信息；entry/dependency 运行行为一致 |
-| P1-5 | 分类矩阵测试 | `.js/.mjs/.cjs/.ts/.mts/.cts` × package type absent/module/commonjs × 纯脚本/import-export/TLA/type-only，含大写扩展 | 每格断言 ModuleKind、TLA、TS 诊断与编译语义 |
+| P1-1 ✅ | 模块分类单一化 | 删除 `Resolver.ModuleType` 字符串权威，改为统一走 `SourceModuleKind`；`compile.go` 移除 `HasESMDecls`/`filepath.Ext(key)==".mjs"` 重复判定，只保留隐式 `.js/.ts` 一次提升 | build 与 runtime 对同一路径得到相同 ModuleKind；分类矩阵测试覆盖 |
+| P1-2 ✅ | TS 策略统一 | `checkUnsupportedTS` 纳入 `ParseSourceUnit`（已部分实现），并在 graph/compile 路径确认调用 | 同一 `.ts/.mts/.cts` 在 run 与 build 中诊断一致；新增 run-vs-build 对拍用例 |
+| P1-3 ✅ | 缓存 key 版本化 | 字节码缓存 key 纳入规范化 SourceKind、ModuleKind 与管线/编译版本（常量） | 同路径在不同分类/版本下不复用旧字节码；冷/热路径测试覆盖 |
+| P1-4 ✅ | payload 持久化 | `EntryInfo`/Manifest 增加 SourceKind、ModuleKind；bump `PayloadVersion`；deserialize/compiled 运行读取 | payload round-trip 保持分类信息；entry/dependency 运行行为一致 |
+| P1-5 ✅ | 分类矩阵测试 | `.js/.mjs/.cjs/.ts/.mts/.cts` × package type absent/module/commonjs × 纯脚本/import-export/TLA/type-only，含大写扩展 | 每格断言 ModuleKind、TLA、TS 诊断与编译语义 |
 
 ### 5.3 P2：优化阶段化
 

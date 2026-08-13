@@ -153,15 +153,13 @@ func (l *Loader) Run(path string) error {
 		return fmt.Errorf("module: cannot resolve path %q: %w", path, err)
 	}
 
-	mt := l.resolver.ModuleType(absPath)
-	switch mt {
-	case "module":
-		return l.loadESMFile(absPath)
-	case "json":
+	if DetectSourceKind(absPath) == SourceJSON {
 		return l.loadJSONFile(absPath)
-	default:
-		return l.loadCJSFile(absPath)
 	}
+	if l.resolver.SourceModuleKind(absPath) == ModuleESM {
+		return l.loadESMFile(absPath)
+	}
+	return l.loadCJSFile(absPath)
 }
 
 // require is the CJS require function for a given parent module path.
@@ -254,15 +252,13 @@ func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engin
 	}
 	l.mu.Unlock()
 
-	mt := l.resolver.ModuleType(absPath)
-	switch mt {
-	case "module":
-		return l.loadESM(absPath)
-	case "json":
+	if DetectSourceKind(absPath) == SourceJSON {
 		return l.loadJSON(absPath)
-	default:
-		return l.loadCJS(absPath)
 	}
+	if l.resolver.SourceModuleKind(absPath) == ModuleESM {
+		return l.loadESM(absPath)
+	}
+	return l.loadCJS(absPath)
 }
 
 // loadJSON loads a .json file by parsing it and returning the resulting value.
