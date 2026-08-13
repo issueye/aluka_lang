@@ -279,6 +279,25 @@ M0 基线与验证框架固化
 | 常量去重影响 IC key / 序列化兼容 | 去重仅限编译期新增常量，不合并既有索引；充分差分 |
 | superinstruction 破坏 JIT candidate 识别 | 同步更新 `candidate.go` 的 opcode 白名单与 lowering |
 
+### 8.5 实施记录（2026-08-13）
+
+- **M4-1 SET_PROP_LOCAL_TOP ❌ 测量否定，已回退**：实现 `LOAD_LOCAL+SET_PROP_TOP → SET_PROP_LOCAL_TOP`
+  融合（opcodes/meta/optimize/vm/FormatVersion 21→22 + JIT candidate/trace 展开），验证融合确实发生
+  （`o.a=1;o.b=2` 均融合）。但 benchmark（jit.Off，循环体 5 次局部对象属性写）基线 96.3ms → 优化后 96.9ms，
+  **无收益**（±1% 噪声）。
+- **重要发现（引出新优化方向）**：属性写无收益的根因是 `setProperty` 的 `FindAccessor`（原型链遍历找
+  accessor）位于 IC（`SetCached`）**之前**，每次写都遍历原型链，稀释了 superinstruction 省下的 LOAD_LOCAL
+  dispatch。对比：属性读的 `getProperty` 把 IC（`GetCached`）放在**最前**，命中即返回，故 GET_PROP_LOCAL 有
+  19% 收益、SET_PROP_LOCAL_TOP 却无。
+- **写入 IC 前置 ✅ 落地（~33.5%）**：把 `SetCached` 提到 `FindAccessor` 之前（Proxy 之后），own 数据属性
+  命中时直写槽位、跳过 FindAccessor 的 shape 查找；`SetCached` 新增 accessor 槽位拒绝（命中但槽位为
+  AccessorValue 时返回 false，回退 FindAccessor 调 setter），保证 getter/setter 语义不变（own 数据属性按
+  JS 语义遮蔽原型 accessor）。benchmark（jit.Off，循环体 5 次对象属性写）基线 101.5ms → 优化后 67.5ms，
+  **~33.5% 提升**（5 次中位数）。测试覆盖 accessor setter 调用 / 原型 setter / delete 后重写；全量零失败，
+  jitdiff 三 tier 零失配。
+- 其余 M4 项（链式 GET_PROP、CALL+POP、常量去重、槽位复用、frame re-fetch）经评估收益均属低垂果实已摘尽
+  的"尾部"，优先级下调，不再单独推进。
+
 ---
 
 ## 9. M5：Quick 紧凑化 + 内联扩展 + AST 收尾（O7 + O9 + O10）
@@ -355,6 +374,8 @@ M1、M2、M4 均只依赖 M0，可并行；M3 依赖 M1（数组 trace 复用索
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v1.4 | 2026-08-13 | M4 后续：写入 IC 前置落地（~33.5%） |
+| v1.3 | 2026-08-13 | M4 实施：SET_PROP_LOCAL_TOP 测量否定回退；发现 setProperty FindAccessor 前置优化机会 |
 | v1.2 | 2026-08-13 | M1 写侧：数组索引写快路径落地（~41.6%） |
 | v1.1 | 2026-08-13 | M1 实施：数组索引读快路径落地（~16.6%）；全局 IC 测量否定回退 |
 | v1.0 | 2026-08-13 | 初稿：基于 JIT/字节码/AST 代码审阅，制定 M0-M5 里程碑与完成定义 |
