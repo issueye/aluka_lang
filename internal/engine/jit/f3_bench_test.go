@@ -100,15 +100,20 @@ func TestFibNativeSelfCallDeep(t *testing.T) {
 	if err := p.CompileNative(); err != nil {
 		t.Fatalf("CompileNative: %v", err)
 	}
-	// 深度 200 < 256：成功，结果 201（deep(n) = n+1）。
+	// 深度 200 < 256：首轮帧区直接容纳，成功，结果 201（deep(n) = n+1）。
 	result, reason, err := p.ExecuteNative(engine.Undefined(), []engine.Value{engine.Number(200)})
 	if err != nil || reason != Executed || result.String() != "201" {
 		t.Fatalf("deep(200) = %v reason=%v err=%v (want 201)", result, reason, err)
 	}
-	// 深度 500 > 256：GuardFailed 回退。
-	_, reason, err = p.ExecuteNative(engine.Undefined(), []engine.Value{engine.Number(500)})
+	// 深度 500 > 256：触发扩容重试（256→1024→4096→16384 帧），结果仍正确。
+	result, reason, err = p.ExecuteNative(engine.Undefined(), []engine.Value{engine.Number(500)})
+	if err != nil || reason != Executed || result.String() != "501" {
+		t.Fatalf("deep(500) = %v reason=%v err=%v (want 501 via grow-retry)", result, reason, err)
+	}
+	// 深度 30000 > 全局上限 16384：GuardFailed 回退 Tier 0。
+	_, reason, err = p.ExecuteNative(engine.Undefined(), []engine.Value{engine.Number(30000)})
 	if err != nil || reason != GuardFailed {
-		t.Fatalf("deep(500) reason=%v err=%v (want GuardFailed)", reason, err)
+		t.Fatalf("deep(30000) reason=%v err=%v (want GuardFailed)", reason, err)
 	}
 }
 

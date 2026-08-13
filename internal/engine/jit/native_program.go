@@ -141,15 +141,19 @@ func (p *Program) ExecuteNativeBudgetWithSafepoint(thisVal engine.Value, args []
 		budget = 65536
 	}
 	frame := &jitnative.Frame{}
-	// F1 自递归：为含 OpSelfCall 的程序分配递归帧区（256 帧 × 66 槽 × 8B：
-	// locals 32 槽 + 操作数栈保存 32 槽 + 返回 PC + status）。
+	// F1 自递归：为含 OpSelfCall 的程序分配递归帧区，帧数按需增长——
+	// 首轮 256 帧（66 槽/帧 × 8B：locals 32 槽 + 操作数栈保存 32 槽 +
+	// 返回 PC + status），深度超限（机器码 status=1）时扩容重试。leaf
+	// 候选是纯函数（无副作用、无外部观察），从头重试安全。
 	// recBuf 在整个 Native 调用期间由本 goroutine 持有（GC 存活），机器码经
 	// Frame.RecBase（uintptr 数值，不参与 GC 追踪）访问；调用结束后随 GC 回收。
 	var recBuf []float64
+	recFrames := nativeRecMaxFrames
 	if p.hasSelfCall {
-		recBuf = make([]float64, 256*66)
+		recBuf = make([]float64, recFrames*66)
 		frame.RecBase = uint64(uintptr(unsafe.Pointer(&recBuf[0])))
 		frame.RecFP = 0
+		frame.RecLimit = uint64(recFrames - 1)
 	}
 	for i := 0; i < p.NumParams; i++ {
 		if p.nativePlan.numberArgs&(uint16(1)<<i) == 0 {
@@ -172,19 +176,36 @@ func (p *Program) ExecuteNativeBudgetWithSafepoint(thisVal engine.Value, args []
 		}
 		frame.Locals[input.frameLocal] = number
 	}
-	frame.Budget = uint64(budget)
-	status := p.nativeCode.Call(frame)
 	var yields uint64
-	for status == 2 {
-		yields++
-		if err := runSafepoint(poll); err != nil {
-			return engine.Undefined(), Interrupted, yields, err
-		}
+	status := uint64(0)
+	for {
 		frame.Budget = uint64(budget)
-		status = p.nativeCode.CallAt(frame.Resume, frame)
+		frame.RecFP = 0
+		status = p.nativeCode.Call(frame)
+		for status == 2 {
+			yields++
+			if err := runSafepoint(poll); err != nil {
+				return engine.Undefined(), Interrupted, yields, err
+			}
+			frame.Budget = uint64(budget)
+			status = p.nativeCode.CallAt(frame.Resume, frame)
+		}
+		// status 1 = 自递归深度超限：扩容重试（×4），达全局上限才 GuardFailed。
+		if status == 1 && p.hasSelfCall && recFrames < maxNativeRecursionFrames {
+			recFrames *= 4
+			if recFrames > maxNativeRecursionFrames {
+				recFrames = maxNativeRecursionFrames
+			}
+			recBuf = make([]float64, recFrames*66)
+			frame.RecBase = uint64(uintptr(unsafe.Pointer(&recBuf[0])))
+			frame.RecLimit = uint64(recFrames - 1)
+			continue
+		}
+		break
 	}
 	if status != 0 {
-		// status 1 = F1 自递归深度超限：GuardFailed 回退 Tier 0（非 Malformed）。
+		// status 1 = F1 自递归深度超限（已达全局上限）：GuardFailed 回退
+		// Tier 0（非 Malformed）。
 		if status == 1 {
 			return engine.Undefined(), GuardFailed, yields, nil
 		}
@@ -192,6 +213,11 @@ func (p *Program) ExecuteNativeBudgetWithSafepoint(thisVal engine.Value, args []
 	}
 	return engine.Number(frame.Result), Executed, yields, nil
 }
+
+// maxNativeRecursionFrames 是自递归 Native 的全局深度上限（帧数）。16K 帧 ×
+// 528B ≈ 8.4MB，超过 Node/V8 默认调用栈（约 1 万帧）；更深递归回退 Tier 0
+// （Go 栈自动增长，无上限）。
+const maxNativeRecursionFrames = 16384
 
 func (p *Program) Close() error {
 	if p == nil || p.nativeCode == nil {

@@ -18,6 +18,10 @@ const (
 	nativeResumeOffset  = 344
 	nativeRecBaseOffset = 352
 	nativeRecFPOffset   = 360
+	// nativeRecLimitOffset 是递归深度上限所在 Frame 字段（Go 侧在调用前写入，
+	// 机器码深度检查读取）。上限不编译期固定：深度超限时 Go 侧扩容 recBuf
+	// 并重试（leaf 候选纯函数幂等），深度上限随每次调用按需增长。
+	nativeRecLimitOffset = 368
 	// nativeRecFrameSize 是递归子帧的大小：locals（32×8B）+ 操作数栈保存（32×8B）
 	// + 返回 PC（8B）+ status（8B）。用 JMP 而非 CALL 避免机器码返回地址进入
 	// Go 栈导致精确 GC 栈扫描崩溃；status 槽让递归中途的深度超限（too_deep）
@@ -27,7 +31,9 @@ const (
 	nativeRecStackSize  = 256
 	nativeRecPCOffset   = 512
 	nativeRecStatusOff  = 520
-	nativeRecMaxFrames  = 256
+	// nativeRecMaxFrames 是首轮递归帧数（Go 侧起始上限）；机器码每次调用
+	// 前读 Frame.RecLimit 作深度检查，超限以 status=1 返回 Go 侧扩容重试。
+	nativeRecMaxFrames = 256
 )
 
 type nativeFixup struct {
@@ -391,11 +397,12 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 			if depth < n+1 {
 				return nil, fmt.Errorf("jit: native self_call stack underflow: depth=%d n=%d", depth, n)
 			}
-			// 深度检查：RecFP >= 256 → GuardFailed（status=1）
+			// 深度检查：RecFP >= Frame.RecLimit → too_deep（status=1 透传，
+			// Go 侧扩容 recBuf 重试或达全局上限 GuardFailed）。
 			code = append(code, 0x49, 0x8B, 0x82)
 			code = appendInt32(code, nativeRecFPOffset)
-			code = append(code, 0x48, 0x3D)
-			code = appendInt32(code, nativeRecMaxFrames-1)
+			code = append(code, 0x49, 0x3B, 0x82)
+			code = appendInt32(code, nativeRecLimitOffset)
 			code = append(code, 0x0F, 0x83)
 			tooDeepFixup := len(code)
 			code = append(code, 0, 0, 0, 0)

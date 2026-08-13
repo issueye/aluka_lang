@@ -130,8 +130,8 @@ globalThis.hr = h(10);
 	}
 }
 
-// 深度递归（>256 层）：Native 自递归深度超限 → GuardFailed → Quick
-// （4096 帧上限内）→ 正确结果。
+// 深度递归（300 层 > 首轮 256 帧）：Native 自递归触发扩容重试
+// （256→1024→4096→16384 帧）后直接成功；结果正确。
 func TestJITAutoSelfCallDeepRecursion(t *testing.T) {
 	source := `
 const f = (n) => n <= 0 ? 0 : f(n-1) + 1;
