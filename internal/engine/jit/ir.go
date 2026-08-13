@@ -874,7 +874,7 @@ func (p *Program) ExecuteWithSafepoint(thisVal engine.Value, args []engine.Value
 		}
 		safepoint = &quickSafepoint{interval: budget, remaining: budget, poll: poll}
 	}
-	result, reason, err := p.executeQuick(quickThis, argBuf[:len(args)], &objectBuf, &objectCount, 0, safepoint)
+	result, reason, err := p.executeQuick(quickThis, &argBuf, len(args), &objectBuf, &objectCount, 0, safepoint)
 	if err != nil || reason != Executed {
 		return engine.Undefined(), reason, err
 	}
@@ -912,7 +912,7 @@ func runSafepoint(poll Safepoint) error {
 // (String concats, BigInt results) are appended to it via quickAlloc. The
 // fixed-size buffer forces a GuardFailed fallback to Tier 0 when it is
 // exhausted; Tier 0 never observes the buffer.
-func (p *Program) executeQuick(thisVal quickValue, args []quickValue, objects *[maxQuickSlots]engine.Value, objectCount *int, depth int, safepoint *quickSafepoint) (quickValue, ExitReason, error) {
+func (p *Program) executeQuick(thisVal quickValue, args *[8]quickValue, argCount int, objects *[maxQuickSlots]engine.Value, objectCount *int, depth int, safepoint *quickSafepoint) (quickValue, ExitReason, error) {
 	if depth > 4096 {
 		return quickValue{}, GuardFailed, nil
 	}
@@ -924,11 +924,8 @@ func (p *Program) executeQuick(thisVal quickValue, args []quickValue, objects *[
 	for i := 1; i <= p.NumParams && i < len(locals); i++ {
 		locals[i] = quickValue{kind: quickUndefined}
 	}
-	for i, arg := range args {
-		if i+1 >= len(locals) {
-			break
-		}
-		locals[i+1] = arg
+	for i := 0; i < argCount && i+1 < len(locals); i++ {
+		locals[i+1] = args[i]
 	}
 	var stackBuf [maxQuickSlots]quickValue
 	stack := stackBuf[:0]
@@ -1218,8 +1215,13 @@ func (p *Program) executeQuick(thisVal quickValue, args []quickValue, objects *[
 				_ = pop()
 			}
 		case OpSelfCall:
-			if err := safepoint.tick(); err != nil {
-				return quickValue{}, Interrupted, err
+			// F3：safepoint 检查每 16 次递归执行一次。自递归深度上限 4096
+			//（executeQuick 入口检查），poll 最大延迟 4096×~100ns≈0.4ms，
+			// OOM/取消响应仍在可接受范围内。
+			if depth&15 == 0 {
+				if err := safepoint.tick(); err != nil {
+					return quickValue{}, Interrupted, err
+				}
 			}
 			n := int(in.Operand)
 			var recursiveArgs [8]quickValue
@@ -1234,7 +1236,7 @@ func (p *Program) executeQuick(thisVal quickValue, args []quickValue, objects *[
 			if p.callTarget != nil {
 				target = p.callTarget
 			}
-			result, reason, err := target.executeQuick(quickValue{}, recursiveArgs[:n], objects, objectCount, depth+1, safepoint)
+			result, reason, err := target.executeQuick(quickValue{}, &recursiveArgs, n, objects, objectCount, depth+1, safepoint)
 			if err != nil || reason != Executed {
 				return quickValue{}, reason, err
 			}
