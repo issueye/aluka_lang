@@ -34,7 +34,6 @@ import (
 	"github.com/aluka-lang/aluka/internal/cli"
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/engine/parser"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
@@ -196,8 +195,7 @@ func cmdBuild(args []string) {
 // buildOne 构建单个入口的产物。
 func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts buildOptions) buildResult {
 	needAnalysis := opts.analyzeFormat != "" || opts.maxPayload > 0
-	// 构建模块图：入口 + 静态可达依赖（import/export/require/动态 import
-	// 字面量与可折叠常量），编译全部模块并记录构建期解析映射。
+	// 构建模块图：解析 + 依赖收集（不编译字节码，AST 供优化阶段共享）。
 	graphResult, err := graph.Build(vm, resolver, entry)
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
@@ -208,41 +206,58 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 		fmt.Fprintf(os.Stderr, "aluka build: warning: %s: dynamic import with non-constant specifier cannot be precompiled; it will fail at runtime\n", key)
 	}
 
+	// 优化管线：tree-shake → minify 在共享 SourceUnit AST 上顺序执行，最后
+	// 统一编译一次。度量编译使用 clone，避免 ESM lower 破坏共享 AST。
 	var rawStage, shakenStage, minifiedStage, optimizedStage analyze.StageMeasurement
 	if needAnalysis {
-		rawStage = mustMeasureStage(graphResult.Modules)
+		rawModules, err := compile.CompileUnitsForMeasure(vm, graphResult.SourceUnits)
+		if err != nil {
+			fatalErr("aluka build: " + err.Error())
+		}
+		rawStage = mustMeasureStage(rawModules)
 	}
 
-	// 打包数据（tree-shake → minify → pack）。
-	modules := graphResult.Modules
+	// 保留集合：默认全保留；tree-shake 后按 kept 过滤。
+	kept := make(map[string]bool, len(graphResult.SourceUnits))
+	for key := range graphResult.SourceUnits {
+		kept[key] = true
+	}
 	resolutions := graphResult.Resolutions
 	assets := graphResult.Assets
 	removed := 0
 	if opts.treeShake {
-		shaken, err := shake.Shake(vm, graphResult, graphResult.Entry)
+		shaken, err := shake.Shake(graphResult, graphResult.Entry)
 		if err != nil {
 			fatalErr("aluka build: " + err.Error())
 		}
-		modules = shaken.Modules
+		kept = shaken.Kept
 		resolutions = shaken.Resolutions
 		assets = shaken.Assets
 		removed = shaken.Removed
 	}
 	if needAnalysis {
-		shakenStage = mustMeasureStage(modules)
+		shakenStage = mustMeasureStage(measureUnits(vm, graphResult.SourceUnits, kept))
 	}
 	if opts.minify {
-		rootDir := graphResult.RootDir
-		for i, m := range modules {
-			nd, err := minifyModule(vm, rootDir, m)
-			if err != nil {
+		// minify 直接作用于共享 AST（含 shake 剪枝后的模块），CJS 跳过。
+		for key, unit := range graphResult.SourceUnits {
+			if !kept[key] || unit.ModuleKind != module.ModuleESM {
+				continue
+			}
+			minify.Program(unit.Program)
+			if err := unit.MarkStage(module.StageMinified); err != nil {
 				fatalErr("aluka build: " + err.Error())
 			}
-			modules[i] = nd
 		}
 	}
 	if needAnalysis {
-		minifiedStage = mustMeasureStage(modules)
+		minifiedStage = mustMeasureStage(measureUnits(vm, graphResult.SourceUnits, kept))
+	}
+
+	// 统一编译保留模块（此时 AST 已含 shake/minify 结果）。
+	modules, err := compile.CompileUnits(vm, keptSourceUnits(graphResult.SourceUnits, kept))
+	if err != nil {
+		fatalErr("aluka build: " + err.Error())
 	}
 	var bytecodeStats bytecode.OptimizationStats
 	if opts.bytecodeOpt {
@@ -418,30 +433,24 @@ func writeAnalysisReports(opts buildOptions, reports []*analyze.Report) error {
 	return nil
 }
 
-// minifyModule 重新解析并最小化 ESM 模块（CJS 保守跳过——字符串包装
-// 无法在 AST 层重编译，保持原样）。
-func minifyModule(vm *interpreter.VM, rootDir string, m *compile.EntryData) (*compile.EntryData, error) {
-	if m.ModuleType != compile.ModuleTypeESM || m.Stage&module.StageShaken != 0 {
-		// 已由 shake 在共享 SourceUnit 上完成 AST 变换的模块不能回到原始
-		// 源码重解析，否则会恢复被删除的依赖。阶段化 minify 接入前保留该
-		// 模块的现状，避免 pass 之间互相覆盖。
-		return m, nil
+// keptSourceUnits 返回保留集合对应的 SourceUnit 子集。
+func keptSourceUnits(units map[string]*module.SourceUnit, kept map[string]bool) map[string]*module.SourceUnit {
+	out := make(map[string]*module.SourceUnit, len(kept))
+	for key := range kept {
+		if u := units[key]; u != nil {
+			out[key] = u
+		}
 	}
-	src, err := os.ReadFile(filepath.Join(rootDir, m.Path))
+	return out
+}
+
+// measureUnits 编译保留模块的 clone 副本用于阶段度量（不破坏共享 AST）。
+func measureUnits(vm *interpreter.VM, units map[string]*module.SourceUnit, kept map[string]bool) []*compile.EntryData {
+	mods, err := compile.CompileUnitsForMeasure(vm, keptSourceUnits(units, kept))
 	if err != nil {
-		return nil, fmt.Errorf("minify: cannot read %q: %w", m.Path, err)
+		fatalErr("aluka build: " + err.Error())
 	}
-	prog, err := parser.ParseModule(string(stripBOM(src)))
-	if err != nil {
-		return nil, fmt.Errorf("minify: parse error in %q: %w", m.Path, err)
-	}
-	minify.Program(prog)
-	// 显式 ESM：minify 后可能失去 import/export 声明，自动判定会误判 CJS。
-	nd, err := compile.CompileProgramType(vm, prog, stripBOM(src), m.Path, true)
-	if err != nil {
-		return nil, fmt.Errorf("minify: recompile %q: %w", m.Path, err)
-	}
-	return nd, nil
+	return mods
 }
 
 // writeCompiledBinary 复制基座到 outfile 并追加 payload + footer。

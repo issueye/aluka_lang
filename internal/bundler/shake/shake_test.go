@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aluka-lang/aluka/internal/bundler/graph"
+	"github.com/aluka-lang/aluka/internal/engine/ast"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
@@ -55,12 +56,11 @@ func TestShakeRemovesUnusedModule(t *testing.T) {
 		t.Fatalf("fixture: want 5 modules, got %d", len(gr.Modules))
 	}
 
-	vm, _ := interpreter.NewVM()
-	res, err := Shake(vm, gr, gr.Entry)
+	res, err := Shake(gr, gr.Entry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	set := pathSet(&graph.Result{Modules: res.Modules})
+	set := res.Kept
 	if !set["main.js"] || !set["lib.js"] || !set["side.js"] {
 		t.Errorf("kept modules missing: %v", set)
 	}
@@ -78,12 +78,11 @@ func TestShakeKeepsSideEffectModule(t *testing.T) {
 		"main.js": "import { a } from './se.js';\nconsole.log(typeof a);\n",
 		"se.js":   "globalThis.__ran = true;\nexport const a = 1;\nexport const b = 2;\n",
 	}, "main.js")
-	vm, _ := interpreter.NewVM()
-	res, err := Shake(vm, gr, gr.Entry)
+	res, err := Shake(gr, gr.Entry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	set := pathSet(&graph.Result{Modules: res.Modules})
+	set := res.Kept
 	if !set["se.js"] {
 		t.Fatal("side-effect module removed")
 	}
@@ -98,14 +97,13 @@ func TestShakeKeepsCJSRequireExports(t *testing.T) {
 		"main.js": "const m = require('./lib.js');\nconsole.log(m.hello());\n",
 		"lib.js":  "export function hello() { return 'H'; }\nexport function unused() { return 'X'; }\n",
 	}, "main.js")
-	vm, _ := interpreter.NewVM()
-	res, err := Shake(vm, gr, gr.Entry)
+	res, err := Shake(gr, gr.Entry)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// lib.js 保留且未被剪枝（hello 全量 used → 导出不删）。
-	if len(res.Modules) != 2 {
-		t.Fatalf("modules = %d, want 2", len(res.Modules))
+	if len(res.Kept) != 2 {
+		t.Fatalf("kept modules = %d, want 2", len(res.Kept))
 	}
 }
 
@@ -117,12 +115,11 @@ func TestShakeReExportPruning(t *testing.T) {
 		"a.js":      "export const a = 'A';\n",
 		"b.js":      "export const b = 'B';\n",
 	}, "main.js")
-	vm, _ := interpreter.NewVM()
-	res, err := Shake(vm, gr, gr.Entry)
+	res, err := Shake(gr, gr.Entry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	set := pathSet(&graph.Result{Modules: res.Modules})
+	set := res.Kept
 	if !set["barrel.js"] || !set["a.js"] {
 		t.Errorf("kept modules missing: %v", set)
 	}
@@ -139,12 +136,11 @@ func TestShakeNamespaceImportThroughStarBarrel(t *testing.T) {
 		"a.js":      "export const a = 'A';\n",
 		"b.js":      "export const b = 'B';\n",
 	}, "main.js")
-	vm, _ := interpreter.NewVM()
-	res, err := Shake(vm, gr, gr.Entry)
+	res, err := Shake(gr, gr.Entry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	set := pathSet(&graph.Result{Modules: res.Modules})
+	set := res.Kept
 	for _, name := range []string{"main.js", "barrel.js", "nested.js", "a.js", "b.js"} {
 		if !set[name] {
 			t.Errorf("namespace import removed %s: %v", name, set)
@@ -158,12 +154,11 @@ func TestShakeNamedNamespaceReExport(t *testing.T) {
 		"barrel.js": "export * as Type from './types.js';\n",
 		"types.js":  "export const a = 'A';\nexport const b = 'B';\n",
 	}, "main.js")
-	vm, _ := interpreter.NewVM()
-	res, err := Shake(vm, gr, gr.Entry)
+	res, err := Shake(gr, gr.Entry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	set := pathSet(&graph.Result{Modules: res.Modules})
+	set := res.Kept
 	for _, name := range []string{"main.js", "barrel.js", "types.js"} {
 		if !set[name] {
 			t.Errorf("named namespace re-export removed %s: %v", name, set)
@@ -171,23 +166,38 @@ func TestShakeNamedNamespaceReExport(t *testing.T) {
 	}
 }
 
-func TestShakeMarksRecompiledModules(t *testing.T) {
+func TestShakeMarksShakenSourceUnit(t *testing.T) {
 	gr := buildFixture(t, map[string]string{
 		"main.js": "import { used } from './lib.js';\nconsole.log(used());\n",
 		"lib.js":  "export function used() { return 'U'; }\nexport function unused() { return 'X'; }\n",
 	}, "main.js")
-	vm, _ := interpreter.NewVM()
-	res, err := Shake(vm, gr, gr.Entry)
+	res, err := Shake(gr, gr.Entry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, m := range res.Modules {
-		if m.Path == "lib.js" {
-			if m.Stage&module.StageShaken == 0 {
-				t.Fatal("tree-shaken module missing StageShaken")
-			}
-			return
+	if !res.Kept["lib.js"] {
+		t.Fatal("lib.js missing from kept")
+	}
+	unit := gr.SourceUnits["lib.js"]
+	if unit == nil {
+		t.Fatal("lib.js source unit missing")
+	}
+	if unit.Stage&module.StageShaken == 0 {
+		t.Fatal("tree-shaken source unit missing StageShaken")
+	}
+	// 剪枝应去掉 unused 的 export 包装（不再公开导出；函数声明本身按
+	// 保守副作用判定可保留为普通声明）。
+	exportedUnused := false
+	for _, stmt := range unit.Program.Body {
+		ed, ok := stmt.(*ast.ExportDecl)
+		if !ok {
+			continue
+		}
+		if fd, ok2 := ed.Declaration.(*ast.FunctionDecl); ok2 && fd.Name != nil && fd.Name.Name == "unused" {
+			exportedUnused = true
 		}
 	}
-	t.Fatal("lib.js missing from result")
+	if exportedUnused {
+		t.Error("unused export declaration survived pruning")
+	}
 }

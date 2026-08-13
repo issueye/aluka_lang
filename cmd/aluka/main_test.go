@@ -465,3 +465,50 @@ func TestCompiledPayloadArgvPassthrough(t *testing.T) {
 		t.Errorf("argv = %v; want [artifact, entry]", argv)
 	}
 }
+
+// TestOptimizePipelineCombination 验证 shake+minify+bytecode-opt 组合管线
+// 在共享 AST 上顺序执行不互相破坏：优化产物与无优化产物输出一致，
+// 且 tree-shake 后的依赖不被 minify 从原始源码恢复。
+func TestOptimizePipelineCombination(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "lib.js"),
+		[]byte("export function used() { return 1 + 2; }\nexport function dead() { return 99; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.js"),
+		[]byte("import { used } from './lib.js';\nconsole.log(used());\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runArtifact := func(name string, buildArgs ...string) string {
+		t.Helper()
+		artifact := filepath.Join(dir, name+exeSuffix())
+		args := append([]string{"build", "--compile", "--outfile", artifact}, buildArgs...)
+		args = append(args, "main.js")
+		build := exec.Command(bin, args...)
+		build.Dir = dir
+		if out, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("%s build failed: %v\n%s", name, err, out)
+		}
+		run := exec.Command(artifact)
+		run.Dir = dir
+		out, err := run.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s run failed: %v", name, err)
+		}
+		return string(out)
+	}
+
+	plain := runArtifact("plain", "--no-tree-shake", "--no-bytecode-opt")
+	optimized := runArtifact("optimized", "--optimize")
+	if plain != optimized {
+		t.Errorf("optimized output = %q, want plain %q", optimized, plain)
+	}
+	if optimized != "3\n" {
+		t.Errorf("optimized output = %q, want %q", optimized, "3\n")
+	}
+}

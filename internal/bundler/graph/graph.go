@@ -30,12 +30,15 @@ type Dep struct {
 // 编译与依赖收集共享这份前端结果，避免重复 ParseModule。
 type SourceUnitByPath map[string]*module.SourceUnit
 
-// Result 是一个模块图构建的产物：编译后的模块列表 + 构建期解析映射 + JSON 资源。
+// Result 是一个模块图构建的产物：前端解析结果 + 构建期解析映射 + JSON 资源。
+// 注意：Build 只做解析与依赖收集，不编译。字节码编译由 buildOne 在优化
+// （shake/minify）之后统一执行，避免 lower 破坏 SourceUnit 的源 AST。
 type Result struct {
 	Entry   string
 	RootDir string // 入口文件所在目录（绝对路径）：虚拟 key 的源码读取基准
+	// Modules 是模块占位列表（无 Module 字节码）：供 optimize 后按序编译
+	// 及 analyze 阶段度量。Module 字段为 nil，必须先经 CompileSourceUnit。
 	Modules []*compile.EntryData
-	// Resolutions 父模块虚拟路径 → specifier → 目标模块虚拟路径。
 	// SourceUnits 按虚拟路径保存唯一前端解析结果，供后续 shake/minify 阶段复用。
 	SourceUnits SourceUnitByPath
 	Resolutions map[string]map[string]string
@@ -44,9 +47,10 @@ type Result struct {
 	UnresolvedDynamic []string
 }
 
-// Build 从入口构建模块图并编译所有模块。
+// Build 从入口构建模块图并解析所有模块（不编译）。
 // 模块标识使用虚拟路径（相对入口文件所在目录，/ 分隔）：产物运行时的
 // __filename/import.meta/错误堆栈均基于虚拟路径，与构建机位置无关。
+// vm 参数为兼容保留（旧调用方传 VM；Build 自身不再编译）。
 func Build(vm *interpreter.VM, resolver *module.Resolver, entry string) (*Result, error) {
 	entryAbs, err := filepath.Abs(entry)
 	if err != nil {
@@ -105,12 +109,14 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 		r.Assets[key] = unit.Source
 		return nil
 	}
-	entryData, err := compile.CompileSourceUnit(vm, unit)
-	if err != nil {
-		return err
-	}
 	r.SourceUnits[key] = unit
-	r.Modules = append(r.Modules, entryData)
+	// 占位 EntryData：Module 留空，由 buildOne 在优化后统一编译。
+	r.Modules = append(r.Modules, &compile.EntryData{
+		Path:       key,
+		ModuleType: compile.ModuleTypeOf(unit.ModuleKind),
+		SourceKind: unit.SourceKind,
+		ModuleKind: unit.ModuleKind,
+	})
 	if r.Entry == "" {
 		r.Entry = key
 	}

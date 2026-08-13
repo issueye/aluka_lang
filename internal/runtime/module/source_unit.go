@@ -62,6 +62,30 @@ const (
 	StageBytecodeOptimized
 )
 
+// MarkStage 把 stage 标记到单元上（只增不减）。若该阶段已存在，返回诊断，
+// 防止 pass 乱序/重复执行破坏单向阶段流（P2-5）。
+func (u *SourceUnit) MarkStage(stage TransformStage) error {
+	if u == nil {
+		return fmt.Errorf("module: cannot mark stage on nil source unit")
+	}
+	if u.Stage&stage != 0 {
+		return fmt.Errorf("module: %q: transform stage %d already applied (current %d)", u.Path, stage, u.Stage)
+	}
+	u.Stage |= stage
+	return nil
+}
+
+// RequireStages 校验单元已完成全部给定阶段；缺失时返回诊断（P2-5）。
+func (u *SourceUnit) RequireStages(stages TransformStage) error {
+	if u == nil {
+		return fmt.Errorf("module: nil source unit")
+	}
+	if missing := stages &^ u.Stage; missing != 0 {
+		return fmt.Errorf("module: %q: missing required transform stages %d (current %d)", u.Path, missing, u.Stage)
+	}
+	return nil
+}
+
 // SourceUnit 是 JS/TS 前端与模块/优化后端之间的稳定中间表示。
 // Program 在一条构建管线内由单一所有者按阶段原地变换，禁止从 Source 重新解析。
 type SourceUnit struct {

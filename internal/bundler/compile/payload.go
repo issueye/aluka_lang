@@ -49,6 +49,14 @@ const (
 	ModuleTypeCJS = "cjs"
 )
 
+// ModuleTypeOf 返回 ModuleKind 对应的 payload 模块类型字符串。
+func ModuleTypeOf(kind module.ModuleKind) string {
+	if kind == module.ModuleESM {
+		return ModuleTypeESM
+	}
+	return ModuleTypeCJS
+}
+
 // EntryInfo 描述一个模块条目在数据区中的位置。
 type EntryInfo struct {
 	Path       string `json:"path"`       // 模块标识（构建时路径，产物模式作为虚拟路径）

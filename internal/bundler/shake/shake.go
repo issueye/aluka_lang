@@ -12,35 +12,32 @@ package shake
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/aluka-lang/aluka/internal/bundler/astutil"
-	"github.com/aluka-lang/aluka/internal/bundler/compile"
 	"github.com/aluka-lang/aluka/internal/bundler/graph"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
-	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
-// Result 是 tree-shaking 后的打包数据（模块子集 + 剪枝后的解析映射）。
+// Result 是 tree-shaking 后的剪枝结果：保留模块集合 + 修剪后的解析映射。
+// 剪枝直接作用于 gr.SourceUnits 的共享 AST；字节码编译由调用方统一执行。
 type Result struct {
-	RootDir     string // 入口目录（虚拟路径源码读取基准）
-	Modules     []*compile.EntryData
+	Kept        map[string]bool
+	Removed     int
 	Resolutions map[string]map[string]string
 	Assets      map[string][]byte
-	Removed     int // 剪除的模块数
 }
 
 // moduleInfo 是单个模块的静态分析结果。
 type moduleInfo struct {
-	key         string
-	prog        *ast.Program // ESM 模块原始 AST；CJS 为 nil
-	isEntry     bool
-	exports     map[string]bool // 本地导出名（含 default）
-	imports     []importInfo
-	reExports   []*ast.ExportDecl
-	sideEffect  bool            // 顶层副作用
-	deps        map[string]bool // 依赖模块 key（Resolutions 指向）
-	transformed bool            // AST 已剪枝，需要重新编译
+	key        string
+	prog       *ast.Program    // ESM 模块 AST；CJS 为 nil
+	exports    map[string]bool // 本地导出名（含 default）
+	imports    []importInfo
+	reExports  []*ast.ExportDecl
+	sideEffect bool            // 顶层副作用
+	deps       map[string]bool // 依赖模块 key（Resolutions 指向）
 }
 
 // importInfo 是一条 import 语句的静态信息。
@@ -49,33 +46,34 @@ type importInfo struct {
 	Specifiers []ast.ImportSpecifier
 }
 
-// Shake 对模块图执行 tree-shaking，返回剪枝后的打包数据。
-// vm 用于重新编译剪枝后的模块；entry 为入口虚拟路径（不剪枝）。
+// Shake 对模块图执行 tree-shaking（P2-1：纯 AST 剪枝，不编译）。
+// entry 为入口虚拟路径。剪枝直接修改 gr.SourceUnits 的 Program，
+// 并为其设置 StageShaken；调用方随后统一 CompileUnits。
 //
 // 传播模型（导入使用分析）：入口/保留模块的 import 按代码引用分析——
 // 引用的导入把目标模块的对应导出标记 used 并保留目标；未引用的导入
 // 在剪枝时删除（目标无副作用时目标可剪除）；side-effect import 与
 // 有副作用的目标模块始终保留（ESM 语义：import 语句执行目标模块）。
-func Shake(vm *interpreter.VM, gr *graph.Result, entry string) (*Result, error) {
-	// 解析全部模块源码并做静态分析。
-	infos := make(map[string]*moduleInfo)
-	for _, m := range gr.Modules {
-		if m.ModuleType != compile.ModuleTypeESM {
+func Shake(gr *graph.Result, entry string) (*Result, error) {
+	keys := make([]string, 0, len(gr.SourceUnits))
+	for key := range gr.SourceUnits {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	// 静态分析全部模块。
+	infos := make(map[string]*moduleInfo, len(keys))
+	for _, key := range keys {
+		unit := gr.SourceUnits[key]
+		if unit.ModuleKind != module.ModuleESM {
 			// CJS 保守保留（不分析、不剪除；依赖全量保留）。
-			infos[m.Path] = &moduleInfo{key: m.Path, deps: depKeys(gr, m.Path)}
+			infos[key] = &moduleInfo{key: key, deps: depKeys(gr, key)}
 			continue
 		}
-		unit := gr.SourceUnits[m.Path]
-		if unit == nil || unit.Program == nil {
-			return nil, fmt.Errorf("shake: source unit missing for %q", m.Path)
+		if unit.Program == nil {
+			return nil, fmt.Errorf("shake: source unit missing AST for %q", key)
 		}
-		if unit.Stage&module.StageWrapped != 0 {
-			// 已进入 lower/wrap 的 artifact 不再按源 ESM AST 分析，避免把
-			// lowered CJS 形态与原始 ESM 语义混用。
-			infos[m.Path] = &moduleInfo{key: m.Path, deps: depKeys(gr, m.Path), sideEffect: true}
-			continue
-		}
-		infos[m.Path] = analyze(m.Path, unit.Program, gr)
+		infos[key] = analyze(key, unit.Program, gr)
 	}
 
 	keep := map[string]bool{entry: true}
@@ -234,53 +232,29 @@ func Shake(vm *interpreter.VM, gr *graph.Result, entry string) (*Result, error) 
 
 	// 剪枝 + 收集结果。
 	res := &Result{
-		RootDir:     gr.RootDir,
+		Kept:        keep,
 		Resolutions: make(map[string]map[string]string, len(gr.Resolutions)),
 		Assets:      gr.Assets,
 	}
-	shaken := make(map[string]*moduleInfo)
-	for _, m := range gr.Modules {
-		info := infos[m.Path]
-		if !keep[m.Path] {
+	for _, key := range keys {
+		info := infos[key]
+		if !keep[key] {
 			res.Removed++
 			continue
 		}
-		shaken[m.Path] = info
-		// 剪枝 AST（仅 ESM 非入口模块）：未用导入删除 + 未用导出删除。
-		if info != nil && info.prog != nil && !info.isEntry {
-			if pruneModule(info, usedExports, infos, gr) {
-				info.transformed = true
+		// 剪枝 AST（ESM 模块）：未用导入删除 + 未用导出删除。直接作用于
+		// 共享 SourceUnit 的 Program，供后续 minify/编译阶段顺序消费。
+		if info != nil && info.prog != nil {
+			pruneModule(info, usedExports, infos, gr)
+			if err := gr.SourceUnits[key].MarkStage(module.StageShaken); err != nil {
+				return nil, err
 			}
 		}
 		// 解析映射：保留 kept 模块的条目（指向已剪除模块的映射无害——
 		// 产物运行时只查 kept 模块实际执行的 require/import）。
-		if table, ok := gr.Resolutions[m.Path]; ok {
-			res.Resolutions[m.Path] = table
+		if table, ok := gr.Resolutions[key]; ok {
+			res.Resolutions[key] = table
 		}
-	}
-
-	// 重新编译剪枝后的模块（顺序与原始一致）。
-	for _, m := range gr.Modules {
-		if !keep[m.Path] {
-			continue
-		}
-		info := shaken[m.Path]
-		if info == nil || info.prog == nil || !info.transformed {
-			res.Modules = append(res.Modules, m)
-			continue
-		}
-		unit := gr.SourceUnits[m.Path]
-		if unit == nil {
-			return nil, fmt.Errorf("shake: source unit missing for %q", m.Path)
-		}
-		unit.Program = info.prog
-		unit.Stage |= module.StageShaken
-		nd, err := compile.CompileSourceUnit(vm, unit)
-		if err != nil {
-			return nil, fmt.Errorf("shake: recompile %q: %w", m.Path, err)
-		}
-		nd.Stage |= module.StageShaken
-		res.Modules = append(res.Modules, nd)
 	}
 	return res, nil
 }

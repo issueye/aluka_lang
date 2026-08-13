@@ -81,15 +81,18 @@ runtime 执行（compiled / cached / fresh）
 | 类别 | 缺口 | 风险 |
 |------|------|------|
 | runtime | loader 仍自行组合 TS check、HasESMDecls 判定、ESM 回退、transform、wrapper，未迁移到 `SourceUnit` | run 与 build 分类不一致的现状保留 |
-| 优化阶段 | minify 尚未成为共享 AST 上的独立阶段（对 shake 后模块保护性跳过） | shake+minify 组合优化收益未恢复 |
-| ESM lower | `TransformESMToCJS` 非纯函数：`rewriteImportedIdentifiers` 反射原地改写嵌套节点 | 重复调用/并行/缓存存在状态污染风险 |
-| CJS wrapper | 仍是 `WrapCJSSource` 字符串拼接，未走 AST wrapper | 与 ESM AST wrapper 两套形态，`hasESMSyntax` 文本扫描误判 |
-| AST 复用 | 无 clone API，模块 IR 无法并行/复用 | 多入口去重、阶段幂等与并发编译受限 |
+| conformance | `tests/conformance/build` 与 node22 差分尚未覆盖 `.mts/.cts`、大小写扩展与 TS run/build 一致 | 平台/Node 行为差异未记录 |
+| TS strip | parser 内 strip-only 尚未拆为独立 tsstrip pass | 类型擦除与 JS 语法解析耦合（P4 可选） |
 
 P1（2026-08-13 已落地）：模块分类单一化（loader 改用 `SourceModuleKind`/`DetectSourceKind`）、TS 策略
 统一（`ParseSourceUnit` 与 runtime 一致，compile 对显式 CJS 含 ESM 语法给明确诊断）、缓存 key
 纳入 `pipelineVersion` + SourceKind + ModuleKind、payload v2 持久化 SourceKind/ModuleKind、
 分类矩阵测试（扩展名 × package type × 内容 × 大写变体）。
+
+P2（2026-08-13 已落地）：优化阶段化——graph 延迟编译（Build 只解析不编译，SourceUnit 贯穿）、
+tree-shake 纯 AST 剪枝（不再内部重编译）、minify 直接作用于共享 AST（含 shake 后模块）、
+ESM lower 幂等（先深拷贝再变换）、`ast.DeepCopy` 结构克隆、`MarkStage` 只增不减阶段校验、
+`--optimize` 组合集成测试（plain vs optimize 输出一致）。
 
 ## 3. 实施原则
 
@@ -176,15 +179,21 @@ P1 与 P2 可部分并行（依赖关系仅在 shake/minify 顺序与 lower/wrap
 | P1-4 ✅ | payload 持久化 | `EntryInfo`/Manifest 增加 SourceKind、ModuleKind；bump `PayloadVersion`；deserialize/compiled 运行读取 | payload round-trip 保持分类信息；entry/dependency 运行行为一致 |
 | P1-5 ✅ | 分类矩阵测试 | `.js/.mjs/.cjs/.ts/.mts/.cts` × package type absent/module/commonjs × 纯脚本/import-export/TLA/type-only，含大写扩展 | 每格断言 ModuleKind、TLA、TS 诊断与编译语义 |
 
-### 5.3 P2：优化阶段化
+### 5.3 P2：优化阶段化（已完成）
+
+> 2026-08-13 实施记录：P2-1 至 P2-5 全部落地并验证。
 
 | ID | 工作项 | 交付物 | 完成条件 |
 |----|--------|--------|----------|
-| P2-1 | minify 接入共享 AST | `minifyModule` 不再磁盘重 parse，在 `SourceUnit` 上执行；移除对 shake 后模块的保护性跳过 | `--optimize`（shake+minify+bytecode-opt）产物与单独 shake/单独 minify 语义一致；tree-shake 后依赖不恢复 |
-| P2-2 | ESM lower 独立纯 pass | 将 `TransformESMToCJS`/`rewriteImportedIdentifiers` 拆为独立 pass，输入输出分离或显式 clone；重复调用幂等 | lower 输入 AST 不变；CJS 模块绝不进入该 pass；幂等性测试 |
-| P2-3 | CJS wrapper 形态决策 | 评估并实现 CJS AST wrapper，或显式保留 `WrapCJSSource` 并记录语义契约 | wrapper 只接收已分类 artifact；`hasESMSyntax` 文本扫描被分类器替代或明确隔离 |
-| P2-4 | AST clone API | 为 `ast` 增加结构深拷贝（覆盖所有节点类型/接口/切片） | clone 后修改不影响原 AST；节点类型反射测试覆盖 |
-| P2-5 | 阶段顺序校验 | `TransformStage` 只增不减校验；非法顺序返回诊断 | 乱序调用返回错误而非静默；测试覆盖 |
+| P2-1 ✅ | minify 接入共享 AST | `minifyModule` 不再磁盘重 parse，在 `SourceUnit` 上执行；移除对 shake 后模块的保护性跳过 | `--optimize`（shake+minify+bytecode-opt）产物与单独 shake/单独 minify 语义一致；tree-shake 后依赖不恢复 |
+| P2-2 ✅ | ESM lower 独立纯 pass | 将 `TransformESMToCJS`/`rewriteImportedIdentifiers` 拆为独立 pass，输入输出分离或显式 clone；重复调用幂等 | lower 输入 AST 不变；CJS 模块绝不进入该 pass；幂等性测试 |
+| P2-3 ✅ | CJS wrapper 形态决策 | 评估并实现 CJS AST wrapper，或显式保留 `WrapCJSSource` 并记录语义契约 | wrapper 只接收已分类 artifact；`hasESMSyntax` 文本扫描被分类器替代或明确隔离 |
+| P2-4 ✅ | AST clone API | 为 `ast` 增加结构深拷贝（覆盖所有节点类型/接口/切片） | clone 后修改不影响原 AST；节点类型反射测试覆盖 |
+| P2-5 ✅ | 阶段顺序校验 | `TransformStage` 只增不减校验；非法顺序返回诊断 | 乱序调用返回错误而非静默；测试覆盖 |
+
+P2-3 决策：**保留字符串 wrapper**（`WrapCJSSource`），契约化记录形参
+（require/module/exports/__filename/__dirname/__import），避免 AST wrapper 引入的
+行号/`this`/direct eval 语义风险；`hasESMSyntax` 文本扫描的移除移交 P3-2。
 
 ### 5.4 P3：运行时/缓存/payload 对齐
 
