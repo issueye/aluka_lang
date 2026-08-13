@@ -11,11 +11,23 @@ import (
 )
 
 const (
-	nativeResultOffset = 64
-	nativeStatusOffset = 72
-	nativeLocalsOffset = 80
-	nativeBudgetOffset = 336
-	nativeResumeOffset = 344
+	nativeResultOffset  = 64
+	nativeStatusOffset  = 72
+	nativeLocalsOffset  = 80
+	nativeBudgetOffset  = 336
+	nativeResumeOffset  = 344
+	nativeRecBaseOffset = 352
+	nativeRecFPOffset   = 360
+	// nativeRecFrameSize 是递归子帧的大小：locals（32×8B）+ 操作数栈保存（32×8B）
+	// + 返回 PC（8B）+ status（8B）。用 JMP 而非 CALL 避免机器码返回地址进入
+	// Go 栈导致精确 GC 栈扫描崩溃；status 槽让递归中途的深度超限（too_deep）
+	// 能沿返回链透传 GuardFailed 到顶层。
+	nativeRecFrameSize  = 528
+	nativeRecLocalsSize = 256
+	nativeRecStackSize  = 256
+	nativeRecPCOffset   = 512
+	nativeRecStatusOff  = 520
+	nativeRecMaxFrames  = 256
 )
 
 type nativeFixup struct {
@@ -33,7 +45,11 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 		return nil, err
 	}
 	// M2 寄存器分配：识别 straight-line 单循环内的热 local，映射到 XMM8-15。
-	plan := tryPlanRegalloc(p, assigned)
+	// 自递归模式（F1）禁用 M2（locals 走 R11 基址，寄存器化会干扰递归帧）。
+	var plan *regallocPlan
+	if !p.hasSelfCall {
+		plan = tryPlanRegalloc(p, assigned)
+	}
 	// The compiler now lowers whole functions, so unreachable tails (e.g. the
 	// implicit return_undef the bytecode compiler emits after the final
 	// return) are part of the IR. Native code only needs reachable
@@ -55,8 +71,15 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 
 	var code []byte
 	depth := 0
+	// F1 自递归入口：R11 = 当前帧 locals 基址（RecFP==0 → &Frame.Locals；
+	// 否则 RecBase + RecFP*frameSize），并把 Frame.Args 拷入顶层 locals[1..n]。
+	if p.hasSelfCall {
+		code = emitNativeSelfCallEntry(code, p)
+	}
 	offsets := make([]int, len(p.Code))
 	depths := make([]int, len(p.Code))
+	// targetDepths 记录跳转目标的路径深度（发射时填充，发射循环开头重置用）。
+	targetDepths := make(map[int]int, 4)
 	fixups := make([]nativeFixup, 0, 8)
 	var ripPool []ripConstRef
 	sawTerminal := false
@@ -75,6 +98,15 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 			}
 			plan.reloadSize = len(code) - plan.reloadStart
 		}
+		// 跳转目标深度：跳转发射时记录目标路径的深度；发射循环开头重置，
+		// 避免无条件跳转后的线性 fallthrough 深度污染跳转目标（fib 的
+		// JMP 跳过递归段，目标由条件跳转以不同深度进入）。仅自递归模式需要
+		// （普通函数线性深度即正确，重置反而破坏）。
+		if p.hasSelfCall {
+			if d, ok := targetDepths[i]; ok {
+				depth = d
+			}
+		}
 		offsets[i] = len(code)
 		depths[i] = depth
 		in := p.Code[i]
@@ -89,6 +121,8 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 			}
 			if reg, ok := plan.regFor(slot, i); ok {
 				code = emitMoveF64(code, depth, reg) // 寄存器 → 操作数栈
+			} else if p.hasSelfCall {
+				code = emitLocalLoadF64(code, depth, slot) // R11 基址（递归帧）
 			} else {
 				code = emitLoadF64(code, depth, nativeLocalOffset(slot, p.NumParams))
 			}
@@ -101,6 +135,8 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 			}
 			if reg, ok := plan.regFor(slot, i); ok {
 				code = emitMoveF64(code, reg, depth) // 操作数栈 → 寄存器
+			} else if p.hasSelfCall {
+				code = emitLocalStoreF64(code, depth, slot) // R11 基址（递归帧）
 			} else {
 				code = emitStoreF64(code, depth, nativeLocalOffset(slot, p.NumParams))
 			}
@@ -169,6 +205,10 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 				condition = 0x84 // JE
 			}
 			target := int(branch.Operand)
+			if target > i {
+				// 前向跳转：记录目标路径深度（比较已消费 2 操作数）。
+				targetDepths[target] = depth
+			}
 			if target < i {
 				if depth != 0 || depths[target] != 0 {
 					return nil, fmt.Errorf("jit: native backedge has live operand stack")
@@ -196,7 +236,20 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 					code = append(code, 0x0F, condition^1)
 					skipFixup := len(code)
 					code = append(code, 0, 0, 0, 0)
-					code = emitNativeBudgetPoll(code, offsets[target])
+					if p.hasSelfCall {
+						// F1：布局 [poll][stub][jmp 循环头]。正常路径落进
+						// stub（R11 重算无害）后 jmp；yield 恢复点 Resume
+						// 指向 stub——Go 侧 CallAt(Resume) 重入时 R11 已被
+						// Go 运行时 clobber，必须重算帧基址。Resume imm 是
+						// 前向引用，stub 发射后 patch。
+						var pollResume int
+						code, pollResume = emitNativeBudgetPoll(code, 0)
+						stub := len(code)
+						code = emitNativeR11Reload(code)
+						binary.LittleEndian.PutUint32(code[pollResume:pollResume+4], uint32(int32(stub)))
+					} else {
+						code, _ = emitNativeBudgetPoll(code, offsets[target])
+					}
 					code = append(code, 0xE9)
 					fixups = append(fixups, nativeFixup{displacement: len(code), target: target})
 					code = append(code, 0, 0, 0, 0)
@@ -211,14 +264,26 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 			i++
 		case OpJump:
 			target := int(in.Operand)
+			if target > i {
+				targetDepths[target] = depth
+			}
 			if target < i {
 				if depth != 0 || depths[target] != 0 {
 					return nil, fmt.Errorf("jit: native backedge has live operand stack")
 				}
 				if plan != nil && i == plan.loop.backedge {
 					code = emitNativeBudgetPollWithSpill(code, plan.reloadStart, plan.hot, p.NumParams)
+				} else if p.hasSelfCall {
+					// F1：布局 [poll][stub][jmp 循环头]，同比较分支——Resume
+					// 指向 stub，重入时重算 R11（RecFP/RecBase 在 Frame 中
+					// 跨 Go 边界保留，寄存器不保留）。
+					var pollResume int
+					code, pollResume = emitNativeBudgetPoll(code, 0)
+					stub := len(code)
+					code = emitNativeR11Reload(code)
+					binary.LittleEndian.PutUint32(code[pollResume:pollResume+4], uint32(int32(stub)))
 				} else {
-					code = emitNativeBudgetPoll(code, offsets[target])
+					code, _ = emitNativeBudgetPoll(code, offsets[target])
 				}
 			}
 			code = append(code, 0xE9)
@@ -234,6 +299,7 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 			if target <= i {
 				return nil, fmt.Errorf("jit: native keep branch must be forward")
 			}
+			targetDepths[target] = depth // keep 分支跳转时栈顶保留
 			code = emitNumberTruthyTest(code, depth-1)
 			condition := byte(0x85) // JNE
 			if in.Op == OpJumpFalseKeep {
@@ -253,16 +319,51 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 			}
 			// Native inputs are guarded Numbers, so the left side is never
 			// nullish and the fallback expression is unreachable.
+			targetDepths[target] = depth // keep：跳转时栈顶保留
 			code = append(code, 0xE9)
 			fixups = append(fixups, nativeFixup{displacement: len(code), target: target})
 			code = append(code, 0, 0, 0, 0)
 			depth--
 		case OpReturn:
 			if depth != 1 {
-				return nil, fmt.Errorf("jit: native return stack")
+				return nil, fmt.Errorf("jit: native return stack: depth=%d at i=%d", depth, i)
 			}
 			code = emitStoreF64(code, 0, nativeResultOffset)
-			code = append(code, 0x31, 0xC0, 0xC3) // XOR EAX,EAX; RET
+			if p.hasSelfCall {
+				// 子帧返回（机器码显式栈）：RecFP--、R11=父帧基址、JMP 父帧返回 PC；
+				// 顶层（RecFP==0）正常 RET（无机器码返回地址，GC 安全）。
+				// MOV RAX,[R10+RecFP]; TEST RAX,RAX; JZ top_ret
+				code = append(code, 0x49, 0x8B, 0x82)
+				code = appendInt32(code, nativeRecFPOffset)
+				code = append(code, 0x48, 0x85, 0xC0)
+				code = append(code, 0x0F, 0x84)
+				topRetFixup := len(code)
+				code = append(code, 0, 0, 0, 0)
+				// SUB RAX,1; MOV [R10+RecFP],RAX（RecFP--）
+				code = append(code, 0x48, 0x83, 0xE8, 0x01)
+				code = append(code, 0x49, 0x89, 0x82)
+				code = appendInt32(code, nativeRecFPOffset)
+				// R11 = 父帧基址 = RecBase + RecFP*528
+				code = append(code, 0x49, 0x8B, 0x8A) // MOV RCX,[R10+RecBase]
+				code = appendInt32(code, nativeRecBaseOffset)
+				code = append(code, 0x48, 0x69, 0xC0) // IMUL RAX,RAX,528
+				code = appendInt32(code, nativeRecFrameSize)
+				code = append(code, 0x4C, 0x8D, 0x1C, 0x01) // LEA R11,[RCX+RAX]
+				// MOV QWORD [R11+statusOff],0（父帧 status=0：正常返回；imm32 sign-extend）
+				code = append(code, 0x49, 0xC7, 0x83)
+				code = appendInt32(code, nativeRecStatusOff)
+				code = appendInt32(code, 0)
+				// MOV RAX,[R11+pcOffset]（父帧返回 PC）
+				code = append(code, 0x49, 0x8B, 0x83)
+				code = appendInt32(code, nativeRecPCOffset)
+				// JMP RAX（跳回父帧调用点，无机器码返回地址）
+				code = append(code, 0xFF, 0xE0)
+				topRet := len(code)
+				binary.LittleEndian.PutUint32(code[topRetFixup:topRetFixup+4], uint32(int32(topRet-(topRetFixup+4))))
+				code = append(code, 0x31, 0xC0, 0xC3) // XOR EAX,EAX; RET
+			} else {
+				code = append(code, 0x31, 0xC0, 0xC3) // XOR EAX,EAX; RET
+			}
 			depth--
 			sawTerminal = true
 		case OpReturnUndef:
@@ -271,6 +372,140 @@ func compileNativeProgram(p *Program, retainDebugBytes ...bool) (*jitnative.Code
 			// cannot represent. Reject so Auto falls back to the Quick tier
 			// instead of silently returning a number.
 			return nil, fmt.Errorf("jit: native cannot represent undefined return")
+		case OpPushSelf:
+			// F1 自递归：callee 是隐式的，push_self 不发射机器码，但深度追踪
+			// 占位 +1（与 Quick 语义对齐，保证跳转路径深度一致）。
+			if !p.hasSelfCall {
+				return nil, fmt.Errorf("jit: native push_self requires self-call mode")
+			}
+			depth++
+		case OpSelfCall:
+			// F1 自递归：机器码显式栈——JMP 到函数入口（不用 CALL，避免机器码
+			// 返回地址进入 Go 栈导致精确 GC 栈扫描崩溃），返回经父帧保存的
+			// 返回 PC 由子帧 OpReturn JMP 回来。
+			// 栈：[callee占位, arg0..argN-1]（参数在 depth-n..depth-1）。
+			if !p.hasSelfCall {
+				return nil, fmt.Errorf("jit: native self_call requires self-call mode")
+			}
+			n := int(in.Operand)
+			if depth < n+1 {
+				return nil, fmt.Errorf("jit: native self_call stack underflow: depth=%d n=%d", depth, n)
+			}
+			// 深度检查：RecFP >= 256 → GuardFailed（status=1）
+			code = append(code, 0x49, 0x8B, 0x82)
+			code = appendInt32(code, nativeRecFPOffset)
+			code = append(code, 0x48, 0x3D)
+			code = appendInt32(code, nativeRecMaxFrames-1)
+			code = append(code, 0x0F, 0x83)
+			tooDeepFixup := len(code)
+			code = append(code, 0, 0, 0, 0)
+			// 保存父帧操作数栈（XMM[0..depth-1] → [R11+localsSize + i*8]）
+			for i := 0; i < depth; i++ {
+				code = emitLocalStoreF64Off(code, i, nativeRecLocalsSize+i*8)
+			}
+			// 保存返回 PC：[R11+pcOffset] = 本指令之后的机器码地址（RIP 相对）
+			// LEA RAX,[RIP+disp]；disp 稍后 patch（指向返回点，即本 self_call 末尾）
+			code = append(code, 0x48, 0x8D, 0x05)
+			rcFixup := len(code)
+			code = append(code, 0, 0, 0, 0)
+			code = append(code, 0x49, 0x89, 0x83) // MOV [R11+pcOffset],RAX
+			code = appendInt32(code, nativeRecPCOffset)
+			// 子帧 locals 基址 = RecBase + (RecFP+1)*528 → R11
+			code = append(code, 0x49, 0x8B, 0x8A) // MOV RCX,[R10+RecBase]
+			code = appendInt32(code, nativeRecBaseOffset)
+			code = append(code, 0x49, 0x8B, 0x82) // MOV RAX,[R10+RecFP]（重读，LEA 覆盖过）
+			code = appendInt32(code, nativeRecFPOffset)
+			code = append(code, 0x48, 0x69, 0xC0) // IMUL RAX,RAX,528
+			code = appendInt32(code, nativeRecFrameSize)
+			code = append(code, 0x4C, 0x8D, 0x9C, 0x01) // LEA R11,[RCX+RAX+disp32]
+			code = appendInt32(code, nativeRecFrameSize)
+			// 参数拷贝：XMM[depth-n+i] → [R11+(i+1)*8]
+			for i := 0; i < n; i++ {
+				code = emitLocalStoreF64(code, depth-n+i, i+1)
+			}
+			// RecFP+1 写回
+			code = append(code, 0x49, 0x8B, 0x82) // MOV RAX,[R10+RecFP]
+			code = appendInt32(code, nativeRecFPOffset)
+			code = append(code, 0x48, 0x8D, 0x40, 0x01) // LEA RAX,[RAX+1]
+			code = append(code, 0x49, 0x89, 0x82)       // MOV [R10+RecFP],RAX
+			code = appendInt32(code, nativeRecFPOffset)
+			// JMP 函数入口（rel32；目标 = 机器码入口 0）——不压返回地址，GC 安全
+			code = append(code, 0xE9)
+			jmpFixup := len(code)
+			code = append(code, 0, 0, 0, 0)
+			// 返回点（子帧 OpReturn/too_deep JMP 回来）：R11 已是父帧基址。
+			retPos := len(code)
+			// patch LEA RAX,[RIP+disp]：disp = retPos - (rcFixup+4)
+			binary.LittleEndian.PutUint32(code[rcFixup:rcFixup+4], uint32(int32(retPos-(rcFixup+4))))
+			// patch JMP：目标 = 0（入口）
+			binary.LittleEndian.PutUint32(code[jmpFixup:jmpFixup+4], uint32(int32(-(jmpFixup + 4))))
+			// 检查父帧 status 槽：非 0（子帧深度超限）→ 透传给更上层
+			// MOV EAX,[R11+statusOff]; TEST EAX,EAX; JZ ok
+			code = append(code, 0x49, 0x8B, 0x83)
+			code = appendInt32(code, nativeRecStatusOff)
+			code = append(code, 0x48, 0x85, 0xC0)
+			code = append(code, 0x0F, 0x84)
+			statusOKFixup := len(code)
+			code = append(code, 0, 0, 0, 0)
+			// status 非 0：透传——RecFP--、R11=更上层、写 status、JMP 更上层返回 PC
+			code = append(code, 0x49, 0x8B, 0x82) // MOV RAX,[R10+RecFP]
+			code = appendInt32(code, nativeRecFPOffset)
+			code = append(code, 0x48, 0x85, 0xC0)
+			code = append(code, 0x0F, 0x84)
+			topStatusFixup := len(code)
+			code = append(code, 0, 0, 0, 0)
+			code = append(code, 0x48, 0x83, 0xE8, 0x01) // SUB RAX,1
+			code = append(code, 0x49, 0x89, 0x82)       // MOV [R10+RecFP],RAX
+			code = appendInt32(code, nativeRecFPOffset)
+			code = append(code, 0x49, 0x8B, 0x8A) // MOV RCX,[R10+RecBase]
+			code = appendInt32(code, nativeRecBaseOffset)
+			code = append(code, 0x48, 0x69, 0xC0) // IMUL RAX,RAX,528
+			code = appendInt32(code, nativeRecFrameSize)
+			code = append(code, 0x4C, 0x8D, 0x1C, 0x01) // LEA R11,[RCX+RAX]
+			code = append(code, 0x49, 0xC7, 0x83)       // MOV QWORD [R11+statusOff],1
+			code = appendInt32(code, nativeRecStatusOff)
+			code = appendInt32(code, 1)           // imm32（sign-extend）
+			code = append(code, 0x49, 0x8B, 0x83) // MOV RAX,[R11+pcOffset]
+			code = appendInt32(code, nativeRecPCOffset)
+			code = append(code, 0xFF, 0xE0) // JMP RAX
+			topStatusPos := len(code)
+			binary.LittleEndian.PutUint32(code[topStatusFixup:topStatusFixup+4], uint32(int32(topStatusPos-(topStatusFixup+4))))
+			// 顶层 status 非 0：XOR EAX,EAX; INC EAX; RET（透传 GuardFailed 给 Go）
+			code = append(code, 0x31, 0xC0, 0xFF, 0xC0, 0xC3)
+			// ok：status==0，恢复父帧操作数栈 + 加载结果。
+			statusOKPos := len(code)
+			binary.LittleEndian.PutUint32(code[statusOKFixup:statusOKFixup+4], uint32(int32(statusOKPos-(statusOKFixup+4))))
+			// 恢复父帧操作数栈（[R11+localsSize + i*8] → XMM[0..depth-1]）
+			for i := 0; i < depth; i++ {
+				code = emitLocalLoadF64Off(code, i, nativeRecLocalsSize+i*8)
+			}
+			code = emitLoadF64(code, depth-n-1, nativeResultOffset) // 结果 → 父帧栈顶
+			// JMP 跳过 too_deep 块（正常返回路径不得 fallthrough 进入）
+			code = append(code, 0xE9)
+			skipTooDeepFixup := len(code)
+			code = append(code, 0, 0, 0, 0)
+			// too_deep：走子帧返回路径（RecFP--、R11=父帧、写 status=1、JMP 父帧 PC）
+			tooDeepEnd := len(code)
+			binary.LittleEndian.PutUint32(code[tooDeepFixup:tooDeepFixup+4], uint32(int32(tooDeepEnd-(tooDeepFixup+4))))
+			code = append(code, 0x48, 0x83, 0xE8, 0x01) // SUB RAX,1（RAX=RecFP）
+			code = append(code, 0x49, 0x89, 0x82)       // MOV [R10+RecFP],RAX
+			code = appendInt32(code, nativeRecFPOffset)
+			code = append(code, 0x49, 0x8B, 0x8A) // MOV RCX,[R10+RecBase]
+			code = appendInt32(code, nativeRecBaseOffset)
+			code = append(code, 0x48, 0x69, 0xC0) // IMUL RAX,RAX,528
+			code = appendInt32(code, nativeRecFrameSize)
+			code = append(code, 0x4C, 0x8D, 0x1C, 0x01) // LEA R11,[RCX+RAX]
+			code = append(code, 0x49, 0xC7, 0x83)       // MOV QWORD [R11+statusOff],1
+			code = appendInt32(code, nativeRecStatusOff)
+			code = appendInt32(code, 1)           // imm32（sign-extend）
+			code = append(code, 0x49, 0x8B, 0x83) // MOV RAX,[R11+pcOffset]
+			code = appendInt32(code, nativeRecPCOffset)
+			code = append(code, 0xFF, 0xE0) // JMP RAX
+			skipTooDeepPos := len(code)
+			binary.LittleEndian.PutUint32(code[skipTooDeepFixup:skipTooDeepFixup+4], uint32(int32(skipTooDeepPos-(skipTooDeepFixup+4))))
+			depth -= n + 1 // 弹 n 参数 + callee 占位
+			depth += 1     // 压结果
+			sawTerminal = false
 		case OpTraceExit:
 			exitID := int(in.Operand)
 			if !p.nativeTrace || in.Operand > ^uint32(0)-3 {
@@ -397,6 +632,105 @@ func emitLoadF64(code []byte, xmm, offset int) []byte {
 	return appendInt32(code, int32(offset))
 }
 
+// emitLocalLoadF64 从 R11 基址的 locals[slot] 加载（F1 自递归模式）。
+// movsd xmmN, [r11+disp32]。R11 需要 REX.B（0x41）。
+func emitLocalLoadF64(code []byte, xmm, slot int) []byte {
+	rex := byte(0x41) // REX.B（r11）
+	if xmm >= 8 {
+		rex |= 0x04 // REX.R
+	}
+	// mod=10(disp32), reg=xmm&7, rm=011(r11)
+	code = append(code, 0xF2, rex, 0x0F, 0x10, byte(0x83|((xmm&7)<<3)))
+	return appendInt32(code, int32(slot*8))
+}
+
+// emitLocalStoreF64 写 R11 基址的 locals[slot]（F1 自递归模式）。
+func emitLocalStoreF64(code []byte, xmm, slot int) []byte {
+	rex := byte(0x41)
+	if xmm >= 8 {
+		rex |= 0x04
+	}
+	code = append(code, 0xF2, rex, 0x0F, 0x11, byte(0x83|((xmm&7)<<3)))
+	return appendInt32(code, int32(slot*8))
+}
+
+// emitLocalStoreF64Off 写 [R11+off]（F1 自递归：操作数栈保存区，off 为字节偏移）。
+func emitLocalStoreF64Off(code []byte, xmm, off int) []byte {
+	rex := byte(0x41)
+	if xmm >= 8 {
+		rex |= 0x04
+	}
+	code = append(code, 0xF2, rex, 0x0F, 0x11, byte(0x83|((xmm&7)<<3)))
+	return appendInt32(code, int32(off))
+}
+
+// emitLocalLoadF64Off 从 [R11+off] 加载（F1 自递归：操作数栈恢复）。
+func emitLocalLoadF64Off(code []byte, xmm, off int) []byte {
+	rex := byte(0x41)
+	if xmm >= 8 {
+		rex |= 0x04
+	}
+	code = append(code, 0xF2, rex, 0x0F, 0x10, byte(0x83|((xmm&7)<<3)))
+	return appendInt32(code, int32(off))
+}
+
+// emitNativeSelfCallEntry 发射 F1 自递归入口：
+//
+//	MOV RAX,[R10+RecFP]; TEST RAX,RAX; JNZ rec_entry   （递归调用直接跳 rec_entry）
+//	MOV RCX,[R10+RecBase]; LEA R11,[RCX]                    （顶层：R11=帧 0）
+//	顶层参数拷贝：Frame.Args[i] → [R11+(i+1)*8]
+//	JMP body
+//
+// rec_entry:                                           （递归子帧入口）
+//
+//	MOV RCX,[R10+RecBase]; IMUL RAX,RAX,528; LEA R11,[RCX+RAX]
+//
+// body:
+// 返回的 fixups 用于把 rec_entry 的 JMP 重定向到 body 位置（入口发射完成后
+// 由调用方 patch）。
+func emitNativeSelfCallEntry(code []byte, p *Program) []byte {
+	// MOV RAX,[R10+RecFP]
+	code = append(code, 0x49, 0x8B, 0x82)
+	code = appendInt32(code, nativeRecFPOffset)
+	// TEST RAX,RAX
+	code = append(code, 0x48, 0x85, 0xC0)
+	// JNZ rec_entry（相对跳转，稍后 patch）
+	code = append(code, 0x0F, 0x85)
+	recEntryFixup := len(code)
+	code = append(code, 0, 0, 0, 0)
+	// 顶层也走 RecBase 帧 0（locals 在 RecBase[0..]，操作数栈保存区在
+	// RecBase[256..]），与子帧统一布局，避免顶层栈保存区与 Frame 字段冲突。
+	code = append(code, 0x49, 0x8B, 0x8A) // MOV RCX,[R10+RecBase]
+	code = appendInt32(code, nativeRecBaseOffset)
+	code = append(code, 0x4C, 0x8D, 0x19) // LEA R11,[RCX]
+	// 顶层参数拷贝：Args[i] → [R11+(i+1)*8]，用 XMM15 中转。
+	for i := 0; i < p.NumParams; i++ {
+		// MOVSD XMM15,[R10+i*8]（REX.R+REX.B：0x45）
+		code = append(code, 0xF2, 0x45, 0x0F, 0x10, 0xBA)
+		code = appendInt32(code, int32(i*8))
+		// MOVSD [R11+(i+1)*8],XMM15（用 emitLocalStoreF64，REX.R/B 正确）
+		code = emitLocalStoreF64(code, 15, i+1)
+	}
+	// JMP body（稍后 patch 到主循环开头）
+	code = append(code, 0xE9)
+	bodyFixup := len(code)
+	code = append(code, 0, 0, 0, 0)
+	// rec_entry：
+	// MOV RCX,[R10+RecBase]
+	code = append(code, 0x49, 0x8B, 0x8A)
+	code = appendInt32(code, nativeRecBaseOffset)
+	// IMUL RAX,RAX,528
+	code = append(code, 0x48, 0x69, 0xC0)
+	code = appendInt32(code, nativeRecFrameSize)
+	// LEA R11,[RCX+RAX]（SIB: base=RCX, index=RAX, scale=1, disp=0）
+	code = append(code, 0x4C, 0x8D, 0x1C, 0x01)
+	// body：
+	bodyPos := len(code)
+	binary.LittleEndian.PutUint32(code[recEntryFixup:recEntryFixup+4], uint32(int32(bodyPos-(recEntryFixup+4))))
+	binary.LittleEndian.PutUint32(code[bodyFixup:bodyFixup+4], uint32(int32(bodyPos-(bodyFixup+4))))
+	return code
+}
+
 func emitStoreF64(code []byte, xmm, offset int) []byte {
 	rex := byte(0x41)
 	if xmm >= 8 {
@@ -497,7 +831,11 @@ func emitNumberTruthyTest(code []byte, xmm int) []byte {
 	return append(code, 0x84, 0xC0)                                // TEST AL,AL
 }
 
-func emitNativeBudgetPoll(code []byte, resumeOffset int) []byte {
+// emitNativeBudgetPoll 发射预算轮询：SUB [R10+Budget],1；未耗尽 JNZ 跳过
+// yield 块；耗尽时把 Resume 设为 resumeOffset、EAX=2、RET（Go 侧恢复后
+// CallAt(Resume) 重入）。返回新的 code 与 Resume imm32 的位置——F1 自递归
+// 的恢复点 stub 在 poll 之后发射，调用方需 patch 该 imm。
+func emitNativeBudgetPoll(code []byte, resumeOffset int) ([]byte, int) {
 	// SUB QWORD PTR [R10+Budget],1; JNZ continue.
 	code = append(code, 0x49, 0x83, 0xAA)
 	code = appendInt32(code, nativeBudgetOffset)
@@ -507,10 +845,30 @@ func emitNativeBudgetPoll(code []byte, resumeOffset int) []byte {
 	// MOV QWORD PTR [R10+Resume],resumeOffset; MOV EAX,2; RET.
 	code = append(code, 0x49, 0xC7, 0x82)
 	code = appendInt32(code, nativeResumeOffset)
+	resumeImmPos := len(code)
 	code = appendInt32(code, int32(resumeOffset))
 	code = append(code, 0xB8, 0x02, 0x00, 0x00, 0x00, 0xC3)
 	relative := len(code) - (continueFixup + 4)
 	binary.LittleEndian.PutUint32(code[continueFixup:continueFixup+4], uint32(int32(relative)))
+	return code, resumeImmPos
+}
+
+// emitNativeR11Reload 重算 R11 = RecBase + RecFP*528（F1 自递归模式）。
+// Go 侧 yield 处理（预算轮询 RET 返回 Go、Go 恢复后 CallAt(resume) 重入）期间
+// R11 会被 Go 运行时 clobber（caller-saved），恢复点必须重算帧基址才能继续
+// 经 R11 访问递归帧 locals。Clobbers RAX、RCX。
+func emitNativeR11Reload(code []byte) []byte {
+	// MOV RAX,[R10+RecFP]
+	code = append(code, 0x49, 0x8B, 0x82)
+	code = appendInt32(code, nativeRecFPOffset)
+	// MOV RCX,[R10+RecBase]
+	code = append(code, 0x49, 0x8B, 0x8A)
+	code = appendInt32(code, nativeRecBaseOffset)
+	// IMUL RAX,RAX,528
+	code = append(code, 0x48, 0x69, 0xC0)
+	code = appendInt32(code, nativeRecFrameSize)
+	// LEA R11,[RCX+RAX]（SIB: base=RCX, index=RAX, scale=1, disp=0）
+	code = append(code, 0x4C, 0x8D, 0x1C, 0x01)
 	return code
 }
 

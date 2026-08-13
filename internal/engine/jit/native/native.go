@@ -10,13 +10,20 @@ var ErrUnsupported = errors.New("native jit is not supported on this platform")
 
 // Frame is the pointer-free ABI shared with generated code. Native code may
 // read/write numeric fields but must not retain the frame address after Call.
+//
+// RecBase/RecFP 支持自递归（F1）：RecBase 是递归帧区（Go 侧分配的 []float64）
+// 的基址（以 uintptr 数值存入，GC 不追踪——recBuf 由 Go 侧在调用期间持有），
+// RecFP 是当前递归深度（帧索引）。递归子帧的 locals 位于
+// [RecBase + RecFP*frameSize + slot*8]。非递归函数不使用这两个字段。
 type Frame struct {
-	Args   [8]float64
-	Result float64
-	Status uint64
-	Locals [32]float64
-	Budget uint64
-	Resume uint64
+	Args    [8]float64
+	Result  float64
+	Status  uint64
+	Locals  [32]float64
+	Budget  uint64
+	Resume  uint64
+	RecBase uint64
+	RecFP   uint64
 }
 
 type Code struct {

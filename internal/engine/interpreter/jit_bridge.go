@@ -880,9 +880,10 @@ func (v *VM) maybeCompileJITState(state *quickJITState, tmpl *bytecode.FuncTempl
 			v.jitStats.Compiled++
 		}
 		if v.jitConfig.Mode == jit.Auto {
-			if _, guardedCall := program.RequiresSelf(); guardedCall {
-				return
-			}
+			// F1：自递归程序（RequiresSelf）也可编译 Native——机器码对
+			// OpPushSelf+OpSelfCall 直接形态做显式栈自递归。非直接形态
+			// （callee 来自局部变量/参数）在 compileNativeProgram 内被拒绝，
+			// 此处不需要静态区分；执行侧的身份门控见 tryQuickCall。
 			if len(program.Code) >= 128 {
 				v.queueNativeCompile(state)
 				return
@@ -949,6 +950,12 @@ func (v *VM) maybeSpecializeCallee(state *quickJITState, cl *vmClosure) {
 		return
 	}
 	baseProgram := state.program.CloneForNative()
+	// F1：内联会改变 IR 形态（自递归模式关闭），旧的机器码先行释放
+	// （Close + 记账），BindCallTarget 内只清引用——否则会装入与 IR
+	// 不匹配的代码，且旧代码无人 Close 造成 executable memory 泄漏。
+	if state.program.HasNative() {
+		v.dropNative(state)
+	}
 	inlined, err := state.program.BindCallTarget(targetProgram)
 	if err != nil {
 		_ = baseProgram.Close()
@@ -1231,6 +1238,15 @@ func (v *VM) installNative(state *quickJITState) error {
 func (v *VM) adoptNative(state *quickJITState, program *jit.Program) error {
 	if state == nil || state.program == nil || program == nil {
 		return fmt.Errorf("jit: missing prepared native candidate")
+	}
+	// 后台编译期间 state.program 可能被 BindCallTarget 内联（IR 形态改变，
+	// 如自递归模式关闭）：编译产物与当前 IR 不一致时丢弃，避免装入与 IR
+	// 不匹配的机器码（例如旧的自递归模式代码配 hasSelfCall=false 执行，
+	// RecBase 未初始化即崩溃）。
+	if len(program.Code) != len(state.program.Code) ||
+		program.NumLocals != state.program.NumLocals ||
+		program.UsesNativeSelfCall() != state.program.UsesNativeSelfCall() {
+		return fmt.Errorf("jit: stale native artifact (IR changed after compile)")
 	}
 	size := uint64(program.NativeSize())
 	if err := v.reserveNative(state, size); err != nil {
@@ -3094,6 +3110,12 @@ func (v *VM) tryQuickCall(cl *vmClosure, thisVal engine.Value, args []engine.Val
 		return engine.Undefined(), false, nil
 	}
 	program := state.program
+	// F1 Native 自递归（机器码显式栈）只对"upvalue == 当前闭包"（quickCallSelf）
+	// 安全：机器码把每个直接形态 OpSelfCall 硬编码为自递归（JMP entry 0）。
+	// quickCallBound 时 upvalue 是另一个闭包，直接形态语义是"调用该 upvalue"，
+	// 必须留在 Quick（callTarget 机制）+ 身份 guard 路径，Native 自递归会错调。
+	// 执行门禁见下方 native 路径：program.UsesNativeSelfCall() 为 false 的
+	// 程序（如内联成功的 bound callee）不在此限制内。
 	if upvalueIndex, required := program.RequiresSelf(); required {
 		if state.calleeDisabled {
 			return engine.Undefined(), false, nil
@@ -3150,7 +3172,12 @@ func (v *VM) tryQuickCall(cl *vmClosure, thisVal engine.Value, args []engine.Val
 		}
 		return engine.Undefined(), true, nil
 	}
-	if v.jitConfig.Mode == jit.Auto && program.HasNative() {
+	// 自递归模式（机器码把 OpSelfCall 硬编码为 JMP entry 0）仅在 quickCallSelf
+	// 身份确认后执行；bound/unknown 状态下 UsesNativeSelfCall() 为 true 的
+	// 程序必须留在 Quick（callTarget + 身份 guard）。内联后的程序（无自调用
+	// 站点，UsesNativeSelfCall()==false）不受限。
+	if v.jitConfig.Mode == jit.Auto && program.HasNative() &&
+		(!program.UsesNativeSelfCall() || state.callKind == quickCallSelf) {
 		v.touchNative(state)
 		result, reason, yields, err := program.ExecuteNativeBudgetWithSafepoint(
 			thisVal, args, v.jitConfig.TraceBudget, v.pollJITSafepoint)

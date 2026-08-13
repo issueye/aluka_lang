@@ -96,6 +96,9 @@ type Program struct {
 	Code           []Instr
 	nativeCode     *jitnative.Code
 	propertyGuards []propertyGuard
+	// hasSelfCall 标记程序含 OpSelfCall（F1 自递归 Native）：需要递归帧区
+	// （Frame.RecBase/RecFP）与 R11 locals 基址发射。
+	hasSelfCall bool
 	// stringConsts is the per-program string constant pool. OpConstString
 	// operands index it; the executors place the values at the front of the
 	// object buffer so quickValue refs resolve through the same objects slice
@@ -158,6 +161,15 @@ func (p *Program) RequiresSelf() (int, bool) {
 	return p.SelfUpvalue, p != nil && p.SelfUpvalue >= 0
 }
 
+// UsesNativeSelfCall 报告程序的机器码是否运行在 F1 自递归模式（直接形态
+// OpSelfCall 站点硬编码为 JMP entry 0 的机器码自递归）。该模式的执行前提
+// 是分发侧已验证 upvalue == 当前闭包（quickCallSelf）；quickCallBound 时
+// upvalue 是另一闭包，自递归模式会把"调用 upvalue"错执行为自递归，必须
+// 留在 Quick。内联成功的程序（无 OpSelfCall 站点）恒为 false。
+func (p *Program) UsesNativeSelfCall() bool {
+	return p != nil && p.hasSelfCall
+}
+
 // BindCallTarget specializes OpSelfCall sites to a guarded monomorphic
 // callee. The interpreter bridge owns the closure identity guard.
 func (p *Program) BindCallTarget(target *Program) (bool, error) {
@@ -178,6 +190,15 @@ func (p *Program) BindCallTarget(target *Program) (bool, error) {
 		return false, fmt.Errorf("jit: callee string constants unsupported in specialized calls")
 	}
 	if p.inlineCallTarget(target) {
+		// 内联后不再有任何 OpSelfCall 站点（含直接形态），F1 Native 自递归
+		// 模式关闭：机器码入口/返回按普通模式发射，避免 RecBase 徒劳初始化。
+		p.hasSelfCall = false
+		// 内联改变了 IR：旧的机器码（可能按自递归模式发射）已失效——继续使用
+		// 会让执行侧按 hasSelfCall=false 跳过 recBuf 分配，而旧机器码仍按
+		// RecBase 寻址（RecBase=0 崩溃）。只清引用不 Close——释放与记账由
+		// 调用方（bridge 的 dropNative）在调用本方法前完成。
+		p.nativeCode = nil
+		p.nativePlan = nil
 		return true, nil
 	}
 	p.callTarget = target
@@ -400,6 +421,63 @@ func (p *Program) inlineCallTarget(target *Program) bool {
 
 const maxQuickSlots = 32
 
+// hasDirectSelfCalls 报告程序是否含 OpSelfCall 且每个站点的 callee 都直接
+// 来自 OpPushSelf（真实形态：push_self; args…; self_call，callee 位于栈底、
+// 参数在其上）。无 OpSelfCall 的程序返回 false（不得进入自递归模式——否则
+// 普通函数会被误标：禁用 M2 寄存器分配并发射自递归入口/返回路径，破坏
+// 属性 guard 等正常行为）。对每个站点从参数区向后做深度游走（与
+// inlineCallTarget 的站点分析同构）：above 从参数个数开始递减，遇到"会执行
+// 到 callee 位置之下"的指令即找到 callee 来源；参数区内出现跳转/返回/嵌套
+// 调用/弹出 callee 以下值的指令均判定为不可判定的普通调用形态（返回 false，
+// native 拒绝、Quick 兜底）。
+func hasDirectSelfCalls(code []Instr) bool {
+	sawSelfCall := false
+	for i := range code {
+		if code[i].Op != OpSelfCall {
+			continue
+		}
+		sawSelfCall = true
+		above := int(code[i].Operand)
+		source := -1
+		for j := i - 1; j >= 0; j-- {
+			need, delta := 0, 0
+			switch code[j].Op {
+			case OpConst, OpLoadLocal, OpConstString, OpDup, OpPushSelf:
+				delta = 1
+			case OpStoreLocal, OpPop:
+				need, delta = 1, -1
+			case OpSwap:
+				need = 2
+			case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpPow, OpEq, OpNe, OpStrictEq, OpStrictNe,
+				OpBitAnd, OpBitOr, OpBitXor, OpShl, OpShr, OpUShr, OpLt, OpLe, OpGt, OpGe:
+				need, delta = 2, -1
+			case OpNeg, OpNot, OpBitNot, OpUnaryPlus:
+				need = 1
+			case OpGetProp:
+				need, delta = 1, 0
+			default:
+				// 跳转/返回/嵌套 OpSelfCall 等：形态不可判定。
+				return false
+			}
+			before := above - delta
+			if before < 0 {
+				source = j
+				break
+			}
+			if need > before {
+				// 该指令会弹出 callee 位置以下的值，破坏自调用形态。
+				return false
+			}
+			above = before
+		}
+		if source < 0 || code[source].Op != OpPushSelf {
+			return false
+		}
+	}
+	// 无任何 OpSelfCall 的程序不是自递归候选。
+	return sawSelfCall
+}
+
 // CompileLeaf lowers a function template whose body is a numeric expression
 // with structured control flow: if/else chains, integer and string switch
 // (lowered by the bytecode compiler to a strict-equality jump chain), ternary
@@ -551,6 +629,12 @@ func CompileLeaf(tmpl *bytecode.FuncTemplate) (*Program, error) {
 	// shape that inline targets, trivial-getter detection and the trailing
 	// return check rely on (reachable instructions are never trimmed).
 	p.Code = trimUnreachableTail(p.Code)
+	// F1 自递归标记：仅当**所有** OpSelfCall 的 callee 都直接来自 OpPushSelf
+	// （push_self; args…; self_call，callee 在栈底）才启用 Native 自递归模式。
+	// 含普通调用（callee 来自局部变量/参数，Quick 运行时 guard 失败回退
+	// Tier 0）的函数不得误标——否则 Native 机器码会把非自递归的 OpSelfCall
+	// 也执行成自递归（JMP entry 0），产生错误结果而非 GuardFailed 回退。
+	p.hasSelfCall = hasDirectSelfCalls(p.Code)
 	if len(p.Code) == 0 || (p.Code[len(p.Code)-1].Op != OpReturn && p.Code[len(p.Code)-1].Op != OpReturnUndef) {
 		return nil, fmt.Errorf("jit: no return")
 	}

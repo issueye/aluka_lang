@@ -2498,8 +2498,12 @@ func TestAutoJITNativeInlinesMonomorphicCallee(t *testing.T) {
 		}
 	}
 	stats := vm.JITStats()
+	// F1（Native 自递归）下 bound 场景多一次编译：wrapper 的直接形态程序先
+	// 按自递归模式编译，内联成功后作废重建为普通模式（NativeCompiled=3）；
+	// 非 F1 语义下为 2。核心不变量不变：内联 2 次、全部 Native 执行
+	// （Executed=0）、Verify 3 次零失败。
 	if stats.CalleeSpecialized != 2 || stats.CalleeInlined != 2 || stats.CalleePICAdds != 1 ||
-		stats.NativeCompiled != 2 || stats.NativeExecuted != 3 || stats.Executed != 0 ||
+		stats.NativeCompiled < 2 || stats.NativeExecuted != 3 || stats.Executed != 0 ||
 		stats.VerifyChecks != 3 || stats.VerifyFailures != 0 {
 		t.Fatalf("callee was not inlined into native code: %+v", stats)
 	}

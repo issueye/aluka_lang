@@ -2,6 +2,7 @@ package jit
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	jitnative "github.com/aluka-lang/aluka/internal/engine/jit/native"
@@ -140,6 +141,16 @@ func (p *Program) ExecuteNativeBudgetWithSafepoint(thisVal engine.Value, args []
 		budget = 65536
 	}
 	frame := &jitnative.Frame{}
+	// F1 自递归：为含 OpSelfCall 的程序分配递归帧区（256 帧 × 66 槽 × 8B：
+	// locals 32 槽 + 操作数栈保存 32 槽 + 返回 PC + status）。
+	// recBuf 在整个 Native 调用期间由本 goroutine 持有（GC 存活），机器码经
+	// Frame.RecBase（uintptr 数值，不参与 GC 追踪）访问；调用结束后随 GC 回收。
+	var recBuf []float64
+	if p.hasSelfCall {
+		recBuf = make([]float64, 256*66)
+		frame.RecBase = uint64(uintptr(unsafe.Pointer(&recBuf[0])))
+		frame.RecFP = 0
+	}
 	for i := 0; i < p.NumParams; i++ {
 		if p.nativePlan.numberArgs&(uint16(1)<<i) == 0 {
 			continue
@@ -173,6 +184,10 @@ func (p *Program) ExecuteNativeBudgetWithSafepoint(thisVal engine.Value, args []
 		status = p.nativeCode.CallAt(frame.Resume, frame)
 	}
 	if status != 0 {
+		// status 1 = F1 自递归深度超限：GuardFailed 回退 Tier 0（非 Malformed）。
+		if status == 1 {
+			return engine.Undefined(), GuardFailed, yields, nil
+		}
 		return engine.Undefined(), Malformed, yields, fmt.Errorf("jit: native status %d", status)
 	}
 	return engine.Number(frame.Result), Executed, yields, nil
@@ -357,6 +372,7 @@ func lowerNativeInputsForMode(p *Program, trace bool) (*Program, *nativeInputPla
 		NumParams:           p.NumParams,
 		NumLocals:           p.NumLocals + len(plan.properties),
 		SelfUpvalue:         -1,
+		hasSelfCall:         !trace && p.hasSelfCall,
 		Code:                code,
 		stringConsts:        append([]engine.Value(nil), p.stringConsts...),
 		nativeNumberArgs:    plan.numberArgs,
