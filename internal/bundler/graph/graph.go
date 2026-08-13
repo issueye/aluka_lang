@@ -17,7 +17,6 @@ import (
 	"github.com/aluka-lang/aluka/internal/bundler/compile"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/engine/parser"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
@@ -27,16 +26,21 @@ type Dep struct {
 	ImportCtx bool // true = import 语境（ESM 导入/动态 import），false = require 语境
 }
 
-// Result 是模块图构建的产物：编译后的模块列表 + 构建期解析映射 + JSON 资源。
+// SourceUnitByPath 缓存构建期已读取并解析的模块中间表示；同一模块的
+// 编译与依赖收集共享这份前端结果，避免重复 ParseModule。
+type SourceUnitByPath map[string]*module.SourceUnit
+
+// Result 是一个模块图构建的产物：编译后的模块列表 + 构建期解析映射 + JSON 资源。
 type Result struct {
 	Entry   string
-	RootDir string // 入口文件所在目录（绝对路径）：虚拟路径的源码读取基准
+	RootDir string // 入口文件所在目录（绝对路径）：虚拟 key 的源码读取基准
 	Modules []*compile.EntryData
 	// Resolutions 父模块虚拟路径 → specifier → 目标模块虚拟路径。
+	// SourceUnits 按虚拟路径保存唯一前端解析结果，供后续 shake/minify 阶段复用。
+	SourceUnits SourceUnitByPath
 	Resolutions map[string]map[string]string
 	Assets      map[string][]byte // JSON 资源：虚拟路径 → 原始字节（M3）
-	// UnresolvedDynamic 无法静态解析的动态 import 所在模块（T2-B4：
-	// 非字面量且不能常量折叠 → 产物运行时会失败，构建期给出警告）。
+	// UnresolvedDynamic 无法静态解析的动态 import 所在模块。
 	UnresolvedDynamic []string
 }
 
@@ -54,6 +58,7 @@ func Build(vm *interpreter.VM, resolver *module.Resolver, entry string) (*Result
 		RootDir:     entryDir,
 		Modules:     make([]*compile.EntryData, 0),
 		Resolutions: make(map[string]map[string]string),
+		SourceUnits: make(SourceUnitByPath),
 		Assets:      make(map[string][]byte),
 	}
 	visited := make(map[string]bool)
@@ -92,26 +97,24 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 		return nil
 	}
 
-	entryData, err := compile.CompileFile(vm, fsPath, key)
+	unit, err := compile.ParseFileUnit(fsPath, key)
 	if err != nil {
 		return err
 	}
+	if unit.SourceKind == module.SourceJSON {
+		r.Assets[key] = unit.Source
+		return nil
+	}
+	entryData, err := compile.CompileSourceUnit(vm, unit)
+	if err != nil {
+		return err
+	}
+	r.SourceUnits[key] = unit
 	r.Modules = append(r.Modules, entryData)
 	if r.Entry == "" {
 		r.Entry = key
 	}
-
-	// 解析源码收集静态依赖（CompileFile 内部已 parse，此处重新 parse 收集
-	// specifier；M2 规模下开销可接受，后续可合并为一次 parse）。
-	src, err := os.ReadFile(fsPath)
-	if err != nil {
-		return fmt.Errorf("graph: cannot read %q: %w", fsPath, err)
-	}
-	prog, err := parser.ParseModule(string(stripBOM(src)))
-	if err != nil {
-		return fmt.Errorf("graph: parse error in %q: %w", fsPath, err)
-	}
-	deps := collectDeps(prog, key, &r.UnresolvedDynamic)
+	deps := collectDeps(unit.Program, key, &r.UnresolvedDynamic)
 	// 反射遍历可能重复收集同一调用节点——去重。
 	if len(r.UnresolvedDynamic) > 0 {
 		seen := make(map[string]bool)

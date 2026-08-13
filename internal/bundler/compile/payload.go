@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
+	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
 // PayloadVersion 是 payload 布局版本。布局变更（header/manifest 字段）时递增。
@@ -73,10 +74,11 @@ type Manifest struct {
 
 // EntryData 是一个待打包模块（编译产物）。
 type EntryData struct {
-	Path        string
-	ModuleType  string // ModuleTypeESM | ModuleTypeCJS
-	Module      *bytecode.Module
-	Transformed bool // tree-shake 等源码 AST 变换后已重新编译
+	Path       string
+	ModuleType string // ModuleTypeESM | ModuleTypeCJS
+	SourceKind module.SourceKind
+	Stage      module.TransformStage
+	Module     *bytecode.Module
 }
 
 // Pack 打包 payload 数据段（不含 footer；footer 由 Build 阶段写入文件）。

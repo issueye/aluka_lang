@@ -183,8 +183,8 @@ func TestShakeMarksRecompiledModules(t *testing.T) {
 	}
 	for _, m := range res.Modules {
 		if m.Path == "lib.js" {
-			if !m.Transformed {
-				t.Fatal("tree-shaken module not marked Transformed")
+			if m.Stage&module.StageShaken == 0 {
+				t.Fatal("tree-shaken module missing StageShaken")
 			}
 			return
 		}

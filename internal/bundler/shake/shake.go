@@ -12,15 +12,13 @@ package shake
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/aluka-lang/aluka/internal/bundler/astutil"
 	"github.com/aluka-lang/aluka/internal/bundler/compile"
 	"github.com/aluka-lang/aluka/internal/bundler/graph"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/engine/parser"
+	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
 // Result 是 tree-shaking 后的打包数据（模块子集 + 剪枝后的解析映射）。
@@ -67,11 +65,17 @@ func Shake(vm *interpreter.VM, gr *graph.Result, entry string) (*Result, error) 
 			infos[m.Path] = &moduleInfo{key: m.Path, deps: depKeys(gr, m.Path)}
 			continue
 		}
-		prog, err := parseModuleFile(filepath.Join(gr.RootDir, m.Path))
-		if err != nil {
-			return nil, err
+		unit := gr.SourceUnits[m.Path]
+		if unit == nil || unit.Program == nil {
+			return nil, fmt.Errorf("shake: source unit missing for %q", m.Path)
 		}
-		infos[m.Path] = analyze(m.Path, prog, gr)
+		if unit.Stage&module.StageWrapped != 0 {
+			// 已进入 lower/wrap 的 artifact 不再按源 ESM AST 分析，避免把
+			// lowered CJS 形态与原始 ESM 语义混用。
+			infos[m.Path] = &moduleInfo{key: m.Path, deps: depKeys(gr, m.Path), sideEffect: true}
+			continue
+		}
+		infos[m.Path] = analyze(m.Path, unit.Program, gr)
 	}
 
 	keep := map[string]bool{entry: true}
@@ -265,16 +269,17 @@ func Shake(vm *interpreter.VM, gr *graph.Result, entry string) (*Result, error) 
 			res.Modules = append(res.Modules, m)
 			continue
 		}
-		src, err := os.ReadFile(filepath.Join(gr.RootDir, m.Path))
-		if err != nil {
-			return nil, fmt.Errorf("shake: cannot read %q: %w", m.Path, err)
+		unit := gr.SourceUnits[m.Path]
+		if unit == nil {
+			return nil, fmt.Errorf("shake: source unit missing for %q", m.Path)
 		}
-		// 显式 ESM：剪枝后可能失去 import/export 声明，自动判定会误判 CJS。
-		nd, err := compile.CompileProgramType(vm, info.prog, stripBOM(src), m.Path, true)
+		unit.Program = info.prog
+		unit.Stage |= module.StageShaken
+		nd, err := compile.CompileSourceUnit(vm, unit)
 		if err != nil {
 			return nil, fmt.Errorf("shake: recompile %q: %w", m.Path, err)
 		}
-		nd.Transformed = true
+		nd.Stage |= module.StageShaken
 		res.Modules = append(res.Modules, nd)
 	}
 	return res, nil
@@ -547,20 +552,16 @@ func stmtHasSideEffects(s ast.Statement) bool {
 	}
 }
 
-// parseModuleFile 读取并解析模块源码（ESM 判定由调用方保证）。
-func parseModuleFile(fsPath string) (*ast.Program, error) {
-	src, err := os.ReadFile(fsPath)
-	if err != nil {
-		return nil, fmt.Errorf("shake: cannot read %q: %w", fsPath, err)
+func findSourcePath(gr *graph.Result, key string) string {
+	for path, unit := range gr.SourceUnits {
+		if unit != nil && unit.Path == key {
+			return path
+		}
 	}
-	prog, err := parser.ParseModule(string(stripBOM(src)))
-	if err != nil {
-		return nil, fmt.Errorf("shake: parse error in %q: %w", fsPath, err)
-	}
-	return prog, nil
+	return ""
 }
 
-// stripBOM 剥离开头的 UTF-8 BOM。
+// stripBOM 保留给 shake 后重编译的兼容路径使用。
 func stripBOM(src []byte) []byte {
 	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
 		return src[3:]

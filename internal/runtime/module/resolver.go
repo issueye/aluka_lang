@@ -477,22 +477,37 @@ func conditionalExportTarget(raw json.RawMessage, conditions []string) string {
 	return ""
 }
 
-// ModuleType determines the module type for a file path.
-// Returns "module" for ESM (.mjs/.ts/.mts or .js with type:module in package.json)
-// and "commonjs" for CJS (.cjs/.cts or .js with type:commonjs/default).
-// TS 文件按 ESM 处理（loadESM 会做类型剥离转译）。
-func (r *Resolver) ModuleType(path string) string {
-	ext := filepath.Ext(path)
+// SourceModuleKind 按扩展名优先规则确定模块协议。
+// .mjs/.mts 固定 ESM，.cjs/.cts 固定 CJS；.js/.ts 由最近 package.json 决定。
+func (r *Resolver) SourceModuleKind(path string) ModuleKind {
+	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".mjs", ".ts", ".mts":
-		return "module"
+	case ".mjs", ".mts":
+		return ModuleESM
 	case ".cjs", ".cts":
-		return "commonjs"
+		return ModuleCommonJS
+	case ".ts", ".js":
+		if r.readPackageType(filepath.Dir(path)) == "module" {
+			return ModuleESM
+		}
+		return ModuleCommonJS
 	case ".json":
-		return "json"
+		return ModuleScript
 	default:
-		// .js — check package.json "type" field
-		dir := filepath.Dir(path)
-		return r.readPackageType(dir)
+		if r.readPackageType(filepath.Dir(path)) == "module" {
+			return ModuleESM
+		}
+		return ModuleCommonJS
 	}
+}
+
+// ModuleType 保留旧字符串 API，内部统一使用 SourceModuleKind。
+func (r *Resolver) ModuleType(path string) string {
+	if DetectSourceKind(path) == SourceJSON {
+		return "json"
+	}
+	if r.SourceModuleKind(path) == ModuleESM {
+		return "module"
+	}
+	return "commonjs"
 }

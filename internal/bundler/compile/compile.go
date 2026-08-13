@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine/ast"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/engine/parser"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
@@ -19,16 +19,37 @@ func stripBOM(src []byte) []byte {
 	return src
 }
 
-// CompileFile 将单个源文件编译为可打包的 EntryData（M1：单模块产物）。
-//
-// path 是文件系统路径（用于读取源码）；key 是模块标识（写入字节码
-// SourceFile 与 EntryData.Path，M3 起为相对入口的虚拟路径，产物运行时的
-// __filename/import.meta/错误堆栈均基于它）。
-//
-// 编译管线与 loader 完全一致：解析 → 模块类型判定（无 import/export 且非
-// .mjs 按 CJS）→ ESM 转换 + 包装（或 CJS 包装）→ 编译为字节码 Module。
-// 产物在执行前已完成转换/包装，运行时零开销（docs/build-compile-plan.md §3.2）。
-func CompileFile(vm *interpreter.VM, path, key string) (*EntryData, error) {
+// CompileSourceUnit 编译已完成前端解析的 SourceUnit。它不会再次读取或解析源码。
+func CompileSourceUnit(vm *interpreter.VM, unit *module.SourceUnit) (*EntryData, error) {
+	if unit == nil {
+		return nil, fmt.Errorf("compile: nil source unit")
+	}
+	if unit.SourceKind == module.SourceJSON {
+		return nil, fmt.Errorf("compile: JSON source unit is an asset, not a bytecode module")
+	}
+	if unit.Program == nil {
+		return nil, fmt.Errorf("compile: source unit %q has no AST", unit.Path)
+	}
+	isESM := unit.ModuleKind == module.ModuleESM
+	if !isESM {
+		wrapped := module.WrapCJSSource(string(unit.Source))
+		mod, err := vm.Compile(wrapped, unit.Path)
+		if err != nil {
+			return nil, fmt.Errorf("compile: %q: %w", unit.Path, err)
+		}
+		return &EntryData{Path: unit.Path, ModuleType: ModuleTypeCJS, SourceKind: unit.SourceKind, Stage: unit.Stage | module.StageWrapped, Module: mod}, nil
+	}
+	transformed := module.TransformESMToCJS(unit.Program, unit.Path)
+	prog := module.WrapESMAST(transformed, unit.Path)
+	mod, err := vm.CompileAST(prog, unit.Path)
+	if err != nil {
+		return nil, fmt.Errorf("compile: %q: %w", unit.Path, err)
+	}
+	return &EntryData{Path: unit.Path, ModuleType: ModuleTypeESM, SourceKind: unit.SourceKind, Stage: unit.Stage | module.StageESMLowered | module.StageWrapped, Module: mod}, nil
+}
+
+// ParseFileUnit 读取并解析一个源码文件，不执行模块 lower 或 bytecode 编译。
+func ParseFileUnit(path, key string) (*module.SourceUnit, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("compile: cannot resolve path %q: %w", path, err)
@@ -37,16 +58,31 @@ func CompileFile(vm *interpreter.VM, path, key string) (*EntryData, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile: cannot read %q: %w", absPath, err)
 	}
-	src = stripBOM(src)
-
-	prog, err := parser.ParseModule(string(src))
+	resolver := module.NewResolver()
+	moduleKind := resolver.SourceModuleKind(absPath)
+	unit, err := module.ParseSourceUnit(src, key, moduleKind)
 	if err != nil {
-		return nil, fmt.Errorf("compile: parse error in %q: %w", absPath, err)
+		return nil, fmt.Errorf("compile: %w", err)
 	}
-	return CompileProgram(vm, prog, src, key)
+	// 隐式 .js/.ts 延续 package-type 兼容：仅在这里做一次语法提升。
+	ext := strings.ToLower(filepath.Ext(absPath))
+	if (ext == ".ts" || ext == ".js") && moduleKind == module.ModuleCommonJS && module.HasESMDecls(unit.Program) {
+		unit.ModuleKind = module.ModuleESM
+	}
+	return unit, nil
 }
 
-// CompileProgram 从已解析的 AST 编译（tree-shaking/minify 变换后的模块
+// CompileFile 将单个源文件编译为可打包的 EntryData。
+// 新路径先构造 SourceUnit，再交给 CompileSourceUnit，保证源码只解析一次。
+func CompileFile(vm *interpreter.VM, path, key string) (*EntryData, error) {
+	unit, err := ParseFileUnit(path, key)
+	if err != nil {
+		return nil, err
+	}
+	return CompileSourceUnit(vm, unit)
+}
+
+// CompileProgram 从已解析的 AST 编译（兼容旧调用方）。
 // 复用同一编译管线）。src 为原始源码（CJS 包装需要）；key 为模块标识。
 // 模块类型自动判定（与 CompileFile 一致）。
 func CompileProgram(vm *interpreter.VM, prog *ast.Program, src []byte, key string) (*EntryData, error) {
