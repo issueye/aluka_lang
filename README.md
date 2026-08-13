@@ -59,8 +59,6 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 
 ### 已知限制
 
-- CJS/ESM interop：`module.exports = func` 整体赋值时动态 import 不包装 `.default`
-- 表达式语句开头的 `/` 可能被误判为正则字面量起始
 - Redis / Postgres 命令级测试需活服务（`TEST_REDIS_URL` / `TEST_DATABASE_URL` 门控）；S3 无 presign / 分片上传
 - Phase 5：生命周期脚本（preinstall/postinstall）、`aluka link`/`pm` 未实现；express 已通过真实 demo 验证，但更复杂 npm 包（undici/@anthropic-ai/sdk 等）仍可能受限
 - Phase 6 完整测试器（并行 worker/watch 模式）、Phase 7 bundle 模式与 source map、Phase 8 文档站/VSCode 插件/Chrome DevTools 调试协议 尚未开始

@@ -19,6 +19,11 @@ type Lexer struct {
 	allowRegex   bool
 	lastToken    Token
 	parenControl []bool
+	// braceControl 记录每个 { 是块（语句位置）还是对象字面量（表达式位置），
+	// 用于区分 } 后是除法（对象字面量除法）还是正则（块结束后语句开头）。
+	braceControl []bool
+	// pendingBlockBrace 标记：刚闭合的控制语句 ) 之后，下一个 { 是块。
+	pendingBlockBrace bool
 }
 
 // New 创建词法分析器。
@@ -109,7 +114,25 @@ func (l *Lexer) Tokens() ([]Token, error) {
 			l.parenControl = l.parenControl[:last]
 			if control {
 				allow = true
+				l.pendingBlockBrace = true // 控制语句 ) 后，下一个 { 是块
 			}
+		}
+		// 跟踪 { 的上下文：块（语句位置）还是对象字面量（表达式位置）。
+		// 块：; { } 之后，else/do/try/finally 之后，或控制语句 ) 之后；
+		// 对象字面量：= ( [ , : 等表达式位置之后。
+		if t.Type == TokenPunct && t.Value == "{" {
+			isBlock := isBlockBrace(l.lastToken) || l.pendingBlockBrace
+			l.braceControl = append(l.braceControl, isBlock)
+		} else if t.Type == TokenPunct && t.Value == "}" && len(l.braceControl) > 0 {
+			last := len(l.braceControl) - 1
+			isBlock := l.braceControl[last]
+			l.braceControl = l.braceControl[:last]
+			if isBlock {
+				allow = true
+			}
+		}
+		if t.Type != TokenPunct || (t.Value != "{" && t.Value != ")") {
+			l.pendingBlockBrace = false
 		}
 		l.lastToken = t
 		l.allowRegex = allow
@@ -124,6 +147,25 @@ func isControlParenKeyword(keyword string) bool {
 	default:
 		return false
 	}
+}
+
+// isBlockBrace 判断 { 是块还是对象字面量：紧跟在 ; { } 或 else/do/try/finally
+// 之后的是块，否则（= ( [ , : 等表达式位置之后）是对象字面量。控制语句 ) 后
+// 的情况由 pendingBlockBrace 标记处理，不在本函数内判断。
+func isBlockBrace(prev Token) bool {
+	switch prev.Type {
+	case TokenPunct:
+		switch prev.Value {
+		case ";", "{", "}":
+			return true
+		}
+	case TokenKeyword:
+		switch prev.Value {
+		case "else", "do", "try", "finally":
+			return true
+		}
+	}
+	return false
 }
 
 // regexAllowedAfter 判断某 token 之后是否允许 regex 字面量。
