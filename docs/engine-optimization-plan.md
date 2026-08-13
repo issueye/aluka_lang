@@ -168,11 +168,16 @@ M0 基线与验证框架固化
   未引入新指令——运行时类型判断即可覆盖 `arr[i]` 动态下标，`OpGetElemInt`（常量下标）收益更小故不再做。
   benchmark（jit.Off，循环体 5 次固定索引读）基线 112.0ms → 优化后 93.4ms，**~16.6% 提升**（5 次中位数，可复现）。
   语义精确对齐：非负整数且 ≤ 2^53-1 走快路径，越界返回 undefined 不查原型，负数/非整数/NaN/±Inf 回退。
+- **M1-2 写侧：数组索引写快路径 ✅ 落地**：`value.go` 新增 `ArrayValue.SetIndex`（复用 Set 数值索引
+  核心逻辑，去掉 string/Atoi），`vm.go` 新增 `tryArrayIndexSet` 接入 `OpSetElem/OpSetElemTop`。
+  benchmark（jit.Off，循环体 5 次固定索引写）基线 184.0ms → 优化后 107.5ms，**~41.6% 提升**。
+  写侧收益远大于读侧：慢路径除 Atoi 外还有 setProperty 的 Proxy 检查 + FindAccessor 原型链遍历 +
+  length 同步。语义精确对齐：越界自动稀疏填充 + 同步 length；负数/非整数/NaN/±Inf 回退普通属性路径。
 - **M1-1 全局变量 IC ❌ 测量否定，已回退**：仿照对象属性 IC 在 `OpLoadGlobal/OpStoreGlobal` 接入
   `GetCached/SetCached` 后，benchmark 无收益（全局对象 shape.index 的 map 查找本就很快，IC 省下的
   开销被类型断言 + 哈希抵消），且会污染 IC 表（与对象属性访问竞争 2048 槽）。依据"基于测量证据"
   原则回退。真正的全局变量优化需编译期确定全局槽位（context slot），不在本里程碑范围。
-- 测试：`m1_optimize_test.go` 新增 16 个快路径用例 + 快/慢路径语义对照 + benchmark；全量 `go test ./...`
+- 测试：`m1_optimize_test.go` 新增读/写快路径用例 + 快/慢路径语义对照 + benchmark；全量 `go test ./...`
   零失败，jitdiff 三 tier 零失配。
 
 ---
@@ -350,5 +355,6 @@ M1、M2、M4 均只依赖 M0，可并行；M3 依赖 M1（数组 trace 复用索
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v1.2 | 2026-08-13 | M1 写侧：数组索引写快路径落地（~41.6%） |
 | v1.1 | 2026-08-13 | M1 实施：数组索引读快路径落地（~16.6%）；全局 IC 测量否定回退 |
 | v1.0 | 2026-08-13 | 初稿：基于 JIT/字节码/AST 代码审阅，制定 M0-M5 里程碑与完成定义 |
