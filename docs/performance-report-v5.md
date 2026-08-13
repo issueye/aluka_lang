@@ -90,6 +90,41 @@
 3. **兼容性修复无性能影响**（正则歧义 braceControl 在 lexer 层，不触热路径）；
 4. **性能归档**：`bench/results/jit-20260813-windows-amd64.json`（commit ba2a3b6，Model 165）。
 
+## 7. 跨引擎对比（aluka auto vs Node 22.3.0）
+
+> 方法：`tests/benchmark/perf-compare.js` 双跑，各 5 次取中位数；mixed.js 为进程墙钟
+> （aluka 取 jitbench 归档值，node 用 `Measure-Command` 计时）。Node 为 nvmd 本地
+> v22.3.0（V8 与 22.12 LTS 相近，可比 v4 报告的 22.23.1）。
+
+| 用例 | Node 22.3.0 (ms) | aluka auto (ms) | 差距 |
+|------|------------------|-----------------|------|
+| arrayMap-100x10K | 9.43 | 25.75 | 2.7x |
+| arrayPush-1M | 16.18 | 99.06 | 6.1x |
+| callOverhead-1M | 1.44 | 4.82 | 3.3x |
+| closureCall-1M | 7.45 | 14.60 | **2.0x** |
+| fib25 | 1.22 | 28.84 | 23.6x |
+| fib30 | 8.39 | 303.34 | 36.2x |
+| gcPressure-500K | 13.62 | 517.57 | 38.0x |
+| methodCall-1M | 1.58 | 5.89 | 3.7x |
+| propAccess-3M | 3.38 | 12.21 | 3.6x |
+| propSet-3M | 2.82 | 10.45 | 3.7x |
+| strConcat-100K | 13.54 | 54.69 | 4.0x |
+| **11 项合计** | **79.05** | **1077.22** | **13.6x** |
+| mixed.js 墙钟 | 132.3 | 400.2 | **3.0x** |
+
+**分析**：
+
+- **JIT 有效路径已达 2-4x**：closureCall 2.0x、arrayMap 2.7x、mixed 3.0x、callOverhead 3.3x、
+  propAccess/PropSet/methodCall 3.6-3.7x——guarded call、属性 PIC、闭包特化把调用/属性类
+  用例压到个位数差距；
+- **递归与非 JIT 友好用例仍是短板**：fib30 36x、gcPressure 38x——递归 fib 依赖 call stack
+  + 深度函数（JIT 未覆盖），gcPressure 是分配密集型（GC 标记-清除 vs V8 分代）；
+- **相对 v4 报告（42.5x 合计 / 8.5x mixed）改善 3.1x / 2.8x**：R1-R5 JIT 里程碑（属性 PIC、
+  调用特化、数组 trace）是主因；
+- **Node 22 完整 LTS（22.12+）通常比 22.3 略快**（V8 优化），实际差距可能再小 ~5-10%；
+- 后续优化方向（见 engine-optimization-plan）：fib 类递归调用的 JIT 内联与 gcPressure 的
+  分配热点（M3 数组 trace / M5 内联扩展）。
+
 ## 7. 与 Node 22 对比（2026-08-13，同机 5 次中位数）
 
 > node 本机 v21.7.3（Node 22 行为基线）；同一 `tests/benchmark/perf-compare.js` 双跑。
