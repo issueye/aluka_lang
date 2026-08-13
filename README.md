@@ -1,4 +1,8 @@
-# Aluka
+<p align="center">
+  <img src="./assets/logo.svg" alt="Aluka" width="132">
+</p>
+
+<h1 align="center">Aluka</h1>
 
 > 用纯 Go 实现的、兼容 Bun（JavaScript 运行时）的运行时引擎。
 
@@ -18,7 +22,7 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 
 ## 项目状态
 
-> 评估日期：2026-08-05 ｜ 测试总数：605 个 Go 测试函数（603 通过 + 2 环境门控 skip，0 失败）
+> 评估日期：2026-08-13 ｜ 测试总数：1249 个 Go 测试函数（全量通过，0 失败）
 
 | Phase | 名称 | 状态 | 完成度 |
 |-------|------|------|--------|
@@ -32,7 +36,10 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 | 4 | Aluka 特有 API（兼容 Bun） | ✅ P0+P1+P2 完成 | ~100% |
 | 5 | 包管理器 | ✅ P0 完成（含 workspace、.npmrc） | ~95% |
 | Pi | 真实世界兼容（Pi Agent Harness 靶标） | ✅ 阶段 A/B/C 完成 | ~90% |
-| 6-8 | 测试器 / 打包器 / 优化 | Phase 6 `node:test` 完成；**Phase 7 `--compile` 单文件可执行完成**（bundle 模式未开始）；Phase 8 JIT 优化 pass/预算调优完成，**JIT 默认 auto** | ~30% |
+| 6 | 测试器 | ✅ node:test 兼容完成（describe/it/mock/coverage/快照/TAP 报告，差分 15/15） | ~85% |
+| 7 | 打包器 | ✅ `--compile` 单文件可执行完成（tree-shaking/analyze/--max-payload，conformance 19/19）；bundle 模式未开始 | ~70% |
+| 8 | 优化与生态 | 🔨 JIT R1-R5 完成、**默认 auto**（Windows 实机 ~12x Node / mixed ~2.2x）；Linux 实机验证口子保留；文档站/VSCode 插件/--inspect 未开始 | ~60% |
+| N22 | Node 22 兼容 | ✅ M1-M5 差分全绿（运行时语义/ES2024/API 补全/新模块 dgram·cluster·http2·inspector/工具链） | ~90% |
 
 ### 核心能力一览
 
@@ -40,23 +47,24 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 - **ES 特性**：ES5 全部核心、ES2015（let/const/class/箭头函数/解构/Promise/Symbol/Map/Set/Proxy/Reflect/生成器/模块/tagged template）、ES2017-2023（async/await、**top-level await**、for await...of、可选链 `?.`、BigInt、动态 `import()`、**import attributes**、数字分隔符、逻辑赋值、Error cause 等）
 - **TypeScript 转译**：类型注解剥离、`interface`/`type` 擦除、`enum`/`namespace` 降级、装饰器跳过、泛型参数删除、**`.ts` 扩展名相对导入**、import attributes、路径别名（`paths`/`baseUrl`）
 - **模块系统**：ESM（import/export 全语法）+ CJS（require/module.exports）+ Node.js 解析算法 + 循环依赖 + 字节码缓存
-- **Node.js 内置模块（25+）**：fs、path、os、url、querystring、events、util、assert、stream、buffer、crypto、string_decoder、http、https、net、tls、dns、zlib（含 **zstd**）、child_process、worker_threads（transferList）、perf_hooks、timers/promises、readline、repl、module、v8、tty、**sqlite（DatabaseSync）**、**test（node:test）** 等
+- **Node.js 内置模块（45+）**：fs、path、os、url、querystring、events、util、assert、stream、buffer、crypto、string_decoder、http、https、net、tls、dns、zlib（含 **zstd**）、child_process、worker_threads（transferList）、perf_hooks、timers/promises、readline、repl、module、v8、tty、**sqlite（DatabaseSync）**、**test（node:test）**、dgram、cluster、http2、inspector、trace_events、async_hooks 等
 - **Web API**：fetch/Request/Response/Headers/FormData、WebSocket、ReadableStream/WritableStream/TransformStream、Blob/File、crypto.subtle、URL/URLPattern、MessageChannel、AbortController（`timeout`/`any`）、Event/EventTarget、**structuredClone**、**Intl.Segmenter**、完整 Date 与 encodeURI/decodeURI
 - **Aluka API（兼容 Bun）**：`Aluka.serve`、`Aluka.file`/`write`、`Aluka.$`、`Aluka.env`、`Aluka.sleep`、`Aluka.hash`/`password`、`Aluka.deflate`/`inflate`、`Aluka.spawn`、`Bun.peek`/`deepEquals` 等（`Bun` 为兼容别名）
 - **外部服务驱动（P2）**：`Aluka.SQL`（SQLite 零配置 + Postgres 经 `DATABASE_URL`，支持 tagged template 参数绑定）、`Aluka.Redis`（get/set/hget/hset...）、`Aluka.S3`（自研 AWS SigV4，get/put/delete/list/exists）
 - **包管理器**：`aluka install/add/remove/update`、npm registry 客户端、自研 semver 解析（含 `">= x < y"` 空格形式）、依赖树解析 + hoisting、并发下载解压、`aluka.lock` lockfile、workspace 支持、.npmrc（registry + 鉴权 token）——**express 依赖树可完整安装并运行**
-- **JIT（默认开启，--jit=off 回滚）**：Quick 类型化 IR（跨平台，可执行 Go 代码）+ amd64 Native 机器码两层（W^X/崩溃隔离/safepoint/OSR）；guard 失败与异常经 DeoptExit 恢复完整 VM 状态回 Tier 0；生成式差分（jitdiff 三 tier 零失配）+ 5 个 Go fuzz target；不支持平台自动 fallback 到 Quick/Tier 0
+- **JIT（默认开启，--jit=off 回滚）**：Quick 类型化 IR（跨平台，可执行 Go 代码）+ amd64 Native 机器码两层（W^X/崩溃隔离/safepoint/OSR）；guard 失败与异常经 DeoptExit 恢复完整 VM 状态回 Tier 0；生成式差分（jitdiff 三 tier 零失配，nightly 10 万例）+ 5 个 Go fuzz target；不支持平台自动 fallback 到 Quick/Tier 0。里程碑：R1（正确性闭环）/R3（Quick 语义覆盖）/R4（Tier 3 热点）/R5（优化 pass·预算调优）完成，R6 默认 auto 已切（剩余 release soak ≥8h 与正式性能报告存档）；Linux 实机验证按 2026-08-12 决策保留口子
+- **Node 22 差分兼容（M1-M5 全部完成）**：for-await 流迭代、Array 方法 `thisArg`、`require(esm)`、事件循环语义差分、ES2024 全局（`Promise.withResolvers`/`Array.fromAsync`/`Object.groupBy`/`Map.groupBy`/`navigator`/`BroadcastChannel`）、常用 API 补全（`assert.match`/`util.parseArgs`/`fs.cp`/`fs.glob`/`path.matchesGlob`/`X509Certificate`/`Buffer.isUtf8`/`spawnSync` 系/`http.Agent`）、缺失模块补齐（**dgram/cluster/http2/inspector**）、node:test mock/coverage/快照
 - **RegExp**：基于 Go regexp 翻译层 + 自研回溯引擎（反向引用、前瞻/后行断言、lazy 量词）、`/v` unicodeSets（`\p{...}`）、g/y lastIndex 状态机、命名捕获组、`$` 替换串、Symbol.match/replace/split
-- **测试运行器**：`aluka test`（node:test 兼容：describe/it/test + mock + assert）
+- **测试运行器**：`aluka test`（node:test 兼容：describe/it/test + mock + coverage + 快照 + TAP 报告）
 
 ### 已知限制
 
-- `Array.prototype.find/map` 等的 `thisArg` 第二参数对非箭头函数未生效
 - CJS/ESM interop：`module.exports = func` 整体赋值时动态 import 不包装 `.default`
 - 表达式语句开头的 `/` 可能被误判为正则字面量起始
 - Redis / Postgres 命令级测试需活服务（`TEST_REDIS_URL` / `TEST_DATABASE_URL` 门控）；S3 无 presign / 分片上传
 - Phase 5：生命周期脚本（preinstall/postinstall）、`aluka link`/`pm` 未实现；express 已通过真实 demo 验证，但更复杂 npm 包（undici/@anthropic-ai/sdk 等）仍可能受限
-- Phase 6 完整测试器（覆盖率/快照/并行 worker）、Phase 7 打包器、Phase 8 优化 尚未开始
+- Phase 6 完整测试器（并行 worker/watch 模式）、Phase 7 bundle 模式与 source map、Phase 8 文档站/VSCode 插件/Chrome DevTools 调试协议 尚未开始
+- JIT：Linux 实机 soak 与正式 5 次中位数性能报告存档为口子（默认 auto 以 Windows amd64 实机门禁为准）；R0 稳定性验收待安静环境复核
 
 详见 [开发计划文档](./docs/development-plan.md) 与 [Pi 兼容计划](./docs/pi-compat-plan.md)。
 
@@ -184,6 +192,7 @@ aluka --monitor --monitor-out=metrics.json app.js
 
 ```
 aluka_lang/
+├── assets/                   # 品牌资源（LOGO：assets/logo.svg）
 ├── cmd/
 │   └── aluka/                 # CLI 入口（run/repl/test/install/build + 包管理子命令）
 ├── internal/
@@ -253,10 +262,10 @@ ALUKA=./aluka bash tests/conformance/install/run.sh
 # express-demo 真实环境验证（HTTP 全链路：中间件/路由/body 解析/500 并发，6/6）
 ALUKA=./aluka bash tests/conformance/express/run.sh
 
-# build --compile conformance（单入口/多文件/循环依赖/动态 import/JSON 资源/argv/import.meta/TLA，12/12）
+# build --compile conformance（单入口/多文件/循环依赖/动态 import/JSON 资源/argv/import.meta/TLA，19/19）
 ALUKA=./aluka bash tests/conformance/build/run.sh
 
-# Node 22 差分 conformance（同一用例 aluka vs node22 双跑对比，4/4）
+# Node 22 差分 conformance（同一用例 aluka vs node22 双跑对比，18 个场景全绿）
 ALUKA=./aluka bash tests/conformance/node22/run.sh
 ```
 
