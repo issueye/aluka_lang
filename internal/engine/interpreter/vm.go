@@ -2327,11 +2327,16 @@ func (v *VM) tryArrayIndexSet(obj, key, val engine.Value) bool {
 // getProperty reads a property from a value, handling primitives via prototypes.
 func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 	// O2-D2 快速路径：隐藏类对象 IC 命中直接返回（跳过 Null/Proxy/String/
-	// Array/Accessor 等类型分派）。accessor 值排除——getter 需走拦截。
+	// Array/Accessor 等类型分派）。accessor 值直接 invoke getter（own accessor
+	// 遮蔽原型，无需再走 FindAccessor）；数据值直接返回。
 	if cv, hit := v.ic.GetCached(obj, key); hit {
-		if _, isAcc := cv.(*engine.AccessorValue); !isAcc {
-			return cv, nil
+		if acc, isAcc := cv.(*engine.AccessorValue); isAcc {
+			if acc.Getter != nil && !acc.Getter.IsUndefined() {
+				return v.invoke(acc.Getter, obj, nil, false)
+			}
+			return engine.Undefined(), nil
 		}
+		return cv, nil
 	}
 	if obj.IsNull() || obj.IsUndefined() {
 		return engine.Undefined(), fmt.Errorf("%w: Cannot read properties of %s (reading '%s')", engine.ErrTypeError, obj.String(), key)
@@ -2426,10 +2431,8 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 		return engine.Undefined(), nil
 	}
 	if o, ok := obj.AsObject(); ok {
-		// 内联缓存快速路径（隐藏类 own 属性直接读槽）。
-		if cv, hit := v.ic.GetCached(obj, key); hit {
-			return cv, nil
-		}
+		// 第一次 GetCached 已在函数开头尝试且 miss，此处直接完整查找（重复
+		// GetCached 必 miss，为纯冗余）。
 		val, err := o.Get(key)
 		v.ic.CachePut(obj, key)
 		return val, err
