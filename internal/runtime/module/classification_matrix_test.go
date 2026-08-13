@@ -109,3 +109,23 @@ func TestParseSourceUnitStageMetadata(t *testing.T) {
 		t.Fatalf("a.ts Stage missing TypeStripped")
 	}
 }
+
+// TestParseFileSourceTLAPromotesToESM：仅有顶层 await 的 .ts/.js 也必须提升为
+// ESM（无 import/export 但含 TLA，Node 语义）。
+func TestParseFileSourceTLAPromotesToESM(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "tla.ts")
+	if err := os.WriteFile(p, []byte("const x = await Promise.resolve(42);\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := ParseFileUnit(p, "tla.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unit.ModuleKind != ModuleESM {
+		t.Fatalf("TLA .ts ModuleKind = %s, want esm", unit.ModuleKind)
+	}
+	if !unit.HasTLA {
+		t.Fatal("HasTLA = false, want true")
+	}
+}

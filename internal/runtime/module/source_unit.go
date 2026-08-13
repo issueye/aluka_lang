@@ -165,8 +165,10 @@ func ParseFileSource(src []byte, key, fsPath string) (*SourceUnit, error) {
 		return nil, err
 	}
 	// 隐式 .js/.ts 延续 package-type 兼容：仅在这里做一次语法提升。
+	// 顶层 await（TLA）即使无 import/export 也必须是 ESM（Node 语义）。
 	ext := strings.ToLower(filepath.Ext(fsPath))
-	if (ext == ".ts" || ext == ".js") && moduleKind == ModuleCommonJS && HasESMDecls(unit.Program) {
+	if (ext == ".ts" || ext == ".js") && moduleKind == ModuleCommonJS &&
+		(HasESMDecls(unit.Program) || ast.HasTopLevelAwait(unit.Program)) {
 		unit.ModuleKind = ModuleESM
 	}
 	return unit, nil
