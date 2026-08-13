@@ -874,7 +874,7 @@ func (p *Program) ExecuteWithSafepoint(thisVal engine.Value, args []engine.Value
 		}
 		safepoint = &quickSafepoint{interval: budget, remaining: budget, poll: poll}
 	}
-	result, reason, err := p.executeQuick(quickThis, &argBuf, len(args), &objectBuf, &objectCount, 0, safepoint)
+	result, reason, err := p.executeQuick(quickThis, &argBuf, len(args), &objectBuf, &objectCount, safepoint)
 	if err != nil || reason != Executed {
 		return engine.Undefined(), reason, err
 	}
@@ -907,33 +907,60 @@ func runSafepoint(poll Safepoint) error {
 	return nil
 }
 
+// quickFrame 是显式栈迭代（F1-Fast）的一个帧：每次自递归调用占用一层。
+// prog 记录该帧执行的 program（OpSelfCall 可能切到 callTarget）。
+// locals/stack 用固定数组（免分配、免 duffzero 清零——复用帧时只覆盖使用区）。
+type quickFrame struct {
+	prog   *Program
+	locals [maxQuickSlots]quickValue
+	stack  [maxQuickSlots]quickValue
+	ip     int
+	sp     int
+}
+
+// quickMaxFrames 是显式栈的最大帧数（对齐原递归 depth>4096 的 GuardFailed 语义）。
+const quickMaxFrames = 4096
+
+// quickFrameInit 是帧栈初始容量：fib 类递归深度 ≤ 64 时零扩容；深递归按需翻倍。
+const quickFrameInit = 64
+
 // executeQuick runs the typed program. `objects` is the shared object buffer:
 // args and `this` populate it through fromEngine, and R3-4/R3-5 results
 // (String concats, BigInt results) are appended to it via quickAlloc. The
 // fixed-size buffer forces a GuardFailed fallback to Tier 0 when it is
 // exhausted; Tier 0 never observes the buffer.
-func (p *Program) executeQuick(thisVal quickValue, args *[8]quickValue, argCount int, objects *[maxQuickSlots]engine.Value, objectCount *int, depth int, safepoint *quickSafepoint) (quickValue, ExitReason, error) {
-	if depth > 4096 {
-		return quickValue{}, GuardFailed, nil
+//
+// 实现（F1-Fast）：显式帧栈迭代，替代 Go 递归。自递归（OpSelfCall）推帧、
+// OpReturn 弹帧，消除了每次递归的 Go 调用开销、recursiveArgs 逃逸堆分配与
+// localBuf/stackBuf 的 duffzero 清零。帧栈懒扩容（64 → 翻倍 → 4096 上限），
+// fib 类浅递归零扩容。
+func (p *Program) executeQuick(thisVal quickValue, args *[8]quickValue, argCount int, objects *[maxQuickSlots]engine.Value, objectCount *int, safepoint *quickSafepoint) (quickValue, ExitReason, error) {
+	frames := make([]quickFrame, quickFrameInit)
+	fp := 0
+	frames[fp].prog = p
+	frames[fp].ip = 0
+	frames[fp].sp = 0
+	{
+		locals := frames[fp].locals[:p.NumLocals]
+		if p.NumLocals > 0 {
+			locals[0] = thisVal
+		}
+		for i := 1; i <= p.NumParams && i < len(locals); i++ {
+			locals[i] = quickValue{kind: quickUndefined}
+		}
+		for i := 0; i < argCount && i+1 < len(locals); i++ {
+			locals[i+1] = args[i]
+		}
 	}
-	var localBuf [maxQuickSlots]quickValue
-	locals := localBuf[:p.NumLocals]
-	if p.NumLocals > 0 {
-		locals[0] = thisVal
-	}
-	for i := 1; i <= p.NumParams && i < len(locals); i++ {
-		locals[i] = quickValue{kind: quickUndefined}
-	}
-	for i := 0; i < argCount && i+1 < len(locals); i++ {
-		locals[i+1] = args[i]
-	}
-	var stackBuf [maxQuickSlots]quickValue
-	stack := stackBuf[:0]
-	push := func(n quickValue) { stack = append(stack, n) }
-	pop := func() quickValue { n := stack[len(stack)-1]; stack = stack[:len(stack)-1]; return n }
-	for ip := 0; ip < len(p.Code); {
-		in := p.Code[ip]
-		ip++
+	for {
+		frame := &frames[fp]
+		cur := frame.prog
+		locals := frame.locals[:cur.NumLocals]
+		ip := frame.ip
+		in := cur.Code[ip]
+		frame.ip = ip + 1
+		push := func(n quickValue) { frame.stack[frame.sp] = n; frame.sp++ }
+		pop := func() quickValue { frame.sp--; return frame.stack[frame.sp] }
 		switch in.Op {
 		case OpConst:
 			push(numberValue(in.Value))
@@ -954,7 +981,7 @@ func (p *Program) executeQuick(thisVal quickValue, args *[8]quickValue, argCount
 			if object.kind != quickObject {
 				return quickValue{}, GuardFailed, nil
 			}
-			guard := &p.propertyGuards[ip-1]
+			guard := &cur.propertyGuards[ip-1]
 			number, ok := guard.loadNumber(objects[object.ref], in.Name)
 			if !ok {
 				return quickValue{}, GuardFailed, nil
@@ -1159,17 +1186,17 @@ func (p *Program) executeQuick(thisVal quickValue, args *[8]quickValue, argCount
 		case OpPop:
 			_ = pop()
 		case OpDup:
-			push(stack[len(stack)-1])
+			push(frame.stack[frame.sp-1])
 		case OpSwap:
-			n := len(stack) - 1
-			stack[n], stack[n-1] = stack[n-1], stack[n]
+			n := frame.sp - 1
+			frame.stack[n], frame.stack[n-1] = frame.stack[n-1], frame.stack[n]
 		case OpJump:
 			if int(in.Operand) < ip-1 {
 				if err := safepoint.tick(); err != nil {
 					return quickValue{}, Interrupted, err
 				}
 			}
-			ip = int(in.Operand)
+			frame.ip = int(in.Operand)
 		case OpJumpTrue, OpJumpFalse:
 			truth, ok := pop().truthy()
 			if !ok {
@@ -1181,10 +1208,10 @@ func (p *Program) executeQuick(thisVal quickValue, args *[8]quickValue, argCount
 						return quickValue{}, Interrupted, err
 					}
 				}
-				ip = int(in.Operand)
+				frame.ip = int(in.Operand)
 			}
 		case OpJumpTrueKeep, OpJumpFalseKeep:
-			truth, ok := stack[len(stack)-1].truthy()
+			truth, ok := frame.stack[frame.sp-1].truthy()
 			if !ok {
 				return quickValue{}, GuardFailed, nil
 			}
@@ -1195,12 +1222,12 @@ func (p *Program) executeQuick(thisVal quickValue, args *[8]quickValue, argCount
 						return quickValue{}, Interrupted, err
 					}
 				}
-				ip = int(in.Operand)
+				frame.ip = int(in.Operand)
 			} else {
 				_ = pop()
 			}
 		case OpJumpNullishKeep:
-			nullish, ok := stack[len(stack)-1].nullish()
+			nullish, ok := frame.stack[frame.sp-1].nullish()
 			if !ok {
 				return quickValue{}, GuardFailed, nil
 			}
@@ -1210,15 +1237,15 @@ func (p *Program) executeQuick(thisVal quickValue, args *[8]quickValue, argCount
 						return quickValue{}, Interrupted, err
 					}
 				}
-				ip = int(in.Operand)
+				frame.ip = int(in.Operand)
 			} else {
 				_ = pop()
 			}
 		case OpSelfCall:
-			// F3：safepoint 检查每 16 次递归执行一次。自递归深度上限 4096
-			//（executeQuick 入口检查），poll 最大延迟 4096×~100ns≈0.4ms，
+			// F3：safepoint 检查每 16 层递归执行一次。帧上限 4096
+			//（quickMaxFrames），poll 最大延迟 4096×~100ns≈0.4ms，
 			// OOM/取消响应仍在可接受范围内。
-			if depth&15 == 0 {
+			if fp&15 == 0 {
 				if err := safepoint.tick(); err != nil {
 					return quickValue{}, Interrupted, err
 				}
@@ -1232,19 +1259,55 @@ func (p *Program) executeQuick(thisVal quickValue, args *[8]quickValue, argCount
 			if callee.kind != quickSelf {
 				return quickValue{}, GuardFailed, nil
 			}
-			target := p
-			if p.callTarget != nil {
-				target = p.callTarget
+			target := cur
+			if cur.callTarget != nil {
+				target = cur.callTarget
 			}
-			result, reason, err := target.executeQuick(quickValue{}, &recursiveArgs, n, objects, objectCount, depth+1, safepoint)
-			if err != nil || reason != Executed {
-				return quickValue{}, reason, err
+			// 推帧（F1-Fast）：参数直接拷入新帧 locals，无 Go 递归、无逃逸分配。
+			fp++
+			if fp >= len(frames) {
+				if fp >= quickMaxFrames {
+					return quickValue{}, GuardFailed, nil
+				}
+				newCap := len(frames) * 2
+				if newCap > quickMaxFrames {
+					newCap = quickMaxFrames
+				}
+				nf := make([]quickFrame, newCap)
+				copy(nf, frames)
+				frames = nf
 			}
-			push(result)
+			frames[fp].prog = target
+			frames[fp].ip = 0
+			frames[fp].sp = 0
+			{
+				fl := frames[fp].locals[:target.NumLocals]
+				if target.NumLocals > 0 {
+					fl[0] = quickValue{}
+				}
+				for i := 1; i <= target.NumParams && i < len(fl); i++ {
+					fl[i] = quickValue{kind: quickUndefined}
+				}
+				for i := 0; i < n && i+1 < len(fl); i++ {
+					fl[i+1] = recursiveArgs[i]
+				}
+			}
 		case OpReturn:
-			return pop(), Executed, nil
+			// 弹帧（F1-Fast）：结果推入父帧栈，继续父帧执行。
+			result := pop()
+			fp--
+			if fp < 0 {
+				return result, Executed, nil
+			}
+			frames[fp].stack[frames[fp].sp] = result
+			frames[fp].sp++
 		case OpReturnUndef:
-			return quickValue{kind: quickUndefined}, Executed, nil
+			fp--
+			if fp < 0 {
+				return quickValue{kind: quickUndefined}, Executed, nil
+			}
+			frames[fp].stack[frames[fp].sp] = quickValue{kind: quickUndefined}
+			frames[fp].sp++
 		default:
 			return quickValue{}, Malformed, fmt.Errorf("jit: invalid IR opcode")
 		}
