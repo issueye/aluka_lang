@@ -217,6 +217,12 @@ func (c *ICache) SetCached(obj Value, key string, val Value) bool {
 		c.setMiss++
 		return false // 已删除，缓存失效（走完整路径恢复）
 	}
+	// accessor 槽位不可直写：必须回退到 setProperty 的 FindAccessor 拦截
+	// 调 setter（IC 前置后 accessor 槽位会到达这里）。
+	if _, isAcc := ov.slots[e.idx].(*AccessorValue); isAcc {
+		c.setMiss++
+		return false
+	}
 	c.setHit++
 	ov.slots[e.idx] = val
 	return true

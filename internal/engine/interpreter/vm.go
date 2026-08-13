@@ -2471,6 +2471,13 @@ func (v *VM) setProperty(obj engine.Value, key string, val engine.Value) error {
 	if p, ok := obj.(*ProxyValue); ok {
 		return p.proxySet(key, val)
 	}
+	// 写入 IC 前置（M4 后续）：own 数据属性命中时直写槽位，跳过 FindAccessor
+	// 的原型链 shape 查找（own 数据属性按 JS 语义遮蔽原型链 accessor）。
+	// accessor 槽位由 SetCached 内部拒绝（返回 false），回退到下方
+	// FindAccessor 拦截调 setter。数组（*ArrayValue）类型断言失败自然回退。
+	if v.ic.SetCached(obj, key, val) {
+		return nil
+	}
 	// Accessor (getter/setter) interception: if an accessor is found on the
 	// prototype chain for this key, invoke the setter with this = obj.
 	// For custom value types, search from the backing obj.
@@ -2488,11 +2495,6 @@ func (v *VM) setProperty(obj engine.Value, key string, val engine.Value) error {
 		return arr.Set(key, val)
 	}
 	if o, ok := obj.AsObject(); ok {
-		// 写入内联缓存快速路径（O1-C3）：隐藏类 own 属性直接写槽，
-		// 跳过 shape.index map 查找与 deleted 检查。
-		if v.ic.SetCached(obj, key, val) {
-			return nil
-		}
 		err := o.Set(key, val)
 		v.ic.SetPut(obj, key)
 		return err
