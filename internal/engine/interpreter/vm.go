@@ -1155,6 +1155,13 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpGetElem:
 				key := v.pop()
 				obj := v.pop()
+				// 数组数值下标读快路径（M1-2）：number key + ArrayValue 时
+				// 直读元素，绕过 propertyKeyOf 的 number→string 与
+				// getProperty 数组分支的 strconv.Atoi 双重转换。
+				if val, ok := v.tryArrayIndexGet(obj, key); ok {
+					v.push(val)
+					break
+				}
 				val, err := v.getProperty(obj, propertyKeyOf(key))
 				if err != nil {
 					return v.handleThrow(err)
@@ -2254,6 +2261,34 @@ func propertyKeyOf(key engine.Value) string {
 		return sym.SymbolKey()
 	}
 	return key.String()
+}
+
+// tryArrayIndexGet 处理数组的数值下标读快路径（M1-2）：obj 为 ArrayValue
+// 且 key 为非负整数 number 时，直接读元素并返回 (值, true)；否则返回
+// (Undefined, false)，调用方回退完整 getProperty 路径。
+//
+// 语义精确对齐 getProperty 的数组分支：key 为非负整数且 ≤ 2^53-1（该范围
+// 内 formatNumber 输出纯十进制整数串，strconv.Atoi 必成功）时，n < len 返回
+// 元素、n ≥ len 返回 undefined 且不查原型链（JS 数组越界索引语义）；负数 /
+// 非整数 / NaN / ±Inf / 超出范围一律返回 false 走完整路径。
+func (v *VM) tryArrayIndexGet(obj, key engine.Value) (engine.Value, bool) {
+	if key.Type() != engine.TypeNumber {
+		return engine.Undefined(), false
+	}
+	arr, ok := obj.(*engine.ArrayValue)
+	if !ok {
+		return engine.Undefined(), false
+	}
+	f, _ := key.Float()
+	if f < 0 || f != math.Trunc(f) || f > 9007199254740991 { // 2^53-1
+		return engine.Undefined(), false
+	}
+	n := int(f)
+	elems := arr.Elems()
+	if n < len(elems) {
+		return elems[n], true
+	}
+	return engine.Undefined(), true
 }
 
 // getProperty reads a property from a value, handling primitives via prototypes.
