@@ -31,11 +31,21 @@ func cacheFileCount(t *testing.T, dir string) int {
 	return count
 }
 
+// writePackageJSON 在项目根写入 package.json，使字节码缓存定位到该目录
+// （cacheDir 以最近的 package.json 为项目根，不再向上越界查找）。
+func writePackageJSON(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestBytecodeCacheWriteAndHit: 首次加载写缓存，二次加载命中缓存（文件数不变）。
 func TestBytecodeCacheWriteAndHit(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
 		"main.cjs": `var x = 1 + 2; globalThis.__r = x;`,
 	})
+	writePackageJSON(t, env.dir) // 项目根：缓存写 <dir>/node_modules/.aluka/cache
 	env.run(t, "main.cjs")
 	if got := env.globalGet("__r"); got != "3" {
 		t.Errorf("first run: got %q, want 3", got)
@@ -62,6 +72,7 @@ func TestBytecodeCacheInvalidationOnSourceChange(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
 		"main.cjs": `globalThis.__r = 10;`,
 	})
+	writePackageJSON(t, env.dir)
 	env.run(t, "main.cjs")
 	n1 := cacheFileCount(t, env.dir)
 
@@ -127,6 +138,7 @@ func TestBytecodeCacheESM(t *testing.T) {
 		"main.mjs": `import { x } from "./mod.mjs"; globalThis.__r = x;`,
 		"mod.mjs":  `export const x = 7;`,
 	})
+	writePackageJSON(t, env.dir)
 	env.run(t, "main.mjs")
 	if got := env.globalGet("__r"); got != "7" {
 		t.Errorf("ESM first run: got %q, want 7", got)

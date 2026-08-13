@@ -11,8 +11,8 @@ import (
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
 )
 
-// 本文件实现字节码磁盘缓存（1C.14）。缓存位于源文件所在目录向上查找的
-// node_modules/.aluka/cache/ 下（需求文档 3.3.3），以缓存键命名。
+// 本文件实现字节码磁盘缓存（1C.14）。缓存位于"最近的 package.json 项目根"
+// 的 node_modules/.aluka/cache/ 下（需求文档 3.3.3），以缓存键命名。
 //
 // 缓存键 = sha256(源文件绝对路径 + mtime + size + 格式版本 + 编译形态) 的
 // 十六进制。编译形态（kind）区分 ESM/CJS：同一 typeless .js 在 CJS 编译
@@ -36,21 +36,20 @@ func (bc *bytecodeCache) cacheKey(absPath string, info os.FileInfo, kind string)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// cacheDir 沿目录树向上查找缓存的存放目录：优先使用"最近的 node_modules
-// 目录"下的 .aluka/cache（真实 node_modules，非仅含 .aluka 的自动生成目录），
-// 其次使用"自身就是 node_modules 目录"的祖先（源文件位于某个 npm 包内）。
-// 找不到任何 node_modules 时回退到源文件所在目录（与早期行为一致，测试依赖）。
+// cacheDir 返回字节码缓存的存放目录：以"最近的 package.json 所在目录"为
+// 项目根，缓存写在 <项目根>/node_modules/.aluka/cache/ 下（与依赖同目录、
+// 随项目走）。源文件位于某个 npm 包内时，包根（含 package.json）即为项目
+// 根，包内文件共享包级缓存。找不到 package.json（临时脚本/裸文件）时回退
+// 到源文件所在目录的 node_modules 下。
+//
+// 注意：查找严格止于最近的 package.json，不再向更上层爬升——避免把缓存
+// 写入用户主目录等其他项目的 node_modules（此前实现会向上找"真实
+// node_modules"，%TEMP% 下的临时脚本会误命中主目录里的真实 node_modules）。
 func (bc *bytecodeCache) cacheDir(srcPath string) string {
 	dir := filepath.Dir(srcPath)
 	for {
-		// 自身是 node_modules（源文件位于 npm 包内）。
-		if filepath.Base(dir) == "node_modules" {
-			return filepath.Join(dir, bcCacheDirName)
-		}
-		// 子目录是真实的 node_modules（排除缓存清理时残留的仅 .aluka 目录）。
-		nm := filepath.Join(dir, "node_modules")
-		if info, err := os.Stat(nm); err == nil && info.IsDir() && hasRealEntries(nm) {
-			return filepath.Join(nm, bcCacheDirName)
+		if _, err := os.Stat(filepath.Join(dir, "package.json")); err == nil {
+			return filepath.Join(dir, "node_modules", bcCacheDirName)
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -59,21 +58,6 @@ func (bc *bytecodeCache) cacheDir(srcPath string) string {
 		dir = parent
 	}
 	return filepath.Join(filepath.Dir(srcPath), "node_modules", bcCacheDirName)
-}
-
-// hasRealEntries 判断 node_modules 目录是否含 .aluka 之外的条目（避免把
-// 缓存自动生成的 node_modules 误当作真实依赖目录）。
-func hasRealEntries(nm string) bool {
-	entries, err := os.ReadDir(nm)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if e.Name() != ".aluka" {
-			return true
-		}
-	}
-	return false
 }
 
 // load 从磁盘读取缓存的字节码 Module。未命中返回 (nil, nil)。
