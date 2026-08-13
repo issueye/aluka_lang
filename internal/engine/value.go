@@ -753,6 +753,18 @@ func (a *ArrayValue) Append(v Value) {
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
+// SetIndex writes a value to a numeric array index, growing the slice with
+// holes (undefined) when idx exceeds the current length, and synchronizes the
+// length property once. It mirrors the numeric-key branch of Set without the
+// string conversion, for the VM's array-index write fast path (M1-2 写侧).
+func (a *ArrayValue) SetIndex(idx int, value Value) {
+	for len(a.elems) <= idx {
+		a.elems = append(a.elems, Undefined())
+	}
+	a.elems[idx] = value
+	a.objectValue.setSlot("length", IntValue(len(a.elems)))
+}
+
 // AppendNumberRange appends count consecutive Number values starting at start
 // and updates length once. It is intentionally narrow: the interpreter JIT
 // uses it only after guarding the ArrayValue receiver and loop semantics.

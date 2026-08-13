@@ -1171,6 +1171,13 @@ func (v *VM) run() (engine.Value, error) {
 				val := v.pop()
 				key := v.pop()
 				obj := v.pop()
+				// 数组数值下标写快路径（M1-2 写侧）：number key + ArrayValue
+				// 直写元素，绕过 propertyKeyOf 的 number→string 与 ArrayValue.Set
+				// 的 strconv.Atoi 双重转换。
+				if v.tryArrayIndexSet(obj, key, val) {
+					v.push(val)
+					break
+				}
 				if err := v.setProperty(obj, propertyKeyOf(key), val); err != nil {
 					return v.handleThrow(err)
 				}
@@ -1180,6 +1187,9 @@ func (v *VM) run() (engine.Value, error) {
 				key := v.pop()
 				obj := v.pop()
 				val := v.pop()
+				if v.tryArrayIndexSet(obj, key, val) {
+					break
+				}
 				if err := v.setProperty(obj, propertyKeyOf(key), val); err != nil {
 					return v.handleThrow(err)
 				}
@@ -2266,7 +2276,6 @@ func propertyKeyOf(key engine.Value) string {
 // tryArrayIndexGet 处理数组的数值下标读快路径（M1-2）：obj 为 ArrayValue
 // 且 key 为非负整数 number 时，直接读元素并返回 (值, true)；否则返回
 // (Undefined, false)，调用方回退完整 getProperty 路径。
-//
 // 语义精确对齐 getProperty 的数组分支：key 为非负整数且 ≤ 2^53-1（该范围
 // 内 formatNumber 输出纯十进制整数串，strconv.Atoi 必成功）时，n < len 返回
 // 元素、n ≥ len 返回 undefined 且不查原型链（JS 数组越界索引语义）；负数 /
@@ -2289,6 +2298,30 @@ func (v *VM) tryArrayIndexGet(obj, key engine.Value) (engine.Value, bool) {
 		return elems[n], true
 	}
 	return engine.Undefined(), true
+}
+
+// tryArrayIndexSet 处理数组的数值下标写快路径（M1-2 写侧）：obj 为
+// ArrayValue 且 key 为非负整数 number 时，直写元素（越界自动稀疏填充并
+// 同步 length）并返回 true；否则返回 false，调用方回退完整 setProperty 路径。
+//
+// 语义精确对齐 setProperty 的数组分支（ArrayValue.Set 的数值索引路径）：
+// 非负整数且 ≤ 2^53-1 走元素写；负数 / 非整数 / NaN / ±Inf / 超范围回退。
+// Proxy 非 *ArrayValue 自动排除；数值索引 accessor 在本引擎不可构造
+// （defineProperty 为简化 Set），故无需 FindAccessor 拦截。
+func (v *VM) tryArrayIndexSet(obj, key, val engine.Value) bool {
+	if key.Type() != engine.TypeNumber {
+		return false
+	}
+	arr, ok := obj.(*engine.ArrayValue)
+	if !ok {
+		return false
+	}
+	f, _ := key.Float()
+	if f < 0 || f != math.Trunc(f) || f > 9007199254740991 { // 2^53-1
+		return false
+	}
+	arr.SetIndex(int(f), val)
+	return true
 }
 
 // getProperty reads a property from a value, handling primitives via prototypes.

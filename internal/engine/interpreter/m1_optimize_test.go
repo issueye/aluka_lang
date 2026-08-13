@@ -60,6 +60,50 @@ func TestVMArrayIndexGetFastPathSemantics(t *testing.T) {
 	}
 }
 
+func TestVMArrayIndexSetFastPath(t *testing.T) {
+	cases := []struct {
+		name string
+		code string
+		want string
+	}{
+		{"write element", "var a=[1,2,3]; a[1]=20; a[1]", "20"},
+		{"write first", "var a=[0]; a[0]=9; a[0]", "9"},
+		{"write out of bounds extends", "var a=[1]; a[3]=42; a[3]", "42"},
+		{"out of bounds length", "var a=[1]; a[3]=42; a.length", "4"},
+		{"sparse hole after extend", "var a=[1]; a[3]=42; a[2]", "undefined"},
+		{"overwrite no extend", "var a=[1,2,3]; a[1]=99; a.length", "3"},
+		{"negative index prop", "var a=[1,2]; a[-1]=7; a[-1]", "7"},
+		{"non-integer prop", "var a=[1,2]; a[1.5]=7; a[1.5]", "7"},
+		{"nan key prop", "var a=[1,2]; a[NaN]=7; a[NaN]", "7"},
+		{"loop write", "var a=[0,0,0]; for(var i=0;i<3;i++){a[i]=i;} a[0]+':'+a[1]+':'+a[2]", "0:1:2"},
+		{"write then read", "var a=[]; a[0]=1; a[1]=2; a[0]+a[1]", "3"},
+		{"computed index write", "var a=[]; var i=2; a[i]=5; a[2]", "5"},
+		{"string index write", "var a=[1,2]; a['1']=9; a[1]", "9"},
+		{"write length key", "var a=[1,2,3]; a.length=1; a.length", "1"},
+		{"truncate via length", "var a=[1,2,3]; a.length=1; a[0]+':'+a[1]", "1:undefined"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := vmEvalStr(t, c.code); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestVMArrayIndexSetFastPathSemantics(t *testing.T) {
+	// 快/慢路径写语义对照：数值下标（快）与字符串下标（慢）结果一致。
+	code := `
+		var a = [10, 20];
+		a[2] = 30;
+		a["3"] = 40;
+		JSON.stringify(a) + "|" + a.length;
+	`
+	if got := vmEvalStr(t, code); got != "[10,20,30,40]|4" {
+		t.Errorf("fast/slow write path mismatch: got %q", got)
+	}
+}
+
 // --- M1 benchmark（jit.Off 隔离字节码层收益） -----------------------------
 
 func BenchmarkArrayIndexRead(b *testing.B) {
@@ -70,6 +114,25 @@ func BenchmarkArrayIndexRead(b *testing.B) {
 	vm.ConfigureJIT(jit.Config{Mode: jit.Off})
 	// 循环体 5 次固定索引数组读，放大数组索引在循环中的占比。
 	code := `var a = [1,2,3,4,5]; var s = 0; for (var i = 0; i < 200000; i++) { s += a[0] + a[1] + a[2] + a[3] + a[4]; } s`
+	if _, err := vm.Eval(code, "bench.js"); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := vm.Eval(code, "bench.js"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkArrayIndexWrite(b *testing.B) {
+	vm, err := NewVM()
+	if err != nil {
+		b.Fatal(err)
+	}
+	vm.ConfigureJIT(jit.Config{Mode: jit.Off})
+	// 循环体 5 次固定索引数组写，放大数组索引写在循环中的占比。
+	code := `var a = [0,0,0,0,0]; for (var i = 0; i < 200000; i++) { a[0] = i; a[1] = i; a[2] = i; a[3] = i; a[4] = i; } a[4]`
 	if _, err := vm.Eval(code, "bench.js"); err != nil {
 		b.Fatal(err)
 	}
