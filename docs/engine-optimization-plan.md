@@ -398,6 +398,7 @@ M1、M2、M4 均只依赖 M0，可并行；M3 依赖 M1（数组 trace 复用索
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v1.7 | 2026-08-13 | 新增 §13 fib30/gcPressure 专项分析（36x/38x 差距的瓶颈与优化方向） |
 | v1.6 | 2026-08-13 | M2 实施：寄存器分配完整实现（liveness+发射改造+REX 修复），收益被 CPU 内存层级抵消（~0-1.4%） |
 | v1.5 | 2026-08-13 | 读路径对称检查：IC 已前置到位，两处尾巴简化为代码质量改进（无性能收益） |
 | v1.4 | 2026-08-13 | M4 后续：写入 IC 前置落地（~33.5%） |
@@ -405,3 +406,54 @@ M1、M2、M4 均只依赖 M0，可并行；M3 依赖 M1（数组 trace 复用索
 | v1.2 | 2026-08-13 | M1 写侧：数组索引写快路径落地（~41.6%） |
 | v1.1 | 2026-08-13 | M1 实施：数组索引读快路径落地（~16.6%）；全局 IC 测量否定回退 |
 | v1.0 | 2026-08-13 | 初稿：基于 JIT/字节码/AST 代码审阅，制定 M0-M5 里程碑与完成定义 |
+
+## 13. fib30 / gcPressure 专项分析（性能报告 v5 跨引擎对比的两大短板）
+
+> 基线：performance-report-v5 §7——fib30 36.2x、gcPressure 38.0x（vs Node 22.3.0），
+> 是 11 项中仅有的两个 >10x 用例。以下基于 --jit-stats / --jit-dump=ir / --monitor
+> 实测数据定位瓶颈与优化方向。
+
+### 13.1 fib30（36.2x）——递归调用开销
+
+**实测定位**（--jit-stats）：fib 已 Quick 编译（compiled=1，IR 含 push_self/self_call），但
+`nativeCompiled=0`（未 Native 化）、`calleeInlined=0`（无内联）、`executed=22`（Quick 入口
+执行次数，自递归在 Quick 内部不计数）。
+
+**瓶颈**：`OpSelfCall` 在 Quick 执行器里是 **Go 函数递归**（`executeQuick(depth+1)`），每次
+递归调用有固定开销：Go 函数调用（~20ns）+ 栈上 localBuf/stackBuf 分配（maxQuickSlots=32，
+~1KB）+ locals 初始化 + 参数 pop/push。fib(30) 约 2.7M 次递归 × ~110ns ≈ 300ms，与实测
+303ms 吻合。Node（8.39ms）靠 V8 递归内联 + 机器码级调用把等效调用次数和单次开销同时压低。
+
+**优化方向**（按收益排序）：
+
+| 方向 | 机制 | 预期收益 | 工程复杂度 |
+|------|------|---------|-----------|
+| **F1 Native 自递归** | OpSelfCall 的 amd64 机器码实现（call/ret 替代 Go executeQuick 递归，复用无指针 Frame） | 5-10x（303→30-60ms） | 大（机器码递归需栈帧约定、budget/depth guard、deopt 出口） |
+| **F2 递归内联展开** | self_call 站内联 2-4 层（fib(n-1)+fib(n-2) 展开），调用次数 2.7M → ~300K | 2-3x | 中（IR 层 self-inlining，需代码膨胀预算） |
+| **F3 Quick 递归开销削减** | executeQuick 递归路径的 localBuf 复用、safepoint 每 N 次递归 tick（当前每次 tick） | 1.2-1.5x | 小 |
+
+### 13.2 gcPressure（38.0x）——对象分配路径
+
+**实测定位**（--monitor）：500K 轮 × 3 对象 = **150 万对象分配，Go 总分配 217MB**（每对象
+~145B）；GC 仅 54 次、暂停总计 2ms——**瓶颈是分配路径本身而非 GC**。对象构造路径：
+`OpNewObject` → `NewObjectFromPairs`（shape transition 遍历 + objectValue malloc + slots
+malloc + 二次遍历填充 + register）+ 嵌套对象/数组递归构造。
+
+Node（13.62ms ≈ 9ns/对象）靠 V8 bump-pointer 分配（对象在连续 arena 内指针递增）+
+编译期预计算 hidden class。aluka（517ms ≈ 345ns/对象）每次都是 Go malloc + map 操作。
+
+**优化方向**：
+
+| 方向 | 机制 | 预期收益 | 工程复杂度 |
+|------|------|---------|-----------|
+| **G1 对象分配池化** | objectValue + slots 的分配池（按 shape 分桶，回收后复用，免 Go malloc） | 1.5-2x | 中（需处理 GC 可达性与池安全） |
+| **G2 字面量快速构造** | 编译器对 {x,y,z} 字面量发射"预计算 shape + 单次 slots 分配 + 直接填充"路径（跳过 NewObjectFromPairs 的两次遍历与逐属性 transition） | 1.3-1.8x | 中（compiler 识别字面量形态 + 新 opcode 或 runtime helper） |
+| **G3 数组字面量池化** | [i,i+1] 的 elems 切片复用 | 1.1-1.3x | 小 |
+| **G4 GC 触发调优** | 当前 54 次/2ms 已健康，无大改必要 | — | — |
+
+### 13.3 优先级建议
+
+1. **F3（Quick 递归开销削减）先做**：小工程、低风险，为 F1/F2 铺路；
+2. **G2（字面量快速构造）**：中工程、直接命中真实代码的常见形态（对象字面量）；
+3. **F1（Native 自递归）**：收益最大但工程最大，作为专项里程碑；
+4. **G1（分配池化）**：需与自研 GC 协同设计（池与标记-清除的交互），排在 G2 之后。
