@@ -29,18 +29,31 @@ func ComputeMaxStack(mod *Module, fn *FuncTemplate) (int, error) {
 		return 0, nil
 	}
 	depthAt := make(map[int]int, len(fn.Code)/InstrSize+1)
+	// settled 标记已从 worklist 弹出（深度已收敛/处理过）的 PC。回边若向
+	// settled 目标携带更大的深度，说明该深度来自上游建模虚高（典型：可选链
+	// 短路路径在链尾残留链内值，污染 JMP_FALSE_POP 后继深度后经回边带回
+	// 循环头）——真实执行中循环头深度由循环不变式决定（body/条件净栈平衡），
+	// 回边深度不可能超过循环头已记录深度，丢弃虚高保持 sound 且防 worklist
+	// 发散（每轮 +1 死循环）。
+	settled := make(map[int]bool, len(fn.Code)/InstrSize+1)
 	var work []int
-	enqueue := func(pc, d int) {
+	enqueue := func(pc, d int, backedge bool) {
 		if pc < 0 || pc >= len(fn.Code) || pc%InstrSize != 0 || d < 0 {
 			return
 		}
-		if prev, ok := depthAt[pc]; ok && prev >= d {
-			return
+		if prev, ok := depthAt[pc]; ok {
+			if prev >= d {
+				return
+			}
+			if backedge && settled[pc] {
+				// 回边虚高：目标已收敛，保持已记录深度（见函数头注释）。
+				return
+			}
 		}
 		depthAt[pc] = d
 		work = append(work, pc)
 	}
-	enqueue(0, 0)
+	enqueue(0, 0, false)
 	// catch/finally 体仅经 throw 进入（正常流不顺序到达），需显式 seed 以纳入
 	// 其栈高度到 maxNormal；throw 带来的 try 体残留深度由第二相 +maxRegionDepth 补偿。
 	// catch 入口栈顶是异常值（深度 1，首指令 StoreLocal(e) 弹之）；finally 入口
@@ -48,10 +61,10 @@ func ComputeMaxStack(mod *Module, fn *FuncTemplate) (int, error) {
 	for i := range fn.TryTable {
 		te := &fn.TryTable[i]
 		if te.HasCatch {
-			enqueue(te.CatchPC, 1)
+			enqueue(te.CatchPC, 1, false)
 		}
 		if te.HasFinally {
-			enqueue(te.FinallyPC, 0)
+			enqueue(te.FinallyPC, 0, false)
 		}
 	}
 
@@ -59,6 +72,7 @@ func ComputeMaxStack(mod *Module, fn *FuncTemplate) (int, error) {
 	for len(work) > 0 {
 		pc := work[len(work)-1]
 		work = work[:len(work)-1]
+		settled[pc] = true
 		D := depthAt[pc]
 		if D > maxNormal {
 			maxNormal = D
@@ -71,18 +85,20 @@ func ComputeMaxStack(mod *Module, fn *FuncTemplate) (int, error) {
 		case OpReturn, OpReturnUndef, OpThrow:
 			// 终结指令：无顺序后继。
 		case OpJmp, OpTryExitJmp:
-			enqueue(target(), D)
+			enqueue(target(), D, target() < pc)
 		case OpJmpTruePop, OpJmpFalsePop:
-			enqueue(target(), D-1)
-			enqueue(next, D-1)
+			enqueue(target(), D-1, target() < pc)
+			enqueue(next, D-1, next < pc)
 		case OpJmpTrueKeep, OpJmpFalseKeep, OpJmpNullishKeep:
-			enqueue(target(), D)
-			enqueue(next, D-1)
+			enqueue(target(), D, target() < pc)
+			enqueue(next, D-1, next < pc)
 		case OpOptionalJump:
-			enqueue(target(), D)
-			enqueue(next, D)
+			// 短路路径：VM 弹栈顶压 undefined（净 0）后跳链尾，链内残留由
+			// 链尾清理块（POP × 残留数）弹出；正常路径（fall through）栈不变。
+			enqueue(target(), D, target() < pc)
+			enqueue(next, D, next < pc)
 		case OpYield, OpAwait:
-			enqueue(next, D)
+			enqueue(next, D, next < pc)
 		default:
 			pop, push, ok := instrEffect(mod, op, operand)
 			if !ok {
@@ -100,7 +116,7 @@ func ComputeMaxStack(mod *Module, fn *FuncTemplate) (int, error) {
 			if nd > maxNormal {
 				maxNormal = nd
 			}
-			enqueue(next, nd)
+			enqueue(next, nd, next < pc)
 		}
 	}
 

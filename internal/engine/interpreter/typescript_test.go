@@ -134,6 +134,14 @@ func TestTSTypeAssertion(t *testing.T) {
 		{"((10 as number) + 5)", "15"},
 		// Assertion inside array
 		{"[1 as number, 2, 3][0]", "1"},
+		// 无括号：断言后接二元运算符（回归：`as T ?? x` 曾报
+		// "expected ';' but got '??'"——as 剥离在 parseBinary 返回后才发生）。
+		{"10 as number + 5", "15"},
+		{"'a' as string | undefined ?? 'fallback'", "a"},
+		{"5 as number ?? 7", "5"},
+		{"null as unknown ?? 'fallback'", "fallback"},
+		{"5 satisfies number ?? 7", "5"},
+		{"1 as number * 2 as number + 3", "5"},
 	}
 	for _, c := range cases {
 		if got := vmEvalStr(t, c.code); got != c.want {

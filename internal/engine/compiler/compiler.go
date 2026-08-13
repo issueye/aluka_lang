@@ -60,6 +60,16 @@ type Compiler struct {
 	// optional chaining (?.) context. Each entry is a list of jump PCs that
 	// must be patched to the end of the chain when it completes.
 	optionalChainStack [][]int
+	// optionalChainResiduals 与 optionalChainStack 平行：每级 OpOptionalJump
+	// 短路时需清理的链内残留值个数（短路发生时栈上链内值数 - 1）。残留数
+	// 编码进 operand 高 8 位，VM 短路时弹出清理，避免残留污染后续栈。
+	optionalChainResiduals [][]int
+	// optChainPushCount 是当前可选链内"栈上链值数"（短路时残留 = 计数-1）。
+	// 链内指令的净栈效应在发射处维护（optChainDelta）；嵌套链继承外层计数
+	// （内层短路残留含外层未消费值），end 恢复为外层值 + 1（内层结果压入 1）。
+	optChainPushCount  int
+	optChainPushSaved  []int
+	optChainPushActive bool
 
 	// curLabel is the label of the labeled statement currently being compiled
 	// (set by compileLabeled). Loops pick it up as their loopCtx.hasLabel so
@@ -1061,14 +1071,19 @@ func (c *Compiler) compileForOf(left ast.Node, right ast.Expression, body ast.St
 	// 使闭包捕获每次迭代的值（而非共享同一槽位的最终值）。
 	// The compiler reuses local slots, so captured slots are closed at the end
 	// of each iteration before the next value is stored into them.
+	// 仅当迭代变量是 let/const 声明（VarDecl 且含 Decls）才存在 per-iteration
+	// 绑定需要关闭；`for (x of ...)`（赋给已有变量）无迭代槽，发射
+	// CloseUpvalues(NumLocals) 会引用越界槽（validate 报 slot out of range）。
 	c.pushBlock()
 	defer c.popBlock()
 	iterationSlotStart := c.cur().tmpl.NumLocals
+	hasIterBindings := false
 
 	// Get value and bind to left.
 	c.emit(bytecode.OpLoadLocal, uint32(tmpResult))
 	c.emit(bytecode.OpGetProp, uint32(nameValue))
 	if vd, ok := left.(*ast.VarDecl); ok {
+		hasIterBindings = len(vd.Decls) > 0
 		for _, d := range vd.Decls {
 			if d.Pattern != nil {
 				tmpSlot := c.newSlot()
@@ -1091,10 +1106,14 @@ func (c *Compiler) compileForOf(left ast.Node, right ast.Expression, body ast.St
 	continuePC := c.curPC()
 	c.topLoop().continueTarget = continuePC
 	c.patchLoopContinues(continuePC)
-	c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+	if hasIterBindings {
+		c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+	}
 	c.emit(bytecode.OpJmp, uint32(loopStart-(c.curPC()+bytecode.InstrSize)))
 	breakCleanupPC := c.curPC()
-	c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+	if hasIterBindings {
+		c.emit(bytecode.OpCloseUpvalues, uint32(iterationSlotStart))
+	}
 	exit := c.curPC()
 	c.patchJumpToHere(jumpExit)
 	c.topLoop().breakTarget = exit
@@ -2591,6 +2610,11 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 			if err := c.compileExpr(m.Object); err != nil {
 				return err
 			}
+			// receiver 压入；m.Object 若是 member（a.b / o?.x?.y），链首已在
+			// 最内层计数（member 级联 GET_PROP 净 0），不重复 +1。
+			if _, isMember := m.Object.(*ast.MemberExpr); !isMember {
+				c.optPushValue()
+			}
 			// 2. If m.Optional, check if receiver is nullish (short-circuit)
 			if m.Optional {
 				c.emitOptionalJump()
@@ -2598,24 +2622,31 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 			// 3. Store receiver in temp for `this` binding
 			tempSlot := c.newSlot()
 			c.emit(bytecode.OpStoreLocal, uint32(tempSlot))
+			c.optChainDelta(-1) // receiver 弹入 temp
 			// 4. Get method from receiver
 			c.emit(bytecode.OpLoadLocal, uint32(tempSlot))
+			c.optPushValue() // receiver 重压（短路残留含 this）
 			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
 			c.emit(bytecode.OpGetProp, uint32(nameIdx))
 			// 5. Check if method is nullish (n.Optional short-circuit)
 			c.emitOptionalJump()
 			// 6. Call with this=receiver
 			c.emit(bytecode.OpLoadLocal, uint32(tempSlot)) // stack: method receiver
+			c.optPushValue()                               // receiver 重压（this 绑定）
 			if !hasSpread {
 				for _, a := range n.Arguments {
 					if err := c.compileExpr(a); err != nil {
 						return err
 					}
+					c.optPushValue()
 				}
 				c.emit(bytecode.OpCallWithThis, uint32(len(n.Arguments)))
+				c.optChainDelta(-(len(n.Arguments) + 1))
 			} else {
 				c.compileArgsArray(n.Arguments)
+				c.optPushValue()
 				c.emit(bytecode.OpCallWithThisArgs, 0)
+				c.optChainDelta(-2)
 			}
 			if chainHead {
 				c.endOptionalChain()
@@ -2627,17 +2658,24 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 		if err := c.compileExpr(n.Callee); err != nil {
 			return err
 		}
+		if _, isMember := n.Callee.(*ast.MemberExpr); !isMember {
+			c.optPushValue() // callee 压入（member 链首已在最内层计数）
+		}
 		c.emitOptionalJump()
 		if !hasSpread {
 			for _, a := range n.Arguments {
 				if err := c.compileExpr(a); err != nil {
 					return err
 				}
+				c.optPushValue()
 			}
 			c.emit(bytecode.OpCall, uint32(len(n.Arguments)))
+			c.optChainDelta(-len(n.Arguments))
 		} else {
 			c.compileArgsArray(n.Arguments)
+			c.optPushValue()
 			c.emit(bytecode.OpCallArgs, 0)
+			c.optChainDelta(-1)
 		}
 		if chainHead {
 			c.endOptionalChain()
@@ -2653,26 +2691,36 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 			if err := c.compileExpr(m.Object); err != nil {
 				return err
 			}
+			if _, isMember := m.Object.(*ast.MemberExpr); !isMember {
+				c.optPushValue() // obj 压入（member 链首已在最内层计数）
+			}
 			if m.Optional {
 				c.emitOptionalJump()
 			}
 			c.emit(bytecode.OpDup, 0) // [obj, obj]
+			c.optPushValue()         // obj 副本
 			if err := c.compileExpr(m.Property); err != nil {
 				return err
 			}
+			c.optPushValue() // key 压入
 			// [obj, obj, key]
 			c.emit(bytecode.OpGetElem, 0) // [obj, method]
+			c.optChainDelta(-1)           // 弹 obj 副本 + key，压 method
 			c.emit(bytecode.OpSwap, 0)    // [method, obj(this)]
 			if !hasSpread {
 				for _, a := range n.Arguments {
 					if err := c.compileExpr(a); err != nil {
 						return err
 					}
+					c.optPushValue()
 				}
 				c.emit(bytecode.OpCallWithThis, uint32(len(n.Arguments)))
+				c.optChainDelta(-(len(n.Arguments) + 1))
 			} else {
 				c.compileArgsArray(n.Arguments)
+				c.optPushValue()
 				c.emit(bytecode.OpCallWithThisArgs, 0)
+				c.optChainDelta(-2)
 			}
 			if chainHead {
 				c.endOptionalChain()
@@ -2681,6 +2729,9 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 		}
 		if err := c.compileExpr(m.Object); err != nil {
 			return err
+		}
+		if _, isMember := m.Object.(*ast.MemberExpr); !isMember {
+			c.optPushValue() // receiver 压入（member 链首已在最内层计数）
 		}
 		// If m.Optional, check if receiver is nullish (short-circuit)
 		if m.Optional {
@@ -2692,15 +2743,19 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 				if err := c.compileExpr(a); err != nil {
 					return err
 				}
+				c.optPushValue()
 			}
 			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
 			operand := uint32(len(n.Arguments))<<16 | uint32(nameIdx&0xFFFF)
 			c.emit(bytecode.OpCallMethod, operand)
+			c.optChainDelta(-len(n.Arguments))
 		} else {
 			// Slow path: build args array, then OpCallMethodArgs.
 			c.compileArgsArray(n.Arguments)
+			c.optPushValue()
 			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
 			c.emit(bytecode.OpCallMethodArgs, uint32(nameIdx))
+			c.optChainDelta(-2)
 		}
 		if chainHead {
 			c.endOptionalChain()
@@ -2821,6 +2876,11 @@ func (c *Compiler) compileMember(n *ast.MemberExpr) error {
 	if err := c.compileExpr(n.Object); err != nil {
 		return err
 	}
+	// 链值压入（对象）：n.Object 若是 member（this.settings / o?.x），链首
+	// 已在最内层计数（member 级联 GET_PROP 净 0），不重复 +1。
+	if _, isMember := n.Object.(*ast.MemberExpr); !isMember {
+		c.optPushValue()
+	}
 
 	// If this node is optional, emit short-circuit jump after evaluating
 	// the object: if nullish, pop + push undefined + jump to chain end.
@@ -2832,7 +2892,9 @@ func (c *Compiler) compileMember(n *ast.MemberExpr) error {
 		if err := c.compileExpr(n.Property); err != nil {
 			return err
 		}
+		c.optPushValue() // key 压入
 		c.emit(bytecode.OpGetElem, 0)
+		c.optChainDelta(-1) // 弹对象 + key，压结果
 	} else {
 		key := n.Property.(*ast.Identifier).Name
 		nameIdx := c.cur().tmpl.AddStringConst(key)
@@ -2892,7 +2954,21 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 	// 错误缓冲区 patch（PatchOperand out of range panic）。
 	savedOptionalStack := c.optionalChainStack
 	c.optionalChainStack = nil
-	defer func() { c.optionalChainStack = savedOptionalStack }()
+	savedOptionalResiduals := c.optionalChainResiduals
+	c.optionalChainResiduals = nil
+	savedChainPushCount := c.optChainPushCount
+	savedChainPushSaved := c.optChainPushSaved
+	savedChainPushActive := c.optChainPushActive
+	c.optChainPushCount = 0
+	c.optChainPushSaved = nil
+	c.optChainPushActive = false
+	defer func() {
+		c.optionalChainStack = savedOptionalStack
+		c.optionalChainResiduals = savedOptionalResiduals
+		c.optChainPushCount = savedChainPushCount
+		c.optChainPushSaved = savedChainPushSaved
+		c.optChainPushActive = savedChainPushActive
+	}()
 
 	// 普通函数：`this` slot = 0；params = slots 1..N；rest 参数 = slot N+1。
 	// 箭头函数：无 own `this`（slot 0 仍保留以兼容 frame 布局，但不会被引用）。
@@ -3213,22 +3289,96 @@ func hasOptionalAccess(expr ast.Expression) bool {
 // beginOptionalChain starts a new optional chain context.
 func (c *Compiler) beginOptionalChain() {
 	c.optionalChainStack = append(c.optionalChainStack, nil)
+	c.optionalChainResiduals = append(c.optionalChainResiduals, nil)
+	// 嵌套链继承外层计数（内层短路残留包含外层未消费值，如 f?.(x?.y)
+	// 中内层链短路时栈上还有外层 callee f）。
+	c.optChainPushSaved = append(c.optChainPushSaved, c.optChainPushCount)
+	c.optChainPushActive = true
 }
 
+// optChainDelta 维护当前链的栈上链值数（链内指令净栈效应，非链时 no-op）。
+func (c *Compiler) optChainDelta(d int) {
+	if c.optChainPushActive && len(c.optionalChainStack) > 0 {
+		c.optChainPushCount += d
+	}
+}
+
+// optPushValue 记录链内又压入一个值（对象/callee/参数/属性 key 等子表达式）。
+func (c *Compiler) optPushValue() { c.optChainDelta(1) }
+
 // emitOptionalJump emits an OpOptionalJump and records it in the current chain.
+// 短路时 VM 弹栈顶压 undefined 后跳链尾；链内残留（本次短路跳过的中间值）
+// 由 endOptionalChain 生成的清理块弹出（operand 只有 24 位，残留数无法编码）。
 func (c *Compiler) emitOptionalJump() {
 	pc := c.emit(bytecode.OpOptionalJump, 0)
 	chain := &c.optionalChainStack[len(c.optionalChainStack)-1]
 	*chain = append(*chain, pc)
+	residual := c.optChainPushCount - 1
+	if residual < 0 {
+		residual = 0
+	}
+	res := &c.optionalChainResiduals[len(c.optionalChainResiduals)-1]
+	*res = append(*res, residual)
 }
 
-// endOptionalChain patches all pending jumps in the current chain to here.
+// endOptionalChain 在链尾生成短路清理块：每个 OpOptionalJump 短路时栈上
+// 残留 r 个链内中间值（VM 只弹栈顶压 undefined），清理块 POP × r 后跳汇聚
+// 点，保证短路路径与正常路径在链尾后栈深一致（否则残留污染后续栈）。
 func (c *Compiler) endOptionalChain() {
 	idx := len(c.optionalChainStack) - 1
-	for _, pc := range c.optionalChainStack[idx] {
-		c.patchJumpToHere(pc)
+	jumps := c.optionalChainStack[idx]
+	residuals := c.optionalChainResiduals[idx]
+	// 正常路径（链尾）：跳汇聚点。
+	tailJmp := c.emit(bytecode.OpJmp, 0)
+	// 各级短路清理块：短路后栈为 [残留..., 结果]（VM 弹链尾值压 undefined，
+	// 结果在栈顶）——先经 temp slot 暂存结果，POP × residual 弹掉残留，再
+	// 压回结果，保证汇聚点栈深与正常路径一致（否则残留污染后续栈、结果
+	// 丢失导致短路路径条件错误）。
+	cleanupJmps := make([]int, len(jumps))
+	var tempSlot uint32
+	haveTemp := false
+	for i := range jumps {
+		if residuals[i] == 0 {
+			// 无残留：短路后栈即 [结果]，无需清理。
+			cleanup := c.curPC()
+			cleanupJmps[i] = c.emit(bytecode.OpJmp, 0)
+			c.patchOptionalJumpToHere(jumps[i], cleanup)
+			continue
+		}
+		if !haveTemp {
+			tempSlot = uint32(c.newSlot())
+			haveTemp = true
+		}
+		cleanup := c.curPC()
+		c.emit(bytecode.OpStoreLocal, tempSlot) // 弹结果暂存
+		for j := 0; j < residuals[i]; j++ {
+			c.emit(bytecode.OpPop, 0) // 弹残留
+		}
+		c.emit(bytecode.OpLoadLocal, tempSlot) // 压回结果
+		cleanupJmps[i] = c.emit(bytecode.OpJmp, 0)
+		c.patchOptionalJumpToHere(jumps[i], cleanup)
+	}
+	// 汇聚点：patch 正常路径与各清理块的 JMP。
+	c.patchJumpToHere(tailJmp)
+	for _, jmp := range cleanupJmps {
+		c.patchJumpToHere(jmp)
 	}
 	c.optionalChainStack = c.optionalChainStack[:idx]
+	c.optionalChainResiduals = c.optionalChainResiduals[:idx]
+	// 恢复外层计数：内层链结果也在栈上压入 1 个值。
+	outer := c.optChainPushSaved[idx]
+	c.optChainPushSaved = c.optChainPushSaved[:idx]
+	c.optChainPushCount = outer + 1
+	if len(c.optionalChainStack) == 0 {
+		c.optChainPushActive = false
+		c.optChainPushCount = 0
+	}
+}
+
+// patchOptionalJumpToHere 将 OpOptionalJump 的偏移 patch 到目标 PC。
+func (c *Compiler) patchOptionalJumpToHere(pc, target int) {
+	delta := target - (pc + bytecode.InstrSize)
+	bytecode.PatchOperand(c.cur().tmpl.Code, pc, uint32(delta))
 }
 
 // inOptionalChain returns true if there's an active optional chain context.

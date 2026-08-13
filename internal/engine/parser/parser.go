@@ -1739,6 +1739,17 @@ func (p *Parser) parseBinary(minPrec int) (ast.Expression, error) {
 	}
 	for {
 		t := p.peek()
+		// TypeScript：`expr as T` / `expr satisfies T` 绑定在单目级——
+		// 剥离后继续二元循环，使后续运算符（`??`/`+` 等）仍作用于断言结果
+		// （`a as T ?? b` 即 `(a as T) ?? b`）。此前在 parseConditional 剥离
+		// 发生在 parseBinary 返回后，`??` 无人认领报 "expected ';' but got '??'"。
+		if t.Type == lexer.TokenIdent && (t.Value == "as" || t.Value == "satisfies") {
+			p.next()
+			if err := p.skipType(); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		var op string
 		var isLogical bool
 		if t.Type == lexer.TokenPunct {

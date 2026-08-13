@@ -337,6 +337,9 @@ func optimizeFunc(fn *FuncTemplate) (funcStats, error) {
 			return stats, fmt.Errorf("bytecode optimize: jump offset out of range at pc %d", currentPC)
 		}
 		g.ins.operand = uint32(offset)
+		if op := Meta(g.ins.op); op == nil || !op.IsJump {
+			fmt.Printf("ZZRELOC non-jump operand rewritten: op=%s old=%d new=%d\n", g.ins.op, g.oldJump, offset)
+		}
 	}
 
 	newCode := make([]byte, 0, newPC)

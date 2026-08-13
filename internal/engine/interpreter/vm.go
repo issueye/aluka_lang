@@ -986,7 +986,8 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpOptionalJump:
 				// Optional chaining short-circuit (?.): if top is null/undefined,
 				// pop it, push undefined, and jump to the chain end. Otherwise,
-				// keep the value on stack and fall through.
+				// keep the value on stack and fall through. 链内残留由编译器在
+				// 链尾生成的清理块（POP × 残留数）弹出。
 				val := v.peek()
 				if val.IsUndefined() || val.IsNull() {
 					v.pop()
