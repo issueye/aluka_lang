@@ -1,0 +1,1327 @@
+{
+  "schemaVersion": "1",
+  "generated": "2026-08-13T05:12:12.9547388Z",
+  "commit": "ba2a3b6",
+  "platform": "windows/amd64",
+  "cpu": "Intel64 Family 6 Model 165 Stepping 3, GenuineIntel",
+  "goVersion": "go1.25.10",
+  "alukaVersion": "aluka 0.1.0-dev",
+  "config": {
+    "binary": "E:\\code\\issueye\\golang\\aluka_lang\\bin\\aluka.exe",
+    "scripts": [
+      "tests/benchmark/perf-compare.js",
+      "tests/benchmark/mixed.js"
+    ],
+    "tiers": [
+      "off",
+      "quick",
+      "auto"
+    ],
+    "reps": 5,
+    "rotate": true,
+    "timeout": "2m0s",
+    "jitStats": false
+  },
+  "cases": {
+    "arrayMap-100x10K": {
+      "script": "tests/benchmark/perf-compare.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 26.81
+            },
+            {
+              "round": 1,
+              "ms": 24.69
+            },
+            {
+              "round": 2,
+              "ms": 27.42
+            },
+            {
+              "round": 3,
+              "ms": 23.14
+            },
+            {
+              "round": 4,
+              "ms": 25.75
+            }
+          ],
+          "medianMs": 25.75,
+          "minMs": 23.14,
+          "maxMs": 27.42,
+          "meanMs": 25.562,
+          "madPct": 4.116504854368927
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 21.45
+            },
+            {
+              "round": 1,
+              "ms": 21.83
+            },
+            {
+              "round": 2,
+              "ms": 21.34
+            },
+            {
+              "round": 3,
+              "ms": 24.03
+            },
+            {
+              "round": 4,
+              "ms": 20.96
+            }
+          ],
+          "medianMs": 21.45,
+          "minMs": 20.96,
+          "maxMs": 24.03,
+          "meanMs": 21.922000000000004,
+          "madPct": 1.7715617715617669
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 21.48
+            },
+            {
+              "round": 1,
+              "ms": 20.99
+            },
+            {
+              "round": 2,
+              "ms": 28.77
+            },
+            {
+              "round": 3,
+              "ms": 25.55
+            },
+            {
+              "round": 4,
+              "ms": 23.51
+            }
+          ],
+          "medianMs": 23.51,
+          "minMs": 20.99,
+          "maxMs": 28.77,
+          "meanMs": 24.06,
+          "madPct": 8.677158655891105
+        }
+      }
+    },
+    "arrayPush-1M": {
+      "script": "tests/benchmark/perf-compare.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 83.46
+            },
+            {
+              "round": 1,
+              "ms": 93.6
+            },
+            {
+              "round": 2,
+              "ms": 107.78
+            },
+            {
+              "round": 3,
+              "ms": 103.75
+            },
+            {
+              "round": 4,
+              "ms": 99.06
+            }
+          ],
+          "medianMs": 99.06,
+          "minMs": 83.46,
+          "maxMs": 107.78,
+          "meanMs": 97.53,
+          "madPct": 5.511811023622055
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 526.95
+            },
+            {
+              "round": 1,
+              "ms": 523.68
+            },
+            {
+              "round": 2,
+              "ms": 536.8
+            },
+            {
+              "round": 3,
+              "ms": 564.75
+            },
+            {
+              "round": 4,
+              "ms": 540.17
+            }
+          ],
+          "medianMs": 536.8,
+          "minMs": 523.68,
+          "maxMs": 564.75,
+          "meanMs": 538.47,
+          "madPct": 1.8349478390461829
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 102.93
+            },
+            {
+              "round": 1,
+              "ms": 96.14
+            },
+            {
+              "round": 2,
+              "ms": 99.32
+            },
+            {
+              "round": 3,
+              "ms": 100.47
+            },
+            {
+              "round": 4,
+              "ms": 91.58
+            }
+          ],
+          "medianMs": 99.32,
+          "minMs": 91.58,
+          "maxMs": 102.93,
+          "meanMs": 98.088,
+          "madPct": 3.2017720499395823
+        }
+      }
+    },
+    "callOverhead-1M": {
+      "script": "tests/benchmark/perf-compare.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 4.99
+            },
+            {
+              "round": 1,
+              "ms": 4.12
+            },
+            {
+              "round": 2,
+              "ms": 4.82
+            },
+            {
+              "round": 3,
+              "ms": 4.99
+            },
+            {
+              "round": 4,
+              "ms": 4.49
+            }
+          ],
+          "medianMs": 4.82,
+          "minMs": 4.12,
+          "maxMs": 4.99,
+          "meanMs": 4.682,
+          "madPct": 3.526970954356845
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 215.18
+            },
+            {
+              "round": 1,
+              "ms": 212.59
+            },
+            {
+              "round": 2,
+              "ms": 213.48
+            },
+            {
+              "round": 3,
+              "ms": 211.88
+            },
+            {
+              "round": 4,
+              "ms": 228.29
+            }
+          ],
+          "medianMs": 213.48,
+          "minMs": 211.88,
+          "maxMs": 228.29,
+          "meanMs": 216.28400000000002,
+          "madPct": 0.749484729248639
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 69.61
+            },
+            {
+              "round": 1,
+              "ms": 74.95
+            },
+            {
+              "round": 2,
+              "ms": 69.65
+            },
+            {
+              "round": 3,
+              "ms": 78.37
+            },
+            {
+              "round": 4,
+              "ms": 77.16
+            }
+          ],
+          "medianMs": 74.95,
+          "minMs": 69.61,
+          "maxMs": 78.37,
+          "meanMs": 73.94800000000001,
+          "madPct": 4.563042028018681
+        }
+      }
+    },
+    "closureCall-1M": {
+      "script": "tests/benchmark/perf-compare.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 15.49
+            },
+            {
+              "round": 1,
+              "ms": 14.35
+            },
+            {
+              "round": 2,
+              "ms": 14.49
+            },
+            {
+              "round": 3,
+              "ms": 14.6
+            },
+            {
+              "round": 4,
+              "ms": 17.46
+            }
+          ],
+          "medianMs": 14.6,
+          "minMs": 14.35,
+          "maxMs": 17.46,
+          "meanMs": 15.278,
+          "madPct": 1.7123287671232876
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 276.94
+            },
+            {
+              "round": 1,
+              "ms": 275.64
+            },
+            {
+              "round": 2,
+              "ms": 282.3
+            },
+            {
+              "round": 3,
+              "ms": 271.61
+            },
+            {
+              "round": 4,
+              "ms": 277.8
+            }
+          ],
+          "medianMs": 276.94,
+          "minMs": 271.61,
+          "maxMs": 282.3,
+          "meanMs": 276.85799999999995,
+          "madPct": 0.4694157579259086
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 14.17
+            },
+            {
+              "round": 1,
+              "ms": 14.06
+            },
+            {
+              "round": 2,
+              "ms": 14.61
+            },
+            {
+              "round": 3,
+              "ms": 15.14
+            },
+            {
+              "round": 4,
+              "ms": 16.54
+            }
+          ],
+          "medianMs": 14.61,
+          "minMs": 14.06,
+          "maxMs": 16.54,
+          "meanMs": 14.904000000000002,
+          "madPct": 3.627652292950042
+        }
+      }
+    },
+    "fib25": {
+      "script": "tests/benchmark/perf-compare.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 26.89
+            },
+            {
+              "round": 1,
+              "ms": 28
+            },
+            {
+              "round": 2,
+              "ms": 29.89
+            },
+            {
+              "round": 3,
+              "ms": 28.92
+            },
+            {
+              "round": 4,
+              "ms": 28.84
+            }
+          ],
+          "medianMs": 28.84,
+          "minMs": 26.89,
+          "maxMs": 29.89,
+          "meanMs": 28.508,
+          "madPct": 2.9126213592233006
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 47.36
+            },
+            {
+              "round": 1,
+              "ms": 46.16
+            },
+            {
+              "round": 2,
+              "ms": 47.44
+            },
+            {
+              "round": 3,
+              "ms": 50.31
+            },
+            {
+              "round": 4,
+              "ms": 46.11
+            }
+          ],
+          "medianMs": 47.36,
+          "minMs": 46.11,
+          "maxMs": 50.31,
+          "meanMs": 47.476,
+          "madPct": 2.53378378378379
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 29.61
+            },
+            {
+              "round": 1,
+              "ms": 29.8
+            },
+            {
+              "round": 2,
+              "ms": 27.29
+            },
+            {
+              "round": 3,
+              "ms": 28
+            },
+            {
+              "round": 4,
+              "ms": 27.32
+            }
+          ],
+          "medianMs": 28,
+          "minMs": 27.29,
+          "maxMs": 29.8,
+          "meanMs": 28.403999999999996,
+          "madPct": 2.5357142857142887
+        }
+      }
+    },
+    "fib30": {
+      "script": "tests/benchmark/perf-compare.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 314.75
+            },
+            {
+              "round": 1,
+              "ms": 297.52
+            },
+            {
+              "round": 2,
+              "ms": 297.28
+            },
+            {
+              "round": 3,
+              "ms": 343.16
+            },
+            {
+              "round": 4,
+              "ms": 303.34
+            }
+          ],
+          "medianMs": 303.34,
+          "minMs": 297.28,
+          "maxMs": 343.16,
+          "meanMs": 311.21,
+          "madPct": 1.9977582910265719
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 523.9
+            },
+            {
+              "round": 1,
+              "ms": 512.82
+            },
+            {
+              "round": 2,
+              "ms": 520.71
+            },
+            {
+              "round": 3,
+              "ms": 514.02
+            },
+            {
+              "round": 4,
+              "ms": 519.1
+            }
+          ],
+          "medianMs": 519.1,
+          "minMs": 512.82,
+          "maxMs": 523.9,
+          "meanMs": 518.1099999999999,
+          "madPct": 0.9246773261413898
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 340.21
+            },
+            {
+              "round": 1,
+              "ms": 314.82
+            },
+            {
+              "round": 2,
+              "ms": 314.41
+            },
+            {
+              "round": 3,
+              "ms": 299.28
+            },
+            {
+              "round": 4,
+              "ms": 309.85
+            }
+          ],
+          "medianMs": 314.41,
+          "minMs": 299.28,
+          "maxMs": 340.21,
+          "meanMs": 315.71400000000006,
+          "madPct": 1.4503355491237562
+        }
+      }
+    },
+    "gcPressure-500K": {
+      "script": "tests/benchmark/perf-compare.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 532.16
+            },
+            {
+              "round": 1,
+              "ms": 514.08
+            },
+            {
+              "round": 2,
+              "ms": 517.57
+            },
+            {
+              "round": 3,
+              "ms": 515.65
+            },
+            {
+              "round": 4,
+              "ms": 518.41
+            }
+          ],
+          "medianMs": 517.57,
+          "minMs": 514.08,
+          "maxMs": 532.16,
+          "meanMs": 519.574,
+          "madPct": 0.370964314005849
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 512.03
+            },
+            {
+              "round": 1,
+              "ms": 494.35
+            },
+            {
+              "round": 2,
+              "ms": 531.64
+            },
+            {
+              "round": 3,
+              "ms": 505.62
+            },
+            {
+              "round": 4,
+              "ms": 523.97
+            }
+          ],
+          "medianMs": 512.03,
+          "minMs": 494.35,
+          "maxMs": 531.64,
+          "meanMs": 513.5219999999999,
+          "madPct": 2.331894615549881
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 507.69
+            },
+            {
+              "round": 1,
+              "ms": 516.51
+            },
+            {
+              "round": 2,
+              "ms": 538.71
+            },
+            {
+              "round": 3,
+              "ms": 508.56
+            },
+            {
+              "round": 4,
+              "ms": 519.47
+            }
+          ],
+          "medianMs": 516.51,
+          "minMs": 507.69,
+          "maxMs": 538.71,
+          "meanMs": 518.1880000000001,
+          "madPct": 1.5391763954231261
+        }
+      }
+    },
+    "methodCall-1M": {
+      "script": "tests/benchmark/perf-compare.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 5.89
+            },
+            {
+              "round": 1,
+              "ms": 6.31
+            },
+            {
+              "round": 2,
+              "ms": 6.83
+            },
+            {
+              "round": 3,
+              "ms": 4.98
+            },
+            {
+              "round": 4,
+              "ms": 5
+            }
+          ],
+          "medianMs": 5.89,
+          "minMs": 4.98,
+          "maxMs": 6.83,
+          "meanMs": 5.8020000000000005,
+          "madPct": 15.110356536502541
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 252.76
+            },
+            {
+              "round": 1,
+              "ms": 241.91
+            },
+            {
+              "round": 2,
+              "ms": 243.58
+            },
+            {
+              "round": 3,
+              "ms": 240.83
+            },
+            {
+              "round": 4,
+              "ms": 240.51
+            }
+          ],
+          "medianMs": 241.91,
+          "minMs": 240.51,
+          "maxMs": 252.76,
+          "meanMs": 243.91800000000003,
+          "madPct": 0.5787276259766052
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 86.28
+            },
+            {
+              "round": 1,
+              "ms": 87.15
+            },
+            {
+              "round": 2,
+              "ms": 86.35
+            },
+            {
+              "round": 3,
+              "ms": 86.91
+            },
+            {
+              "round": 4,
+              "ms": 84.69
+            }
+          ],
+          "medianMs": 86.35,
+          "minMs": 84.69,
+          "maxMs": 87.15,
+          "meanMs": 86.27599999999998,
+          "madPct": 0.6485234510712244
+        }
+      }
+    },
+    "mixed.js": {
+      "script": "tests/benchmark/mixed.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 400.1082
+            },
+            {
+              "round": 1,
+              "ms": 405.0241
+            },
+            {
+              "round": 2,
+              "ms": 400.1598
+            },
+            {
+              "round": 3,
+              "ms": 400.0307
+            },
+            {
+              "round": 4,
+              "ms": 418.5009
+            }
+          ],
+          "medianMs": 400.1598,
+          "minMs": 400.0307,
+          "maxMs": 418.5009,
+          "meanMs": 404.76474,
+          "madPct": 0.032262111286539524
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 688.5513
+            },
+            {
+              "round": 1,
+              "ms": 718.033
+            },
+            {
+              "round": 2,
+              "ms": 697.7362
+            },
+            {
+              "round": 3,
+              "ms": 694.0187
+            },
+            {
+              "round": 4,
+              "ms": 703.3253
+            }
+          ],
+          "medianMs": 697.7362,
+          "minMs": 688.5513,
+          "maxMs": 718.033,
+          "meanMs": 700.3329,
+          "madPct": 0.8010333991557147
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 404.653
+            },
+            {
+              "round": 1,
+              "ms": 426.106
+            },
+            {
+              "round": 2,
+              "ms": 398.3841
+            },
+            {
+              "round": 3,
+              "ms": 431.5067
+            },
+            {
+              "round": 4,
+              "ms": 403.0816
+            }
+          ],
+          "medianMs": 404.653,
+          "minMs": 398.3841,
+          "maxMs": 431.5067,
+          "meanMs": 412.74628,
+          "madPct": 1.549203885798457
+        }
+      }
+    },
+    "propAccess-3M": {
+      "script": "tests/benchmark/perf-compare.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 11.47
+            },
+            {
+              "round": 1,
+              "ms": 12.48
+            },
+            {
+              "round": 2,
+              "ms": 14
+            },
+            {
+              "round": 3,
+              "ms": 12.21
+            },
+            {
+              "round": 4,
+              "ms": 11.52
+            }
+          ],
+          "medianMs": 12.21,
+          "minMs": 11.47,
+          "maxMs": 14,
+          "meanMs": 12.336000000000002,
+          "madPct": 5.651105651105661
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 800.05
+            },
+            {
+              "round": 1,
+              "ms": 827.1
+            },
+            {
+              "round": 2,
+              "ms": 833.76
+            },
+            {
+              "round": 3,
+              "ms": 807.15
+            },
+            {
+              "round": 4,
+              "ms": 807.22
+            }
+          ],
+          "medianMs": 807.22,
+          "minMs": 800.05,
+          "maxMs": 833.76,
+          "meanMs": 815.0559999999999,
+          "madPct": 0.8882336909392821
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 395.92
+            },
+            {
+              "round": 1,
+              "ms": 394.07
+            },
+            {
+              "round": 2,
+              "ms": 412.4
+            },
+            {
+              "round": 3,
+              "ms": 389.92
+            },
+            {
+              "round": 4,
+              "ms": 390.51
+            }
+          ],
+          "medianMs": 394.07,
+          "minMs": 389.92,
+          "maxMs": 412.4,
+          "meanMs": 396.56399999999996,
+          "madPct": 0.903392798233817
+        }
+      }
+    },
+    "propSet-3M": {
+      "script": "tests/benchmark/perf-compare.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 9.99
+            },
+            {
+              "round": 1,
+              "ms": 9.48
+            },
+            {
+              "round": 2,
+              "ms": 11.53
+            },
+            {
+              "round": 3,
+              "ms": 10.45
+            },
+            {
+              "round": 4,
+              "ms": 10.62
+            }
+          ],
+          "medianMs": 10.45,
+          "minMs": 9.48,
+          "maxMs": 11.53,
+          "meanMs": 10.414,
+          "madPct": 4.401913875598078
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 477.77
+            },
+            {
+              "round": 1,
+              "ms": 464.58
+            },
+            {
+              "round": 2,
+              "ms": 466.51
+            },
+            {
+              "round": 3,
+              "ms": 465.57
+            },
+            {
+              "round": 4,
+              "ms": 471.61
+            }
+          ],
+          "medianMs": 466.51,
+          "minMs": 464.58,
+          "maxMs": 477.77,
+          "meanMs": 469.20799999999997,
+          "madPct": 0.4137103170350061
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 175.47
+            },
+            {
+              "round": 1,
+              "ms": 176.83
+            },
+            {
+              "round": 2,
+              "ms": 174.95
+            },
+            {
+              "round": 3,
+              "ms": 174.88
+            },
+            {
+              "round": 4,
+              "ms": 195.45
+            }
+          ],
+          "medianMs": 175.47,
+          "minMs": 174.88,
+          "maxMs": 195.45,
+          "meanMs": 179.516,
+          "madPct": 0.3362398130734618
+        }
+      }
+    },
+    "strConcat-100K": {
+      "script": "tests/benchmark/perf-compare.js",
+      "tier": {
+        "auto": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 56.53
+            },
+            {
+              "round": 1,
+              "ms": 54.13
+            },
+            {
+              "round": 2,
+              "ms": 52.53
+            },
+            {
+              "round": 3,
+              "ms": 55.87
+            },
+            {
+              "round": 4,
+              "ms": 54.69
+            }
+          ],
+          "medianMs": 54.69,
+          "minMs": 52.53,
+          "maxMs": 56.53,
+          "meanMs": 54.75,
+          "madPct": 2.1576156518559144
+        },
+        "off": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 66.66
+            },
+            {
+              "round": 1,
+              "ms": 50.68
+            },
+            {
+              "round": 2,
+              "ms": 54.81
+            },
+            {
+              "round": 3,
+              "ms": 51.88
+            },
+            {
+              "round": 4,
+              "ms": 55.48
+            }
+          ],
+          "medianMs": 54.81,
+          "minMs": 50.68,
+          "maxMs": 66.66,
+          "meanMs": 55.902,
+          "madPct": 5.3457398284984485
+        },
+        "quick": {
+          "samples": [
+            {
+              "round": 0,
+              "ms": 53.98
+            },
+            {
+              "round": 1,
+              "ms": 52.98
+            },
+            {
+              "round": 2,
+              "ms": 52.52
+            },
+            {
+              "round": 3,
+              "ms": 54.74
+            },
+            {
+              "round": 4,
+              "ms": 51.73
+            }
+          ],
+          "medianMs": 52.98,
+          "minMs": 51.73,
+          "maxMs": 54.74,
+          "meanMs": 53.19,
+          "madPct": 1.8875047187617968
+        }
+      }
+    }
+  },
+  "summary": {
+    "cases": {
+      "arrayMap-100x10K": {
+        "tier": {
+          "auto": {
+            "medianMs": 25.75,
+            "vsOff": 0.8330097087378641
+          },
+          "off": {
+            "medianMs": 21.45,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 23.51,
+            "vsOff": 0.9123777116120799
+          }
+        }
+      },
+      "arrayPush-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 99.06,
+            "vsOff": 5.418938017363214
+          },
+          "off": {
+            "medianMs": 536.8,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 99.32,
+            "vsOff": 5.40475231574708
+          }
+        }
+      },
+      "callOverhead-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 4.82,
+            "vsOff": 44.29045643153526
+          },
+          "off": {
+            "medianMs": 213.48,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 74.95,
+            "vsOff": 2.848298865910607
+          }
+        }
+      },
+      "closureCall-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 14.6,
+            "vsOff": 18.96849315068493
+          },
+          "off": {
+            "medianMs": 276.94,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 14.61,
+            "vsOff": 18.955509924709105
+          }
+        }
+      },
+      "fib25": {
+        "tier": {
+          "auto": {
+            "medianMs": 28.84,
+            "vsOff": 1.6421636615811372
+          },
+          "off": {
+            "medianMs": 47.36,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 28,
+            "vsOff": 1.6914285714285715
+          }
+        }
+      },
+      "fib30": {
+        "tier": {
+          "auto": {
+            "medianMs": 303.34,
+            "vsOff": 1.711281070745698
+          },
+          "off": {
+            "medianMs": 519.1,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 314.41,
+            "vsOff": 1.65102891129417
+          }
+        }
+      },
+      "gcPressure-500K": {
+        "tier": {
+          "auto": {
+            "medianMs": 517.57,
+            "vsOff": 0.9892961338562898
+          },
+          "off": {
+            "medianMs": 512.03,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 516.51,
+            "vsOff": 0.9913264021993765
+          }
+        }
+      },
+      "methodCall-1M": {
+        "tier": {
+          "auto": {
+            "medianMs": 5.89,
+            "vsOff": 41.07130730050934
+          },
+          "off": {
+            "medianMs": 241.91,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 86.35,
+            "vsOff": 2.8015055008685583
+          }
+        }
+      },
+      "mixed.js": {
+        "tier": {
+          "auto": {
+            "medianMs": 400.1598,
+            "vsOff": 1.7436439142562548
+          },
+          "off": {
+            "medianMs": 697.7362,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 404.653,
+            "vsOff": 1.7242827805551917
+          }
+        }
+      },
+      "propAccess-3M": {
+        "tier": {
+          "auto": {
+            "medianMs": 12.21,
+            "vsOff": 66.11138411138411
+          },
+          "off": {
+            "medianMs": 807.22,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 394.07,
+            "vsOff": 2.048417793792981
+          }
+        }
+      },
+      "propSet-3M": {
+        "tier": {
+          "auto": {
+            "medianMs": 10.45,
+            "vsOff": 44.642105263157895
+          },
+          "off": {
+            "medianMs": 466.51,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 175.47,
+            "vsOff": 2.658631105032199
+          }
+        }
+      },
+      "strConcat-100K": {
+        "tier": {
+          "auto": {
+            "medianMs": 54.69,
+            "vsOff": 1.0021941854086671
+          },
+          "off": {
+            "medianMs": 54.81,
+            "vsOff": 1
+          },
+          "quick": {
+            "medianMs": 52.98,
+            "vsOff": 1.034541336353341
+          }
+        }
+      }
+    }
+  }
+}
