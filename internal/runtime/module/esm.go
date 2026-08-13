@@ -2,7 +2,6 @@ package module
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
 
@@ -10,67 +9,17 @@ import (
 	"github.com/aluka-lang/aluka/internal/engine/ast"
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/engine/parser"
 )
 
 // loadESM loads and executes an ESM module, returning its exports.
 func (l *Loader) loadESM(absPath string) (engine.Value, error) {
-	return l.loadESMModule(absPath)
+	return l.loadModuleFile(absPath)
 }
 
 // loadESMFile loads, transforms, and executes an ESM module file (for Run).
 func (l *Loader) loadESMFile(absPath string) error {
-	_, err := l.loadESMModule(absPath)
+	_, err := l.loadModuleFile(absPath)
 	return err
-}
-
-// loadESMModule loads an ESM module and returns its exports.
-func (l *Loader) loadESMModule(absPath string) (engine.Value, error) {
-	src, err := os.ReadFile(absPath)
-	if err != nil {
-		return engine.Undefined(), fmt.Errorf("module: cannot read %q: %w", absPath, err)
-	}
-	// 剥离 UTF-8 BOM（同 CJS，避免 BOM 字符导致 lexer 死循环）。
-	src = stripBOM(src)
-
-	// TS strip-only 诊断：.ts/.mts 中非 declare 的 enum/namespace 报
-	// ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX（Node 22 语义）。
-	if err := checkUnsupportedTS(string(src), absPath); err != nil {
-		return engine.Undefined(), fmt.Errorf("module: %w", err)
-	}
-
-	prog, err := parser.ParseModule(string(src))
-	if err != nil {
-		return engine.Undefined(), fmt.Errorf("module: parse error in %q: %w", absPath, err)
-	}
-
-	// Check if the source actually has import/export; if not, treat as CJS.
-	// 例外：.mjs 强制 ESM（Node 语义）；含顶层 await（TLA）也按 ESM
-	// （无 import/export 的纯 TLA 模块，如 scripts/*.mjs）。
-	if !HasESMDecls(prog) && !ast.HasTopLevelAwait(prog) && filepath.Ext(absPath) != ".mjs" {
-		return l.loadCJS(absPath)
-	}
-
-	// Transform ESM AST to CJS-equivalent AST
-	transformed := TransformESMToCJS(prog, absPath)
-
-	// 包装转换后的 AST 为模块函数（P0-1）：require/module/exports 等作为
-	// 词法参数注入，使 async/回调中的引用在异步恢复后依然可用。
-	prog2 := WrapESMAST(transformed, absPath)
-
-	// 编译转换后的 AST（优先字节码缓存），然后执行。
-	// 字节码缓存（1C.14）：缓存键基于源文件元数据（转换是确定性的）。
-	vm, ok := l.ctx.(*interpreter.VM)
-	if !ok {
-		return engine.Undefined(), fmt.Errorf("module: ESM requires the bytecode VM engine")
-	}
-	mod, compileErr := l.bcCache.compileOrLoad(absPath, DetectSourceKind(absPath), ModuleESM, func() (*bytecode.Module, error) {
-		return vm.CompileAST(prog2, absPath)
-	})
-	if compileErr != nil {
-		return engine.Undefined(), fmt.Errorf("module: error in %q: %w", absPath, compileErr)
-	}
-	return l.RunPrecompiled(absPath, mod, true)
 }
 
 // RunPrecompiled 执行一个已编译的模块（文件模式与构建产物模式共用）。

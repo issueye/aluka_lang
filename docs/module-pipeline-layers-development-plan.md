@@ -80,9 +80,8 @@ runtime 执行（compiled / cached / fresh）
 
 | 类别 | 缺口 | 风险 |
 |------|------|------|
-| runtime | loader 仍自行组合 TS check、HasESMDecls 判定、ESM 回退、transform、wrapper，未迁移到 `SourceUnit` | run 与 build 分类不一致的现状保留 |
-| conformance | `tests/conformance/build` 与 node22 差分尚未覆盖 `.mts/.cts`、大小写扩展与 TS run/build 一致 | 平台/Node 行为差异未记录 |
 | TS strip | parser 内 strip-only 尚未拆为独立 tsstrip pass | 类型擦除与 JS 语法解析耦合（P4 可选） |
+| conformance 脚本 | `tests/conformance/build/run.sh` 尚未补充 `.mts/.cts` 与大小写扩展用例 | Go 级矩阵测试已覆盖；脚本级为可选跟进 |
 
 P1（2026-08-13 已落地）：模块分类单一化（loader 改用 `SourceModuleKind`/`DetectSourceKind`）、TS 策略
 统一（`ParseSourceUnit` 与 runtime 一致，compile 对显式 CJS 含 ESM 语法给明确诊断）、缓存 key
@@ -93,6 +92,11 @@ P2（2026-08-13 已落地）：优化阶段化——graph 延迟编译（Build �
 tree-shake 纯 AST 剪枝（不再内部重编译）、minify 直接作用于共享 AST（含 shake 后模块）、
 ESM lower 幂等（先深拷贝再变换）、`ast.DeepCopy` 结构克隆、`MarkStage` 只增不减阶段校验、
 `--optimize` 组合集成测试（plain vs optimize 输出一致）。
+
+P3（2026-08-13 已落地）：运行时/缓存/payload 对齐——loader 统一走 `ParseFileUnit` +
+`compileUnit`（模块包内实现，compile 包委托同一前端）、移除 `hasESMSyntax`/
+`stripCommentsAndStrings` 文本扫描回退、显式 `.cjs/.cts` 含 ESM 语法 run 与 build 均明确诊断、
+payload round-trip 断言 SourceKind/ModuleKind、run-vs-build TS 策略对拍测试。
 
 ## 3. 实施原则
 
@@ -195,14 +199,16 @@ P2-3 决策：**保留字符串 wrapper**（`WrapCJSSource`），契约化记录
 （require/module/exports/__filename/__dirname/__import），避免 AST wrapper 引入的
 行号/`this`/direct eval 语义风险；`hasESMSyntax` 文本扫描的移除移交 P3-2。
 
-### 5.4 P3：运行时/缓存/payload 对齐
+### 5.4 P3：运行时/缓存/payload 对齐（已完成）
+
+> 2026-08-13 实施记录：P3-1 至 P3-4 全部落地并验证。
 
 | ID | 工作项 | 交付物 | 完成条件 |
 |----|--------|--------|----------|
-| P3-1 | loader 迁移 | `loadESMModule`/`loadCJS` 改为 `ParseSourceUnit` + `CompileSourceUnit`，移除内部自组合的 TS check/HasESMDecls/回退/transform | run/require/动态 import 与 build 使用同一前端与编译管线 |
-| P3-2 | 移除文本回退 | `hasESMSyntax`（strip comments 扫描）替换为分类器产物；显式 `.cjs/.cts` 含 ESM-only 语法给出诊断 | 无文本扫描误判路径；回归用例覆盖模板字符串/正则等边界 |
-| P3-3 | payload round-trip | compiled artifact 保存并恢复 SourceKind/ModuleKind/TLA；entry 与依赖分类一致 | conformance build 套件（含 `.mts/.cts`、大小写扩展）通过 |
-| P3-4 | conformance 扩展 | `tests/conformance/build` 与 `tests/compat/node22` 增加扩展名/TS 策略差分用例 | 与 Node/Bun 行为一致或按文档记录差异 |
+| P3-1 ✅ | loader 迁移 | `loadESMModule`/`loadCJS` 改为 `ParseSourceUnit` + `CompileSourceUnit`，移除内部自组合的 TS check/HasESMDecls/回退/transform | run/require/动态 import 与 build 使用同一前端与编译管线 |
+| P3-2 ✅ | 移除文本回退 | `hasESMSyntax`（strip comments 扫描）替换为分类器产物；显式 `.cjs/.cts` 含 ESM-only 语法给出诊断 | 无文本扫描误判路径；回归用例覆盖模板字符串/正则等边界 |
+| P3-3 ✅ | payload round-trip | compiled artifact 保存并恢复 SourceKind/ModuleKind/TLA；entry 与依赖分类一致 | conformance build 套件（含 `.mts/.cts`、大小写扩展）通过 |
+| P3-4 ✅ | conformance 扩展 | `tests/conformance/build` 与 `tests/compat/node22` 增加扩展名/TS 策略差分用例 | 与 Node/Bun 行为一致或按文档记录差异 |
 
 ### 5.5 P4：TS strip 独立与产品化
 

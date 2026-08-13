@@ -2,6 +2,7 @@ package module
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -139,6 +140,36 @@ func ParseSourceUnit(src []byte, path string, kind ModuleKind) (*SourceUnit, err
 		HasTLA:     ast.HasTopLevelAwait(prog),
 		Stage:      stage,
 	}, nil
+}
+
+// ParseFileUnit 读取并解析一个源码文件（P3-1：runtime loader 与 bundler
+// 共用的统一前端入口）。path 为文件系统路径，key 为模块标识（虚拟路径）。
+func ParseFileUnit(path, key string) (*SourceUnit, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("module: cannot resolve path %q: %w", path, err)
+	}
+	src, err := os.ReadFile(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("module: cannot read %q: %w", absPath, err)
+	}
+	return ParseFileSource(src, key, absPath)
+}
+
+// ParseFileSource 解析已读取的源码并完成扩展名优先分类 + 隐式 .js/.ts 提升。
+func ParseFileSource(src []byte, key, fsPath string) (*SourceUnit, error) {
+	resolver := NewResolver()
+	moduleKind := resolver.SourceModuleKind(fsPath)
+	unit, err := ParseSourceUnit(src, key, moduleKind)
+	if err != nil {
+		return nil, err
+	}
+	// 隐式 .js/.ts 延续 package-type 兼容：仅在这里做一次语法提升。
+	ext := strings.ToLower(filepath.Ext(fsPath))
+	if (ext == ".ts" || ext == ".js") && moduleKind == ModuleCommonJS && HasESMDecls(unit.Program) {
+		unit.ModuleKind = ModuleESM
+	}
+	return unit, nil
 }
 
 func stripSourceBOM(src []byte) []byte {

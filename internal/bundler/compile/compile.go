@@ -2,7 +2,6 @@ package compile
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -62,28 +61,9 @@ func CompileSourceUnit(vm *interpreter.VM, unit *module.SourceUnit) (*EntryData,
 	return &EntryData{Path: unit.Path, ModuleType: ModuleTypeESM, SourceKind: unit.SourceKind, ModuleKind: unit.ModuleKind, Stage: unit.Stage | module.StageESMLowered | module.StageWrapped, Module: mod}, nil
 }
 
-// ParseFileUnit 读取并解析一个源码文件，不执行模块 lower 或 bytecode 编译。
+// ParseFileUnit 委托 module.ParseFileUnit（统一前端：读取/分类/解析/隐式提升）。
 func ParseFileUnit(path, key string) (*module.SourceUnit, error) {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return nil, fmt.Errorf("compile: cannot resolve path %q: %w", path, err)
-	}
-	src, err := os.ReadFile(absPath)
-	if err != nil {
-		return nil, fmt.Errorf("compile: cannot read %q: %w", absPath, err)
-	}
-	resolver := module.NewResolver()
-	moduleKind := resolver.SourceModuleKind(absPath)
-	unit, err := module.ParseSourceUnit(src, key, moduleKind)
-	if err != nil {
-		return nil, fmt.Errorf("compile: %w", err)
-	}
-	// 隐式 .js/.ts 延续 package-type 兼容：仅在这里做一次语法提升。
-	ext := strings.ToLower(filepath.Ext(absPath))
-	if (ext == ".ts" || ext == ".js") && moduleKind == module.ModuleCommonJS && module.HasESMDecls(unit.Program) {
-		unit.ModuleKind = module.ModuleESM
-	}
-	return unit, nil
+	return module.ParseFileUnit(path, key)
 }
 
 // CompileUnits 编译一批 SourceUnit（确定性按键排序），返回对应 EntryData。

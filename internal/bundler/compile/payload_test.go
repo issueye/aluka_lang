@@ -89,6 +89,13 @@ func TestPackParseRoundTrip(t *testing.T) {
 	if got := manifest.ModuleTypeOf("main.ts"); got != ModuleTypeESM {
 		t.Errorf("moduleType = %q, want esm", got)
 	}
+	// P1-4/P3-3：SourceKind/ModuleKind 分类上下文持久化并恢复。
+	if got := manifest.SourceKindOf("main.ts"); got != "typescript" {
+		t.Errorf("sourceKind = %q, want typescript", got)
+	}
+	if got := manifest.ModuleKindOf("main.ts"); got != "esm" {
+		t.Errorf("moduleKind = %q, want esm", got)
+	}
 	mod, err := manifest.LoadModule(data, "main.ts")
 	if err != nil {
 		t.Fatal(err)
