@@ -14,9 +14,12 @@ package globals
 
 import (
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
@@ -698,6 +701,11 @@ func newCompressionStream(ctx engine.Context, args []engine.Value, compress bool
 	_ = ts.Set("readable", rs)
 	_ = ts.Set("writable", writable)
 
+	format := "gzip"
+	if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
+		format = strings.ToLower(args[0].String())
+	}
+
 	var acc []byte
 	writeImpl := func(wa []engine.Value) {
 		if len(wa) > 0 {
@@ -710,18 +718,56 @@ func newCompressionStream(ctx engine.Context, args []engine.Value, compress bool
 	}
 	closeImpl := func() {
 		var out []byte
+		var err error
 		if compress {
 			var buf bytes.Buffer
-			gw := gzip.NewWriter(&buf)
-			_, _ = gw.Write(acc)
-			_ = gw.Close()
-			out = buf.Bytes()
-		} else {
-			zr, err := gzip.NewReader(bytes.NewReader(acc))
-			if err == nil {
-				out, _ = io.ReadAll(zr)
-				_ = zr.Close()
+			switch format {
+			case "gzip":
+				gw := gzip.NewWriter(&buf)
+				_, _ = gw.Write(acc)
+				_ = gw.Close()
+				out = buf.Bytes()
+			case "deflate":
+				zw := zlib.NewWriter(&buf)
+				_, _ = zw.Write(acc)
+				_ = zw.Close()
+				out = buf.Bytes()
+			case "deflate-raw":
+				fw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
+				_, _ = fw.Write(acc)
+				_ = fw.Close()
+				out = buf.Bytes()
+			default:
+				err = fmt.Errorf("TypeError: Unsupported compression format: %s", format)
 			}
+		} else {
+			switch format {
+			case "gzip":
+				zr, rErr := gzip.NewReader(bytes.NewReader(acc))
+				if rErr == nil {
+					out, _ = io.ReadAll(zr)
+					_ = zr.Close()
+				} else {
+					err = rErr
+				}
+			case "deflate":
+				zr, rErr := zlib.NewReader(bytes.NewReader(acc))
+				if rErr == nil {
+					out, _ = io.ReadAll(zr)
+					_ = zr.Close()
+				} else {
+					err = rErr
+				}
+			case "deflate-raw":
+				fr := flate.NewReader(bytes.NewReader(acc))
+				out, _ = io.ReadAll(fr)
+				_ = fr.Close()
+			default:
+				err = fmt.Errorf("TypeError: Unsupported decompression format: %s", format)
+			}
+		}
+		if err != nil {
+			interpreter.ReportUncaught(nil, err)
 		}
 		if enqueueFn != nil && enqueueFn.IsFunction() {
 			if f, ok := enqueueFn.AsFunction(); ok {

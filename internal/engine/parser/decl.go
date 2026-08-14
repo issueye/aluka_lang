@@ -147,6 +147,11 @@ func (p *Parser) parseFuncParamsAndBody() ([]*ast.Identifier, []ast.Pattern, []a
 	var parameterProperties []*ast.Identifier
 	if !(p.peek().Type == lexer.TokenPunct && p.peek().Value == ")") {
 		for {
+			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "@" {
+				if err := p.skipDecorators(); err != nil {
+					return nil, nil, nil, nil, nil, err
+				}
+			}
 			// TypeScript constructor parameter properties: consume visibility/
 			// readonly modifiers and emit this.name = name after parsing the body.
 			isParameterProperty := false
@@ -721,6 +726,13 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 			return nil, err
 		}
 		return decl, nil
+	}
+
+	// TypeScript: skip decorators on export declaration: `export @dec class Foo {}`
+	if p.peek().Type == lexer.TokenPunct && p.peek().Value == "@" {
+		if err := p.skipDecorators(); err != nil {
+			return nil, err
+		}
 	}
 
 	// TypeScript 类型声明擦除：export interface / export enum /
