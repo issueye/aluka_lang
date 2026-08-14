@@ -17,9 +17,14 @@ TARGETS := \
 	bin/aluka-darwin-arm64   \
 	bin/aluka-windows-amd64.exe
 
-.PHONY: all build test cover lint clean install release help
+.PHONY: all build test cover lint clean install release icon help
 
 all: build
+
+# 生成品牌多尺寸图标与 Windows 资源文件
+icon:
+	go run ./internal/cli/genicon/main.go
+	windres -i cmd/aluka/aluka.rc -O coff -o cmd/aluka/aluka_windows_amd64.syso -F pe-x86-64
 
 # 本机构建（默认二进制）
 build:
