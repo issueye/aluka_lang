@@ -948,6 +948,7 @@ func findTestFilesIn(dir string) []string {
 		}
 		lower := strings.ToLower(name)
 		if strings.HasSuffix(lower, ".test.js") || strings.HasSuffix(lower, ".test.ts") ||
+			strings.HasSuffix(lower, ".test.jsx") || strings.HasSuffix(lower, ".test.tsx") ||
 			strings.HasSuffix(lower, ".test.mjs") || strings.HasSuffix(lower, ".test.cjs") {
 			out = append(out, filepath.Join(dir, name))
 		}

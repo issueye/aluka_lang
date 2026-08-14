@@ -2361,24 +2361,32 @@ func (v *VM) tryArrayIndexSet(obj, key, val engine.Value) bool {
 
 // getProperty reads a property from a value, handling primitives via prototypes.
 func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
-	// O2-D2 快速路径：隐藏类对象 IC 命中直接返回（跳过 Null/Proxy/String/
-	// Array/Accessor 等类型分派）。accessor 值直接 invoke getter（own accessor
-	// 遮蔽原型，无需再走 FindAccessor）；数据值直接返回。
-	if cv, hit := v.ic.GetCached(obj, key); hit {
-		if acc, isAcc := cv.(*engine.AccessorValue); isAcc {
-			if acc.Getter != nil && !acc.Getter.IsUndefined() {
-				return v.invoke(acc.Getter, obj, nil, false)
+	return v.getPropertyWithReceiver(obj, key, obj)
+}
+
+// getPropertyWithReceiver reads a property from obj, using receiver as 'this' for getters.
+func (v *VM) getPropertyWithReceiver(obj engine.Value, key string, receiver engine.Value) (engine.Value, error) {
+	if receiver == nil {
+		receiver = obj
+	}
+	// O2-D2 快速路径：隐藏类对象 IC 命中直接返回（仅在 receiver == obj 时生效以保证 getter this 正确）。
+	if receiver == obj {
+		if cv, hit := v.ic.GetCached(obj, key); hit {
+			if acc, isAcc := cv.(*engine.AccessorValue); isAcc {
+				if acc.Getter != nil && !acc.Getter.IsUndefined() {
+					return v.invoke(acc.Getter, receiver, nil, false)
+				}
+				return engine.Undefined(), nil
 			}
-			return engine.Undefined(), nil
+			return cv, nil
 		}
-		return cv, nil
 	}
 	if obj.IsNull() || obj.IsUndefined() {
 		return engine.Undefined(), fmt.Errorf("%w: Cannot read properties of %s (reading '%s')", engine.ErrTypeError, obj.String(), key)
 	}
 	// Proxy interception: dispatch to the get trap if defined.
 	if p, ok := obj.(*ProxyValue); ok {
-		return p.proxyGet(key)
+		return p.proxyGet(key, receiver)
 	}
 	// String primitives: handle length + indexed access + string proto methods.
 	if obj.Type() == engine.TypeString {
@@ -2443,9 +2451,9 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 		// （native 函数的 [[Prototype]] 未链接 functionProto）。
 		if o, ok := obj.(engine.Object); ok {
 			if val, _ := o.Get(key); !val.IsUndefined() {
-				// 访问器属性：调用 getter（this=函数对象）。
+				// 访问器属性：调用 getter（this=receiver）。
 				if acc, ok := val.(*engine.AccessorValue); ok && !acc.Getter.IsUndefined() {
-					return v.invoke(acc.Getter, obj, nil, false)
+					return v.invoke(acc.Getter, receiver, nil, false)
 				}
 				return val, nil
 			}
@@ -2454,22 +2462,31 @@ func (v *VM) getProperty(obj engine.Value, key string) (engine.Value, error) {
 			return v.interp.functionProto.Get(key)
 		}
 	}
-	// Accessor (getter/setter) interception: if an accessor is found on the
-	// prototype chain for this key, invoke the getter with this = obj.
-	// For custom value types (MapValue, SetValue, etc.) the proto chain lives
-	// on the backing obj, so we search from there.
+	// 如果对象本身或原型链上有 Proxy，分派到 Proxy 的 proxyGet（携带正确的 receiver）
+	cur := obj
+	for cur != nil {
+		if p, ok := cur.(*ProxyValue); ok {
+			return p.proxyGet(key, receiver)
+		}
+		proto := engine.GetProto(cur)
+		if proto == nil {
+			break
+		}
+		cur = proto
+	}
+
 	backing := v.backingObj(obj)
 	if acc, ok := engine.FindAccessor(backing, key); ok {
 		if acc.Getter != nil && !acc.Getter.IsUndefined() {
-			return v.invoke(acc.Getter, obj, nil, false)
+			return v.invoke(acc.Getter, receiver, nil, false)
 		}
 		return engine.Undefined(), nil
 	}
 	if o, ok := obj.AsObject(); ok {
-		// 第一次 GetCached 已在函数开头尝试且 miss，此处直接完整查找（重复
-		// GetCached 必 miss，为纯冗余）。
 		val, err := o.Get(key)
-		v.ic.CachePut(obj, key)
+		if receiver == obj {
+			v.ic.CachePut(obj, key)
+		}
 		return val, err
 	}
 	return engine.Undefined(), nil

@@ -40,7 +40,11 @@ func (interp *Interpreter) setupReflect() {
 			return engine.Undefined(), fmt.Errorf("%w: Reflect.get requires a key", engine.ErrTypeError)
 		}
 		key := propertyKeyOf(args[1])
-		return vm.getProperty(t, key)
+		receiver := t
+		if len(args) >= 3 && !args[2].IsUndefined() {
+			receiver = args[2]
+		}
+		return vm.getPropertyWithReceiver(t, key, receiver)
 	}))
 
 	// Reflect.set(target, key, value[, receiver])

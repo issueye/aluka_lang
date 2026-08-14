@@ -184,9 +184,9 @@ func regexAllowedAfter(t Token) bool {
 		}
 		return false
 	case TokenPunct:
-		// ) ] 之后为除法
+		// ) ] } > < ++ -- 之后为除法或闭合符，不允许为 regex 开头
 		switch t.Value {
-		case ")", "]", "}":
+		case ")", "]", "}", ">", "<", "++", "--":
 			return false
 		}
 		return true
@@ -669,12 +669,11 @@ func (l *Lexer) readIdent(startLine, startCol int) (Token, error) {
 	start := l.pos
 	// 第一个字符
 	if l.src[l.pos] >= 0x80 {
-		// Unicode 标识符首字符
+		// Unicode 标识符/符号首字符
 		r, size := utf8.DecodeRuneInString(l.src[l.pos:])
-		if !unicode.IsLetter(r) {
-			// 非字母的高字节（如 UTF-8 BOM U+FEFF、孤立续字节）不能作为标识符
-			// 首字符。必须返回错误而非静默不前进，否则 Tokens() 会无限循环
-			//（CPU/内存暴涨，曾在加载带 BOM 的 CJS 文件时触发）。
+		if !unicode.IsGraphic(r) {
+			// 非图形的高字节（如 UTF-8 BOM U+FEFF、孤立续字节）不能作为字符
+			// 必须返回错误而非静默不前进，否则 Tokens() 会无限循环
 			return Token{}, fmt.Errorf("unexpected character %q at line %d:%d", r, startLine, startCol)
 		}
 		l.pos += size
@@ -795,5 +794,5 @@ func isIdentPartRune(r rune) bool {
 	if r < 0x80 {
 		return isIdentPartByte(byte(r))
 	}
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '$' || r == '_'
+	return unicode.IsGraphic(r) || r == '$' || r == '_'
 }

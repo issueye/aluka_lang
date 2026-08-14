@@ -564,6 +564,25 @@ func (o *objectValue) getSlot(key string) (Value, bool) {
 	return o.slots[idx], true
 }
 
+// GetSlot 读取本对象 own 属性（供外部/VM 原型链遍历使用）。
+func (o *objectValue) GetSlot(key string) (Value, bool) {
+	return o.getSlot(key)
+}
+
+// GetOwnSlot 尝试从值中直接读取自有属性（不走原型链）。
+func GetOwnSlot(val Value, key string) (Value, bool) {
+	if o, ok := val.(*objectValue); ok {
+		return o.getSlot(key)
+	}
+	if a, ok := val.(*ArrayValue); ok && a.objectValue != nil {
+		return a.objectValue.getSlot(key)
+	}
+	if f, ok := val.(*functionValue); ok && f.objectValue != nil {
+		return f.objectValue.getSlot(key)
+	}
+	return Undefined(), false
+}
+
 // setSlot 写入本对象 own 属性；不存在时经 Shape transition 添加。
 func (o *objectValue) setSlot(key string, value Value) {
 	if o.deleted != nil && o.deleted[key] {

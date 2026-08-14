@@ -102,7 +102,7 @@ type SourceUnit struct {
 // DetectSourceKind 仅按规范化扩展名识别语言层。
 func DetectSourceKind(path string) SourceKind {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".ts", ".mts", ".cts":
+	case ".ts", ".mts", ".cts", ".tsx":
 		return SourceTypeScript
 	case ".json":
 		return SourceJSON
@@ -125,6 +125,7 @@ func ParseSourceUnit(src []byte, path string, kind ModuleKind) (*SourceUnit, err
 	if err != nil {
 		return nil, fmt.Errorf("parse error in %q: %w", path, err)
 	}
+	prog = ast.LowerJSX(prog).(*ast.Program)
 	stage := StageParsed
 	if sourceKind == SourceTypeScript {
 		// 当前 parser 在建 AST 时执行 strip-only；显式记录该事实，后续可替换为
@@ -167,7 +168,7 @@ func ParseFileSource(src []byte, key, fsPath string) (*SourceUnit, error) {
 	// 隐式 .js/.ts 延续 package-type 兼容：仅在这里做一次语法提升。
 	// 顶层 await（TLA）即使无 import/export 也必须是 ESM（Node 语义）。
 	ext := strings.ToLower(filepath.Ext(fsPath))
-	if (ext == ".ts" || ext == ".js") && moduleKind == ModuleCommonJS &&
+	if (ext == ".ts" || ext == ".js" || ext == ".tsx" || ext == ".jsx") && moduleKind == ModuleCommonJS &&
 		(HasESMDecls(unit.Program) || ast.HasTopLevelAwait(unit.Program)) {
 		unit.ModuleKind = ModuleESM
 	}

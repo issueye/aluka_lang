@@ -32,8 +32,8 @@ type Resolver struct {
 // 扩展名补全顺序遵循需求文档 3.3.2（含 TS 扩展名）。
 func NewResolver() *Resolver {
 	return &Resolver{
-		Extensions:    []string{".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"},
-		IndexNames:    []string{"index.ts", "index.mts", "index.cts", "index.js", "index.mjs", "index.cjs", "index.json"},
+		Extensions:    []string{".tsx", ".jsx", ".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"},
+		IndexNames:    []string{"index.tsx", "index.jsx", "index.ts", "index.mts", "index.cts", "index.js", "index.mjs", "index.cjs", "index.json"},
 		tsconfigCache: newTsconfigCache(),
 	}
 }
@@ -486,7 +486,7 @@ func (r *Resolver) SourceModuleKind(path string) ModuleKind {
 		return ModuleESM
 	case ".cjs", ".cts":
 		return ModuleCommonJS
-	case ".ts", ".js":
+	case ".ts", ".js", ".tsx", ".jsx":
 		if r.readPackageType(filepath.Dir(path)) == "module" {
 			return ModuleESM
 		}

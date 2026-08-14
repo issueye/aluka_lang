@@ -1,0 +1,9 @@
+{
+  "name": "aluka-vue3-ssr-demo",
+  "version": "1.0.0",
+  "description": "Vue 3 SSR and SFC Demo running on Aluka runtime",
+  "main": "app.js",
+  "scripts": {
+    "start": "aluka app.js"
+  }
+}

@@ -221,6 +221,11 @@ func translateEscape(pattern string, i int, f Flags) (string, int, error) {
 
 // translateClass 复制字符类 [...] 并翻译其中的转义。
 func translateClass(pattern string, i int, f Flags) (string, int, error) {
+	if strings.HasPrefix(pattern[i:], `[\s\S]`) || strings.HasPrefix(pattern[i:], `[\S\s]`) ||
+		strings.HasPrefix(pattern[i:], `[\d\D]`) || strings.HasPrefix(pattern[i:], `[\D\d]`) ||
+		strings.HasPrefix(pattern[i:], `[\w\W]`) || strings.HasPrefix(pattern[i:], `[\W\w]`) {
+		return `[\x00-\x{10ffff}]`, i + 6, nil
+	}
 	var b strings.Builder
 	b.WriteByte('[')
 	i++ // 跳过 '['

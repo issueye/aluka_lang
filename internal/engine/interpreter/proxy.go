@@ -155,17 +155,25 @@ func (p *ProxyValue) callTrapSymbol(sym *engine.SymbolValue, args []engine.Value
 // --- VM-aware trap dispatch (called from VM methods) ---
 
 // proxyGet implements the [[Get]] internal method with the get trap.
-func (p *ProxyValue) proxyGet(key string) (engine.Value, error) {
-	if p.hasTrap("get") {
-		return p.callTrap("get", []engine.Value{p.target, engine.Str(key), p})
+func (p *ProxyValue) proxyGet(key string, receiver ...engine.Value) (engine.Value, error) {
+	rec := engine.Value(p)
+	if len(receiver) > 0 && receiver[0] != nil {
+		rec = receiver[0]
 	}
-	return p.vm.getProperty(p.target, key)
+	if p.hasTrap("get") {
+		return p.callTrap("get", []engine.Value{p.target, engine.Str(key), rec})
+	}
+	return p.vm.getPropertyWithReceiver(p.target, key, rec)
 }
 
 // proxySet implements the [[Set]] internal method with the set trap.
-func (p *ProxyValue) proxySet(key string, val engine.Value) error {
+func (p *ProxyValue) proxySet(key string, val engine.Value, receiver ...engine.Value) error {
+	rec := engine.Value(p)
+	if len(receiver) > 0 && receiver[0] != nil {
+		rec = receiver[0]
+	}
 	if p.hasTrap("set") {
-		_, err := p.callTrap("set", []engine.Value{p.target, engine.Str(key), val, p})
+		_, err := p.callTrap("set", []engine.Value{p.target, engine.Str(key), val, rec})
 		return err
 	}
 	return p.vm.setProperty(p.target, key, val)

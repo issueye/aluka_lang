@@ -11,14 +11,6 @@ import (
 // 本文件实现 bytecode.Module 的二进制序列化/反序列化，供磁盘缓存（1C.14）使用。
 // 格式版本号变更时，旧缓存自动失效。
 
-// FormatVersion 是字节码缓存格式版本。当 Module 布局、常量编码或编译器
-// 语义变化（如函数声明提升修复）时递增，使旧缓存自动失效。
-// v3：新增 OpMakeRegexp 指令（RegExp 引擎）；switch break 目标、前缀自增、
-//
-//	标签 continue/break、正则字面量等编译器语义修复。
-//
-// v4 → v5：新增 FuncTemplate.ArgumentsSlot（实现函数级 `arguments` 对象）。
-// v5 → v6：新增解构参数（ParamPatterns）编译语义。
 // v9 → v10：新增 OpGetPropLocal superinstruction（O2-D1）。
 // v10 → v11：OpNewObject operand 携带批量对象字面量属性数量（ME-2）。
 // v11 → v12：FuncTemplate.NoArgumentsObject（O-5 调用快速路径：函数体未引用
@@ -68,10 +60,8 @@ import (
 //	计算键访问器 get/set [expr]() {}）。指令集布局变化，旧缓存索引错位，
 //	必须失效。
 //
-// v24 → v25：ES2022 类静态初始化块/静态字段支持（编译器发射形态变化，
-//
-//	无新增指令；与 v24 保持失效语义一致）。
-const FormatVersion = 25
+// v25 → v26：JSX / TSX 源码级 AST 节点与 Lowering 转换管道支持。
+const FormatVersion = 26
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")

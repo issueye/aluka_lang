@@ -459,73 +459,176 @@ func (interp *Interpreter) ordinaryHasInstance(v, ctor engine.Value) bool {
 
 // --- Array.prototype ---
 
+func (interp *Interpreter) getArrayLength(this engine.Value) int {
+	if arr, ok := this.(*engine.ArrayValue); ok {
+		return len(arr.Elems())
+	}
+	if interp.currentVM != nil {
+		if val, err := interp.currentVM.getProperty(this, "length"); err == nil {
+			if n, ok := val.Int(); ok {
+				return n
+			}
+		}
+	} else if obj, ok := this.AsObject(); ok {
+		if val, err := obj.Get("length"); err == nil {
+			if n, ok := val.Int(); ok {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+func (interp *Interpreter) getArrayElement(this engine.Value, idx int) engine.Value {
+	if arr, ok := this.(*engine.ArrayValue); ok {
+		elems := arr.Elems()
+		if idx >= 0 && idx < len(elems) {
+			return elems[idx]
+		}
+		return engine.Undefined()
+	}
+	key := strconv.Itoa(idx)
+	if interp.currentVM != nil {
+		val, err := interp.currentVM.getProperty(this, key)
+		if err == nil {
+			return val
+		}
+	} else if obj, ok := this.AsObject(); ok {
+		val, err := obj.Get(key)
+		if err == nil {
+			return val
+		}
+	}
+	return engine.Undefined()
+}
+
+func (interp *Interpreter) setArrayElement(this engine.Value, idx int, val engine.Value) error {
+	if arr, ok := this.(*engine.ArrayValue); ok {
+		return arr.Set(strconv.Itoa(idx), val)
+	}
+	key := strconv.Itoa(idx)
+	if interp.currentVM != nil {
+		return interp.currentVM.setProperty(this, key, val)
+	} else if obj, ok := this.AsObject(); ok {
+		return obj.Set(key, val)
+	}
+	return nil
+}
+
+func (interp *Interpreter) setArrayLength(this engine.Value, length int) error {
+	if arr, ok := this.(*engine.ArrayValue); ok {
+		return arr.Set("length", engine.IntValue(length))
+	}
+	if interp.currentVM != nil {
+		return interp.currentVM.setProperty(this, "length", engine.IntValue(length))
+	} else if obj, ok := this.AsObject(); ok {
+		return obj.Set("length", engine.IntValue(length))
+	}
+	return nil
+}
+
 func (interp *Interpreter) setupArrayProto() {
 	p := interp.arrayProto
 	_ = p.Set("push", interp.nativeMethod("push", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		arr, ok := this.(*engine.ArrayValue)
-		if !ok {
-			return engine.IntValue(0), nil
+		if arr, ok := this.(*engine.ArrayValue); ok {
+			for _, a := range args {
+				_ = arr.Set(strconv.Itoa(len(arr.Elems())), a)
+			}
+			return engine.IntValue(len(arr.Elems())), nil
 		}
+		length := interp.getArrayLength(this)
 		for _, a := range args {
-			_ = arr.Set(strconv.Itoa(len(arr.Elems())), a)
+			_ = interp.setArrayElement(this, length, a)
+			length++
 		}
-		return engine.IntValue(len(arr.Elems())), nil
+		_ = interp.setArrayLength(this, length)
+		return engine.IntValue(length), nil
 	}))
 	_ = p.Set("pop", interp.nativeMethod("pop", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		arr, ok := this.(*engine.ArrayValue)
-		if !ok {
+		if arr, ok := this.(*engine.ArrayValue); ok {
+			elems := arr.Elems()
+			if len(elems) == 0 {
+				return engine.Undefined(), nil
+			}
+			last := elems[len(elems)-1]
+			_ = arr.Set("length", engine.IntValue(len(elems)-1))
+			return last, nil
+		}
+		length := interp.getArrayLength(this)
+		if length == 0 {
 			return engine.Undefined(), nil
 		}
-		elems := arr.Elems()
-		if len(elems) == 0 {
-			return engine.Undefined(), nil
-		}
-		last := elems[len(elems)-1]
-		_ = arr.Set("length", engine.IntValue(len(elems)-1))
+		last := interp.getArrayElement(this, length-1)
+		_ = interp.setArrayLength(this, length-1)
 		return last, nil
 	}))
 	_ = p.Set("shift", interp.nativeMethod("shift", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		arr, ok := this.(*engine.ArrayValue)
-		if !ok {
+		if arr, ok := this.(*engine.ArrayValue); ok {
+			elems := arr.Elems()
+			if len(elems) == 0 {
+				return engine.Undefined(), nil
+			}
+			first := elems[0]
+			rest := elems[1:]
+			for i, e := range rest {
+				_ = arr.Set(strconv.Itoa(i), e)
+			}
+			_ = arr.Set("length", engine.IntValue(len(rest)))
+			return first, nil
+		}
+		length := interp.getArrayLength(this)
+		if length == 0 {
 			return engine.Undefined(), nil
 		}
-		elems := arr.Elems()
-		if len(elems) == 0 {
-			return engine.Undefined(), nil
+		first := interp.getArrayElement(this, 0)
+		for i := 1; i < length; i++ {
+			_ = interp.setArrayElement(this, i-1, interp.getArrayElement(this, i))
 		}
-		first := elems[0]
-		// Shift elements
-		rest := elems[1:]
-		for i, e := range rest {
-			_ = arr.Set(strconv.Itoa(i), e)
-		}
-		_ = arr.Set("length", engine.IntValue(len(rest)))
+		_ = interp.setArrayLength(this, length-1)
 		return first, nil
 	}))
 	_ = p.Set("unshift", interp.nativeMethod("unshift", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		arr, ok := this.(*engine.ArrayValue)
-		if !ok {
-			return engine.IntValue(0), nil
+		if arr, ok := this.(*engine.ArrayValue); ok {
+			old := arr.Elems()
+			newElems := append(append([]engine.Value{}, args...), old...)
+			for i, e := range newElems {
+				_ = arr.Set(strconv.Itoa(i), e)
+			}
+			return engine.IntValue(len(newElems)), nil
 		}
-		old := arr.Elems()
-		newElems := append(append([]engine.Value{}, args...), old...)
-		for i, e := range newElems {
-			_ = arr.Set(strconv.Itoa(i), e)
+		oldLen := interp.getArrayLength(this)
+		argCount := len(args)
+		for i := oldLen - 1; i >= 0; i-- {
+			_ = interp.setArrayElement(this, i+argCount, interp.getArrayElement(this, i))
 		}
-		return engine.IntValue(len(newElems)), nil
+		for i, a := range args {
+			_ = interp.setArrayElement(this, i, a)
+		}
+		newLen := oldLen + argCount
+		_ = interp.setArrayLength(this, newLen)
+		return engine.IntValue(newLen), nil
 	}))
 	_ = p.Set("join", interp.nativeMethod("join", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		arr, ok := this.(*engine.ArrayValue)
-		if !ok {
-			return engine.Str(""), nil
-		}
 		sep := ","
 		if len(args) > 0 && !args[0].IsUndefined() {
 			sep = args[0].String()
 		}
-		elems := arr.Elems()
-		parts := make([]string, len(elems))
-		for i, e := range elems {
+		if arr, ok := this.(*engine.ArrayValue); ok {
+			elems := arr.Elems()
+			parts := make([]string, len(elems))
+			for i, e := range elems {
+				if e.IsUndefined() || e.IsNull() {
+					parts[i] = ""
+				} else {
+					parts[i] = e.String()
+				}
+			}
+			return engine.Str(strings.Join(parts, sep)), nil
+		}
+		length := interp.getArrayLength(this)
+		parts := make([]string, length)
+		for i := 0; i < length; i++ {
+			e := interp.getArrayElement(this, i)
 			if e.IsUndefined() || e.IsNull() {
 				parts[i] = ""
 			} else {
@@ -535,13 +638,22 @@ func (interp *Interpreter) setupArrayProto() {
 		return engine.Str(strings.Join(parts, sep)), nil
 	}))
 	_ = p.Set("toString", interp.nativeMethod("toString", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		arr, ok := this.(*engine.ArrayValue)
-		if !ok {
-			return engine.Str(""), nil
+		if arr, ok := this.(*engine.ArrayValue); ok {
+			elems := arr.Elems()
+			parts := make([]string, len(elems))
+			for i, e := range elems {
+				if e.IsUndefined() || e.IsNull() {
+					parts[i] = ""
+				} else {
+					parts[i] = e.String()
+				}
+			}
+			return engine.Str(strings.Join(parts, ",")), nil
 		}
-		elems := arr.Elems()
-		parts := make([]string, len(elems))
-		for i, e := range elems {
+		length := interp.getArrayLength(this)
+		parts := make([]string, length)
+		for i := 0; i < length; i++ {
+			e := interp.getArrayElement(this, i)
 			if e.IsUndefined() || e.IsNull() {
 				parts[i] = ""
 			} else {
@@ -551,24 +663,56 @@ func (interp *Interpreter) setupArrayProto() {
 		return engine.Str(strings.Join(parts, ",")), nil
 	}))
 	_ = p.Set("slice", interp.nativeMethod("slice", func(this engine.Value, args []engine.Value) (engine.Value, error) {
-		arr, ok := this.(*engine.ArrayValue)
-		if !ok {
-			return engine.NewArray(nil), nil
+		if arr, ok := this.(*engine.ArrayValue); ok {
+			elems := arr.Elems()
+			start := 0
+			end := len(elems)
+			if len(args) > 0 {
+				if n, ok := args[0].Int(); ok {
+					start = n
+					if start < 0 {
+						start += len(elems)
+						if start < 0 {
+							start = 0
+						}
+					}
+					if start > len(elems) {
+						start = len(elems)
+					}
+				}
+			}
+			if len(args) > 1 {
+				if n, ok := args[1].Int(); ok {
+					end = n
+					if end < 0 {
+						end += len(elems)
+					}
+					if end > len(elems) {
+						end = len(elems)
+					}
+				}
+			}
+			if start > end {
+				start = end
+			}
+			result := engine.NewArray(append([]engine.Value{}, elems[start:end]...))
+			engine.SetProto(result, interp.arrayProto)
+			return result, nil
 		}
-		elems := arr.Elems()
+		length := interp.getArrayLength(this)
 		start := 0
-		end := len(elems)
+		end := length
 		if len(args) > 0 {
 			if n, ok := args[0].Int(); ok {
 				start = n
 				if start < 0 {
-					start += len(elems)
+					start += length
 					if start < 0 {
 						start = 0
 					}
 				}
-				if start > len(elems) {
-					start = len(elems)
+				if start > length {
+					start = length
 				}
 			}
 		}
@@ -576,20 +720,23 @@ func (interp *Interpreter) setupArrayProto() {
 			if n, ok := args[1].Int(); ok {
 				end = n
 				if end < 0 {
-					end += len(elems)
+					end += length
 				}
-				if end > len(elems) {
-					end = len(elems)
+				if end > length {
+					end = length
 				}
 			}
 		}
-		// start > end 时规范要求返回空数组（如 slice(2, 1)）。
 		if start > end {
 			start = end
 		}
-		result := engine.NewArray(append([]engine.Value{}, elems[start:end]...))
-		engine.SetProto(result, interp.arrayProto)
-		return result, nil
+		var result []engine.Value
+		for i := start; i < end; i++ {
+			result = append(result, interp.getArrayElement(this, i))
+		}
+		out := engine.NewArray(result)
+		engine.SetProto(out, interp.arrayProto)
+		return out, nil
 	}))
 	_ = p.Set("concat", interp.nativeMethod("concat", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		arr, ok := this.(*engine.ArrayValue)
@@ -811,7 +958,15 @@ func (interp *Interpreter) setupArrayCtor() {
 		if len(args) == 0 {
 			return engine.Boolean(false), nil
 		}
-		_, ok := args[0].(*engine.ArrayValue)
+		v := args[0]
+		for {
+			if p, ok := v.(*ProxyValue); ok {
+				v = p.target
+			} else {
+				break
+			}
+		}
+		_, ok := v.(*engine.ArrayValue)
 		return engine.Boolean(ok), nil
 	}))
 	interp.setupArrayCtorExt(ctor)
@@ -1607,15 +1762,34 @@ func (interp *Interpreter) setupFunctionProto() {
 		return engine.Str(this.String()), nil
 	}))
 
-	// 注册全局 Function 构造器。npm 包常访问 Function.prototype.toString /
-	// bind 等（如 object-inspect 的 `Function.prototype.toString`）。
+	// 注册全局 Function 构造器，支持动态编译（供 Vue 3 模板运行时编译 compileToFunction / new Function 使用）。
 	ctor := interp.makeFunc("Function", func(args []engine.Value) (engine.Value, error) {
-		// Dynamic code generation is intentionally unavailable. Returning a
-		// callable that reports this explicitly lets libraries such as TypeBox
-		// detect the limitation and choose their interpreter-safe path.
-		return interp.makeFunc("anonymous", func(_ []engine.Value) (engine.Value, error) {
-			return engine.Undefined(), fmt.Errorf("%w: dynamic Function construction is unavailable", engine.ErrTypeError)
-		}), nil
+		paramList := ""
+		body := ""
+		if len(args) == 1 {
+			body = args[0].String()
+		} else if len(args) > 1 {
+			var params []string
+			for i := 0; i < len(args)-1; i++ {
+				params = append(params, args[i].String())
+			}
+			paramList = strings.Join(params, ",")
+			body = args[len(args)-1].String()
+		}
+		source := "(function anonymous(" + paramList + ") {\n" + body + "\n})"
+		vm := interp.currentVM
+		if vm != nil {
+			mod, err := vm.Compile(source, "anonymous.js")
+			if err != nil {
+				return engine.Undefined(), fmt.Errorf("%w: %v", engine.ErrSyntaxError, err)
+			}
+			fnVal, err := vm.RunModule(mod)
+			if err != nil {
+				return engine.Undefined(), err
+			}
+			return fnVal, nil
+		}
+		return interp.Eval(source, "anonymous.js")
 	})
 	_ = ctor.Set("prototype", p)
 	_ = p.Set("constructor", ctor)

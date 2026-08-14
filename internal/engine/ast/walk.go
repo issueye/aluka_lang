@@ -228,6 +228,45 @@ func ForEachChild(node Node, fn func(Node) bool) bool {
 				return true
 			}
 		}
+
+	// ---- JSX ----
+	case *JSXElement:
+		if visitChild(n.OpeningElement, fn) {
+			return true
+		}
+		for _, c := range n.Children {
+			if visitChild(c, fn) {
+				return true
+			}
+		}
+		return visitChild(n.ClosingElement, fn)
+	case *JSXOpeningElement:
+		if visitChild(n.Name, fn) {
+			return true
+		}
+		for _, a := range n.Attributes {
+			if visitChild(a, fn) {
+				return true
+			}
+		}
+	case *JSXClosingElement:
+		return visitChild(n.Name, fn)
+	case *JSXFragment:
+		for _, c := range n.Children {
+			if visitChild(c, fn) {
+				return true
+			}
+		}
+	case *JSXAttribute:
+		return visitChild(n.Value, fn)
+	case *JSXSpreadAttribute:
+		return visitChild(n.Argument, fn)
+	case *JSXExpressionContainer:
+		return visitChild(n.Expression, fn)
+	case *JSXMemberExpr:
+		return visitChild(n.Object, fn)
+	case *JSXText:
+		// 叶子节点
 	}
 	return false
 }
