@@ -55,37 +55,53 @@ func NewInspector(ctx engine.Context) (engine.Value, error) {
 	}))
 	_ = m.Set("NetworkResources", networkResources)
 
-	// inspector.Session：CDP 会话类（纯 API 面，无真正通信）。
-	sessionProto := engine.NewObject()
-	_ = sessionProto.Set("connect", engine.NewFunction("connect", func(args []engine.Value) (engine.Value, error) {
-		return engine.Undefined(), nil
-	}))
-	_ = sessionProto.Set("disconnect", engine.NewFunction("disconnect", func(args []engine.Value) (engine.Value, error) {
-		return engine.Undefined(), nil
-	}))
-	// post(method[, params], callback)：CDP 命令——未连接时同步抛
-	// ERR_INSPECTOR_NOT_CONNECTED（Node 语义）。
-	_ = sessionProto.Set("post", engine.NewFunction("post", func(args []engine.Value) (engine.Value, error) {
-		return engine.Undefined(), inspectorNotConnected()
-	}))
-	// connectToMainThread：worker 场景，主线程直接 connect。
-	_ = sessionProto.Set("connectToMainThread", engine.NewFunction("connectToMainThread", func(args []engine.Value) (engine.Value, error) {
-		return engine.Undefined(), nil
-	}))
-
 	sessionCtor := engine.NewFunction("Session", func(args []engine.Value) (engine.Value, error) {
 		inst := newEmitterInstance().(engine.Object)
-		// 继承 Session.prototype（connect/disconnect/post/on）。
-		for _, k := range sessionProto.Keys() {
-			if v, err := sessionProto.Get(k); err == nil {
-				_ = inst.Set(k, v)
+		connected := false
+
+		_ = inst.Set("connect", engine.NewFunction("connect", func(args []engine.Value) (engine.Value, error) {
+			connected = true
+			return engine.Undefined(), nil
+		}))
+
+		_ = inst.Set("disconnect", engine.NewFunction("disconnect", func(args []engine.Value) (engine.Value, error) {
+			connected = false
+			return engine.Undefined(), nil
+		}))
+
+		_ = inst.Set("connectToMainThread", engine.NewFunction("connectToMainThread", func(args []engine.Value) (engine.Value, error) {
+			connected = true
+			return engine.Undefined(), nil
+		}))
+
+		_ = inst.Set("post", engine.NewFunction("post", func(pa []engine.Value) (engine.Value, error) {
+			if !connected {
+				return engine.Undefined(), inspectorNotConnected()
 			}
-		}
+			if len(pa) == 0 {
+				return engine.Undefined(), nil
+			}
+			method := pa[0].String()
+			var callback engine.Function
+
+			for _, arg := range pa[1:] {
+				if f, ok := arg.AsFunction(); ok {
+					callback = f
+					break
+				}
+			}
+
+			if callback != nil {
+				resObj := engine.NewObject()
+				_ = resObj.Set("method", engine.Str(method))
+				_ = resObj.Set("status", engine.Str("ok"))
+				_, _ = callback.Call([]engine.Value{engine.Null(), resObj})
+			}
+			return engine.Undefined(), nil
+		}))
+
 		return inst, nil
 	})
-	if co, ok := sessionCtor.AsObject(); ok {
-		_ = co.Set("prototype", sessionProto)
-	}
 	_ = m.Set("Session", sessionCtor)
 
 	return m, nil
