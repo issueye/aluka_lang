@@ -407,6 +407,56 @@ func (interp *Interpreter) nativeMethod(name string, fn func(this engine.Value, 
 	return m
 }
 
+// ordinaryHasInstance 实现 Function.prototype[Symbol.hasInstance] 的普通
+// 原型链判断：V 的 [[Prototype]] 链上是否出现 ctor.prototype。忽略用户对
+// @@hasInstance 的覆写（内置语义），且不调用 VM.instanceof 避免递归。
+func (interp *Interpreter) ordinaryHasInstance(v, ctor engine.Value) bool {
+	if v.IsNull() || v.IsUndefined() {
+		return false
+	}
+	if !v.IsObject() {
+		return false
+	}
+	ctorObj, ok := ctor.AsObject()
+	if !ok {
+		return false
+	}
+	protoVal, err := ctorObj.Get("prototype")
+	if err != nil || protoVal.IsUndefined() {
+		return false
+	}
+	protoObj, ok := protoVal.(engine.Object)
+	if !ok {
+		return false
+	}
+	// custom 值类型（Map/Set/Promise/Generator 等）的 [[Prototype]] 链在 backing
+	// obj 上（与 vm.getProto 一致），否则 `new Map() instanceof Map` 恒 false。
+	var cur engine.Object
+	switch t := v.(type) {
+	case *PromiseValue:
+		cur = engine.GetProto(t.obj)
+	case *GeneratorValue:
+		cur = engine.GetProto(t.obj)
+	case *MapValue:
+		cur = engine.GetProto(t.obj)
+	case *SetValue:
+		cur = engine.GetProto(t.obj)
+	case *WeakMapValue:
+		cur = engine.GetProto(t.obj)
+	case *WeakSetValue:
+		cur = engine.GetProto(t.obj)
+	default:
+		cur = engine.GetProto(v)
+	}
+	for cur != nil {
+		if cur == protoObj {
+			return true
+		}
+		cur = engine.GetProto(cur)
+	}
+	return false
+}
+
 // --- Array.prototype ---
 
 func (interp *Interpreter) setupArrayProto() {
@@ -1486,6 +1536,18 @@ func (interp *Interpreter) setupFunctionProto() {
 	// Function.prototype 的原型是 Object.prototype，使函数对象可访问
 	// hasOwnProperty/toString 等对象方法（ECMAScript 语义）。
 	engine.SetProto(p, interp.objectProto)
+	// Function.prototype[Symbol.hasInstance]：`fn[Symbol.hasInstance](V)` 等价于
+	// `V instanceof fn`。undici 等库直接调用该内置方法（Function.call.bind(
+	// Function.prototype[Symbol.hasInstance])），缺失会导致 "undefined is not a
+	// function"。注意不能内部调用 VM.instanceof——它又会查 Symbol.hasInstance
+	// 导致递归栈溢出；此处实现普通原型链判断（忽略 @@hasInstance 覆写）。
+	_ = p.Set(engine.SymbolHasInstance.SymbolKey(), interp.nativeMethod("[Symbol.hasInstance]", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		var v engine.Value = engine.Undefined()
+		if len(args) > 0 {
+			v = args[0]
+		}
+		return engine.Boolean(interp.ordinaryHasInstance(v, this)), nil
+	}))
 	_ = p.Set("call", interp.nativeMethod("call", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		callable, err := asCallable(this)
 		if err != nil {

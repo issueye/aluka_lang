@@ -202,6 +202,12 @@ func TestTSInterfaceAndTypeAlias(t *testing.T) {
 		{"type Fn = (x: number) => number; 300", "300"},
 		// multiple declarations mixed
 		{"interface I {} type A = I; var x = 5; x", "5"},
+		// conditional type with function-type extends（telemetry 形态）
+		{"type UnionToIntersection<U> = (U extends unknown ? (value: U) => void : never) extends (value: infer I) => void ? I : never; 7", "7"},
+		// 泛型函数类型（类型层面）：`<T>(args) => U`，含 const 类型参数与 extends 约束
+		{"type G<S extends string[], N extends string> = <const A extends string, R>(name: N, cb: (a: A) => R) => Promise<R>; 9", "9"},
+		// 泛型函数类型后跟普通代码（确保不吞掉后续语句）
+		{"type H<T> = <A>(x: A) => T; const ok = 42; ok", "42"},
 	}
 	for _, c := range cases {
 		if got := vmEvalStr(t, c.code); got != c.want {

@@ -12,10 +12,23 @@ import (
 
 // NewAssert 构造 node:assert 模块的导出对象。
 func NewAssert(ctx engine.Context) (engine.Value, error) {
-	m := engine.NewObject()
+	// Node 的 assert 模块本身可调用：`assert(value)` 断言 truthy（否则抛
+	// AssertionError），同时携带 ok/strictEqual 等方法。undici 等库直接调用
+	// `assert(cond)`，若导出为纯对象会报 "is not a function"。
+	m := engine.NewFunction("assert", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 || !truthy(args[0]) {
+			msg := "assert: value is not truthy"
+			if len(args) > 1 {
+				msg = fmt.Sprintf("%s: %s", msg, args[1].String())
+			}
+			return engine.Undefined(), fmt.Errorf("%w: %s", engine.ErrAssertion, msg)
+		}
+		return engine.Undefined(), nil
+	})
 
+	mo := m.(engine.Object)
 	// assert(value, message)：断言 truthy。
-	_ = m.Set("ok", engine.NewFunction("ok", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("ok", engine.NewFunction("ok", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 || !truthy(args[0]) {
 			msg := "assert.ok: value is not truthy"
 			if len(args) > 1 {
@@ -27,7 +40,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.strictEqual(actual, expected, message)
-	_ = m.Set("strictEqual", engine.NewFunction("strictEqual", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("strictEqual", engine.NewFunction("strictEqual", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 || !strictEqual(args[0], args[1]) {
 			msg := "strictEqual mismatch"
 			if len(args) >= 2 {
@@ -39,7 +52,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.notStrictEqual(actual, expected, message)
-	_ = m.Set("notStrictEqual", engine.NewFunction("notStrictEqual", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("notStrictEqual", engine.NewFunction("notStrictEqual", func(args []engine.Value) (engine.Value, error) {
 		if len(args) >= 2 && strictEqual(args[0], args[1]) {
 			return engine.Undefined(), fmt.Errorf("%w: values should not be strictly equal", engine.ErrAssertion)
 		}
@@ -47,7 +60,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.equal(actual, expected, message)（宽松 == 比较）
-	_ = m.Set("equal", engine.NewFunction("equal", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("equal", engine.NewFunction("equal", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 || !looseEqual(args[0], args[1]) {
 			return engine.Undefined(), fmt.Errorf("%w: expected %s but got %s", engine.ErrAssertion, argString(args, 1), argString(args, 0))
 		}
@@ -55,7 +68,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.notEqual(actual, expected, message)
-	_ = m.Set("notEqual", engine.NewFunction("notEqual", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("notEqual", engine.NewFunction("notEqual", func(args []engine.Value) (engine.Value, error) {
 		if len(args) >= 2 && looseEqual(args[0], args[1]) {
 			return engine.Undefined(), fmt.Errorf("%w: values should not be loosely equal", engine.ErrAssertion)
 		}
@@ -63,7 +76,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.deepEqual(actual, expected, message)（非严格，== 比较）
-	_ = m.Set("deepEqual", engine.NewFunction("deepEqual", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("deepEqual", engine.NewFunction("deepEqual", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 || !deepEqual(args[0], args[1], false) {
 			msg := "deepEqual mismatch"
 			if len(args) >= 2 {
@@ -75,7 +88,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.deepStrictEqual(actual, expected, message)
-	_ = m.Set("deepStrictEqual", engine.NewFunction("deepStrictEqual", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("deepStrictEqual", engine.NewFunction("deepStrictEqual", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 || !deepEqual(args[0], args[1], true) {
 			msg := "deepStrictEqual mismatch"
 			if len(args) >= 2 {
@@ -87,7 +100,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.throws(fn, errorMatcher, message)
-	_ = m.Set("throws", engine.NewFunction("throws", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("throws", engine.NewFunction("throws", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Undefined(), fmt.Errorf("%w: throws: function required", engine.ErrAssertion)
 		}
@@ -103,7 +116,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.doesNotThrow(fn)
-	_ = m.Set("doesNotThrow", engine.NewFunction("doesNotThrow", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("doesNotThrow", engine.NewFunction("doesNotThrow", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Undefined(), nil
 		}
@@ -119,7 +132,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.ifError(value)：value 为 falsy 则通过，否则抛出。
-	_ = m.Set("ifError", engine.NewFunction("ifError", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("ifError", engine.NewFunction("ifError", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 0 && truthy(args[0]) {
 			return engine.Undefined(), fmt.Errorf("%w: ifError: %s", engine.ErrAssertion, args[0].String())
 		}
@@ -127,7 +140,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.fail(message)
-	_ = m.Set("fail", engine.NewFunction("fail", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("fail", engine.NewFunction("fail", func(args []engine.Value) (engine.Value, error) {
 		msg := "fail"
 		if len(args) > 0 {
 			msg = args[0].String()
@@ -136,7 +149,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.match(string, regexp, message)：字符串匹配正则（Node ≥ 15 语义）。
-	_ = m.Set("match", engine.NewFunction("match", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("match", engine.NewFunction("match", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Undefined(), fmt.Errorf("%w: match: string and regexp arguments required", engine.ErrAssertion)
 		}
@@ -151,7 +164,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// assert.doesNotMatch(string, regexp, message)
-	_ = m.Set("doesNotMatch", engine.NewFunction("doesNotMatch", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("doesNotMatch", engine.NewFunction("doesNotMatch", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Undefined(), fmt.Errorf("%w: doesNotMatch: string and regexp arguments required", engine.ErrAssertion)
 		}
@@ -167,7 +180,7 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 
 	// assert.partialDeepStrictEqual(actual, expected, message)：actual 必须
 	// 包含 expected 的所有属性（深严格比较），actual 可有多余属性。
-	_ = m.Set("partialDeepStrictEqual", engine.NewFunction("partialDeepStrictEqual", func(args []engine.Value) (engine.Value, error) {
+	_ = mo.Set("partialDeepStrictEqual", engine.NewFunction("partialDeepStrictEqual", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 || !partialDeepStrictEqualImpl(args[0], args[1]) {
 			msg := "partialDeepStrictEqual mismatch"
 			if len(args) >= 2 {
@@ -183,24 +196,24 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 
 	// assert.rejects(promise|fn, [error], [message]) → Promise：断言目标 reject。
 	// assert.doesNotReject(...)：断言目标 resolve（Node ≥ 10 语义）。
-	_ = m.Set("rejects", engine.NewFunction("rejects", makeAssertPromise(ctx, true)))
-	_ = m.Set("doesNotReject", engine.NewFunction("doesNotReject", makeAssertPromise(ctx, false)))
+	_ = mo.Set("rejects", engine.NewFunction("rejects", makeAssertPromise(ctx, true)))
+	_ = mo.Set("doesNotReject", engine.NewFunction("doesNotReject", makeAssertPromise(ctx, false)))
 
 	// assert.strict 子对象（所有方法用严格模式）
 	strict := engine.NewObject()
-	if v, _ := m.Get("strictEqual"); v != nil {
+	if v, _ := mo.Get("strictEqual"); v != nil {
 		_ = strict.Set("equal", v)
 	}
-	if v, _ := m.Get("notStrictEqual"); v != nil {
+	if v, _ := mo.Get("notStrictEqual"); v != nil {
 		_ = strict.Set("notEqual", v)
 	}
-	if v, _ := m.Get("deepStrictEqual"); v != nil {
+	if v, _ := mo.Get("deepStrictEqual"); v != nil {
 		_ = strict.Set("deepEqual", v)
 	}
-	if v, _ := m.Get("ok"); v != nil {
+	if v, _ := mo.Get("ok"); v != nil {
 		_ = strict.Set("ok", v)
 	}
-	if v, _ := m.Get("throws"); v != nil {
+	if v, _ := mo.Get("throws"); v != nil {
 		_ = strict.Set("throws", v)
 	}
 	// 补全严格版方法（node:assert/strict 直接解构使用，Pi 用到
@@ -208,11 +221,11 @@ func NewAssert(ctx engine.Context) (engine.Value, error) {
 	for _, name := range []string{"strictEqual", "notStrictEqual", "deepStrictEqual",
 		"notEqual", "doesNotThrow", "ifError", "fail", "rejects", "doesNotReject",
 		"match", "doesNotMatch", "partialDeepStrictEqual"} {
-		if v, _ := m.Get(name); v != nil {
+		if v, _ := mo.Get(name); v != nil {
 			_ = strict.Set(name, v)
 		}
 	}
-	_ = m.Set("strict", strict)
+	_ = mo.Set("strict", strict)
 
 	return m, nil
 }

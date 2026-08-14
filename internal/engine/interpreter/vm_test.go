@@ -1,6 +1,7 @@
 package interpreter
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -2065,6 +2066,22 @@ func TestVMMapInstanceof(t *testing.T) {
 	got := vmEvalStr(t, `new Map() instanceof Map`)
 	if got != "true" {
 		t.Errorf("Map instanceof = %q, want true", got)
+	}
+}
+
+// TestVMGetPropLocalSlotOverflow：OpGetPropLocal 的打包 slot 仅 8 位（0-255）。
+// 巨型函数局部槽 >255 时必须回退普通 LoadLocal+GetProp，否则高位截断读到
+// 错误槽位（@aws-sdk 生成代码场景）。
+func TestVMGetPropLocalSlotOverflow(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("function f() { ")
+	for i := 0; i < 300; i++ {
+		fmt.Fprintf(&b, "let v%d = { p: %d }; ", i, i)
+	}
+	b.WriteString("return v260.p; } f()")
+	got := vmEvalStr(t, b.String())
+	if got != "260" {
+		t.Fatalf("slot>255 prop = %q, want 260", got)
 	}
 }
 

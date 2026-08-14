@@ -4105,7 +4105,7 @@ func (p *Parser) skipTypeInner() (bool, error) {
 	if err := p.skipTypePrefix(); err != nil {
 		return false, err
 	}
-	wasParen, err := p.skipTypeAtom()
+	wasParen, wasAngle, err := p.skipTypeAtom()
 	if err != nil {
 		return false, err
 	}
@@ -4115,6 +4115,15 @@ func (p *Parser) skipTypeInner() (bool, error) {
 			return false, err
 		}
 		wasParen = false
+	}
+	// 泛型函数类型：`<T>(args) => U`。类型位置的 `<...>` 后跟 `(` 必为函数
+	// 类型参数列表；消费后置 wasParen，使末尾的 `=> 返回类型` 分支生效。
+	if wasAngle && p.peek().Type == lexer.TokenPunct && p.peek().Value == "(" {
+		if err := p.skipBalanced("(", ")"); err != nil {
+			return false, err
+		}
+		wasParen = true
+		wasAngle = false
 	}
 	// Infix union/intersection/conditional/type-predicate/as-assertion.
 	for {
@@ -4199,7 +4208,11 @@ func (p *Parser) skipTypePrefix() error {
 
 // skipTypeAtom skips one type atom: primitive, reference, literal, object,
 // tuple, function, or parenthesised type. Returns whether it was a `(...)`.
-func (p *Parser) skipTypeAtom() (bool, error) {
+// skipTypeAtom skips one type atom: primitive, reference, literal, object,
+// tuple, function, or parenthesised type. Returns whether it was a `(...)`
+// (wasParen) and whether it was a generic `<...>` (wasAngle, for generic
+// function types `<T>(args) => U`).
+func (p *Parser) skipTypeAtom() (wasParen, wasAngle bool, err error) {
 	t := p.peek()
 	switch t.Type {
 	case lexer.TokenString, lexer.TokenNumber:
@@ -4209,20 +4222,20 @@ func (p *Parser) skipTypeAtom() (bool, error) {
 			p.next() // import
 			p.next() // (
 			if _, err := p.expect(lexer.TokenString, ""); err != nil {
-				return false, err
+				return false, false, err
 			}
 			if err := p.expectPunct(")"); err != nil {
-				return false, err
+				return false, false, err
 			}
 			for p.peek().Type == lexer.TokenPunct && p.peek().Value == "." {
 				p.next()
 				if _, err := p.expect(lexer.TokenIdent, ""); err != nil {
-					return false, err
+					return false, false, err
 				}
 			}
 			if p.peek().Type == lexer.TokenPunct && p.peek().Value == "<" {
 				if err := p.skipAngleBraces(); err != nil {
-					return false, err
+					return false, false, err
 				}
 			}
 			break
@@ -4237,13 +4250,13 @@ func (p *Parser) skipTypeAtom() (bool, error) {
 		for p.peek().Type == lexer.TokenPunct && p.peek().Value == "." {
 			p.next()
 			if _, err := p.expect(lexer.TokenIdent, ""); err != nil {
-				return false, err
+				return false, false, err
 			}
 		}
 		// Generic type args: Foo<T, U>
 		if p.peek().Type == lexer.TokenPunct && p.peek().Value == "<" {
 			if err := p.skipAngleBraces(); err != nil {
-				return false, err
+				return false, false, err
 			}
 		}
 	case lexer.TokenPunct:
@@ -4251,41 +4264,43 @@ func (p *Parser) skipTypeAtom() (bool, error) {
 		case "(":
 			// Function type (params) => ret OR parenthesised type.
 			if err := p.skipBalanced("(", ")"); err != nil {
-				return false, err
+				return false, false, err
 			}
-			return true, nil
+			return true, false, nil
 		case "{":
 			// Object/mapped type.
 			if err := p.skipBalanced("{", "}"); err != nil {
-				return false, err
+				return false, false, err
 			}
 		case "[":
 			// Tuple type [T, U] or index-access type T[K].
 			if err := p.skipBalanced("[", "]"); err != nil {
-				return false, err
+				return false, false, err
 			}
 		case "<":
-			// Standalone generic type (rare at atom position).
+			// Generic parameter list. In type position this is the head of a
+			// generic function type `<T>(args) => U`.
 			if err := p.skipAngleBraces(); err != nil {
-				return false, err
+				return false, false, err
 			}
+			return false, true, nil
 		case "-":
 			// `-` literal type (e.g. -1). Consume and expect a number.
 			p.next()
 			if p.peek().Type != lexer.TokenNumber {
-				return false, p.errorf(p.peek(), "expected number after '-' in type")
+				return false, false, p.errorf(p.peek(), "expected number after '-' in type")
 			}
 			p.next()
 		default:
-			return false, p.errorf(t, "unexpected token %q in type", t.Value)
+			return false, false, p.errorf(t, "unexpected token %q in type", t.Value)
 		}
 	case lexer.TokenTemplate:
 		// Template literal type: `foo${T}bar`
 		p.next()
 	default:
-		return false, p.errorf(t, "unexpected token %q in type", t.Value)
+		return false, false, p.errorf(t, "unexpected token %q in type", t.Value)
 	}
-	return false, nil
+	return false, false, nil
 }
 
 // skipBalanced consumes tokens from `open` to the matching `close`, tracking

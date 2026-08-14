@@ -1758,6 +1758,12 @@ func (v *VM) getIterator(iterable engine.Value) (engine.Value, error) {
 		if iterMethod, err := obj.Get(symKey); err == nil && !iterMethod.IsUndefined() {
 			return v.invoke(iterMethod, iterable, nil, false)
 		}
+		// 裸迭代器（有 callable next 但无 [Symbol.iterator]）：undici 等库的
+		// 迭代器对象（FastIterableIterator）只实现 next。yield*/for...of 应直接
+		// 使用该迭代器（ES 迭代协议；宽松兼容 Node 生态）。
+		if nextFn, err := obj.Get("next"); err == nil && isCallable(nextFn) {
+			return iterable, nil
+		}
 	}
 	return engine.Undefined(), fmt.Errorf("%w: %s is not iterable", engine.ErrTypeError, iterable.Type())
 }

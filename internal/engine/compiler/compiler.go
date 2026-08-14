@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
@@ -2190,6 +2191,15 @@ func (c *Compiler) compileAwait(n *ast.AwaitExpr) error {
 }
 
 func (c *Compiler) compileIdentifier(n *ast.Identifier) error {
+	// 私有字段名（#field，lexer 产出的值为 "#field"）在表达式位置作为属性键
+	// 字面量：`#x in obj` → `"#x" in obj`（私有字段存在性检查，undici 等库
+	// 依赖）。`this.#x` 走成员访问（compileMember 用 "#x" 属性名），不走这里。
+	if strings.HasPrefix(n.Name, "#") {
+		fmt.Printf("DEBUG compileIdentifier # %q\n", n.Name)
+		idx := c.cur().tmpl.AddStringConst(n.Name)
+		c.emit(bytecode.OpPushConst, uint32(idx))
+		return nil
+	}
 	kind, idx := c.resolve(n.Name)
 	switch kind {
 	case "local":
@@ -2203,6 +2213,20 @@ func (c *Compiler) compileIdentifier(n *ast.Identifier) error {
 }
 
 func (c *Compiler) compileBinary(n *ast.BinaryExpr) error {
+	// `#name in obj`：私有字段存在性检查（ES2022）。左操作数 `#name` 是属性键
+	// 而非读取（`this.#name` 读取返回字段值，`42 in obj` 恒 false）。编译为
+	// PUSH_CONST "#name" 使 in 检查属性存在（undici 迭代器 brand 依赖）。
+	if n.Op == "in" {
+		if id, ok := n.Left.(*ast.Identifier); ok && strings.HasPrefix(id.Name, "#") {
+			idx := c.cur().tmpl.AddStringConst(id.Name)
+			c.emit(bytecode.OpPushConst, uint32(idx))
+			if err := c.compileExpr(n.Right); err != nil {
+				return err
+			}
+			c.emit(bytecode.OpIn, 0)
+			return nil
+		}
+	}
 	if err := c.compileExpr(n.Left); err != nil {
 		return err
 	}
@@ -2637,7 +2661,26 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 		}
 	}
 
+	// 编译一个调用实参。参数本身是链表达式（含 ?.）时按链正常编译并计数；
+	// 否则暂停链计数（参数内部的非链调用——如 ternary 分支里的 method call——
+	// 的中间值会在 CALL_METHOD 时消费，不应计入外层链残留），再为参数结果
+	// 计 1。修复 `m.get(a ? x.f() : y)?.v` 短路清理 POP 过多导致帧栈越界。
+	compileCallArg := func(a ast.Expression) error {
+		if hasOptionalAccess(a) {
+			return c.compileExpr(a)
+		}
+		saved := c.optChainPushActive
+		c.optChainPushActive = false
+		err := c.compileExpr(a)
+		c.optChainPushActive = saved
+		if err == nil {
+			c.optPushValue()
+		}
+		return err
+	}
+
 	// super(args) — construct the parent class with this = current slot 0.
+
 	if _, ok := n.Callee.(*ast.SuperExpr); ok {
 		c.emitSuperCtor()
 		if !hasSpread {
@@ -2715,10 +2758,9 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 			c.optPushValue()                               // receiver 重压（this 绑定）
 			if !hasSpread {
 				for _, a := range n.Arguments {
-					if err := c.compileExpr(a); err != nil {
+					if err := compileCallArg(a); err != nil {
 						return err
 					}
-					c.optPushValue()
 				}
 				c.emit(bytecode.OpCallWithThis, uint32(len(n.Arguments)))
 				c.optChainDelta(-(len(n.Arguments) + 1))
@@ -2744,10 +2786,9 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 		c.emitOptionalJump()
 		if !hasSpread {
 			for _, a := range n.Arguments {
-				if err := c.compileExpr(a); err != nil {
+				if err := compileCallArg(a); err != nil {
 					return err
 				}
-				c.optPushValue()
 			}
 			c.emit(bytecode.OpCall, uint32(len(n.Arguments)))
 			c.optChainDelta(-len(n.Arguments))
@@ -2789,10 +2830,9 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 			c.emit(bytecode.OpSwap, 0)    // [method, obj(this)]
 			if !hasSpread {
 				for _, a := range n.Arguments {
-					if err := c.compileExpr(a); err != nil {
+					if err := compileCallArg(a); err != nil {
 						return err
 					}
-					c.optPushValue()
 				}
 				c.emit(bytecode.OpCallWithThis, uint32(len(n.Arguments)))
 				c.optChainDelta(-(len(n.Arguments) + 1))
@@ -2820,10 +2860,9 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 		if !hasSpread {
 			// Fast path: args inline.
 			for _, a := range n.Arguments {
-				if err := c.compileExpr(a); err != nil {
+				if err := compileCallArg(a); err != nil {
 					return err
 				}
-				c.optPushValue()
 			}
 			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
 			operand := uint32(len(n.Arguments))<<16 | uint32(nameIdx&0xFFFF)
@@ -2860,7 +2899,7 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 	}
 	if !hasSpread {
 		for _, a := range n.Arguments {
-			if err := c.compileExpr(a); err != nil {
+			if err := compileCallArg(a); err != nil {
 				return err
 			}
 		}
@@ -2942,10 +2981,12 @@ func (c *Compiler) compileMember(n *ast.MemberExpr) error {
 
 	// O2-D1 superinstruction：`localVar.prop`（非计算、非可选、对象为局部
 	// 变量）合并为单条 OpGetPropLocal（slot<<16 | nameIdx），省 1 次
-	// dispatch 与压栈/弹栈。
+	// dispatch 与压栈/弹栈。slot 打包在高 8 位（OperandPackedSlotName），
+	// 仅支持 0-255；超限（巨型函数局部槽 >255，如 @aws-sdk 生成代码）回退
+	// 普通 LoadLocal+GetProp，避免高位截断读到错误槽位。
 	if !n.Computed && !n.Optional && !chainHead {
 		if id, ok := n.Object.(*ast.Identifier); ok {
-			if kind, idx := c.resolve(id.Name); kind == "local" {
+			if kind, idx := c.resolve(id.Name); kind == "local" && idx <= 0xFF {
 				nameIdx := c.cur().tmpl.AddStringConst(n.Property.(*ast.Identifier).Name)
 				c.emit(bytecode.OpGetPropLocal, uint32(idx)<<16|uint32(nameIdx&0xFFFF))
 				return nil

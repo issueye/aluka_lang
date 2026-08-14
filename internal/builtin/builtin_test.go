@@ -527,6 +527,26 @@ func TestUtilIsDeepStrictEqual(t *testing.T) {
 	}
 }
 
+// TestAssertModuleIsCallable：node:assert 模块本身可调用（`assert(x)` 断言
+// truthy），undici 等库直接调用 assert(cond)。
+func TestAssertModuleIsCallable(t *testing.T) {
+	env := newHTTPEnv(t)
+	if err := env.runWithLoop(t, `
+var assert = require('node:assert');
+if (typeof assert !== 'function') throw new Error('assert not callable');
+assert(true);
+assert.strictEqual(1, 1);
+var threw = false;
+try { assert(false); } catch (e) { threw = true; }
+globalThis.__r = (typeof assert === 'function') + ':' + threw;
+`); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "true:true" {
+		t.Errorf("assert callable = %q, want true:true", got)
+	}
+}
+
 // TestAssertStrictModule：node:assert/strict 子路径（Pi conformance.ts 依赖）：
 // 解构 deepStrictEqual/ok/rejects/strictEqual 可用（Node 语义 ≡ assert.strict）。
 func TestAssertStrictModule(t *testing.T) {

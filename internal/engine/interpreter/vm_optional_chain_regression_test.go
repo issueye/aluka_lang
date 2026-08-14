@@ -45,6 +45,21 @@ func TestVMOptionalChainResidualRegression(t *testing.T) {
 		{`const o = { a: { b: { c: 42 } } }; let sum = 0; for (let i = 0; i < 10; i++) { sum += o?.a?.b?.c ?? 0; } sum`, "420"},
 		// 短路路径在条件判断中再次消费结果。
 		{`const o = { a: null }; if ((o?.a?.b) === undefined) 'yes'`, "yes"},
+		// undici Headers.get 形态：`m.get(lc ? name : name.toLowerCase())?.value ?? null`
+		// ——参数 ternary 内部的非链 method call 不得计入外层链残留（否则短路
+		// 清理 POP 过多、帧栈越界）。
+		{`const h = { headersMap: { get: (n) => ({ value: "v" }) } }; function f(name, lc) { return h.headersMap.get(lc ? name : name.toLowerCase())?.value ?? null; } f("X", false)`, "v"},
+		{`const h = { headersMap: { get: () => null } }; function f(name, lc) { return h.headersMap.get(lc ? name : name.toLowerCase())?.value ?? null; } f("X", false)`, "null"},
+		{`const h = { headersMap: { get: (n) => ({ value: n }) } }; function f(name, lc) { return h.headersMap.get(lc ? name : name.toLowerCase())?.value ?? "none"; } f("HeLLo", true)`, "HeLLo"},
+		// 私有字段存在性检查 `#x in obj`（undici 迭代器 brand 依赖）。
+		{`class A { #x = 1; static has(o) { return #x in o; } } const a = new A(); String(A.has(a)) + "," + String(A.has({}))`, "true,false"},
+		// 私有字段访问 this.#x / obj.#x。
+		{`class A { #v = 42; get() { return this.#v; } } new A().get()`, "42"},
+		// 裸迭代器（有 next 无 [Symbol.iterator]）经 yield* 迭代（undici 迭代器）。
+		{`const it = { i: 0, next() { return this.i < 2 ? { value: this.i++, done: false } : { value: undefined, done: true }; } }; function* g() { yield* it; } const r = [g().next().value, g().next().value]; r.join(",")`, "0,1"},
+		// Function.prototype[Symbol.hasInstance] 可调用（undici 依赖）。
+		{`typeof Function.prototype[Symbol.hasInstance]`, "function"},
+		{`class F {}; const f = new F(); F[Symbol.hasInstance](f)`, "true"},
 	}
 	for _, c := range cases {
 		got := vmEvalStr(t, c.code)
