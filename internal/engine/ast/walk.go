@@ -318,420 +318,586 @@ func Walk(node Node, visit func(Node) bool) {
 	})
 }
 
-// ForEachRef 遍历 node 中的"引用位置"标识符：对每个是变量引用的
-// Identifier 调用 fn（对象字面量/成员访问的非计算属性键、声明名、模式
-// 绑定名等位置被跳过；计算属性键 `obj[a]` 与真实引用位置被命中）。
-//
-// 语义对照：
-//   - 声明名（var/函数/类名、参数、catch 参数、import Local、模式绑定名、
-//     类方法名）→ 不命中
-//   - 非计算属性键（`obj.method`、`{key: v}`、模式 `{key: x}`）→ 不命中
-//   - 计算属性键（`obj[a]`、`{[k]: v}`）→ 命中
-//   - 对象字面量简写 `{a}`（Value 与 Key 同节点）→ 命中
-//   - 解构赋值 `({a} = x)` 的目标 → 命中（赋值语境是对既有变量的引用）
-//   - 函数默认值 `function f(a = g()) {}` → 命中 g
+// ForEachRef 遍历 node 中的"引用位置"标识符：对每个是变量引用的 Identifier
+// 调用 fn（对象字面量/成员访问的非计算属性键、声明名、模式绑定名等位置被
+// 跳过；计算属性键 `obj[a]` 与真实引用位置被命中）。只读版本：内部由
+// RewriteRefs 包装，单一权威的引用位置遍历实现。
 func ForEachRef(node Node, fn func(*Identifier)) {
+	RewriteRefs(node, func(id *Identifier) Node { fn(id); return nil })
+}
+
+// RewriteRefs 遍历 node 中的"引用位置"标识符并对每个位置调用 fn：fn 返回
+// 非 nil 节点时用返回值原地替换该引用位置（Statement 槽位上的裸标识符
+// 会被包装为 ExprStmt 以承接表达式替换节点）。返回是否发生替换。
+//
+// 语义与 ForEachRef 完全一致（见其上注释），额外支持原地改写——供
+// TransformESMToCJS 的 live-binding 改写使用，取代原先的反射 +
+// 字段名白名单启发式（修复计算属性 `obj[imported]` 漏改等缺陷）。
+func RewriteRefs(node Node, fn func(*Identifier) Node) bool {
+	return rewriteRefsIn(node, fn)
+}
+
+func rewriteRefsIn(node Node, fn func(*Identifier) Node) bool {
 	switch n := node.(type) {
 	case *Identifier:
+		// 顶层直接入口：无父槽位，仅触发回调（read 场景）。
 		fn(n)
+		return false
 	case *Program:
-		for _, s := range n.Body {
-			ForEachRef(s, fn)
-		}
+		return rewriteStmtSlice(&n.Body, fn)
 	case *VarDecl:
+		changed := false
 		for i := range n.Decls {
-			forEachRefDeclarator(&n.Decls[i], fn)
-		}
-	case *FunctionDecl:
-		forEachRefFunction(n.Defaults, n.ParamPatterns, n.Body, fn)
-	case *FunctionExpr:
-		forEachRefFunction(n.Defaults, n.ParamPatterns, n.Body, fn)
-	case *ArrowFunc:
-		forEachRefFunction(n.Defaults, n.ParamPatterns, n.Body, fn)
-	case *ClassDecl:
-		forEachRefClass(n.SuperClass, n.Body, fn)
-	case *ClassExpr:
-		forEachRefClass(n.SuperClass, n.Body, fn)
-	case *ExprStmt:
-		if n.Expr != nil {
-			ForEachRef(n.Expr, fn)
-		}
-	case *BlockStmt:
-		for _, s := range n.Body {
-			ForEachRef(s, fn)
-		}
-	case *IfStmt:
-		if n.Test != nil {
-			ForEachRef(n.Test, fn)
-		}
-		if n.Consequent != nil {
-			ForEachRef(n.Consequent, fn)
-		}
-		if n.Alternate != nil {
-			ForEachRef(n.Alternate, fn)
-		}
-	case *WhileStmt:
-		if n.Test != nil {
-			ForEachRef(n.Test, fn)
-		}
-		if n.Body != nil {
-			ForEachRef(n.Body, fn)
-		}
-	case *DoWhileStmt:
-		if n.Body != nil {
-			ForEachRef(n.Body, fn)
-		}
-		if n.Test != nil {
-			ForEachRef(n.Test, fn)
-		}
-	case *ForStmt:
-		if n.Init != nil {
-			ForEachRef(n.Init, fn)
-		}
-		if n.Test != nil {
-			ForEachRef(n.Test, fn)
-		}
-		if n.Update != nil {
-			ForEachRef(n.Update, fn)
-		}
-		if n.Body != nil {
-			ForEachRef(n.Body, fn)
-		}
-	case *ForInStmt:
-		forEachRefForLeft(n.Left, fn)
-		if n.Right != nil {
-			ForEachRef(n.Right, fn)
-		}
-		if n.Body != nil {
-			ForEachRef(n.Body, fn)
-		}
-	case *ForOfStmt:
-		forEachRefForLeft(n.Left, fn)
-		if n.Right != nil {
-			ForEachRef(n.Right, fn)
-		}
-		if n.Body != nil {
-			ForEachRef(n.Body, fn)
-		}
-	case *ReturnStmt:
-		if n.Arg != nil {
-			ForEachRef(n.Arg, fn)
-		}
-	case *ThrowStmt:
-		if n.Arg != nil {
-			ForEachRef(n.Arg, fn)
-		}
-	case *TryStmt:
-		if n.Block != nil {
-			ForEachRef(n.Block, fn)
-		}
-		if n.Handler != nil {
-			// Param 是绑定名，不命中
-			if n.Handler.Body != nil {
-				ForEachRef(n.Handler.Body, fn)
+			if rewriteVarDeclarator(&n.Decls[i], fn) {
+				changed = true
 			}
 		}
-		if n.Finally != nil {
-			ForEachRef(n.Finally, fn)
+		return changed
+	case *FunctionDecl:
+		return rewriteFunctionLike(n.Defaults, n.ParamPatterns, n.Body, fn)
+	case *FunctionExpr:
+		return rewriteFunctionLike(n.Defaults, n.ParamPatterns, n.Body, fn)
+	case *ArrowFunc:
+		changed := false
+		if rewriteFunctionDefaults(n.Defaults, fn) {
+			changed = true
 		}
+		for i := range n.ParamPatterns {
+			target := Node(n.ParamPatterns[i])
+			if rewritePatternDecl(&target, fn) {
+				n.ParamPatterns[i] = target.(Pattern)
+				changed = true
+			}
+		}
+		if rewriteNodeSlot(&n.Body, fn) {
+			changed = true
+		}
+		return changed
+	case *ClassDecl:
+		return rewriteClassLike(&n.SuperClass, n.Body, fn)
+	case *ClassExpr:
+		return rewriteClassLike(&n.SuperClass, n.Body, fn)
+	case *BlockStmt:
+		return rewriteStmtSlice(&n.Body, fn)
+	case *ExprStmt:
+		return rewriteExprSlot(&n.Expr, fn)
+	case *EmptyStmt:
+		return false
+	case *IfStmt:
+		changed := false
+		if rewriteExprSlot(&n.Test, fn) {
+			changed = true
+		}
+		if rewriteStmtSlot(&n.Consequent, fn) {
+			changed = true
+		}
+		if rewriteStmtSlot(&n.Alternate, fn) {
+			changed = true
+		}
+		return changed
+	case *WhileStmt:
+		changed := false
+		if rewriteExprSlot(&n.Test, fn) {
+			changed = true
+		}
+		if rewriteStmtSlot(&n.Body, fn) {
+			changed = true
+		}
+		return changed
+	case *DoWhileStmt:
+		changed := false
+		if rewriteStmtSlot(&n.Body, fn) {
+			changed = true
+		}
+		if rewriteExprSlot(&n.Test, fn) {
+			changed = true
+		}
+		return changed
+	case *ForStmt:
+		changed := false
+		if rewriteNodeSlot(&n.Init, fn) {
+			changed = true
+		}
+		if rewriteExprSlot(&n.Test, fn) {
+			changed = true
+		}
+		if rewriteExprSlot(&n.Update, fn) {
+			changed = true
+		}
+		if rewriteStmtSlot(&n.Body, fn) {
+			changed = true
+		}
+		return changed
+	case *ForInStmt:
+		changed := false
+		if rewriteForLeft(&n.Left, fn) {
+			changed = true
+		}
+		if rewriteExprSlot(&n.Right, fn) {
+			changed = true
+		}
+		if rewriteStmtSlot(&n.Body, fn) {
+			changed = true
+		}
+		return changed
+	case *ForOfStmt:
+		changed := false
+		if rewriteForLeft(&n.Left, fn) {
+			changed = true
+		}
+		if rewriteExprSlot(&n.Right, fn) {
+			changed = true
+		}
+		if rewriteStmtSlot(&n.Body, fn) {
+			changed = true
+		}
+		return changed
+	case *ReturnStmt:
+		return rewriteExprSlot(&n.Arg, fn)
+	case *BreakStmt, *ContinueStmt:
+		return false
+	case *ThrowStmt:
+		return rewriteExprSlot(&n.Arg, fn)
+	case *TryStmt:
+		changed := false
+		if n.Block != nil && rewriteRefsIn(n.Block, fn) {
+			changed = true
+		}
+		if n.Handler != nil && n.Handler.Body != nil && rewriteRefsIn(n.Handler.Body, fn) {
+			changed = true
+		}
+		if n.Finally != nil && rewriteRefsIn(n.Finally, fn) {
+			changed = true
+		}
+		return changed
 	case *SwitchStmt:
-		if n.Disc != nil {
-			ForEachRef(n.Disc, fn)
+		changed := false
+		if rewriteExprSlot(&n.Disc, fn) {
+			changed = true
 		}
 		for i := range n.Cases {
 			c := &n.Cases[i]
-			if c.Test != nil {
-				ForEachRef(c.Test, fn)
+			if rewriteExprSlot(&c.Test, fn) {
+				changed = true
 			}
-			for _, s := range c.Consequent {
-				ForEachRef(s, fn)
+			if rewriteStmtSlice(&c.Consequent, fn) {
+				changed = true
 			}
 		}
+		return changed
 	case *LabeledStmt:
-		if n.Body != nil {
-			ForEachRef(n.Body, fn)
-		}
+		return rewriteStmtSlot(&n.Body, fn)
+	case *ImportDecl:
+		return false
 	case *ExportDecl:
-		if n.Declaration != nil {
-			ForEachRef(n.Declaration, fn)
-		}
+		return rewriteStmtSlot(&n.Declaration, fn)
 	case *ExportDefaultDecl:
-		if n.Expression != nil {
-			ForEachRef(n.Expression, fn)
-		}
+		return rewriteExprSlot(&n.Expression, fn)
 	case *TemplateLit:
-		for _, e := range n.Expressions {
-			if e != nil {
-				ForEachRef(e, fn)
-			}
-		}
+		return rewriteExprSlice(&n.Expressions, fn)
 	case *TaggedTemplateExpr:
-		if n.Tag != nil {
-			ForEachRef(n.Tag, fn)
+		changed := false
+		if rewriteExprSlot(&n.Tag, fn) {
+			changed = true
 		}
-		if n.Template != nil {
-			ForEachRef(n.Template, fn)
+		if n.Template != nil && rewriteRefsIn(n.Template, fn) {
+			changed = true
 		}
+		return changed
 	case *ArrayLit:
-		for _, e := range n.Elements {
-			if e != nil {
-				ForEachRef(e, fn)
-			}
-		}
+		return rewriteExprSlice(&n.Elements, fn)
 	case *ObjectLit:
+		changed := false
 		for i := range n.Properties {
 			p := &n.Properties[i]
-			if p.Computed && p.Key != nil {
-				ForEachRef(p.Key, fn)
+			if p.Computed && rewriteExprSlot(&p.Key, fn) {
+				changed = true
 			}
-			if p.Value != nil {
-				ForEachRef(p.Value, fn)
+			if rewriteExprSlot(&p.Value, fn) {
+				changed = true
 			}
-			if p.Default != nil {
-				ForEachRef(p.Default, fn)
+			if rewriteExprSlot(&p.Default, fn) {
+				changed = true
 			}
 		}
+		return changed
 	case *MemberExpr:
-		if n.Object != nil {
-			ForEachRef(n.Object, fn)
+		changed := false
+		if rewriteExprSlot(&n.Object, fn) {
+			changed = true
 		}
-		if n.Computed && n.Property != nil {
-			ForEachRef(n.Property, fn)
+		if n.Computed && rewriteExprSlot(&n.Property, fn) {
+			changed = true
 		}
+		return changed
 	case *CallExpr:
-		if n.Callee != nil {
-			ForEachRef(n.Callee, fn)
+		changed := false
+		if rewriteExprSlot(&n.Callee, fn) {
+			changed = true
 		}
-		for _, a := range n.Arguments {
-			if a != nil {
-				ForEachRef(a, fn)
-			}
+		if rewriteExprSlice(&n.Arguments, fn) {
+			changed = true
 		}
+		return changed
 	case *NewExpr:
-		if n.Callee != nil {
-			ForEachRef(n.Callee, fn)
+		changed := false
+		if rewriteExprSlot(&n.Callee, fn) {
+			changed = true
 		}
-		for _, a := range n.Arguments {
-			if a != nil {
-				ForEachRef(a, fn)
-			}
+		if rewriteExprSlice(&n.Arguments, fn) {
+			changed = true
 		}
+		return changed
 	case *UnaryExpr:
-		if n.Arg != nil {
-			ForEachRef(n.Arg, fn)
-		}
+		return rewriteExprSlot(&n.Arg, fn)
 	case *UpdateExpr:
-		if n.Arg != nil {
-			ForEachRef(n.Arg, fn)
-		}
+		return rewriteExprSlot(&n.Arg, fn)
 	case *BinaryExpr:
-		if n.Left != nil {
-			ForEachRef(n.Left, fn)
+		changed := false
+		if rewriteExprSlot(&n.Left, fn) {
+			changed = true
 		}
-		if n.Right != nil {
-			ForEachRef(n.Right, fn)
+		if rewriteExprSlot(&n.Right, fn) {
+			changed = true
 		}
+		return changed
 	case *LogicalExpr:
-		if n.Left != nil {
-			ForEachRef(n.Left, fn)
+		changed := false
+		if rewriteExprSlot(&n.Left, fn) {
+			changed = true
 		}
-		if n.Right != nil {
-			ForEachRef(n.Right, fn)
+		if rewriteExprSlot(&n.Right, fn) {
+			changed = true
 		}
+		return changed
 	case *AssignExpr:
+		changed := false
 		if n.Left != nil {
-			if pat, ok := n.Left.(Pattern); ok {
-				forEachRefPatternAssign(pat, fn)
-			} else {
-				ForEachRef(n.Left, fn)
+			if _, isPat := n.Left.(Pattern); isPat {
+				if rewritePatternAssign(&n.Left, fn) {
+					changed = true
+				}
+			} else if rewriteNodeSlot(&n.Left, fn) {
+				changed = true
 			}
 		}
-		if n.Right != nil {
-			ForEachRef(n.Right, fn)
+		if rewriteExprSlot(&n.Right, fn) {
+			changed = true
 		}
+		return changed
 	case *ConditionalExpr:
-		if n.Test != nil {
-			ForEachRef(n.Test, fn)
+		changed := false
+		if rewriteExprSlot(&n.Test, fn) {
+			changed = true
 		}
-		if n.Consequent != nil {
-			ForEachRef(n.Consequent, fn)
+		if rewriteExprSlot(&n.Consequent, fn) {
+			changed = true
 		}
-		if n.Alternate != nil {
-			ForEachRef(n.Alternate, fn)
+		if rewriteExprSlot(&n.Alternate, fn) {
+			changed = true
 		}
+		return changed
 	case *SequenceExpr:
-		for _, e := range n.Expressions {
-			if e != nil {
-				ForEachRef(e, fn)
-			}
-		}
+		return rewriteExprSlice(&n.Expressions, fn)
 	case *SpreadElement:
-		if n.Arg != nil {
-			ForEachRef(n.Arg, fn)
-		}
+		return rewriteExprSlot(&n.Arg, fn)
 	case *YieldExpr:
-		if n.Argument != nil {
-			ForEachRef(n.Argument, fn)
-		}
+		return rewriteExprSlot(&n.Argument, fn)
 	case *AwaitExpr:
-		if n.Argument != nil {
-			ForEachRef(n.Argument, fn)
-		}
+		return rewriteExprSlot(&n.Argument, fn)
 	case *ArrayPattern:
+		changed := false
 		for i := range n.Elements {
 			el := &n.Elements[i]
 			if el.Target != nil {
-				forEachRefPatternDecl(el.Target, fn)
+				target := Node(el.Target)
+				if rewritePatternDecl(&target, fn) {
+					el.Target = target.(Pattern)
+					changed = true
+				}
 			}
-			if el.Default != nil {
-				ForEachRef(el.Default, fn)
+			if rewriteExprSlot(&el.Default, fn) {
+				changed = true
 			}
 		}
+		return changed
 	case *ObjectPattern:
+		changed := false
 		for i := range n.Properties {
 			p := &n.Properties[i]
-			if p.Computed && p.Key != nil {
-				ForEachRef(p.Key, fn)
+			if p.Computed && rewriteExprSlot(&p.Key, fn) {
+				changed = true
 			}
-			if p.Default != nil {
-				ForEachRef(p.Default, fn)
+			if rewriteExprSlot(&p.Default, fn) {
+				changed = true
 			}
 			if p.Value != nil {
-				forEachRefPatternDecl(p.Value, fn)
+				target := Node(p.Value)
+				if rewritePatternDecl(&target, fn) {
+					p.Value = target.(Pattern)
+					changed = true
+				}
 			}
 		}
+		return changed
 	}
+	return false
 }
 
-// forEachRefDeclarator 处理声明语境：绑定名跳过，模式默认值与 Init 是引用。
-func forEachRefDeclarator(d *VarDeclarator, fn func(*Identifier)) {
+// rewriteExprSlot 处理 Expression 槽位：命中匹配引用则替换，否则递归深入。
+func rewriteExprSlot(slot *Expression, fn func(*Identifier) Node) bool {
+	if *slot == nil {
+		return false
+	}
+	if id, ok := (*slot).(*Identifier); ok {
+		if repl := fn(id); repl != nil {
+			*slot = repl.(Expression)
+			return true
+		}
+		return false
+	}
+	return rewriteRefsIn(*slot, fn)
+}
+
+// rewriteNodeSlot 处理 Node 槽位（ForStmt.Init / for 左值 / ArrowFunc.Body 等）。
+func rewriteNodeSlot(slot *Node, fn func(*Identifier) Node) bool {
+	if *slot == nil {
+		return false
+	}
+	if id, ok := (*slot).(*Identifier); ok {
+		if repl := fn(id); repl != nil {
+			*slot = repl
+			return true
+		}
+		return false
+	}
+	return rewriteRefsIn(*slot, fn)
+}
+
+// rewriteStmtSlot 处理 Statement 槽位：裸标识符被替换时包装为 ExprStmt
+//（替换节点是表达式，不能直接赋给 Statement 接口）。
+func rewriteStmtSlot(slot *Statement, fn func(*Identifier) Node) bool {
+	if *slot == nil {
+		return false
+	}
+	if id, ok := (*slot).(*Identifier); ok {
+		if repl := fn(id); repl != nil {
+			if stmt, ok := repl.(Statement); ok {
+				*slot = stmt
+			} else {
+				*slot = &ExprStmt{Expr: repl.(Expression), Loc: id.Loc}
+			}
+			return true
+		}
+		return false
+	}
+	return rewriteRefsIn(*slot, fn)
+}
+
+func rewriteExprSlice(slots *[]Expression, fn func(*Identifier) Node) bool {
+	changed := false
+	for i := range *slots {
+		if rewriteExprSlot(&(*slots)[i], fn) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+func rewriteStmtSlice(slots *[]Statement, fn func(*Identifier) Node) bool {
+	changed := false
+	for i := range *slots {
+		if rewriteStmtSlot(&(*slots)[i], fn) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// rewriteVarDeclarator 处理声明语境 declarator：绑定名跳过，模式默认值与
+// Init 命中。
+func rewriteVarDeclarator(d *VarDeclarator, fn func(*Identifier) Node) bool {
+	changed := false
 	if d.Pattern != nil {
-		forEachRefPatternDecl(d.Pattern, fn)
-	}
-	if d.Init != nil {
-		ForEachRef(d.Init, fn)
-	}
-}
-
-// forEachRefFunction 处理函数体引用：默认值、参数解构默认值与函数体命中；
-// 函数名、参数名、rest 参数是绑定名，不命中。
-func forEachRefFunction(defaults []Expression, patterns []Pattern, body Node, fn func(*Identifier)) {
-	for _, d := range defaults {
-		if d != nil {
-			ForEachRef(d, fn)
+		target := Node(d.Pattern)
+		if rewritePatternDecl(&target, fn) {
+			d.Pattern = target.(Pattern)
+			changed = true
 		}
 	}
-	for _, p := range patterns {
-		if p != nil {
-			forEachRefPatternDecl(p, fn)
-		}
+	if rewriteExprSlot(&d.Init, fn) {
+		changed = true
 	}
-	if body != nil {
-		ForEachRef(body, fn)
-	}
+	return changed
 }
 
-// forEachRefClass 处理类引用：超类、方法体/字段初始化命中；
-// 类名、方法名（非计算 Key）是绑定名，不命中。
-func forEachRefClass(super Expression, body *ClassBody, fn func(*Identifier)) {
-	if super != nil {
-		ForEachRef(super, fn)
+// rewriteFunctionDefaults 处理函数默认值参数表达式。
+func rewriteFunctionDefaults(defaults []Expression, fn func(*Identifier) Node) bool {
+	changed := false
+	for i := range defaults {
+		if rewriteExprSlot(&defaults[i], fn) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// rewriteFunctionLike 处理函数声明/表达式的引用位置：默认值与函数体命中；
+// 函数名/参数/rest 参数为绑定名（跳过）。
+func rewriteFunctionLike(defaults []Expression, patterns []Pattern, body Node, fn func(*Identifier) Node) bool {
+	changed := false
+	if rewriteFunctionDefaults(defaults, fn) {
+		changed = true
+	}
+	for i := range patterns {
+		target := Node(patterns[i])
+		if rewritePatternDecl(&target, fn) {
+			patterns[i] = target.(Pattern)
+			changed = true
+		}
+	}
+	if body != nil && rewriteRefsIn(body, fn) {
+		changed = true
+	}
+	return changed
+}
+
+// rewriteClassLike 处理类的引用位置：超类与类体（方法体/字段初始化/计算键）
+// 命中；类名/方法名（非计算键）为绑定名（跳过）。
+func rewriteClassLike(super *Expression, body *ClassBody, fn func(*Identifier) Node) bool {
+	changed := false
+	if rewriteExprSlot(super, fn) {
+		changed = true
 	}
 	if body == nil {
-		return
+		return changed
 	}
 	for i := range body.Methods {
 		m := &body.Methods[i]
-		if m.Computed && m.Key != nil {
-			ForEachRef(m.Key, fn)
+		if m.Computed && rewriteExprSlot(&m.Key, fn) {
+			changed = true
 		}
-		if m.Value != nil {
-			ForEachRef(m.Value, fn)
+		if m.Value != nil && rewriteRefsIn(m.Value, fn) {
+			changed = true
 		}
-		if m.Init != nil {
-			ForEachRef(m.Init, fn)
+		if rewriteExprSlot(&m.Init, fn) {
+			changed = true
 		}
 	}
+	return changed
 }
 
-// forEachRefPatternDecl 声明语境解构模式：绑定名跳过，仅命中计算属性键与默认值。
-func forEachRefPatternDecl(p Pattern, fn func(*Identifier)) {
-	switch pat := p.(type) {
+// rewritePatternDecl 声明语境解构模式：绑定名跳过，仅命中计算属性键与默认值。
+func rewritePatternDecl(slot *Node, fn func(*Identifier) Node) bool {
+	switch pat := (*slot).(type) {
 	case *Identifier:
-		// 绑定名，跳过
+		return false // 绑定名
 	case *ArrayPattern:
+		changed := false
 		for i := range pat.Elements {
 			el := &pat.Elements[i]
 			if el.Target != nil {
-				forEachRefPatternDecl(el.Target, fn)
+				target := Node(el.Target)
+				if rewritePatternDecl(&target, fn) {
+					el.Target = target.(Pattern)
+					changed = true
+				}
 			}
-			if el.Default != nil {
-				ForEachRef(el.Default, fn)
+			if rewriteExprSlot(&el.Default, fn) {
+				changed = true
 			}
 		}
+		return changed
 	case *ObjectPattern:
+		changed := false
 		for i := range pat.Properties {
-			prop := &pat.Properties[i]
-			if prop.Computed && prop.Key != nil {
-				ForEachRef(prop.Key, fn)
+			p := &pat.Properties[i]
+			if p.Computed && rewriteExprSlot(&p.Key, fn) {
+				changed = true
 			}
-			if prop.Default != nil {
-				ForEachRef(prop.Default, fn)
+			if rewriteExprSlot(&p.Default, fn) {
+				changed = true
 			}
-			if prop.Value != nil {
-				forEachRefPatternDecl(prop.Value, fn)
+			if p.Value != nil {
+				target := Node(p.Value)
+				if rewritePatternDecl(&target, fn) {
+					p.Value = target.(Pattern)
+					changed = true
+				}
 			}
 		}
+		return changed
 	}
+	return false
 }
 
-// forEachRefPatternAssign 赋值语境解构模式：目标是对既有变量的引用，命中；
+// rewritePatternAssign 赋值语境解构模式：目标是对既有变量的引用，命中；
 // 非计算属性键仍是属性名，跳过。
-func forEachRefPatternAssign(p Pattern, fn func(*Identifier)) {
-	switch pat := p.(type) {
+func rewritePatternAssign(slot *Node, fn func(*Identifier) Node) bool {
+	switch pat := (*slot).(type) {
 	case *Identifier:
-		fn(pat)
+		if repl := fn(pat); repl != nil {
+			*slot = repl
+			return true
+		}
+		return false
 	case *ArrayPattern:
+		changed := false
 		for i := range pat.Elements {
 			el := &pat.Elements[i]
 			if el.Target != nil {
-				forEachRefPatternAssign(el.Target, fn)
+				target := Node(el.Target)
+				if rewritePatternAssign(&target, fn) {
+					el.Target = target.(Pattern)
+					changed = true
+				}
 			}
-			if el.Default != nil {
-				ForEachRef(el.Default, fn)
+			if rewriteExprSlot(&el.Default, fn) {
+				changed = true
 			}
 		}
+		return changed
 	case *ObjectPattern:
+		changed := false
 		for i := range pat.Properties {
-			prop := &pat.Properties[i]
-			if prop.Computed && prop.Key != nil {
-				ForEachRef(prop.Key, fn)
+			p := &pat.Properties[i]
+			if p.Computed && rewriteExprSlot(&p.Key, fn) {
+				changed = true
 			}
-			if prop.Default != nil {
-				ForEachRef(prop.Default, fn)
+			if rewriteExprSlot(&p.Default, fn) {
+				changed = true
 			}
-			if prop.Value != nil {
-				forEachRefPatternAssign(prop.Value, fn)
+			if p.Value != nil {
+				target := Node(p.Value)
+				if rewritePatternAssign(&target, fn) {
+					p.Value = target.(Pattern)
+					changed = true
+				}
 			}
 		}
+		return changed
 	}
+	return rewriteRefsIn(*slot, fn)
 }
 
-// forEachRefForLeft 处理 for-in/of 左值：声明语境（VarDecl）绑定名跳过；
+// rewriteForLeft 处理 for-in/of 左值：声明语境（VarDecl）绑定名跳过；
 // 表达式/模式语境（对既有变量赋值）按引用处理。
-func forEachRefForLeft(left Node, fn func(*Identifier)) {
-	if left == nil {
-		return
+func rewriteForLeft(slot *Node, fn func(*Identifier) Node) bool {
+	if *slot == nil {
+		return false
 	}
-	if vd, ok := left.(*VarDecl); ok {
-		for i := range vd.Decls {
-			forEachRefDeclarator(&vd.Decls[i], fn)
+	switch left := (*slot).(type) {
+	case *VarDecl:
+		changed := false
+		for i := range left.Decls {
+			if rewriteVarDeclarator(&left.Decls[i], fn) {
+				changed = true
+			}
 		}
-		return
+		return changed
+	case *ArrayPattern, *ObjectPattern, *Identifier:
+		return rewritePatternAssign(slot, fn)
+	default:
+		return rewriteRefsIn(*slot, fn)
 	}
-	if pat, ok := left.(Pattern); ok {
-		forEachRefPatternAssign(pat, fn)
-		return
-	}
-	ForEachRef(left, fn)
 }

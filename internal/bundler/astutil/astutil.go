@@ -3,97 +3,24 @@
 package astutil
 
 import (
-	"reflect"
 	"strconv"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine/ast"
 )
 
-// CollectRefs 收集节点内全部标识符引用名（不含声明位置本身——
-// VarDeclarator.Name、FunctionDecl.Name、ClassDecl.Name、参数名）。
-// 用于"声明是否被引用"的判定。
-func CollectRefs(node interface{}) map[string]int {
+// CollectRefs 收集节点内全部标识符引用名（不含声明位置与非计算属性键——
+// 成员访问 `obj.method`、对象/模式键、类方法名、函数参数/声明名等均不计入）。
+// 基于统一引用位置遍历 ast.ForEachRef（internal/engine/ast/walk.go），
+// 取代原先的反射遍历（误收集成员属性名/嵌套函数形参/模式键）。
+//
+// 保守语义：嵌套函数体内的引用仍计入（不做作用域感知），可导致保留
+// 多余的声明（安全方向）。
+func CollectRefs(node ast.Node) map[string]int {
 	refs := make(map[string]int)
-	var walk func(v reflect.Value)
-	walk = func(v reflect.Value) {
-		if !v.IsValid() {
-			return
-		}
-		switch v.Kind() {
-		case reflect.Interface:
-			if v.IsNil() {
-				return
-			}
-			walk(v.Elem())
-		case reflect.Pointer:
-			if v.IsNil() {
-				return
-			}
-			walk(v.Elem())
-		case reflect.Slice, reflect.Array:
-			for i := 0; i < v.Len(); i++ {
-				walk(v.Index(i))
-			}
-		case reflect.Struct:
-			for i := 0; i < v.NumField(); i++ {
-				walk(v.Field(i))
-			}
-		}
-	}
-	collect := func(node interface{}) {
-		switch n := node.(type) {
-		case *ast.Identifier:
-			refs[n.Name]++
-		case *ast.VarDeclarator:
-			// 声明名不收集；初始化表达式收集。
-			if n.Init != nil {
-				walk(reflect.ValueOf(n.Init))
-			}
-		case *ast.FunctionDecl:
-			// 函数名与参数不收集；默认值与函数体收集。
-			for _, d := range n.Defaults {
-				if d != nil {
-					walk(reflect.ValueOf(d))
-				}
-			}
-			walk(reflect.ValueOf(n.Body))
-		case *ast.ClassDecl:
-			walk(reflect.ValueOf(n.SuperClass))
-			walk(reflect.ValueOf(n.Body))
-		default:
-			walk(reflect.ValueOf(node))
-		}
-	}
-	var walkStmt func(v reflect.Value)
-	walkStmt = func(v reflect.Value) {
-		if !v.IsValid() {
-			return
-		}
-		switch v.Kind() {
-		case reflect.Interface:
-			if v.IsNil() {
-				return
-			}
-			collect(v.Elem().Interface())
-			walkStmt(v.Elem())
-		case reflect.Pointer:
-			if v.IsNil() {
-				return
-			}
-			collect(v.Interface())
-			walkStmt(v.Elem())
-		case reflect.Slice, reflect.Array:
-			for i := 0; i < v.Len(); i++ {
-				walkStmt(v.Index(i))
-			}
-		case reflect.Struct:
-			for i := 0; i < v.NumField(); i++ {
-				walkStmt(v.Field(i))
-			}
-		}
-	}
-	walkStmt(reflect.ValueOf(node))
+	ast.ForEachRef(node, func(id *ast.Identifier) {
+		refs[id.Name]++
+	})
 	return refs
 }
 

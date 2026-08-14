@@ -14,7 +14,6 @@ package compiler
 import (
 	"fmt"
 	"math/big"
-	"reflect"
 	"strconv"
 	"strings"
 
@@ -4037,44 +4036,14 @@ func astBodyReferencesName(body ast.Node, name string) bool {
 			found = true
 			return
 		}
-		// 反射遍历子节点（ast 节点均为结构体/切片/指针）。
-		rv := reflect.ValueOf(n)
-		walkValue(rv, walk, visited)
+		// 统一遍历子节点（internal/engine/ast/walk.go），取代反射遍历。
+		ast.ForEachChild(n, func(c ast.Node) bool {
+			walk(c)
+			return found // 命中后全局提前终止
+		})
 	}
 	walk(body)
 	return found
-}
-
-func walkValue(rv reflect.Value, walk func(ast.Node), visited map[ast.Node]bool) {
-	switch rv.Kind() {
-	case reflect.Struct:
-		t := rv.Type()
-		for i := 0; i < rv.NumField(); i++ {
-			if t.Field(i).PkgPath != "" {
-				continue // 未导出字段
-			}
-			walkValue(rv.Field(i), walk, visited)
-		}
-	case reflect.Ptr:
-		if !rv.IsNil() {
-			// 通知访问者后必须继续遍历字段：此前仅 walk(n) 导致嵌套
-			// 子树（函数体/表达式内的引用）永远不被扫描——astBodyReferencesName
-			// 恒 false（NFE 自引用槽从不分配）与 forLetCapturedNames 恒空
-			// （per-iteration 绑定从不启用）均由此引起。
-			if n, ok := rv.Interface().(ast.Node); ok {
-				walk(n)
-			}
-			walkValue(rv.Elem(), walk, visited)
-		}
-	case reflect.Slice:
-		for i := 0; i < rv.Len(); i++ {
-			walkValue(rv.Index(i), walk, visited)
-		}
-	case reflect.Interface:
-		if !rv.IsNil() {
-			walkValue(rv.Elem(), walk, visited)
-		}
-	}
 }
 
 // forLetCapturedNames 返回 body 中嵌套函数（闭包）内引用的名字子集。
@@ -4108,7 +4077,7 @@ func forLetCapturedNames(body ast.Node, names []string) []string {
 		case *ast.FunctionExpr:
 			walkFn(f.Body, true)
 			// 函数默认值/参数中的引用不视为捕获（参数绑定遮蔽）；
-			// 简化实现：仅扫描函数体。返回后不再走反射（防重复）。
+			// 简化实现：仅扫描函数体。返回后不再遍历子节点（防重复）。
 			return
 		case *ast.ArrowFunc:
 			walkFn(f.Body, true)
@@ -4117,8 +4086,10 @@ func forLetCapturedNames(body ast.Node, names []string) []string {
 			walkFn(f.Body, true)
 			return
 		}
-		rv := reflect.ValueOf(n)
-		walkValue(rv, func(child ast.Node) { walkFn(child, inFunc) }, visited)
+		ast.ForEachChild(n, func(c ast.Node) bool {
+			walkFn(c, inFunc)
+			return false
+		})
 	}
 	walkFn(body, false)
 	if len(found) == 0 {
@@ -4170,16 +4141,14 @@ func collectLoopBodyBlockNames(body ast.Statement) []string {
 			}
 			return // init 内无新的块级绑定名，不深入
 		}
-		rv := reflect.ValueOf(n)
-		walkValue(rv, func(child ast.Node) { walk(child) }, visited)
+		ast.ForEachChild(n, func(c ast.Node) bool {
+			walk(c)
+			return false
+		})
 	}
 	walk(body)
 	return names
 }
-
-// loopBodyCapturedBlockNames 返回循环体内被嵌套函数（闭包）捕获的块级
-// let/const 绑定名。用于判断 classic for / while / do-while / for-in 的循环体
-// 是否需要 per-iteration 封存（ES2015 语义：每次迭代的块级声明是独立副本，
 // 闭包应捕获当次迭代的值，而非共享同一槽位的终值）。
 func loopBodyCapturedBlockNames(body ast.Statement) []string {
 	names := collectLoopBodyBlockNames(body)

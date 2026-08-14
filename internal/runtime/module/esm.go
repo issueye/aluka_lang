@@ -3,7 +3,6 @@ package module
 import (
 	"fmt"
 	"path/filepath"
-	"reflect"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
@@ -337,69 +336,19 @@ func makeNamedImportExpr(impVar, imported string, loc ast.Pos) ast.Expression {
 // member expressions that read the current export value. This preserves ESM
 // live-binding behavior across circular dependencies while leaving declaration
 // names and non-computed property keys untouched.
+//
+// 基于统一引用位置遍历 ast.RewriteRefs（internal/engine/ast/walk.go）原地
+// 改写，取代原先的反射 + 字段名白名单启发式。相比旧实现修复：计算属性
+// `obj[imported]` 中的引用现被正确改写（原实现按字段名 `Property` 一刀切
+// 跳过）；声明名/非计算属性键/模式绑定名依旧不触碰。
 func rewriteImportedIdentifiers(body []ast.Statement, bindings map[string]ast.Expression) {
 	for _, stmt := range body {
-		rewriteImportedReflect(reflect.ValueOf(stmt), "", bindings)
-	}
-}
-
-func rewriteImportedReflect(v reflect.Value, fieldName string, bindings map[string]ast.Expression) {
-	if !v.IsValid() {
-		return
-	}
-	if v.Kind() == reflect.Interface {
-		if v.IsNil() {
-			return
-		}
-		if id, ok := v.Elem().Interface().(*ast.Identifier); ok {
-			if replacement, found := bindings[id.Name]; found && v.CanSet() && fieldName != "Name" && fieldName != "Property" && fieldName != "Key" && fieldName != "Label" {
-				v.Set(reflect.ValueOf(replacement))
-				return
+		ast.RewriteRefs(stmt, func(id *ast.Identifier) ast.Node {
+			if repl, found := bindings[id.Name]; found {
+				return repl
 			}
-		}
-		rewriteImportedReflect(v.Elem(), fieldName, bindings)
-		return
-	}
-	if v.Kind() == reflect.Pointer {
-		if v.IsNil() {
-			return
-		}
-		if tmpl, ok := v.Interface().(*ast.TemplateLit); ok {
-			for i := range tmpl.Expressions {
-				rewriteImportedReflect(reflect.ValueOf(&tmpl.Expressions[i]).Elem(), "", bindings)
-			}
-			return
-		}
-		if _, ok := v.Interface().(*ast.Identifier); ok {
-			return
-		}
-		rewriteImportedReflect(v.Elem(), fieldName, bindings)
-		return
-	}
-	if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
-		for i := 0; i < v.Len(); i++ {
-			rewriteImportedReflect(v.Index(i), "", bindings)
-		}
-		return
-	}
-	if v.Kind() != reflect.Struct {
-		return
-	}
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
-		if !field.CanInterface() {
-			continue
-		}
-		name := v.Type().Field(i).Name
-		if field.Kind() == reflect.Interface && !field.IsNil() {
-			if id, ok := field.Interface().(*ast.Identifier); ok {
-				if replacement, found := bindings[id.Name]; found && name != "Name" && name != "Property" && name != "Key" && name != "Label" && field.CanSet() {
-					field.Set(reflect.ValueOf(replacement))
-					continue
-				}
-			}
-		}
-		rewriteImportedReflect(field, name, bindings)
+			return nil
+		})
 	}
 }
 

@@ -293,8 +293,8 @@ func collectDecls(body []ast.Statement) map[string]bool {
 	return decls
 }
 
-// blockNode 把语句列表包装为节点（供 CollectRefs 遍历）。
-func blockNode(body []ast.Statement) interface{} {
+// blockNode 把语句列表包装为块节点（供 CollectRefs 遍历）。
+func blockNode(body []ast.Statement) *ast.BlockStmt {
 	return &ast.BlockStmt{Body: body}
 }
 

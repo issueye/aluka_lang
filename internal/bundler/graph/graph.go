@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/bundler/astutil"
@@ -179,76 +178,48 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 //
 // T2-B4：动态 import 的非字面量参数尝试常量折叠（字符串拼接/模板字符串
 // 等）；无法折叠的记入 unresolved（模块 key）。
+//
+// 基于统一遍历 ast.Walk（internal/engine/ast/walk.go），取代原先的反射遍历。
 func collectDeps(prog *ast.Program, key string, unresolved *[]string) []Dep {
 	var deps []Dep
-	var walk func(v reflect.Value)
-	walk = func(v reflect.Value) {
-		if !v.IsValid() {
-			return
-		}
-		switch v.Kind() {
-		case reflect.Interface:
-			if v.IsNil() {
-				return
+	ast.Walk(prog, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.ImportDecl:
+			if node.Source != "" {
+				deps = append(deps, Dep{Spec: node.Source, ImportCtx: true})
 			}
-			collectNode(v.Elem().Interface(), &deps, key, unresolved, walk)
-			walk(v.Elem())
-		case reflect.Pointer:
-			if v.IsNil() {
-				return
+		case *ast.ExportDecl:
+			if node.Source != "" {
+				deps = append(deps, Dep{Spec: node.Source, ImportCtx: true})
 			}
-			collectNode(v.Interface(), &deps, key, unresolved, walk)
-			walk(v.Elem())
-		case reflect.Slice, reflect.Array:
-			for i := 0; i < v.Len(); i++ {
-				walk(v.Index(i))
-			}
-		case reflect.Struct:
-			for i := 0; i < v.NumField(); i++ {
-				walk(v.Field(i))
-			}
-		}
-	}
-	walk(reflect.ValueOf(prog))
-	return deps
-}
-
-// collectNode 在节点类型层面收集依赖（在字段遍历前处理，避免重复收集）。
-func collectNode(n interface{}, deps *[]Dep, key string, unresolved *[]string, walk func(reflect.Value)) {
-	switch node := n.(type) {
-	case *ast.ImportDecl:
-		if node.Source != "" {
-			*deps = append(*deps, Dep{Spec: node.Source, ImportCtx: true})
-		}
-	case *ast.ExportDecl:
-		if node.Source != "" {
-			*deps = append(*deps, Dep{Spec: node.Source, ImportCtx: true})
-		}
-	case *ast.CallExpr:
-		if id, ok := node.Callee.(*ast.Identifier); ok && len(node.Arguments) > 0 {
-			arg := node.Arguments[0]
-			switch id.Name {
-			case "require":
-				if lit, ok := arg.(*ast.StringLit); ok {
-					*deps = append(*deps, Dep{Spec: lit.Value, ImportCtx: false})
-				}
-			case "__import": // 动态 import() 经 parser lower 的形式
-				if lit, ok := arg.(*ast.StringLit); ok {
-					*deps = append(*deps, Dep{Spec: lit.Value, ImportCtx: true})
-					break
-				}
-				// T2-B4：非字面量 → 常量折叠（字符串拼接/无插值模板等）。
-				if v, ok := astutil.FoldConst(arg); ok {
-					if s, isStr := v.(string); isStr {
-						*deps = append(*deps, Dep{Spec: s, ImportCtx: true})
+		case *ast.CallExpr:
+			if id, ok := node.Callee.(*ast.Identifier); ok && len(node.Arguments) > 0 {
+				arg := node.Arguments[0]
+				switch id.Name {
+				case "require":
+					if lit, ok := arg.(*ast.StringLit); ok {
+						deps = append(deps, Dep{Spec: lit.Value, ImportCtx: false})
+					}
+				case "__import": // 动态 import() 经 parser lower 的形式
+					if lit, ok := arg.(*ast.StringLit); ok {
+						deps = append(deps, Dep{Spec: lit.Value, ImportCtx: true})
 						break
 					}
+					// T2-B4：非字面量 → 常量折叠（字符串拼接/无插值模板等）。
+					if v, ok := astutil.FoldConst(arg); ok {
+						if s, isStr := v.(string); isStr {
+							deps = append(deps, Dep{Spec: s, ImportCtx: true})
+							break
+						}
+					}
+					// 无法静态解析：构建期警告，产物运行时报错。
+					*unresolved = append(*unresolved, key)
 				}
-				// 无法静态解析：构建期警告，产物运行时报错。
-				*unresolved = append(*unresolved, key)
 			}
 		}
-	}
+		return true
+	})
+	return deps
 }
 
 // isBuiltinSpecifier 判断是否为 node: 前缀的内置模块。

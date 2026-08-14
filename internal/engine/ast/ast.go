@@ -736,218 +736,27 @@ func (d *ExportDefaultDecl) stmtNode() {}
 func (d *ExportDefaultDecl) node()     {}
 
 // HasTopLevelAwait 报告程序顶层（模块级）是否含 await 表达式。
-// 不深入嵌套函数体（函数内的 await 不是 TLA），但深入语句内的表达式
-// （表达式语句、声明初始化、if/for/return 等分支）。
+// 不深入嵌套函数体与类体（函数/类内的 await 不是 TLA），但深入语句内的
+// 表达式（表达式语句、声明初始化、if/for/return 分支、模式默认值、计算
+// 属性键等）。基于统一遍历 ForEachChild（internal/engine/ast/walk.go）。
 func HasTopLevelAwait(prog *Program) bool {
-	for _, stmt := range prog.Body {
-		if stmtHasAwait(stmt) {
-			return true
+	found := false
+	var walk func(n Node) bool
+	walk = func(n Node) bool {
+		switch nn := n.(type) {
+		case *AwaitExpr:
+			found = true
+			return true // 全局提前终止
+		case *ForOfStmt:
+			if nn.IsAwait { // `for await` 是标记位而非 AwaitExpr 子节点
+				found = true
+				return true
+			}
+		case *FunctionDecl, *FunctionExpr, *ArrowFunc, *ClassDecl, *ClassExpr:
+			return false // 不深入函数体/类体
 		}
+		return ForEachChild(n, func(c Node) bool { return walk(c) })
 	}
-	return false
-}
-
-// stmtHasAwait 判断语句中（非嵌套函数内）是否出现 await。
-func stmtHasAwait(s Statement) bool {
-	switch n := s.(type) {
-	case *ExprStmt:
-		return exprHasAwait(n.Expr)
-	case *VarDecl:
-		for _, d := range n.Decls {
-			if d.Init != nil && exprHasAwait(d.Init) {
-				return true
-			}
-		}
-		return false
-	case *ReturnStmt:
-		return n.Arg != nil && exprHasAwait(n.Arg)
-	case *IfStmt:
-		if exprHasAwait(n.Test) || stmtHasAwait(n.Consequent) {
-			return true
-		}
-		return n.Alternate != nil && stmtHasAwait(n.Alternate)
-	case *WhileStmt:
-		return exprHasAwait(n.Test) || stmtHasAwait(n.Body)
-	case *DoWhileStmt:
-		return exprHasAwait(n.Test) || stmtHasAwait(n.Body)
-	case *ForStmt:
-		if n.Test != nil && exprHasAwait(n.Test) {
-			return true
-		}
-		if n.Update != nil && exprHasAwait(n.Update) {
-			return true
-		}
-		return stmtHasAwait(n.Body)
-	case *ForInStmt:
-		if exprHasAwait(n.Right) {
-			return true
-		}
-		return stmtHasAwait(n.Body)
-	case *ForOfStmt:
-		if n.IsAwait || exprHasAwait(n.Right) {
-			return true
-		}
-		return stmtHasAwait(n.Body)
-	case *BlockStmt:
-		for _, b := range n.Body {
-			if stmtHasAwait(b) {
-				return true
-			}
-		}
-		return false
-	case *SwitchStmt:
-		if exprHasAwait(n.Disc) {
-			return true
-		}
-		for _, c := range n.Cases {
-			if c.Test != nil && exprHasAwait(c.Test) {
-				return true
-			}
-			for _, b := range c.Consequent {
-				if stmtHasAwait(b) {
-					return true
-				}
-			}
-		}
-		return false
-	case *TryStmt:
-		if stmtHasAwait(n.Block) {
-			return true
-		}
-		if n.Handler != nil && stmtHasAwait(n.Handler.Body) {
-			return true
-		}
-		return n.Finally != nil && stmtHasAwait(n.Finally)
-	case *LabeledStmt:
-		return stmtHasAwait(n.Body)
-	case *ThrowStmt:
-		return n.Arg != nil && exprHasAwait(n.Arg)
-	case *FunctionDecl:
-		return false // 嵌套函数体不算 TLA
-	default:
-		return false
-	}
-}
-
-// nodeHasAwait 判断任意 AST 节点（Expression 或 Pattern）中是否出现 await。
-// AssignExpr.Left 可能是 Pattern（解构赋值），Pattern 内只有默认值表达式
-// 可能含 await。
-func nodeHasAwait(n Node) bool {
-	if e, ok := n.(Expression); ok {
-		return exprHasAwait(e)
-	}
-	switch pat := n.(type) {
-	case *ArrayPattern:
-		for _, el := range pat.Elements {
-			if el.Default != nil && exprHasAwait(el.Default) {
-				return true
-			}
-			if el.Target != nil && nodeHasAwait(el.Target) {
-				return true
-			}
-		}
-	case *ObjectPattern:
-		for _, prop := range pat.Properties {
-			if prop.Default != nil && exprHasAwait(prop.Default) {
-				return true
-			}
-			if prop.Key != nil && prop.Computed && exprHasAwait(prop.Key) {
-				return true
-			}
-			if prop.Value != nil && nodeHasAwait(prop.Value) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// exprHasAwait 判断表达式（不深入函数表达式体）中是否出现 await。
-func exprHasAwait(e Expression) bool {
-	switch n := e.(type) {
-	case *AwaitExpr:
-		return true
-	case *UnaryExpr:
-		return exprHasAwait(n.Arg)
-	case *BinaryExpr:
-		return exprHasAwait(n.Left) || exprHasAwait(n.Right)
-	case *LogicalExpr:
-		return exprHasAwait(n.Left) || exprHasAwait(n.Right)
-	case *AssignExpr:
-		if nodeHasAwait(n.Left) {
-			return true
-		}
-		return n.Right != nil && exprHasAwait(n.Right)
-	case *UpdateExpr:
-		return exprHasAwait(n.Arg)
-	case *ConditionalExpr:
-		return exprHasAwait(n.Test) || exprHasAwait(n.Consequent) || exprHasAwait(n.Alternate)
-	case *CallExpr:
-		if exprHasAwait(n.Callee) {
-			return true
-		}
-		for _, a := range n.Arguments {
-			if exprHasAwait(a) {
-				return true
-			}
-		}
-		return false
-	case *MemberExpr:
-		if exprHasAwait(n.Object) {
-			return true
-		}
-		return n.Property != nil && exprHasAwait(n.Property)
-	case *NewExpr:
-		if exprHasAwait(n.Callee) {
-			return true
-		}
-		for _, a := range n.Arguments {
-			if exprHasAwait(a) {
-				return true
-			}
-		}
-		return false
-	case *SequenceExpr:
-		for _, e := range n.Expressions {
-			if exprHasAwait(e) {
-				return true
-			}
-		}
-		return false
-	case *ArrayLit:
-		for _, e := range n.Elements {
-			if e != nil && exprHasAwait(e) {
-				return true
-			}
-		}
-		return false
-	case *ObjectLit:
-		for _, p := range n.Properties {
-			if p.Value != nil && exprHasAwait(p.Value) {
-				return true
-			}
-		}
-		return false
-	case *TemplateLit:
-		for _, e := range n.Expressions {
-			if exprHasAwait(e) {
-				return true
-			}
-		}
-		return false
-	case *TaggedTemplateExpr:
-		if exprHasAwait(n.Tag) {
-			return true
-		}
-		for _, e := range n.Template.Expressions {
-			if exprHasAwait(e) {
-				return true
-			}
-		}
-		return false
-	case *FunctionExpr, *ArrowFunc:
-		return false // 函数表达式体内不算 TLA
-	default:
-		return false
-	}
+	walk(prog)
+	return found
 }
