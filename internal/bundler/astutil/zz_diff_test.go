@@ -107,8 +107,18 @@ func sortedKeys(m map[string]int) []string {
 // 引用集合差异：找出"旧实现计入、新实现未计入"的引用（这类可能导致 tree-shake
 // 错误剪除 import binding）。
 func TestCollectRefsDiffVsOldReflection(t *testing.T) {
-	src, err := os.ReadFile("E:/codes/github/pi/packages/coding-agent/src/config.ts")
-	if err != nil {
+	candidates := []string{
+		"E:/code/github/pi/packages/coding-agent/src/config.ts",
+		"E:/codes/github/pi/packages/coding-agent/src/config.ts",
+	}
+	var src []byte
+	var err error
+	for _, c := range candidates {
+		if src, err = os.ReadFile(c); err == nil {
+			break
+		}
+	}
+	if len(src) == 0 {
 		t.Skipf("config.ts not readable: %v", err)
 	}
 	prog, err := parser.ParseModule(string(src))

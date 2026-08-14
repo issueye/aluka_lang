@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/aluka-lang/aluka/internal/bundler/astutil"
@@ -61,7 +62,20 @@ func TestShakePrunedConfigDiff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry := "E:/codes/github/pi/packages/coding-agent/src/cli.ts"
+	candidates := []string{
+		"E:/code/github/pi/packages/coding-agent/src/cli.ts",
+		"E:/codes/github/pi/packages/coding-agent/src/cli.ts",
+	}
+	entry := ""
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			entry = c
+			break
+		}
+	}
+	if entry == "" {
+		t.Skip("coding-agent not found")
+	}
 
 	buildAndShake := func(refs func(ast.Node) map[string]int) (string, string, string) {
 		resolver := module.NewResolver()

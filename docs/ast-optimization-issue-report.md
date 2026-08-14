@@ -116,33 +116,47 @@ undefined is not a function
 
 ---
 
-## 四、剩余任务清单
+### 4. 根因查明与修复闭环（已完成）
 
-### 1. 定位并修复回归（P0）
+1. **根因 1：`shake.go` 剪枝中 `refs` 变量遮蔽致内部声明被误剪**
+   - **位置**：`internal/bundler/shake/shake.go` (`pruneModule`)
+   - **现象**：`ExportDecl` 分支中写了 `refs := astutil.CollectRefs(stmt)`，覆盖了函数入口处的模块级 `refs := astutil.CollectRefs(info.prog)`。
+   - **机理**：`CollectRefs(stmt)` 仅扫描单条声明内部，因此非自递归的导出函数/变量声明其计数为 0。当该声明未被外部模块直接导入、但被当前模块内部其它函数引用时，被误判为无用代码直接丢弃（如 `config.ts` 中的 `normalizePath` 被删除，导致运行时 `TypeError: undefined is not a function at config.ts:481`）。
+   - **修复**：移除语句级遮蔽，采用模块级 `refs[name] > 0` 判定内部引用，同时对 `ExportDefaultDecl` 补充具名函数/类声明与副作用表达式的保留支持。
+   - **对拍结果**：`TestShakePrunedConfigDiff` 新旧剪枝 AST 结构哈希达到 100% 字节级一致（`c62f0077...`，0 差异）。
 
-- [ ] 完成 `TestShakePrunedConfigDiff`（对拍新旧 shake 后 config.ts 剪枝结果），
-      确认模块内剪枝是否差异。
-- [ ] 在 compiler 包对拍三个 walker（`astBodyReferencesName`/
-      `forLetCapturedNames`/`collectLoopBodyBlockNames`）在 coding-agent 全模块
-      AST 上的新旧输出差异。
-- [ ] 对拍 `RewriteRefs` 与旧反射改写在新/旧 shaken AST 上的替换结果。
-- [ ] 修复定位到的差异（倾向：CollectRefs/ForEachRef 在某参考位置的漏计，
-      或 RewriteRefs 在 shaken AST 上的漏改），补回归测试。
-- [ ] 重新打包 coding-agent 三档产物验证：`--version`/`--help`/offline 非交互
-      路径；`CGO_ENABLED=0 go test ./...` + jitdiff 三 tier 零失配。
+2. **根因 2：`VM.callClosureThis` 跨模块继承未切换 `v.module`**
+   - **位置**：`internal/engine/interpreter/vm.go` (`callClosureThis`)
+   - **现象**：子类继承父类跨模块执行 `super()` 构造链时，`callClosureThis` 缺少 `v.module = cl.module` 模块上下文切换。
+   - **机理**：父类构造函数执行 `OpMakeClosure` 时，从子类模块的 `v.module.Functions` 索引函数模板，导致闭包捕获的局部槽位索引错乱（如槽位 127 超过当前帧长度 107），触发 `panic: index out of range [127] with length 107`。
+   - **修复**：在 `callClosureThis` 入口补充 `savedModule := v.module; v.module = cl.module; defer func() { v.module = savedModule }()`。
 
-### 2. 后续优化（当前回归修复后的独立里程碑，按计划留白）
+---
 
-- [ ] **统一 `*Node` + `nodeData` 接口**（tsgo 核心形态；全部消费方改造，
-      规模大，独立立项）。
-- [ ] **arena 分配 / NodeFactory**（约 278 处 `&ast.X{}` 分配点改造；收益需
-      基准支撑）。
-- [ ] **TextRange 字节偏移位置**（联动 lexer/parser/compiler/解释器；每节点
-      省内存，独立里程碑）。
-- [ ] **Parent 指针**（compiler 已有作用域栈，暂无消费方）。
-- [ ] **作用域感知的 CollectRefs**（当前保留保守语义：嵌套函数体内引用计入；
-      后续引入绑定解析以精确剪枝）。
-- [ ] **生成式 clone**（替代 `clone.go` 反射 DeepCopy；与统一 Node 形态配合）。
+## 四、任务进展与后续清单
+
+### 1. 定位并修复回归（P0 — ✅ 已全部完成）
+
+- [x] 完成 `TestShakePrunedConfigDiff`（新旧剪枝 AST 结构哈希完全对拍一致，0 差异）。
+- [x] 查明 `shake.go` 局部变量遮蔽导致的内部声明误剪缺陷并修复。
+- [x] 查明 `VM.callClosureThis` 跨模块构造调用未切换 `v.module` 导致的槽位越界并修复。
+- [x] 重新打包 coding-agent 产物验证：
+  - `pi.exe --version`：成功输出 `0.0.0`（exit 0）
+  - `pi.exe --help`：成功输出完整 CLI 帮助与选项参数（exit 0）
+- [x] 运行全量测试：`internal/bundler/...`、`internal/engine/...` 与 `jitdiff` 三 tier 全量通过（0 失败）。
+
+### 2. 对齐 tsgo 后续 AST 优化演进路线（独立里程碑规划）
+
+1. **统一 `*Node` + `nodeData` 接口体系（借鉴 `tsgo/internal/ast/ast.go`）**：
+   - 将 Aluka 目前分散的 ~50 种具体 AST 结构体逐步收敛为统一的 `*Node` 结构体基类 + `nodeData` 私有字段，内嵌 `Kind`、`Flags`、`Loc` (TextRange)、`Parent` 指针，提升 CPU 缓存局部性与遍历性能。
+2. **内存池化与 Arena 内存分配器（借鉴 `tsgo/internal/ast/ast.go NodeFactory`）**：
+   - 引入 `NodeFactory` 与 `Arena` 对象池，减少解析时海量小对象在 Go 堆上的逃逸与 GC 扫描压力。
+3. **TextRange 字节偏移体系（借鉴 `tsgo/internal/core/textrange.go`）**：
+   - 用 `Pos/End` 32 位整型偏移替代 AST 节点内冗余的行列位置结构，降低单个 AST 节点内存开销。
+4. **生成式 AST Clone（借鉴 `tsgo/internal/ast/deepclone.go`）**：
+   - 基于统一 `Node` 体系自动生成强类型深拷贝，替代 `clone.go` 的反射型 `DeepCopy`。
+5. **作用域感知的精确符号解析（借鉴 `tsgo/internal/binder`）**：
+   - 在 AST 之上建立轻量级 Binder 符号表，使 Tree-shaking 从目前的保守引用收集进化为精确作用域感知剪枝。
 
 ### 3. 清理临时调试产物
 

@@ -213,15 +213,21 @@ func GC(roots []Value) HeapStats {
 	}
 }
 
-// markFromRoots 从根集沿对象图 DFS 标记可达对象。
-// 遍历 own 属性（shape.slots）与数组元素。
+// markFromRoots 从根集沿对象图遍历标记可达对象（迭代式 worklist 遍历，防栈溢出）。
+// 遍历 own 属性（shape.slots）、原型链（proto）、数组元素与 Accessor。
 func markFromRoots(roots []Value) map[*objectValue]bool {
 	marked := make(map[*objectValue]bool)
-	var visit func(v Value)
-	visit = func(v Value) {
+	worklist := make([]Value, 0, len(roots)*4)
+	worklist = append(worklist, roots...)
+
+	for len(worklist) > 0 {
+		idx := len(worklist) - 1
+		v := worklist[idx]
+		worklist = worklist[:idx]
 		if v == nil {
-			return
+			continue
 		}
+
 		var o *objectValue
 		switch t := v.(type) {
 		case *objectValue:
@@ -229,7 +235,9 @@ func markFromRoots(roots []Value) map[*objectValue]bool {
 		case *ArrayValue:
 			o = t.objectValue
 			for _, e := range t.elems {
-				visit(e)
+				if e != nil {
+					worklist = append(worklist, e)
+				}
 			}
 		case *functionValue:
 			o = t.objectValue
@@ -237,25 +245,36 @@ func markFromRoots(roots []Value) map[*objectValue]bool {
 			o = t.objectValue
 		case *DateValue:
 			o = t.objectValue
+		case *AccessorValue:
+			if t.Getter != nil {
+				worklist = append(worklist, t.Getter)
+			}
+			if t.Setter != nil {
+				worklist = append(worklist, t.Setter)
+			}
+			continue
 		default:
-			return
+			continue
 		}
+
 		if o == nil || marked[o] {
-			return
+			continue
 		}
 		marked[o] = true
+
+		if o.proto != nil {
+			worklist = append(worklist, o.proto)
+		}
+
 		// 遍历 own 属性引用。
 		for i, name := range o.shape.names {
 			if o.deleted != nil && o.deleted[name] {
 				continue
 			}
-			if i < len(o.slots) {
-				visit(o.slots[i])
+			if i < len(o.slots) && o.slots[i] != nil {
+				worklist = append(worklist, o.slots[i])
 			}
 		}
-	}
-	for _, r := range roots {
-		visit(r)
 	}
 	return marked
 }

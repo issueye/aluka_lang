@@ -1,6 +1,7 @@
 package graph_test
 
 import (
+	"os"
 	"reflect"
 	"sort"
 	"testing"
@@ -104,7 +105,20 @@ func TestImportSpecifierPruneDiff(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolver := module.NewResolver()
-	entry := "E:/codes/github/pi/packages/coding-agent/src/cli.ts"
+	candidates := []string{
+		"E:/code/github/pi/packages/coding-agent/src/cli.ts",
+		"E:/codes/github/pi/packages/coding-agent/src/cli.ts",
+	}
+	entry := ""
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			entry = c
+			break
+		}
+	}
+	if entry == "" {
+		t.Skip("coding-agent not found")
+	}
 	gr, err := graph.Build(vm, resolver, entry)
 	if err != nil {
 		t.Fatalf("graph build: %v", err)

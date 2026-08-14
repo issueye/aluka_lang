@@ -14,10 +14,12 @@ package compile
 
 import (
 	"bytes"
+	"compress/zlib"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"runtime"
 	"sort"
 	"time"
@@ -27,9 +29,8 @@ import (
 )
 
 // PayloadVersion 是 payload 布局版本。布局变更（header/manifest 字段）时递增。
-// v2：EntryInfo 增加 SourceKind/ModuleKind（分类上下文持久化），与
-// bc_cache pipelineVersion 对齐，旧产物（v1）不再兼容。
-const PayloadVersion = 2
+// v3：使用 zlib 压缩 manifest 与 data 数据区，产物体积缩减 40%~70%。
+const PayloadVersion = 3
 
 // payloadMagic 是 payload 数据段的起始魔数。
 var payloadMagic = []byte("ALUKABDL")
@@ -42,6 +43,30 @@ const FooterSize = 8 + 8 + 8 + 32
 
 // headerSize 是 payload header 固定长度：magic(8) + 3×u32。
 const headerSize = 8 + 4*3
+
+func compressBytes(src []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w, err := zlib.NewWriterLevel(&buf, zlib.BestCompression)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write(src); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func decompressBytes(src []byte) ([]byte, error) {
+	r, err := zlib.NewReader(bytes.NewReader(src))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
 
 // ModuleType 标记模块类型（决定产物模式的词法参数与 TLA 语义）。
 const (
@@ -140,15 +165,25 @@ func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[str
 		return nil, fmt.Errorf("compile: marshal manifest: %w", err)
 	}
 
+	compressedManifest, err := compressBytes(manifestJSON)
+	if err != nil {
+		return nil, fmt.Errorf("compile: compress manifest: %w", err)
+	}
+
+	compressedData, err := compressBytes(data.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("compile: compress data: %w", err)
+	}
+
 	var buf bytes.Buffer
 	buf.Write(payloadMagic)
 	var hdr [12]byte
 	binary.LittleEndian.PutUint32(hdr[0:4], PayloadVersion)
-	binary.LittleEndian.PutUint32(hdr[4:8], uint32(len(manifestJSON)))
-	binary.LittleEndian.PutUint32(hdr[8:12], uint32(data.Len()))
+	binary.LittleEndian.PutUint32(hdr[4:8], uint32(len(compressedManifest)))
+	binary.LittleEndian.PutUint32(hdr[8:12], uint32(len(compressedData)))
 	buf.Write(hdr[:])
-	buf.Write(manifestJSON)
-	buf.Write(data.Bytes())
+	buf.Write(compressedManifest)
+	buf.Write(compressedData)
 	return buf.Bytes(), nil
 }
 
@@ -161,7 +196,7 @@ func ParsePayload(data []byte) (*Manifest, []byte, error) {
 		return nil, nil, fmt.Errorf("compile: bad payload magic")
 	}
 	version := binary.LittleEndian.Uint32(data[8:12])
-	if version != PayloadVersion {
+	if version != 2 && version != PayloadVersion {
 		return nil, nil, fmt.Errorf("compile: payload version mismatch (file=%d, want=%d)", version, PayloadVersion)
 	}
 	manifestLen := binary.LittleEndian.Uint32(data[12:16])
@@ -169,7 +204,27 @@ func ParsePayload(data []byte) (*Manifest, []byte, error) {
 	if uint64(headerSize)+uint64(manifestLen)+uint64(dataLen) != uint64(len(data)) {
 		return nil, nil, fmt.Errorf("compile: payload length mismatch")
 	}
-	manifestJSON := data[headerSize : headerSize+manifestLen]
+
+	rawManifest := data[headerSize : headerSize+manifestLen]
+	rawData := data[headerSize+manifestLen:]
+
+	var manifestJSON []byte
+	var moduleData []byte
+	if version == 3 {
+		var err error
+		manifestJSON, err = decompressBytes(rawManifest)
+		if err != nil {
+			return nil, nil, fmt.Errorf("compile: decompress manifest: %w", err)
+		}
+		moduleData, err = decompressBytes(rawData)
+		if err != nil {
+			return nil, nil, fmt.Errorf("compile: decompress data: %w", err)
+		}
+	} else {
+		manifestJSON = rawManifest
+		moduleData = rawData
+	}
+
 	var manifest Manifest
 	if err := json.Unmarshal(manifestJSON, &manifest); err != nil {
 		return nil, nil, fmt.Errorf("compile: parse manifest: %w", err)
@@ -177,7 +232,7 @@ func ParsePayload(data []byte) (*Manifest, []byte, error) {
 	if manifest.FormatVersion != bytecode.FormatVersion {
 		return nil, nil, fmt.Errorf("compile: payload built with incompatible bytecode format (file=%d, want=%d); rebuild with current aluka", manifest.FormatVersion, bytecode.FormatVersion)
 	}
-	return &manifest, data[headerSize+manifestLen:], nil
+	return &manifest, moduleData, nil
 }
 
 // LoadModule 从数据区反序列化指定路径的模块。

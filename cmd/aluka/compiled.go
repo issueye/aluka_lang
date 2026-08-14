@@ -105,6 +105,7 @@ func runCompiled(payload []byte) int {
 	_ = builtin.InstallGetBuiltinModule(ctx, loader)
 	// M2：嵌入式模块存储——require/import 按构建期解析映射加载嵌入模块。
 	loader.SetEmbedded(compile.NewEmbedded(manifest, data))
+	loader.SetEntryPath(entry)
 
 	// M3：产物模式 process.argv 语义（Bun 编译产物一致）：
 	// argv[0] = 可执行文件路径，argv[1] = 虚拟入口路径，其余为应用参数。

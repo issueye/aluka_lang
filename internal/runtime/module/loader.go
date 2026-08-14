@@ -57,6 +57,9 @@ type Loader struct {
 	// Object.prototype（engine.NewObject 产生的对象原型为 nil，缺少
 	// hasOwnProperty/toString 等常用方法，会破坏依赖它的 npm 包）。
 	objectProto engine.Object
+
+	// entryPath 记录入口文件绝对路径（用于 import.meta.main 判定）。
+	entryPath string
 }
 
 // NewLoader creates a module loader bound to the given context.
@@ -68,6 +71,15 @@ func NewLoader(ctx engine.Context) *Loader {
 		builtins:       make(map[string]engine.Value),
 		builtinFns:     make(map[string]func(engine.Context) (engine.Value, error)),
 		virtualModules: make(map[string]engine.Value),
+	}
+}
+
+// SetEntryPath 设置入口模块路径（支持文件路径或虚拟路径）。
+func (l *Loader) SetEntryPath(path string) {
+	if abs, err := filepath.Abs(path); err == nil {
+		l.entryPath = abs
+	} else {
+		l.entryPath = path
 	}
 }
 
@@ -151,6 +163,9 @@ func (l *Loader) Run(path string) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("module: cannot resolve path %q: %w", path, err)
+	}
+	if l.entryPath == "" {
+		l.entryPath = absPath
 	}
 
 	if DetectSourceKind(absPath) == SourceJSON {
@@ -573,8 +588,25 @@ func (l *Loader) makeImportMetaFunc(modulePath string) engine.Value {
 	} else {
 		_ = meta.Set("url", engine.Str(pathToFileURLString(modulePath)))
 	}
-	_ = meta.Set("dirname", engine.Str(filepath.Dir(modulePath)))
+	dirPath := filepath.Dir(modulePath)
+	_ = meta.Set("dirname", engine.Str(dirPath))
+	_ = meta.Set("dir", engine.Str(dirPath))
 	_ = meta.Set("filename", engine.Str(modulePath))
+	_ = meta.Set("path", engine.Str(modulePath))
+
+	isMain := false
+	if l.entryPath != "" {
+		if l.embedded != nil {
+			isMain = modulePath == l.entryPath || filepath.ToSlash(modulePath) == filepath.ToSlash(l.entryPath)
+		} else {
+			if abs, err := filepath.Abs(modulePath); err == nil {
+				isMain = abs == l.entryPath
+			} else {
+				isMain = modulePath == l.entryPath
+			}
+		}
+	}
+	_ = meta.Set("main", engine.Boolean(isMain))
 	_ = meta.Set("resolve", engine.NewFunction("resolve", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Undefined(), fmt.Errorf("import.meta.resolve: missing specifier")

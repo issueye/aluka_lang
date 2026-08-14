@@ -2,6 +2,7 @@ package compile
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,6 +107,49 @@ func TestPackParseRoundTrip(t *testing.T) {
 	// 未找到的模块应报错。
 	if _, err := manifest.LoadModule(data, "nope.ts"); err == nil {
 		t.Error("missing module did not error")
+	}
+}
+
+func TestPayloadCompression(t *testing.T) {
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	var entries []*EntryData
+	for i := 0; i < 50; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("mod%d.ts", i))
+		src := fmt.Sprintf("export function f%d(x) { return x + %d; }", i, i)
+		if err := os.WriteFile(p, []byte(src), 0644); err != nil {
+			t.Fatal(err)
+		}
+		entry, err := CompileFile(vm, p, fmt.Sprintf("mod%d.ts", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, entry)
+	}
+
+	payload, err := Pack("mod0.ts", entries, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, data, err := ParsePayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Modules) != 50 {
+		t.Fatalf("modules = %d, want 50", len(manifest.Modules))
+	}
+	for i := 0; i < 50; i++ {
+		key := fmt.Sprintf("mod%d.ts", i)
+		mod, err := manifest.LoadModule(data, key)
+		if err != nil {
+			t.Fatalf("LoadModule(%q): %v", key, err)
+		}
+		if len(mod.Functions) == 0 {
+			t.Fatalf("mod %q has no functions", key)
+		}
 	}
 }
 

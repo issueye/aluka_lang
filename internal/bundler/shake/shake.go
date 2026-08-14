@@ -355,11 +355,11 @@ func pruneModule(info *moduleInfo, usedExports map[string]map[string]bool, infos
 				// 未全用：模块内引用的名字保留声明（去 export 包装），
 				// 未被引用且无副作用的声明整体删除。
 				changed = true
-				refs := astutil.CollectRefs(stmt)
 				keepDecl := false
 				for _, name := range names {
-					if !used[name] && refs[name] > 0 {
+					if used["*"] || used[name] || refs[name] > 0 {
 						keepDecl = true
+						break
 					}
 				}
 				if keepDecl || stmtHasSideEffects(n.Declaration) {
@@ -429,6 +429,28 @@ func pruneModule(info *moduleInfo, usedExports map[string]map[string]bool, infos
 				newBody = append(newBody, stmt)
 			} else {
 				changed = true
+				if fn, ok := n.Expression.(*ast.FunctionExpr); ok && fn.Name != nil && refs[fn.Name.Name] > 0 {
+					newBody = append(newBody, &ast.FunctionDecl{
+						Name:          fn.Name,
+						Params:        fn.Params,
+						ParamPatterns: fn.ParamPatterns,
+						Defaults:      fn.Defaults,
+						RestParam:     fn.RestParam,
+						Body:          fn.Body,
+						IsAsync:       fn.IsAsync,
+						IsGenerator:   fn.IsGenerator,
+						Loc:           fn.Loc,
+					})
+				} else if cls, ok := n.Expression.(*ast.ClassExpr); ok && cls.Name != nil && refs[cls.Name.Name] > 0 {
+					newBody = append(newBody, &ast.ClassDecl{
+						Name:       cls.Name,
+						SuperClass: cls.SuperClass,
+						Body:       cls.Body,
+						Loc:        cls.Loc,
+					})
+				} else if n.Expression != nil && astutil.HasSideEffects(n.Expression) {
+					newBody = append(newBody, &ast.ExprStmt{Expr: n.Expression, Loc: n.Loc})
+				}
 			}
 		default:
 			newBody = append(newBody, stmt)

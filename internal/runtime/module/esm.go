@@ -259,8 +259,35 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 			}
 
 		case *ast.ExportDefaultDecl:
-			// export default expr → module.exports.default = expr
-			exportAssignments = append(exportAssignments, makeExportAssignment("default", "", n.Loc, n.Expression))
+			if fn, ok := n.Expression.(*ast.FunctionExpr); ok && fn.Name != nil {
+				// export default function foo() {} → function foo() {} (hoisted in scope) + module.exports.default = foo;
+				fnDecl := &ast.FunctionDecl{
+					Name:          fn.Name,
+					Params:        fn.Params,
+					ParamPatterns: fn.ParamPatterns,
+					Defaults:      fn.Defaults,
+					RestParam:     fn.RestParam,
+					Body:          fn.Body,
+					IsAsync:       fn.IsAsync,
+					IsGenerator:   fn.IsGenerator,
+					Loc:           fn.Loc,
+				}
+				newBody = append(newBody, fnDecl)
+				exportAssignments = append(exportAssignments, makeExportAssignment("default", fn.Name.Name, n.Loc))
+			} else if cls, ok := n.Expression.(*ast.ClassExpr); ok && cls.Name != nil {
+				// export default class Foo {} → class Foo {} + module.exports.default = Foo;
+				clsDecl := &ast.ClassDecl{
+					Name:       cls.Name,
+					SuperClass: cls.SuperClass,
+					Body:       cls.Body,
+					Loc:        cls.Loc,
+				}
+				newBody = append(newBody, clsDecl)
+				exportAssignments = append(exportAssignments, makeExportAssignment("default", cls.Name.Name, n.Loc))
+			} else {
+				// export default expr → module.exports.default = expr
+				exportAssignments = append(exportAssignments, makeExportAssignment("default", "", n.Loc, n.Expression))
+			}
 
 		default:
 			// Keep non-import/export statements as-is

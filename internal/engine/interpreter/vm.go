@@ -1916,6 +1916,11 @@ func (v *VM) constructThis(callee engine.Value, thisVal engine.Value, args []eng
 // caller's `this` value (slot 0) instead of creating a new object. Used by
 // super() to chain constructor calls on the same instance.
 func (v *VM) callClosureThis(cl *vmClosure, thisVal engine.Value, args []engine.Value) (engine.Value, error) {
+	savedModule := v.module
+	if cl.module != nil {
+		v.module = cl.module
+	}
+	defer func() { v.module = savedModule }()
 	tmpl := cl.tmpl
 	frame := vmFrame{
 		tmpl:     tmpl,

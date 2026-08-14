@@ -593,3 +593,20 @@ func TestRequireESM(t *testing.T) {
 		t.Errorf("require(esm) = %q, want 42|function|true|__esModule,default,named", got)
 	}
 }
+
+func TestESMNamedDefaultFunctionAndClassLocalBinding(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.mjs": `
+			import addFn, { compute } from './mod.mjs';
+			globalThis.__res = addFn(10) + ':' + compute(5);
+		`,
+		"mod.mjs": `
+			export default function add(x) { return x + 1; }
+			export function compute(y) { return add(y * 2); }
+		`,
+	})
+	env.run(t, "main.mjs")
+	if got := env.globalGet("__res"); got != "11:11" {
+		t.Errorf("named export default function local reference: got %q, want 11:11", got)
+	}
+}
