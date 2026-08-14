@@ -134,6 +134,7 @@ func NewAluka(ctx engine.Context, cfg AlukaConfig) error {
 	alukaRegisterSQL(ctx, aluka)
 	alukaRegisterRedis(ctx, aluka)
 	alukaRegisterS3(ctx, aluka)
+	alukaRegisterIPC(ctx, aluka)
 
 	if err := ctx.Global().Set("Aluka", aluka); err != nil {
 		return err

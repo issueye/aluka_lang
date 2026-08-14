@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
+	"github.com/aluka-lang/aluka/internal/ipc"
 )
 
 // EmbeddedResolver 是产物模式（aluka build --compile）的嵌入式模块存储
@@ -192,6 +194,21 @@ func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engin
 	// Bun SQLite 兼容别名：复用纯 Go 的 node:sqlite 实现。
 	if specifier == "bun:sqlite" {
 		return l.loadBuiltin("node:sqlite")
+	}
+	// Aluka 原生 IPC 与动态插件模块拦截: import plugin from "aluka:plugin:xxx"
+	if strings.HasPrefix(specifier, "aluka:plugin:") {
+		pluginName := strings.TrimPrefix(specifier, "aluka:plugin:")
+		return l.loadPluginModule(pluginName)
+	}
+	if specifier == "aluka:ipc" {
+		alukaVal, err := l.ctx.Global().Get("Aluka")
+		if err == nil && alukaVal.IsObject() {
+			if ao, ok := alukaVal.AsObject(); ok {
+				if ipcVal, err := ao.Get("ipc"); err == nil {
+					return ipcVal, nil
+				}
+			}
+		}
 	}
 	// 内置模块拦截：node: 前缀（如 node:fs、node:path、node:fs/promises）。
 	if isBuiltinSpecifier(specifier) {
@@ -788,4 +805,129 @@ func (l *Loader) GetBuiltin(specifier string) (engine.Value, error) {
 		return engine.Undefined(), nil
 	}
 	return l.loadBuiltin("node:" + name)
+}
+
+// loadPluginModule 加载 aluka:plugin:<name> 原生 IPC 透明代理模块。
+func (l *Loader) loadPluginModule(pluginName string) (engine.Value, error) {
+	client, err := ipc.Connect(pluginName)
+	if err != nil {
+		return nil, fmt.Errorf("module: failed to connect to plugin %q: %w", pluginName, err)
+	}
+
+	proxyObj := engine.NewObject()
+	_ = proxyObj.Set("__pluginName", engine.Str(pluginName))
+
+	_ = proxyObj.Set("call", engine.NewFunction("call", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("plugin.call requires method name")
+		}
+		method := args[0].String()
+		var params interface{}
+		if len(args) > 1 {
+			params = pluginValueToJSON(args[1])
+		}
+		res, err := client.Call(method, params, 30*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		return pluginJSONToEngine(res), nil
+	}))
+
+	_ = proxyObj.Set("callSync", engine.NewFunction("callSync", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("plugin.callSync requires method name")
+		}
+		method := args[0].String()
+		var params interface{}
+		if len(args) > 1 {
+			params = pluginValueToJSON(args[1])
+		}
+		res, err := client.Call(method, params, 30*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		return pluginJSONToEngine(res), nil
+	}))
+
+	_ = proxyObj.Set("emit", engine.NewFunction("emit", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("plugin.emit requires event name")
+		}
+		evt := args[0].String()
+		var data interface{}
+		if len(args) > 1 {
+			data = pluginValueToJSON(args[1])
+		}
+		if err := client.Emit(evt, data); err != nil {
+			return nil, err
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = proxyObj.Set("close", engine.NewFunction("close", func(args []engine.Value) (engine.Value, error) {
+		_ = client.Close()
+		return engine.Undefined(), nil
+	}))
+
+	return proxyObj, nil
+}
+
+func pluginValueToJSON(v engine.Value) interface{} {
+	switch {
+	case v.IsUndefined() || v.IsNull():
+		return nil
+	case v.Type() == engine.TypeString:
+		return v.String()
+	case v.Type() == engine.TypeBoolean:
+		b, _ := v.Bool()
+		return b
+	case v.Type() == engine.TypeNumber:
+		f, _ := v.Float()
+		return f
+	default:
+		if a, ok := v.(*engine.ArrayValue); ok {
+			out := make([]interface{}, 0, len(a.Elems()))
+			for _, e := range a.Elems() {
+				out = append(out, pluginValueToJSON(e))
+			}
+			return out
+		}
+		if o, ok := v.AsObject(); ok {
+			obj := make(map[string]interface{})
+			for _, k := range o.Keys() {
+				if val, err := o.Get(k); err == nil {
+					obj[k] = pluginValueToJSON(val)
+				}
+			}
+			return obj
+		}
+	}
+	return nil
+}
+
+func pluginJSONToEngine(v interface{}) engine.Value {
+	switch val := v.(type) {
+	case nil:
+		return engine.Null()
+	case bool:
+		return engine.Boolean(val)
+	case float64:
+		return engine.Number(val)
+	case string:
+		return engine.Str(val)
+	case []interface{}:
+		elems := make([]engine.Value, len(val))
+		for i, e := range val {
+			elems[i] = pluginJSONToEngine(e)
+		}
+		return engine.NewArray(elems)
+	case map[string]interface{}:
+		obj := engine.NewObject()
+		for k, e := range val {
+			_ = obj.Set(k, pluginJSONToEngine(e))
+		}
+		return obj
+	default:
+		return engine.Undefined()
+	}
 }
