@@ -273,7 +273,7 @@ func analyze(key string, prog *ast.Program, gr *graph.Result) *moduleInfo {
 			info.imports = append(info.imports, importInfo{Spec: n.Source, Specifiers: n.Specifiers})
 		case *ast.ExportDecl:
 			if n.Declaration != nil {
-				for _, name := range declNames(n.Declaration) {
+				for _, name := range ast.DeclNames(n.Declaration) {
 					info.exports[name] = true
 				}
 				if stmtHasSideEffects(n.Declaration) {
@@ -340,7 +340,7 @@ func pruneModule(info *moduleInfo, usedExports map[string]map[string]bool, infos
 			}
 		case *ast.ExportDecl:
 			if n.Declaration != nil {
-				names := declNames(n.Declaration)
+				names := ast.DeclNames(n.Declaration)
 				allUsed := true
 				for _, name := range names {
 					if !used["*"] && !used[name] {
@@ -455,29 +455,6 @@ func resolveTarget(gr *graph.Result, from, spec string) string {
 		return ""
 	}
 	return table[spec]
-}
-
-// declNames 返回导出声明中的名字（var/function/class/let/const）。
-func declNames(d ast.Statement) []string {
-	switch n := d.(type) {
-	case *ast.VarDecl:
-		var names []string
-		for _, decl := range n.Decls {
-			if decl.Name != nil {
-				names = append(names, decl.Name.Name)
-			}
-		}
-		return names
-	case *ast.FunctionDecl:
-		if n.Name != nil {
-			return []string{n.Name.Name}
-		}
-	case *ast.ClassDecl:
-		if n.Name != nil {
-			return []string{n.Name.Name}
-		}
-	}
-	return nil
 }
 
 // stmtHasSideEffects 语句级副作用判定（仅顶层分析用）。

@@ -605,7 +605,7 @@ func (c *Compiler) compileVarDecl(d *ast.VarDecl) error {
 			// Destructuring declaration.
 			if decl.Init == nil {
 				// `let [a, b];` — declare all bindings as undefined.
-				for _, name := range patternNames(decl.Pattern) {
+				for _, name := range ast.PatternNames(decl.Pattern) {
 					if d.Kind == "var" {
 						c.declareVar(name)
 					} else {
@@ -672,28 +672,6 @@ func (c *Compiler) compileVarDecl(d *ast.VarDecl) error {
 	return nil
 }
 
-// patternNames extracts all identifier names bound by a destructuring pattern.
-func patternNames(p ast.Pattern) []string {
-	switch pat := p.(type) {
-	case *ast.Identifier:
-		return []string{pat.Name}
-	case *ast.ArrayPattern:
-		var names []string
-		for _, el := range pat.Elements {
-			if el.Target != nil {
-				names = append(names, patternNames(el.Target)...)
-			}
-		}
-		return names
-	case *ast.ObjectPattern:
-		var names []string
-		for _, prop := range pat.Properties {
-			names = append(names, patternNames(prop.Value)...)
-		}
-		return names
-	}
-	return nil
-}
 
 // compileBindPattern emits code to destructure the value in srcSlot into the
 // bindings declared by the pattern. `kind` is "var" or "let"/"const" and
@@ -3370,7 +3348,7 @@ func (c *Compiler) hoistFunctionDecls(stmts []ast.Statement) {
 func (c *Compiler) hoistVarDeclarators(decls []ast.VarDeclarator) {
 	for _, d := range decls {
 		if d.Pattern != nil {
-			for _, name := range patternNames(d.Pattern) {
+			for _, name := range ast.PatternNames(d.Pattern) {
 				c.declareVar(name)
 			}
 		} else {
@@ -3384,7 +3362,7 @@ func (c *Compiler) hoistVarDeclarators(decls []ast.VarDeclarator) {
 func (c *Compiler) hoistLetConst(decls []ast.VarDeclarator) {
 	for _, d := range decls {
 		if d.Pattern != nil {
-			for _, name := range patternNames(d.Pattern) {
+			for _, name := range ast.PatternNames(d.Pattern) {
 				c.declareLocal(name)
 			}
 		} else if d.Name != nil {
@@ -4125,7 +4103,7 @@ func collectLoopBodyBlockNames(body ast.Statement) []string {
 			if f.Kind == "let" || f.Kind == "const" {
 				for _, d := range f.Decls {
 					if d.Pattern != nil {
-						for _, name := range patternNames(d.Pattern) {
+						for _, name := range ast.PatternNames(d.Pattern) {
 							if !seen[name] {
 								seen[name] = true
 								names = append(names, name)

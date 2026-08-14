@@ -229,7 +229,7 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 				// export <decl> → keep the declaration, add export assignment
 				newBody = append(newBody, n.Declaration)
 				// Collect export assignments for the declared names
-				for _, name := range declNames(n.Declaration) {
+				for _, name := range ast.DeclNames(n.Declaration) {
 					exportAssignments = append(exportAssignments, makeExportAssignment(name, name, n.Loc))
 				}
 			} else if n.IsStar && n.Source != "" {
@@ -489,48 +489,3 @@ func makeStarReexport(source string, loc ast.Pos) ast.Statement {
 	}
 }
 
-// declNames extracts the names declared by a VarDecl, FunctionDecl, or ClassDecl.
-func declNames(stmt ast.Statement) []string {
-	switch n := stmt.(type) {
-	case *ast.VarDecl:
-		var names []string
-		for _, d := range n.Decls {
-			if d.Name != nil {
-				names = append(names, d.Name.Name)
-			}
-			if d.Pattern != nil {
-				names = append(names, patternNames(d.Pattern)...)
-			}
-		}
-		return names
-	case *ast.FunctionDecl:
-		if n.Name != nil {
-			return []string{n.Name.Name}
-		}
-	case *ast.ClassDecl:
-		if n.Name != nil {
-			return []string{n.Name.Name}
-		}
-	}
-	return nil
-}
-
-// patternNames extracts names from a destructuring pattern.
-func patternNames(p ast.Pattern) []string {
-	var names []string
-	switch pat := p.(type) {
-	case *ast.Identifier:
-		names = append(names, pat.Name)
-	case *ast.ArrayPattern:
-		for _, elem := range pat.Elements {
-			if elem.Target != nil {
-				names = append(names, patternNames(elem.Target)...)
-			}
-		}
-	case *ast.ObjectPattern:
-		for _, prop := range pat.Properties {
-			names = append(names, patternNames(prop.Value)...)
-		}
-	}
-	return names
-}

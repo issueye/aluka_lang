@@ -1,8 +1,6 @@
 // Package ast defines JavaScript abstract syntax tree node types.
 package ast
 
-import "github.com/aluka-lang/aluka/internal/engine/lexer"
-
 // Pos represents a source position.
 type Pos struct {
 	Line int
@@ -666,10 +664,6 @@ func (o *ObjectPattern) Pos() Pos     { return o.Loc }
 func (o *ObjectPattern) patternNode() {}
 func (o *ObjectPattern) node()        {}
 
-// PosFromToken builds a Pos from a lexer.Token.
-func PosFromToken(t lexer.Token) Pos {
-	return Pos{Line: t.Line, Col: t.Col}
-}
 
 // --- ESM import/export nodes --------------------------------------------
 
