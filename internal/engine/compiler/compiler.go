@@ -1877,19 +1877,22 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 				c.emit(bytecode.OpSpreadObject, 0)
 				continue
 			}
-			if prop.Computed {
-				// { [expr]: value } — evaluate key at runtime.
-				if err := c.compileExpr(prop.Key); err != nil {
-					return err
-				}
-				if err := c.compileExpr(prop.Value); err != nil {
-					return err
-				}
-				c.emit(bytecode.OpSetPropComputedObj, 0)
-				continue
-			}
 			// get/set 访问器：把函数注册为对象上的 accessor。
 			if prop.Kind == ast.PropertyGet || prop.Kind == ast.PropertySet {
+				if prop.Computed {
+					if err := c.compileExpr(prop.Key); err != nil {
+						return err
+					}
+					if err := c.compileExpr(prop.Value); err != nil {
+						return err
+					}
+					if prop.Kind == ast.PropertyGet {
+						c.emit(bytecode.OpSetGetterComputedObj, 0)
+					} else {
+						c.emit(bytecode.OpSetSetterComputedObj, 0)
+					}
+					continue
+				}
 				if err := c.compileExpr(prop.Value); err != nil {
 					return err
 				}
@@ -1900,6 +1903,17 @@ func (c *Compiler) compileExpr(e ast.Expression) error {
 				} else {
 					c.emit(bytecode.OpSetSetterObj, uint32(nameIdx))
 				}
+				continue
+			}
+			if prop.Computed {
+				// { [expr]: value } — evaluate key at runtime.
+				if err := c.compileExpr(prop.Key); err != nil {
+					return err
+				}
+				if err := c.compileExpr(prop.Value); err != nil {
+					return err
+				}
+				c.emit(bytecode.OpSetPropComputedObj, 0)
 				continue
 			}
 			if err := c.compileExpr(prop.Value); err != nil {
@@ -3651,18 +3665,24 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 		HasSuper: hasSuper,
 	}
 
-	// Collect class field declarations (ES2022 / TypeScript). Instance fields
+	// Collect class field declarations and static blocks (ES2022 / TypeScript). Instance fields
 	// with initializers are injected into the constructor body; static fields
-	// are assigned to the class after OpMakeClass. Fields without initializers
+	// and static initialization blocks are evaluated after OpMakeClass. Fields without initializers
 	// (e.g. `x: number;`) have no runtime effect and are skipped.
 	var instanceFieldInits []ast.Statement
-	var staticFields []*ast.MethodDefinition
+	var staticElements []*ast.MethodDefinition
 	for fieldIndex, m := range body.Methods {
+		if m.Kind == ast.MethodStaticBlock {
+			staticElements = append(staticElements, &m)
+			continue
+		}
 		if m.Kind != ast.MethodField {
 			continue
 		}
 		if m.Static {
-			staticFields = append(staticFields, &m)
+			if m.Init != nil {
+				staticElements = append(staticElements, &m)
+			}
 			continue
 		}
 		if m.Init == nil {
@@ -3767,11 +3787,11 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 		classTpl.CtorIdx = idx
 	}
 
-	// Compile non-constructor, non-field methods.
+	// Compile non-constructor, non-field, non-static-block methods.
 	// 计算键方法（[expr]() {}）：键表达式按方法顺序求值压栈，供
 	// OpMakeClass 弹出使用；记录其在 Methods 中的索引。
 	for _, m := range body.Methods {
-		if m.Kind == ast.MethodConstructor || m.Kind == ast.MethodField {
+		if m.Kind == ast.MethodConstructor || m.Kind == ast.MethodField || m.Kind == ast.MethodStaticBlock {
 			continue
 		}
 		if m.Computed {
@@ -3806,28 +3826,43 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 	classIdx := c.module.AddClass(classTpl)
 	c.emit(bytecode.OpMakeClass, uint32(classIdx))
 
-	// Static field initialization: `Class.field = init` after the class is
-	// created. The constructor (class function) is on top of the stack.
-	// 布局 [class, class, val] → OpSetPropObj（val 弹栈、写 class 属性、
-	// class 留在栈顶供后续字段/表达式继续使用）。
-	for _, f := range staticFields {
-		if f.Init == nil {
+	// Static field & static block initialization (ES2022):
+	// Evaluated in source declaration order after the class constructor is created.
+	// The constructor (class function) is on top of the stack.
+	for _, elem := range staticElements {
+		if elem.Kind == ast.MethodStaticBlock {
+			// static { ... } block execution:
+			// Stack: [class] -> OpDup -> [class, class]
+			// compileExpr(elem.Value) -> [class, class, blockFn]
+			// OpSwap -> [class, blockFn, class]
+			// OpCallWithThis(0) -> [class, ret]
+			// OpPop -> [class]
+			c.emit(bytecode.OpDup, 0)
+			if err := c.compileExpr(elem.Value); err != nil {
+				return err
+			}
+			c.emit(bytecode.OpSwap, 0)
+			c.emit(bytecode.OpCallWithThis, 0)
+			c.emit(bytecode.OpPop, 0)
+			continue
+		}
+		if elem.Init == nil {
 			continue
 		}
 		c.emit(bytecode.OpDup, 0)
-		if f.Computed {
-			if err := c.compileExpr(f.Key); err != nil {
+		if elem.Computed {
+			if err := c.compileExpr(elem.Key); err != nil {
 				return err
 			}
-			if err := c.compileExpr(f.Init); err != nil {
+			if err := c.compileExpr(elem.Init); err != nil {
 				return err
 			}
 			c.emit(bytecode.OpSetPropComputedObj, 0)
 			continue
 		}
-		fieldName := propKey(f.Key)
+		fieldName := propKey(elem.Key)
 		nameIdx := c.cur().tmpl.AddStringConst(fieldName)
-		if err := c.compileExpr(f.Init); err != nil {
+		if err := c.compileExpr(elem.Init); err != nil {
 			return err
 		}
 		c.emit(bytecode.OpSetPropObj, uint32(nameIdx))

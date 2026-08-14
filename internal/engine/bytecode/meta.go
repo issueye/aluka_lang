@@ -208,8 +208,10 @@ var opMeta = [256]*OpMeta{
 	OpMakeRegexp: {Name: "MAKE_REGEXP", Pops: 2, Pushes: 1},
 
 	// --- Object literal accessors (get/set) ---
-	OpSetGetterObj: {Name: "SET_GETTER_OBJ", Operand: OperandConstIdx, Pops: 1},
-	OpSetSetterObj: {Name: "SET_SETTER_OBJ", Operand: OperandConstIdx, Pops: 1},
+	OpSetGetterObj:         {Name: "SET_GETTER_OBJ", Operand: OperandConstIdx, Pops: 1},
+	OpSetSetterObj:         {Name: "SET_SETTER_OBJ", Operand: OperandConstIdx, Pops: 1},
+	OpSetGetterComputedObj: {Name: "SET_GETTER_COMPUTED_OBJ", Pops: 2},
+	OpSetSetterComputedObj: {Name: "SET_SETTER_COMPUTED_OBJ", Pops: 2},
 
 	// --- Superinstructions (O2-D1) ---
 	OpGetPropLocal: {Name: "GET_PROP_LOCAL", Operand: OperandPackedSlotName, Pushes: 1},

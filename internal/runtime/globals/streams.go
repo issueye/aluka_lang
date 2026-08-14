@@ -793,12 +793,37 @@ func promiseResolveValue(ctx engine.Context, v engine.Value) (engine.Value, erro
 	}))
 }
 
+// newTypeError 创建一个 TypeError / Error 实例（优先调用全局构造器）。
+func newTypeError(ctx engine.Context, msg string) engine.Value {
+	if ctx != nil {
+		if ctorVal, err := ctx.Global().Get("TypeError"); err == nil && ctorVal.IsFunction() {
+			if fn, ok := ctorVal.AsFunction(); ok {
+				if res, err := fn.Call([]engine.Value{engine.Str(msg)}); err == nil {
+					return res
+				}
+			}
+		}
+		if ctorVal, err := ctx.Global().Get("Error"); err == nil && ctorVal.IsFunction() {
+			if fn, ok := ctorVal.AsFunction(); ok {
+				if res, err := fn.Call([]engine.Value{engine.Str(msg)}); err == nil {
+					return res
+				}
+			}
+		}
+	}
+	errObj := engine.NewObject()
+	_ = errObj.Set("name", engine.Str("TypeError"))
+	_ = errObj.Set("message", engine.Str(msg))
+	return errObj
+}
+
 // promiseRejectValue 用 Promise.reject 包装错误。
 func promiseRejectValue(ctx engine.Context, msg string) (engine.Value, error) {
 	return newPromise(ctx, engine.NewFunction("executor", func(args []engine.Value) (engine.Value, error) {
 		if len(args) > 1 {
 			if f, ok := args[1].AsFunction(); ok {
-				if _, err := f.Call([]engine.Value{engine.Str(msg)}); err != nil {
+				errVal := newTypeError(ctx, msg)
+				if _, err := f.Call([]engine.Value{errVal}); err != nil {
 					interpreter.ReportUncaught(nil, err)
 				}
 			}
@@ -824,10 +849,22 @@ func callResolve(resolve engine.Value, v engine.Value) {
 	}
 }
 
+// callRejectError 调用 Promise reject 函数并传入指定 Error 实例。
+func callRejectError(reject engine.Value, errVal engine.Value) {
+	if f, ok := reject.AsFunction(); ok {
+		if _, err := f.Call([]engine.Value{errVal}); err != nil {
+			interpreter.ReportUncaught(nil, err)
+		}
+	}
+}
+
 // callReject 调用 Promise reject 函数。
 func callReject(reject engine.Value, msg string) {
 	if f, ok := reject.AsFunction(); ok {
-		if _, err := f.Call([]engine.Value{engine.Str(msg)}); err != nil {
+		errObj := engine.NewObject()
+		_ = errObj.Set("name", engine.Str("TypeError"))
+		_ = errObj.Set("message", engine.Str(msg))
+		if _, err := f.Call([]engine.Value{errObj}); err != nil {
 			interpreter.ReportUncaught(nil, err)
 		}
 	}

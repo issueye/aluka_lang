@@ -2376,14 +2376,25 @@ func (p *Parser) parseImportDeclRest(t lexer.Token) (*ast.ImportDecl, error) {
 				}
 				nameTok, err := p.expect(lexer.TokenIdent, "")
 				if err != nil {
-					return nil, err
+					// 规范：关键字/字符串字面量作为导入名合法，例如 import { in as Foo, default as Bar, "pkg-name" as pkg }
+					if p.peek().Type == lexer.TokenKeyword || p.peek().Type == lexer.TokenString {
+						tk := p.next()
+						nameTok = lexer.Token{Type: lexer.TokenIdent, Value: tk.Value}
+					} else {
+						return nil, err
+					}
 				}
 				spec := ast.ImportSpecifier{Imported: nameTok.Value, Local: nameTok.Value}
 				// `as` rename: {a as b}
 				if p.matchIdent("as") {
 					localTok, err := p.expect(lexer.TokenIdent, "")
 					if err != nil {
-						return nil, err
+						if p.peek().Type == lexer.TokenKeyword {
+							tk := p.next()
+							localTok = lexer.Token{Type: lexer.TokenIdent, Value: tk.Value}
+						} else {
+							return nil, err
+						}
 					}
 					spec.Local = localTok.Value
 				}
@@ -2535,7 +2546,19 @@ func (p *Parser) parseExportDecl() (ast.Statement, error) {
 		}
 		// `export type X = ...` — 类型别名声明（含泛型/联合类型等），擦除。
 		if p.peek().Type == lexer.TokenIdent {
-			if err := p.skipToSemicolon(); err != nil {
+			if _, err := p.expect(lexer.TokenIdent, ""); err != nil {
+				return nil, err
+			}
+			if err := p.skipTypeParameters(); err != nil {
+				return nil, err
+			}
+			if err := p.expectPunct("="); err != nil {
+				return nil, err
+			}
+			if err := p.skipType(); err != nil {
+				return nil, err
+			}
+			if err := p.consumeSemicolon(); err != nil {
 				return nil, err
 			}
 			return &ast.EmptyStmt{Loc: posOf(t)}, nil
@@ -2880,6 +2903,24 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 	t := p.peek()
 	var def ast.MethodDefinition
 	def.Loc = posOf(t)
+
+	// ES2022 类静态初始化块：`static { ... }`
+	if (p.peek().Type == lexer.TokenIdent || p.peek().Type == lexer.TokenKeyword) && p.peek().Value == "static" &&
+		p.peekAt(1).Type == lexer.TokenPunct && p.peekAt(1).Value == "{" {
+		p.next() // consume static
+		block, err := p.parseBlock()
+		if err != nil {
+			return def, err
+		}
+		def.Kind = ast.MethodStaticBlock
+		def.Static = true
+		def.Key = &ast.Identifier{Name: "__static_block__", Loc: posOf(t)}
+		def.Value = &ast.FunctionExpr{
+			Body: block,
+			Loc:  posOf(t),
+		}
+		return def, nil
+	}
 
 	// TypeScript 可见性/修饰符前缀：private/protected/public/readonly/
 	// abstract/override/declare + static（任意顺序，如 `private static readonly`）。
@@ -3305,13 +3346,27 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 					continue
 				}
 				if (id.Name == "get" || id.Name == "set") &&
-					p.peek().Type != lexer.TokenPunct {
-					// 实际是访问器：get prop() {}
-					methodTok := p.next()
+					(p.peek().Type != lexer.TokenPunct || p.peek().Value == "[") {
+					// 实际是访问器：get prop() {} / get [prop]() {}
+					methodTok := p.peek()
 					var methodKey ast.Expression
-					if methodTok.Type == lexer.TokenIdent || methodTok.Type == lexer.TokenKeyword {
+					accessorComputed := false
+					if methodTok.Type == lexer.TokenPunct && methodTok.Value == "[" {
+						p.next() // [
+						computedExpr, err := p.parseAssignment()
+						if err != nil {
+							return nil, err
+						}
+						if err := p.expectPunct("]"); err != nil {
+							return nil, err
+						}
+						methodKey = computedExpr
+						accessorComputed = true
+					} else if methodTok.Type == lexer.TokenIdent || methodTok.Type == lexer.TokenKeyword {
+						p.next()
 						methodKey = &ast.Identifier{Name: methodTok.Value, Loc: posOf(methodTok)}
 					} else if methodTok.Type == lexer.TokenString {
+						p.next()
 						methodKey = &ast.StringLit{Value: methodTok.Value, Loc: posOf(methodTok)}
 					} else {
 						return nil, p.errorf(methodTok, "invalid accessor name")
@@ -3326,7 +3381,7 @@ func (p *Parser) parseObjectLit() (ast.Expression, error) {
 					} else {
 						kind = ast.PropertySet
 					}
-					obj.Properties = append(obj.Properties, ast.Property{Key: methodKey, Value: fn, Kind: kind, Loc: posOf(propTok)})
+					obj.Properties = append(obj.Properties, ast.Property{Key: methodKey, Value: fn, Kind: kind, Computed: accessorComputed, Loc: posOf(propTok)})
 					if !p.matchPunct(",") {
 						break
 					}

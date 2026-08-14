@@ -166,6 +166,9 @@ const (
 	// 栈 [obj, fn]：把 fn 注册为 obj 上 key（A: 常量索引）的 getter/setter。
 	OpSetGetterObj
 	OpSetSetterObj
+	// 栈 [obj, key, fn]：把 fn 注册为 obj 上计算键 key 的 getter/setter。
+	OpSetGetterComputedObj
+	OpSetSetterComputedObj
 
 	// --- Superinstructions (O2-D1) ---
 	// OpGetPropLocal：合并 LoadLocal slot; GetProp name（slot<<16 | nameIdx）。

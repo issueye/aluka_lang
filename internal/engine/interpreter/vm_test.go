@@ -1090,6 +1090,24 @@ func TestVMClassGetterSetter(t *testing.T) {
 	}
 }
 
+func TestVMComputedObjectAccessors(t *testing.T) {
+	got := vmEvalStr(t, `
+		const sym = Symbol("meta");
+		const obj = {
+			_v: 10,
+			get [sym]() { return this._v * 2; },
+			set [sym](v) { this._v = v; }
+		};
+		const v1 = obj[sym];
+		obj[sym] = 50;
+		const v2 = obj[sym];
+		v1 + "," + v2
+	`)
+	if got != "20,100" {
+		t.Errorf("computed object accessors = %q, want '20,100'", got)
+	}
+}
+
 func TestVMClassGetterOnly(t *testing.T) {
 	// Read-only getter (no setter).
 	got := vmEvalStr(t, `
@@ -1177,6 +1195,27 @@ func TestVMClassDefaultConstructor(t *testing.T) {
 	`)
 	if got != "object" {
 		t.Errorf("default base ctor = %q, want object", got)
+	}
+}
+
+func TestVMClassStaticBlock(t *testing.T) {
+	// ES2022 Class Static Initialization Blocks
+	got := vmEvalStr(t, `
+		class Config {
+			static count = 10;
+			static {
+				this.brand = "aluka." + this.name;
+				this.count += 5;
+			}
+			static suffix = "_ok";
+			static {
+				this.fullBrand = this.brand + this.suffix;
+			}
+		}
+		Config.count + "|" + Config.brand + "|" + Config.fullBrand
+	`)
+	if got != "15|aluka.Config|aluka.Config_ok" {
+		t.Errorf("class static block = %q, want '15|aluka.Config|aluka.Config_ok'", got)
 	}
 }
 

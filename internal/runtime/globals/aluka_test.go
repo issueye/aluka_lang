@@ -300,7 +300,7 @@ var r2 = Aluka.Redis({ hostname: "example.com", port: 7000, password: "x" });
 globalThis.__r2 = typeof r2 === "object";
 var s = Aluka.S3();
 globalThis.__s = typeof s === "object" && typeof s.put === "function" && typeof s.get === "function";
-s.exists("k").catch(function(e) { globalThis.__sErr = typeof e === "string" && e.indexOf("configured") >= 0; });
+s.exists("k").catch(function(e) { var m = (e && e.message) ? e.message : String(e); globalThis.__sErr = m.indexOf("configured") >= 0; });
 `
 	if err := fetchRun(t, ctx, code); err != nil {
 		t.Fatalf("run: %v", err)

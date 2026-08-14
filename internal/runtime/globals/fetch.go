@@ -701,7 +701,7 @@ func (b *fetchBodyState) finish(err error) {
 
 func (b *fetchBodyState) settle(waiter fetchBodyWaiter) {
 	if b.err != "" {
-		callReject(waiter.reject, b.err)
+		callRejectError(waiter.reject, newTypeError(b.ctx, b.err))
 		return
 	}
 	switch waiter.kind {
@@ -710,25 +710,25 @@ func (b *fetchBodyState) settle(waiter fetchBodyWaiter) {
 	case "json":
 		jsonGlobal, err := b.ctx.Global().Get("JSON")
 		if err != nil || !jsonGlobal.IsObject() {
-			callReject(waiter.reject, "JSON not available")
+			callRejectError(waiter.reject, newTypeError(b.ctx, "JSON not available"))
 			return
 		}
 		jsonObject, _ := jsonGlobal.AsObject()
 		parse, err := jsonObject.Get("parse")
 		if err != nil || !parse.IsFunction() {
-			callReject(waiter.reject, "JSON.parse not available")
+			callRejectError(waiter.reject, newTypeError(b.ctx, "JSON.parse not available"))
 			return
 		}
 		if f, ok := parse.AsFunction(); ok {
 			parsed, parseErr := f.Call([]engine.Value{engine.Str(string(b.data))})
 			if parseErr != nil {
-				callReject(waiter.reject, parseErr.Error())
+				callRejectError(waiter.reject, newTypeError(b.ctx, parseErr.Error()))
 				return
 			}
 			callResolve(waiter.resolve, parsed)
 			return
 		}
-		callReject(waiter.reject, "JSON.parse failed")
+		callRejectError(waiter.reject, newTypeError(b.ctx, "JSON.parse failed"))
 	default:
 		callResolve(waiter.resolve, engine.Str(string(b.data)))
 	}
@@ -916,7 +916,7 @@ func doFetch(ctx engine.Context, args []engine.Value) (engine.Value, error) {
 			if err != nil {
 				ctx.PostTask(func() {
 					defer release()
-					callResolve(reject, engine.Str("fetch: "+err.Error()))
+					callRejectError(reject, newTypeError(ctx, "fetch failed: "+err.Error()))
 				})
 				return
 			}
@@ -938,7 +938,7 @@ func doFetch(ctx engine.Context, args []engine.Value) (engine.Value, error) {
 			if err != nil {
 				ctx.PostTask(func() {
 					defer release()
-					callResolve(reject, engine.Str("fetch: "+err.Error()))
+					callRejectError(reject, newTypeError(ctx, "fetch failed: "+err.Error()))
 				})
 				return
 			}

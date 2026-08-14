@@ -62,7 +62,7 @@ import (
 //
 //	短路弹残留），for-of 无声明迭代变量不再发射越界 CloseUpvalues，成员
 //	链计数修正。旧缓存产物栈行为不一致，必须失效。
-const FormatVersion = 23
+const FormatVersion = 25
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")

@@ -482,6 +482,16 @@ func TestUtilInspect(t *testing.T) {
 	}
 }
 
+func TestUtilStripVTControlCharacters(t *testing.T) {
+	ctx := newCtx(t)
+	m, _ := NewUtil(ctx)
+
+	got := callMethod(t, m, "stripVTControlCharacters", engine.Str("\u001B[4mvalue\u001B[0m"))
+	if got.String() != "value" {
+		t.Errorf("stripVTControlCharacters = %q, want 'value'", got.String())
+	}
+}
+
 func TestUtilTypes(t *testing.T) {
 	ctx := newCtx(t)
 	m, _ := NewUtil(ctx)

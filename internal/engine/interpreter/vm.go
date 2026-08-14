@@ -1153,6 +1153,24 @@ func (v *VM) run() (engine.Value, error) {
 				if o, ok := obj.AsObject(); ok {
 					engine.UpdateAccessor(o, name, false, fn)
 				}
+			case bytecode.OpSetGetterComputedObj:
+				// 对象字面量计算 getter：栈 [obj, key, fn]，注册为 accessor getter。
+				fn := v.pop()
+				key := v.pop()
+				obj := v.peek()
+				name := propertyKeyOf(key)
+				if o, ok := obj.AsObject(); ok {
+					engine.UpdateAccessor(o, name, true, fn)
+				}
+			case bytecode.OpSetSetterComputedObj:
+				// 对象字面量计算 setter：栈 [obj, key, fn]，注册为 accessor setter。
+				fn := v.pop()
+				key := v.pop()
+				obj := v.peek()
+				name := propertyKeyOf(key)
+				if o, ok := obj.AsObject(); ok {
+					engine.UpdateAccessor(o, name, false, fn)
+				}
 			case bytecode.OpGetElem:
 				key := v.pop()
 				obj := v.pop()

@@ -610,3 +610,16 @@ func TestESMNamedDefaultFunctionAndClassLocalBinding(t *testing.T) {
 		t.Errorf("named export default function local reference: got %q, want 11:11", got)
 	}
 }
+
+func TestExportTypeWithoutSemicolonASI(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"entry.cjs": `var m = require('./mod.ts');
+			globalThis.__r = typeof m.fn;`,
+		"mod.ts": `export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
+export function fn() { return 1; }`,
+	})
+	env.run(t, "entry.cjs")
+	if got := env.globalGet("__r"); got != "function" {
+		t.Errorf("require(mod.ts) fn = %q, want 'function'", got)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -143,6 +144,13 @@ func NewUtil(ctx engine.Context) (engine.Value, error) {
 	// node v22.x lib/internal/util/parse_args 移植）。
 	_ = m.Set("parseArgs", engine.NewFunction("parseArgs", func(args []engine.Value) (engine.Value, error) {
 		return parseArgsImpl(ctx, args)
+	}))
+
+	_ = m.Set("stripVTControlCharacters", engine.NewFunction("stripVTControlCharacters", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Str(""), nil
+		}
+		return engine.Str(stripVTControlCharacters(args[0].String())), nil
 	}))
 
 	// util.types 子对象
@@ -772,4 +780,10 @@ func registerUtilTypes(types engine.Object) {
 		_, ok := engine.AsDataView(v)
 		return ok
 	})
+}
+
+var ansiEscapePattern = regexp.MustCompile(`[\x1b\x9b](?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[P^_][^\x07\x1b]*(?:\x07|\x1b\\))`)
+
+func stripVTControlCharacters(str string) string {
+	return ansiEscapePattern.ReplaceAllString(str, "")
 }

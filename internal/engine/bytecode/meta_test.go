@@ -155,6 +155,8 @@ func TestMetaStackEffect(t *testing.T) {
 		{bytecode.OpAwait, 1, 1, true},
 		{bytecode.OpMakeRegexp, 2, 1, true},
 		{bytecode.OpSetGetterObj, 1, 0, true},
+		{bytecode.OpSetGetterComputedObj, 2, 0, true},
+		{bytecode.OpSetSetterComputedObj, 2, 0, true},
 		{bytecode.OpCloseUpvalues, 0, 0, true},
 		{bytecode.OpInc, 1, 1, true},
 		{bytecode.OpDec, 1, 1, true},

@@ -571,7 +571,8 @@ const (
 	MethodConstructor
 	MethodGetter
 	MethodSetter
-	MethodField // class field declaration (ES2022 / TS): `x = init;` or `x: T;`
+	MethodField       // class field declaration (ES2022 / TS): `x = init;` or `x: T;`
+	MethodStaticBlock // class static initialization block (ES2022): `static { ... }`
 )
 
 // MethodDefinition is one entry in a class body: a constructor, method,
