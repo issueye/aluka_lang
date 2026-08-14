@@ -1219,6 +1219,43 @@ func TestVMClassStaticBlock(t *testing.T) {
 	}
 }
 
+// TestVMClassStaticSuperResolution 静态语境（静态字段初始化器/静态块/静态
+// 方法）中 super 属性解析到父类构造器（父类静态成员）；实例语境仍解析到
+// 父类原型。
+func TestVMClassStaticSuperResolution(t *testing.T) {
+	got := vmEvalStr(t, `
+		class Base {
+			static x = 1;
+			static double() { return Base.x * 2; }
+			proto() { return "proto"; }
+		}
+		class Sub extends Base {
+			static y = super.x + 1;
+			static { this.z = super.x + 10; }
+			static m() { return super.x * 100; }
+			static callBase() { return super.double(); }
+			inst() { return super.proto(); }
+		}
+		Sub.y + "," + Sub.z + "," + Sub.m() + "," + Sub.callBase() + "," + new Sub().inst()
+	`)
+	if got != "2,11,100,2,proto" {
+		t.Errorf("class static super resolution = %q, want '2,11,100,2,proto'", got)
+	}
+}
+
+// TestVMClassStaticSuperInstanceContextUndefined 实例方法中 super.x 仍
+// 查父类原型：父类只有静态 x 时为 undefined。
+func TestVMClassStaticSuperInstanceContextUndefined(t *testing.T) {
+	got := vmEvalStr(t, `
+		class Base { static x = 1; }
+		class Sub extends Base { m() { return super.x; } }
+		new Sub().m() === undefined
+	`)
+	if got != "true" {
+		t.Errorf("instance super.x over static = %q, want 'true'", got)
+	}
+}
+
 func TestVMClassInstanceof(t *testing.T) {
 	got := vmEvalStr(t, `
 		class A {}

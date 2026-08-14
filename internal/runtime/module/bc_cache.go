@@ -26,7 +26,12 @@ const bcCacheDirName = ".aluka/cache"
 // pipelineVersion 是模块管线分层版本。前端分类、ESM/CJS 判定、lower/wrapper
 // 语义变化时递增，使旧字节码缓存失效（不依赖 FormatVersion——字节码布局
 // 未变时 FormatVersion 不变，但分类/阶段语义可能已变）。
-const pipelineVersion = 1
+//
+// v1 → v2：TransformESMToCJS 将 import 的 require 调用提升到模块体顶部；
+//
+//	编译器 super 静态语境解析到父类构造器。同源文件的产物语义已变化，
+//	旧缓存必须失效。
+const pipelineVersion = 2
 
 // bytecodeCache 提供字节码 Module 的磁盘读写。
 type bytecodeCache struct {

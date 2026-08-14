@@ -1938,7 +1938,6 @@ func (v *VM) callClosureThis(cl *vmClosure, thisVal engine.Value, args []engine.
 	if cl.module != nil {
 		v.module = cl.module
 	}
-	defer func() { v.module = savedModule }()
 	tmpl := cl.tmpl
 	frame := vmFrame{
 		tmpl:     tmpl,
@@ -1963,6 +1962,7 @@ func (v *VM) callClosureThis(cl *vmClosure, thisVal engine.Value, args []engine.
 	}
 	v.frames = append(v.frames, frame)
 	result, err := v.run()
+	v.module = savedModule
 	// super() returns this if the parent ctor didn't return an object.
 	if err == nil && !result.IsObject() {
 		result = thisVal

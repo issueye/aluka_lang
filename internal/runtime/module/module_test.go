@@ -623,3 +623,41 @@ export function fn() { return 1; }`,
 		t.Errorf("require(mod.ts) fn = %q, want 'function'", got)
 	}
 }
+
+// TestImportHoistingBeforeUse ESM 语义：所有模块请求先于模块体求值，
+// import 语句的位置不影响导入绑定的可用时机（require 调用提升到顶部）。
+func TestImportHoistingBeforeUse(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.mjs": `
+			globalThis.__first = add(1);
+			import add from './mod.mjs';
+			globalThis.__second = add(2);
+		`,
+		"mod.mjs": `export default function add(n) { return n + 40; }`,
+	})
+	env.run(t, "main.mjs")
+	if got := env.globalGet("__first"); got != "41" {
+		t.Errorf("import used before import stmt: got %q, want 41", got)
+	}
+	if got := env.globalGet("__second"); got != "42" {
+		t.Errorf("import used after import stmt: got %q, want 42", got)
+	}
+}
+
+// TestImportHoistingSideEffectOrder import 提升不改变源码内 import 的
+// 相对顺序：依赖副作用按 import 出现顺序执行，且都先于模块体语句。
+func TestImportHoistingSideEffectOrder(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"main.mjs": `
+			globalThis.__log += "|body";
+			import './a.mjs';
+			import './b.mjs';
+		`,
+		"a.mjs": `globalThis.__log = (globalThis.__log || "") + "|a";`,
+		"b.mjs": `globalThis.__log = (globalThis.__log || "") + "|b";`,
+	})
+	env.run(t, "main.mjs")
+	if got := env.globalGet("__log"); got != "|a|b|body" {
+		t.Errorf("import hoisting side-effect order = %q, want '|a|b|body'", got)
+	}
+}

@@ -187,6 +187,7 @@ func HasESMDecls(prog *ast.Program) bool {
 //	import * as ns from 'mod'     →  var ns = require('mod')
 //	import {a, b as c} from 'mod' →  var __imp_N = require('mod'); var a = __imp_N.a; var c = __imp_N.b
 //	import 'mod'                   →  require('mod')
+//	（import 的 require 调用统一提升到模块体顶部，见函数内注释）
 //
 //	export var x = 1              →  var x = 1;  (plus module.exports.x = x at end)
 //	export function f() {}        →  function f() {}  (plus module.exports.f = f at end)
@@ -196,6 +197,11 @@ func HasESMDecls(prog *ast.Program) bool {
 //	export * from 'mod'           →  Object.assign(module.exports, require('mod'))
 func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 	var newBody []ast.Statement
+	// import 的 require 调用提升到模块体顶部（按源码顺序）：ESM 语义要求
+	// 所有模块请求在模块体执行前求值，import 语句位置不影响依赖求值时机
+	//（对齐 Node/Babel CJS 产物；body 中语句先于 import 文本位置引用导入
+	// 绑定时也能取到已求值的模块）。
+	var importRequires []ast.Statement
 	var exportAssignments []ast.Statement
 	lazyBindings := make(map[string]ast.Expression)
 	impCounter := 0
@@ -207,8 +213,8 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 			impVar := fmt.Sprintf("__imp_%d", impCounter)
 			impCounter++
 
-			// var __imp_N = require('mod')
-			newBody = append(newBody, makeRequireCall(impVar, n.Source, n.Loc))
+			// var __imp_N = require('mod')  — hoisted below
+			importRequires = append(importRequires, makeRequireCall(impVar, n.Source, n.Loc))
 
 			// Bind specifiers
 			for _, spec := range n.Specifiers {
@@ -295,6 +301,10 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 		}
 	}
 
+	// 提升的 import require 前置，再接模块体，最后是导出赋值。
+	if len(importRequires) > 0 {
+		newBody = append(importRequires, newBody...)
+	}
 	// Append all export assignments at the end
 	newBody = append(newBody, exportAssignments...)
 	if len(lazyBindings) > 0 {

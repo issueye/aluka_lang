@@ -2310,6 +2310,14 @@ func (p *Parser) parseImportDecl() (ast.Statement, error) {
 	return p.parseImportDeclRest(t)
 }
 
+// isContextualBindingKeyword 判断关键字token能否作为 import 绑定名。
+// of/async 是上下文关键字（非保留字，可作标识符）；其余关键字（if/let/
+// await/default 等）在模块代码（恒严格模式）中不可作绑定名，与 Node 一致
+// 报 SyntaxError，例如 import { a as if }。
+func isContextualBindingKeyword(s string) bool {
+	return s == "of" || s == "async"
+}
+
 // parseImportDeclRest parses the specifier list + `from 'mod'` part of an
 // import declaration (after the leading `import` [and optional `type`] has
 // been consumed).
@@ -2339,7 +2347,8 @@ func (p *Parser) parseImportDeclRest(t lexer.Token) (*ast.ImportDecl, error) {
 	// Parse import specifiers
 	for {
 		// Default import: import x from 'mod'
-		if p.peek().Type == lexer.TokenIdent {
+		if p.peek().Type == lexer.TokenIdent ||
+			(p.peek().Type == lexer.TokenKeyword && isContextualBindingKeyword(p.peek().Value)) {
 			nameTok := p.next()
 			decl.Specifiers = append(decl.Specifiers, ast.ImportSpecifier{
 				Imported: "",
@@ -2353,7 +2362,12 @@ func (p *Parser) parseImportDeclRest(t lexer.Token) (*ast.ImportDecl, error) {
 			}
 			nameTok, err := p.expect(lexer.TokenIdent, "")
 			if err != nil {
-				return nil, err
+				// import * as ns：上下文关键字 of/async 可作绑定名。
+				if p.peek().Type == lexer.TokenKeyword && isContextualBindingKeyword(p.peek().Value) {
+					nameTok = p.next()
+				} else {
+					return nil, err
+				}
 			}
 			decl.Specifiers = append(decl.Specifiers, ast.ImportSpecifier{
 				Imported: "*",
@@ -2389,9 +2403,10 @@ func (p *Parser) parseImportDeclRest(t lexer.Token) (*ast.ImportDecl, error) {
 				if p.matchIdent("as") {
 					localTok, err := p.expect(lexer.TokenIdent, "")
 					if err != nil {
-						if p.peek().Type == lexer.TokenKeyword {
-							tk := p.next()
-							localTok = lexer.Token{Type: lexer.TokenIdent, Value: tk.Value}
+						// 绑定名仅允许上下文关键字（of/async）；保留字
+						// （if/let/await 等）按 Node 行为报 SyntaxError。
+						if p.peek().Type == lexer.TokenKeyword && isContextualBindingKeyword(p.peek().Value) {
+							localTok = p.next()
 						} else {
 							return nil, err
 						}
@@ -2894,6 +2909,76 @@ func classKeyStart(t lexer.Token) bool {
 	return false
 }
 
+// containsArgumentsRef 判断静态块 AST 中是否存在 arguments 引用（规范
+// ContainsArguments：引用位置命中即非法）。嵌套的普通函数/方法有独立的
+// arguments 绑定，跳过其函数体；箭头函数沿用外层绑定，需继续深入。
+// 非计算成员键/属性键/方法名等非引用位置不计数。
+func containsArgumentsRef(n ast.Node) bool {
+	found := false
+	var walk func(ast.Node)
+	// walkClassBody：非计算方法名/字段名不是引用；方法体是 FunctionExpr
+	// （含独立 arguments 绑定，跳过）。
+	walkClassBody := func(body *ast.ClassBody) {
+		if body == nil {
+			return
+		}
+		for i := range body.Methods {
+			m := &body.Methods[i]
+			if m.Computed {
+				walk(m.Key)
+			}
+			walk(m.Init)
+			if m.Value != nil {
+				walk(m.Value)
+			}
+		}
+	}
+	walk = func(n ast.Node) {
+		if found || n == nil {
+			return
+		}
+		switch t := n.(type) {
+		case *ast.Identifier:
+			if t.Name == "arguments" {
+				found = true
+			}
+			return
+		case *ast.FunctionDecl, *ast.FunctionExpr:
+			// 独立 arguments 绑定：内部引用合法。
+			return
+		case *ast.MemberExpr:
+			walk(t.Object)
+			if t.Computed {
+				walk(t.Property)
+			}
+			return
+		case *ast.ObjectLit:
+			// 非计算属性键（{arguments: 1}）不是引用。
+			for i := range t.Properties {
+				p := &t.Properties[i]
+				if p.Computed {
+					walk(p.Key)
+				}
+				walk(p.Value)
+				walk(p.Default)
+			}
+			return
+		case *ast.ClassDecl:
+			walkClassBody(t.Body)
+			return
+		case *ast.ClassExpr:
+			walkClassBody(t.Body)
+			return
+		}
+		ast.ForEachChild(n, func(c ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	walk(n)
+	return found
+}
+
 func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 	// TypeScript: skip leading `@decorator` expressions (parsed and discarded).
 	if err := p.skipDecorators(); err != nil {
@@ -2911,6 +2996,10 @@ func (p *Parser) parseClassMember() (ast.MethodDefinition, error) {
 		block, err := p.parseBlock()
 		if err != nil {
 			return def, err
+		}
+		// 规范：静态块内不允许出现 arguments 引用（SyntaxError）。
+		if containsArgumentsRef(block) {
+			return def, p.errorf(t, "'arguments' is not allowed in class static initialization block")
 		}
 		def.Kind = ast.MethodStaticBlock
 		def.Static = true

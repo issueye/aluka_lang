@@ -62,6 +62,15 @@ import (
 //
 //	短路弹残留），for-of 无声明迭代变量不再发射越界 CloseUpvalues，成员
 //	链计数修正。旧缓存产物栈行为不一致，必须失效。
+//
+// v23 → v24：新增 OpSetGetterComputedObj/OpSetSetterComputedObj（对象字面量
+//
+//	计算键访问器 get/set [expr]() {}）。指令集布局变化，旧缓存索引错位，
+//	必须失效。
+//
+// v24 → v25：ES2022 类静态初始化块/静态字段支持（编译器发射形态变化，
+//
+//	无新增指令；与 v24 保持失效语义一致）。
 const FormatVersion = 25
 
 // Magic header 用于快速识别缓存文件。

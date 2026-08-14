@@ -55,6 +55,10 @@ type Compiler struct {
 	// curClassID is the ID of the class currently being compiled (for super
 	// resolution). -1 when not inside a class body.
 	curClassID int
+	// inStaticCtx 为 true 表示当前正在编译静态上下文（静态方法体 / 静态块 /
+	// 静态字段初始化器）。此语境下 super 属性访问解析到父类构造器（而非
+	// 父类原型），见 emitSuperProto。compileClass 进入/退出时保存/恢复。
+	inStaticCtx bool
 
 	// optionalChainStack tracks pending OpOptionalJump PCs for the current
 	// optional chaining (?.) context. Each entry is a list of jump PCs that
@@ -3562,10 +3566,16 @@ func (c *Compiler) emitSuperCtor() {
 	c.emitLoadByKind(kind, idx)
 }
 
-// emitSuperProto loads the current class's superclass prototype (for
-// super.method() calls).
+// emitSuperProto loads the superclass receiver for `super.prop` access:
+// the superclass prototype in instance context (super.method() 委托到父类
+// 原型)，or the superclass constructor in static context（静态方法/静态块/
+// 静态字段初始化器中 super.prop 按规范解析到父类构造器的静态属性）。
 func (c *Compiler) emitSuperProto() {
-	kind, idx := c.resolve(superProtoName(c.curClassID))
+	name := superProtoName(c.curClassID)
+	if c.inStaticCtx {
+		name = superCtorName(c.curClassID)
+	}
+	kind, idx := c.resolve(name)
 	c.emitLoadByKind(kind, idx)
 }
 
@@ -3637,6 +3647,11 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 	savedClassID := c.curClassID
 	c.curClassID = classID
 	defer func() { c.curClassID = savedClassID }()
+	// 类体内静态语境从零开始：实例构造器/字段初始化器为实例语境；进入
+	// 静态方法/静态块/静态字段时置位。外层语境由 defer 恢复（嵌套类场景）。
+	savedStaticCtx := c.inStaticCtx
+	c.inStaticCtx = false
+	defer func() { c.inStaticCtx = savedStaticCtx }()
 
 	hasSuper := super != nil
 
@@ -3804,7 +3819,10 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 		if m.Computed {
 			methodName = "computed"
 		}
+		// 静态方法体为静态语境：super.prop 解析到父类构造器。
+		c.inStaticCtx = m.Static
 		idx, err := c.compileMethod(methodName, m.Value)
+		c.inStaticCtx = false
 		if err != nil {
 			return err
 		}
@@ -3830,6 +3848,8 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 	// Evaluated in source declaration order after the class constructor is created.
 	// The constructor (class function) is on top of the stack.
 	for _, elem := range staticElements {
+		// 静态块/静态字段初始化器为静态语境：super.prop 解析到父类构造器。
+		c.inStaticCtx = true
 		if elem.Kind == ast.MethodStaticBlock {
 			// static { ... } block execution:
 			// Stack: [class] -> OpDup -> [class, class]
@@ -3867,6 +3887,7 @@ func (c *Compiler) compileClass(name string, super ast.Expression, body *ast.Cla
 		}
 		c.emit(bytecode.OpSetPropObj, uint32(nameIdx))
 	}
+	c.inStaticCtx = false
 	return nil
 }
 
