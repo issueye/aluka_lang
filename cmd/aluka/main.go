@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -99,6 +100,14 @@ func finishMonitor() {
 }
 
 func main() {
+	// GC 目标堆倍率：默认 400（live×5 触发 GC）。JS 工作负载以短生命周期
+	// 小对象为主（分配热路径开销 > 回收频率收益），默认 GOGC=100 会频繁触发
+	// GC 周期；实测分配密集用例（gcPressure）提速 ~15%。仅当用户未显式
+	// 设置 GOGC 环境变量时生效，RSS 敏感场景可自行调低。
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(400)
+	}
+
 	// 产物模式：自身携带编译产物（aluka build --compile）时直接执行。
 	// 检测零开销（仅读尾部 footer），普通 aluka 不受影响。
 	// 校验失败（截断/损坏）时告警并回退正常模式（B2.4.1）。

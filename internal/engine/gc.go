@@ -116,10 +116,12 @@ func init() {
 }
 
 // startFreeOSLoop 启动后台归还 OS 内存 goroutine。进程生命周期内只启一次
-// （sync.Once）。goroutine 在定时器到期或 freeOSSig 收到信号时执行
-// runtime.GC()+debug.FreeOSMemory()——STW 发生在后台 goroutine 调度点，
-// 不阻塞 register 热路径。空闲时按 freeOSInterval 周期触发，忙时由分配阈值
-// 信号触发但合并冗余。
+// （sync.Once）。goroutine 在定时器到期时执行 runtime.GC()+debug.FreeOSMemory()
+// ——STW 发生在后台 goroutine 调度点，不阻塞 register 热路径。
+//
+// 分配阈值信号（freeOSSig）只执行 runtime.GC()：分配密集阶段 madvise
+// （FreeOSMemory 系统调用）是纯延迟开销且收益低（页很快又被分配复用），
+// RSS 上界仍由定时器路径兜底。
 func startFreeOSLoop() {
 	freeOSLoopOnce.Do(func() {
 		if freeOSInterval <= 0 {
@@ -132,7 +134,6 @@ func startFreeOSLoop() {
 				select {
 				case <-freeOSSig:
 					runtime.GC()
-					debug.FreeOSMemory()
 				case <-ticker.C:
 					runtime.GC()
 					debug.FreeOSMemory()

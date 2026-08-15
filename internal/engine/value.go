@@ -451,6 +451,17 @@ type objectValue struct {
 	slots   []Value
 	deleted map[string]bool // 对象级已删除属性（避免污染共享 Shape）
 	proto   Object          // [[Prototype]]
+	// small 是小对象（≤4 属性）的内嵌槽位后备：slots 指向它即可省去
+	// 一次独立 slice 分配（字面量/短生命周期对象分配热路径的主力开销）。
+	// 超过 4 属性时 append 自动迁移到独立堆数组，语义与纯 slice 一致。
+	small [4]Value
+}
+
+// initSlots 惰性把 slots 指向内嵌后备（首次添加属性时调用）。
+func (o *objectValue) initSlots() {
+	if o.slots == nil {
+		o.slots = o.small[:0]
+	}
 }
 
 // NewObject creates an empty JS object.
@@ -472,7 +483,13 @@ func NewObjectFromPairs(pairs []Value) Object {
 		}
 	}
 
-	o := &objectValue{shape: shape, slots: make([]Value, shape.NumProps())}
+	o := &objectValue{shape: shape}
+	n := shape.NumProps()
+	if n <= len(o.small) {
+		o.slots = o.small[:n]
+	} else {
+		o.slots = make([]Value, n)
+	}
 	for i := 0; i+1 < len(pairs); i += 2 {
 		idx, _ := shape.lookup(pairs[i].String())
 		o.slots[idx] = pairs[i+1]
@@ -598,6 +615,7 @@ func (o *objectValue) setSlot(key string, value Value) {
 		return
 	}
 	o.shape = o.shape.transition(key)
+	o.initSlots()
 	o.slots = append(o.slots, value)
 }
 
@@ -660,13 +678,20 @@ func (o *objectValue) Delete(key string) bool {
 type ArrayValue struct {
 	*objectValue
 	elems []Value
+	// smallElems 是小数组（≤4 元素）的内嵌元素后备：字面量 [a, b] 类
+	// 高频短生命周期数组省去独立 elems 分配；更大数组走独立堆数组。
+	smallElems [4]Value
 }
 
-// NewArray 创建数组对象。
+// NewArray 创建数组对象。elems 长度 ≤4 时拷贝进内嵌后备（调用方可让
+// 传入切片留在栈上避免逃逸）；更长时直接接管传入切片（零拷贝）。
 func NewArray(elems []Value) *ArrayValue {
-	a := &ArrayValue{
-		objectValue: &objectValue{shape: rootShape},
-		elems:       elems,
+	a := &ArrayValue{objectValue: &objectValue{shape: rootShape}}
+	if len(elems) <= len(a.smallElems) {
+		copy(a.smallElems[:], elems)
+		a.elems = a.smallElems[:len(elems)]
+	} else {
+		a.elems = elems
 	}
 	register(a.objectValue)
 	// 同步 length 属性
