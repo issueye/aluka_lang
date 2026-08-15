@@ -61,6 +61,7 @@ type buildOptions struct {
 	noBytecodeOpt bool
 	guiApp        bool
 	webDir        string
+	iconPath      string
 }
 
 type buildResult struct {
@@ -93,6 +94,7 @@ func buildFlags(opts *buildOptions, optimize *bool) *cli.FlagSet {
 	fs.Var(cli.ActionValue{Fn: func() error { return errors.New("--target not implemented (scope: --compile only)") }}, "target", "Target platform (not implemented)")
 	fs.Bool("gui", "Embed frontend web assets as a GUI desktop app (with --compile)", &opts.guiApp)
 	fs.String("web-dir", "Frontend web assets directory to embed (default: dist; requires --gui)", &opts.webDir).MissingMsg("--web-dir requires a path")
+	fs.String("icon", "Application .ico file embedded for window/taskbar/tray icons (requires --gui)", &opts.iconPath).MissingMsg("--icon requires a path")
 	return fs
 }
 
@@ -185,6 +187,9 @@ func cmdBuild(args []string) {
 	}
 	if opts.webDir != "" && !opts.guiApp {
 		fatalErr("aluka build: --web-dir requires --gui")
+	}
+	if opts.iconPath != "" && !opts.guiApp {
+		fatalErr("aluka build: --icon requires --gui")
 	}
 	if !opts.compileOnly {
 		fatalErr("aluka build: M1 supports only --compile (single-file executable); plain bundling is not implemented")
@@ -335,8 +340,9 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 		optimizedStage = mustMeasureStage(modules)
 	}
 
-	// GUI 模式：收集前端静态资源目录（--web-dir，默认 dist）
+	// GUI 模式：收集前端静态资源目录（--web-dir，默认 dist）与应用图标（--icon）
 	var webAssets map[string][]byte
+	packOpts := compile.PackOptions{}
 	if opts.guiApp {
 		webDir := opts.webDir
 		if webDir == "" {
@@ -346,9 +352,21 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 		if err != nil {
 			fatalErr("aluka build: " + err.Error())
 		}
+		packOpts.WebAssets = webAssets
+
+		if opts.iconPath != "" {
+			iconData, err := os.ReadFile(opts.iconPath)
+			if err != nil {
+				fatalErr("aluka build: --icon: " + err.Error())
+			}
+			if len(iconData) > 4<<20 {
+				fatalErr("aluka build: --icon: file too large (max 4MB)")
+			}
+			packOpts.Icon = iconData
+		}
 	}
 
-	payload, err := compile.PackWithWebAssets(graphResult.Entry, modules, resolutions, assets, webAssets)
+	payload, err := compile.PackWithOptions(graphResult.Entry, modules, resolutions, assets, packOpts)
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
 	}
@@ -379,6 +397,9 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 	guiNote := ""
 	if opts.guiApp {
 		guiNote = fmt.Sprintf(", %d web assets", len(webAssets))
+		if len(packOpts.Icon) > 0 {
+			guiNote += ", app icon"
+		}
 	}
 	result := buildResult{budgetExceeded: budgetExceeded}
 	switch {

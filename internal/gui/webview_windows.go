@@ -48,6 +48,7 @@ var (
 	procDwmSetWindowAttribute = dwmapi.NewProc("DwmSetWindowAttribute")
 	procGetWindowLongW        = user32.NewProc("GetWindowLongW")
 	procSetWindowLongW        = user32.NewProc("SetWindowLongW")
+	procSendMessageW          = user32.NewProc("SendMessageW")
 )
 
 const (
@@ -479,8 +480,11 @@ func createWindowOnUIThread(opts WindowOptions, parent *Window) (NativeWindow, e
 	win.wvPendingURL = translateAlukaURL(opts.URL)
 	win.wvPendingHTML = opts.HTML
 
+	// 应用级图标（--icon 内嵌）→ 标题栏/任务栏
+	applyAppIcon(h)
+
 	// Windows 11 现代背景特效（Mica / Acrylic / MicaAlt）；旧系统上调用静默失败
-	applyBackgroundEffect(syscall.Handle(hwnd), opts.BackgroundEffect)
+	applyBackgroundEffect(h, opts.BackgroundEffect)
 
 	if opts.AlwaysOnTop {
 		win.SetAlwaysOnTop(true)

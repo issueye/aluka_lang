@@ -197,6 +197,11 @@ func createTrayOnUIThread(opts TrayOptions) (NativeTray, error) {
 	t.id = nextTrayID()
 	if opts.Icon != "" {
 		t.icon = loadTrayIcon(opts.Icon)
+	} else {
+		// 未显式指定时优先使用应用级图标（--icon 内嵌），再回退可执行文件图标
+		if big, _ := AppIcons(); big != 0 {
+			t.icon = big
+		}
 	}
 
 	var data notifyIconDataW

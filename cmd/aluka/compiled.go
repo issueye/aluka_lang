@@ -7,6 +7,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -109,8 +110,18 @@ func runCompiled(payload []byte) int {
 	loader.SetEntryPath(entry)
 
 	// GUI 产物模式：挂载内嵌前端资源到 aluka://app/ 虚拟协议，
-	// 并分离控制台（Windows 免黑框）。
-	if len(manifest.WebAssets) > 0 {
+	// 应用内嵌图标（窗口/任务栏/托盘），并分离控制台（Windows 免黑框）。
+	if len(manifest.WebAssets) > 0 || manifest.Icon != "" {
+		if manifest.Icon != "" {
+			iconData, err := base64.StdEncoding.DecodeString(manifest.Icon)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "aluka: decode embedded icon: "+err.Error())
+				return 1
+			}
+			if err := gui.SetAppIcon(iconData); err != nil {
+				fmt.Fprintln(os.Stderr, "aluka: "+err.Error())
+			}
+		}
 		if err := gui.MountEmbeddedWebAssets(manifest.WebAssets); err != nil {
 			fmt.Fprintln(os.Stderr, "aluka: "+err.Error())
 			return 1

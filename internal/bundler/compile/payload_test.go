@@ -286,3 +286,42 @@ func decodeWebAssetsForTest(webAssets map[string]string) (map[string][]byte, err
 	}
 	return out, nil
 }
+
+// TestPackIconRoundTrip：--icon 内嵌应用图标的打包/解析往返。
+func TestPackIconRoundTrip(t *testing.T) {
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(main, []byte("export const x = 1;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := CompileFile(vm, main, "main.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 最小合法 .ico：ICONDIR + 1 目录项 + 图像数据
+	ico := []byte{0, 0, 0, 1, 0, 1,
+		16, 16, 0, 0, 1, 0, 32, 0,
+		4, 0, 0, 0, 22, 0, 0, 0,
+		0xDE, 0xAD, 0xBE, 0xEF}
+
+	payload, err := PackWithOptions("main.ts", []*EntryData{entry}, nil, nil, PackOptions{Icon: ico})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, _, err := ParsePayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := base64.StdEncoding.DecodeString(manifest.Icon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, ico) {
+		t.Errorf("icon roundtrip mismatch: got %d bytes, want %d", len(got), len(ico))
+	}
+}

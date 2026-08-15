@@ -20,9 +20,12 @@
 > - ✅ 窗口尺寸约束（WM_GETMINMAXINFO）与可调整大小切换（WS_THICKFRAME）；
 > - ✅ `aluka build --gui` 单文件 GUI 打包：`--web-dir` 前端资源递归内嵌进 payload
 >   （manifest.webAssets，base64+zlib），产物启动时挂载 `aluka://app/` 内存虚拟协议
->   并分离控制台（Windows 免黑框，`FreeConsole`）；端到端验证：37MB 单文件 exe
->   加载内嵌页面 + 前端桥接回路全通；
-> - ⏳ 待办：macOS/Linux 平台层、Vibrancy（macOS）、按应用替换 PE 图标（当前用基座品牌图标）。
+>   并分离控制台（Windows 免黑框，`FreeConsole`）；`--icon` 应用图标内嵌
+>   （manifest.icon），运行时经 `CreateIconFromResourceEx` 应用于窗口标题栏/任务栏
+>   （WM_SETICON）与默认托盘图标；端到端验证：37MB 单文件 exe 加载内嵌页面 +
+>   前端桥接回路全通；
+> - ⏳ 待办：macOS/Linux 平台层、Vibrancy（macOS）、PE 资源段按应用替换 exe 文件图标
+>   （Explorer 展示仍为基座品牌图标，需 rsrc 级重写，暂缓）。
 
 ---
 
