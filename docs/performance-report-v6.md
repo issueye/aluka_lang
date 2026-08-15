@@ -131,3 +131,24 @@ gcPressure 循环含 NEW_OBJECT/NEW_ARRAY（JIT 不支持，直接拒绝编译�
 
 **剩余空间**：数字装箱 ~3.6 次/迭代（占剩余分配 41%）需 Value
 NaN-boxing 引擎级重构；Closure.prototype 惰性物化（每闭包省 1 分配）。
+
+## 11. 附：数字表示分阶段优化（perf/nan-boxing 分支，Stage 1-2.5）
+
+按 §10 剩余空间推进（详见 docs/adr/number-representation-stages.md）：
+
+- **Stage 1 slab 装箱数字**：numberValue 改单指针字结构体（interface 转换
+  零分配），数字单元 64KB slab 原子 bump 分配
+- **Stage 2 字面量站点缓存 + 取模整数快路径**（按 CPU 剖面重定目标）：
+  字面量 shape/索引按 (模板,PC) 缓存免逐属性哈希；整数 % 走 int64
+- **Stage 2.5 VM 私有数字 slab**：热路径数字分配免全局原子
+
+| 指标 | v6 基线 | 最终 | 变化 |
+|------|-------:|-----:|-----:|
+| gcPressure 每迭代分配 | 14.1 | **4.1** | **-71%** |
+| gcPressure-500K（auto） | ~401ms | **~226ms** | **-44%** |
+| perf-compare 合计 vs Node | 13.6x | **6.2x** | -2.2x |
+| fib25 vs Node | 1.5x | **0.7x（反超）** | |
+| propSet / arrayPush | 4.4x / 5.6x | **2.2x / 3.3x** | |
+
+门禁：每轮全量测试 + jitdiff 三档零失配（取模 -0 边界由 jitdiff 抓获）。
+收尾 CPU 剖面已平坦化（剩余为固有结构体分配与指令派发）。

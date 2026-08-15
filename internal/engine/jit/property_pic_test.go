@@ -9,6 +9,7 @@ import (
 
 // picObject builds a plain object with the given key/value pairs, so each
 // distinct key set yields a distinct shape (the R4-3 test shapes).
+
 func picObject(t *testing.T, pairs ...interface{}) engine.Object {
 	t.Helper()
 	values := make([]engine.Value, 0, len(pairs))
@@ -346,7 +347,15 @@ func TestNativePropertyVerifyMismatchRestoresQuickResult(t *testing.T) {
 		t.Fatalf("recovery exit = %+v, want %+v", exit, expectedExit)
 	}
 	for i := range expected {
-		if locals[i] != expected[i] {
+		same := locals[i] == expected[i] || func() bool {
+			w, ok2 := expected[i].Float()
+			if !ok2 {
+				return false
+			}
+			f, ok1 := locals[i].Float()
+			return ok1 && f == w
+		}()
+		if !same {
 			t.Fatalf("local %d after recovery = %v, want %v (Quick result not restored)", i, locals[i], expected[i])
 		}
 	}
