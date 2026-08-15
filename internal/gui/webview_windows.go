@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -310,6 +311,8 @@ type windowsWindow struct {
 	minHeight int
 	maxWidth  int
 	maxHeight int
+	// lastDragClick 上次拖拽区按下时刻（双击最大化判定）
+	lastDragClick time.Time
 
 	// WebView2 渲染层状态（字段由 UI 线程读写，其他线程经 PostAction 投递）
 	wvMu             sync.RWMutex
@@ -335,6 +338,13 @@ func globalWndProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uint
 	if msg == wmSize && ok {
 		// 窗口尺寸变化时同步 WebView 渲染层边界（本回调即 UI 线程）
 		w.wvUpdateBounds()
+	}
+
+	if msg == wmNCHitTest && ok {
+		// 无边框窗口边缘热区（父窗口可见像素时生效；WebView 覆盖区由前端热区兜底）
+		if hit := w.framelessEdgeHitTest(lParam); hit != 0 {
+			return hit
+		}
 	}
 
 	switch msg {
@@ -630,6 +640,100 @@ func applyBackgroundEffect(hwnd syscall.Handle, effect string) {
 		uintptr(unsafe.Pointer(&backdrop)),
 		unsafe.Sizeof(backdrop),
 	)
+}
+
+// ---------- 无边框拖拽 / 边缘缩放（UI 线程） ----------
+
+// 非客户区命中测试码
+const (
+	htCaption       = 2
+	htClient        = 1
+	htLeft          = 10
+	htRight         = 11
+	htTop           = 12
+	htTopLeft       = 13
+	htTopRight      = 14
+	htBottom        = 15
+	htBottomLeft    = 16
+	htBottomRight   = 17
+	wmNCHitTest     = 0x0084
+	wmNCLButtonDown = 0x00A1
+)
+
+var procReleaseCapture = user32.NewProc("ReleaseCapture")
+
+// StartDragMove 进入系统原生窗口移动循环（前端拖拽区 mousedown 触发）。
+// 400ms 内连续两次触发视为双击 → 切换最大化（拖动模态循环会吞掉 JS 侧
+// dblclick 事件，双击判定必须在原生侧完成）。
+func (w *windowsWindow) StartDragMove() {
+	if w.IsMaximized() {
+		return
+	}
+	now := time.Now()
+	if now.Sub(w.lastDragClick) < 400*time.Millisecond {
+		w.lastDragClick = time.Time{}
+		if w.IsMaximized() {
+			w.Unmaximize()
+		} else {
+			w.Maximize()
+		}
+		return
+	}
+	w.lastDragClick = now
+	procReleaseCapture.Call()
+	procSendMessageW.Call(uintptr(w.hwnd), wmNCLButtonDown, htCaption, 0)
+}
+
+// resizeHitCodes 边缘方向 → 非客户区命中码。
+var resizeHitCodes = map[string]uintptr{
+	"left": htLeft, "right": htRight, "top": htTop, "bottom": htBottom,
+	"topLeft": htTopLeft, "topRight": htTopRight,
+	"bottomLeft": htBottomLeft, "bottomRight": htBottomRight,
+}
+
+// StartResize 进入系统原生边缘缩放循环（前端边缘热区 mousedown 触发）。
+func (w *windowsWindow) StartResize(dir string) {
+	hit, ok := resizeHitCodes[dir]
+	if !ok {
+		return
+	}
+	procReleaseCapture.Call()
+	procSendMessageW.Call(uintptr(w.hwnd), wmNCLButtonDown, hit, 0)
+}
+
+// framelessEdgeHitTest 无边框窗口的边缘命中测试（WM_NCHITTEST，屏幕坐标）。
+func (w *windowsWindow) framelessEdgeHitTest(lParam uintptr) uintptr {
+	if w.opts.Frame == nil || *w.opts.Frame {
+		return 0 // 未命中（走默认处理）
+	}
+	x := int16(lParam & 0xFFFF)
+	y := int16(lParam >> 16)
+	var r rect
+	procGetWindowRect.Call(uintptr(w.hwnd), uintptr(unsafe.Pointer(&r)))
+	const b = 8
+	left := int(x) < int(r.Left)+b
+	right := int(x) >= int(r.Right)-b
+	top := int(y) < int(r.Top)+b
+	bottom := int(y) >= int(r.Bottom)-b
+	switch {
+	case left && top:
+		return htTopLeft
+	case left && bottom:
+		return htBottomLeft
+	case right && top:
+		return htTopRight
+	case right && bottom:
+		return htBottomRight
+	case left:
+		return htLeft
+	case right:
+		return htRight
+	case top:
+		return htTop
+	case bottom:
+		return htBottom
+	}
+	return 0
 }
 
 func (w *windowsWindow) SetAlwaysOnTop(alwaysOnTop bool) {
