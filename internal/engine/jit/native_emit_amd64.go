@@ -31,9 +31,6 @@ const (
 	nativeRecStackSize  = 256
 	nativeRecPCOffset   = 512
 	nativeRecStatusOff  = 520
-	// nativeRecMaxFrames 是首轮递归帧数（Go 侧起始上限）；机器码每次调用
-	// 前读 Frame.RecLimit 作深度检查，超限以 status=1 返回 Go 侧扩容重试。
-	nativeRecMaxFrames = 256
 )
 
 type nativeFixup struct {

@@ -1,0 +1,151 @@
+:root {
+  --bg: #101418;
+  --panel: #1a2129;
+  --panel-2: #212a34;
+  --line: #2c3742;
+  --text: #e6edf3;
+  --muted: #8b98a5;
+  --accent: #4cc38a;
+  --accent-2: #58a6ff;
+  --danger: #f85149;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; }
+
+body {
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  background: linear-gradient(160deg, var(--bg), #0c1013 70%);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 标题栏 */
+.titlebar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 44px;
+  padding: 0 0 0 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+  /* 无边框窗口拖拽区（Aluka 自定义属性写法）：按住标题栏移动窗口，双击最大化 */
+  --aluka-draggable: drag;
+}
+
+/* 交互控件豁免拖拽 */
+.win-controls {
+  --aluka-draggable: no-drag;
+}
+
+.brand { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+
+.logo {
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #08130d;
+  font-weight: 700;
+}
+
+.badge {
+  font-size: 11px;
+  color: var(--accent-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.win-controls { display: flex; height: 100%; }
+
+.win-controls button {
+  width: 46px; height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.win-controls button:hover { background: var(--panel-2); color: var(--text); }
+.win-controls button.danger:hover { background: var(--danger); color: #fff; }
+
+/* 主体网格 */
+.grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: auto 1fr;
+  gap: 14px;
+  padding: 14px;
+  overflow: hidden;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.card.wide { grid-column: 1 / -1; }
+
+.card h2 { font-size: 14px; font-weight: 600; }
+.card h2 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.hint, .tips { color: var(--muted); font-size: 12px; line-height: 1.7; }
+
+.tips { list-style: none; }
+kbd {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 11px;
+}
+
+/* 键值对 */
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; }
+.kv dt { color: var(--muted); }
+.kv dd { font-family: Consolas, monospace; color: var(--accent); }
+
+/* 按钮 */
+button {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+button:hover { filter: brightness(1.2); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #08130d; font-weight: 600; }
+
+/* 日志 */
+.log {
+  flex: 1;
+  overflow-y: auto;
+  background: #0b0f13;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.log .t { color: #566070; margin-right: 8px; }
+.log .ev-heartbeat { color: var(--muted); }
+.log .ev-tray-message, .log .ev-shortcut, .log .ev-rpc { color: var(--accent-2); }
+.log .ev-dialog { color: #d29922; }
+
+#beat { color: var(--accent); float: right; }

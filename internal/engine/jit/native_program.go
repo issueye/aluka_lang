@@ -8,6 +8,12 @@ import (
 	jitnative "github.com/aluka-lang/aluka/internal/engine/jit/native"
 )
 
+// nativeRecMaxFrames 是自递归首轮帧数（Go 侧起始上限）；机器码每次调用
+// 前读 Frame.RecLimit 作深度检查，超限以 status=1 返回 Go 侧扩容重试。
+// 定义在平台无关文件：native_program.go 的 Execute 路径在所有平台编译，
+// 而帧布局常量仅 amd64 发射器需要。
+const nativeRecMaxFrames = 256
+
 type nativePropertyInput struct {
 	sourceLocal int
 	frameLocal  int

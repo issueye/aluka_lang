@@ -24,9 +24,9 @@ type TimerConfig struct {
 func NewTimers(ctx engine.Context, cfg TimerConfig) error {
 	// 每个 Context 一个定时器状态（闭包捕获）。
 	state := &timerState{
-		ctx:     ctx,
-		nextID:  1,
-		timers:  make(map[int]*activeTimer),
+		ctx:       ctx,
+		nextID:    1,
+		timers:    make(map[int]*activeTimer),
 		maxTimers: cfg.MaxTimers,
 	}
 

@@ -210,6 +210,16 @@ func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engin
 			}
 		}
 	}
+	if specifier == "aluka:gui" {
+		alukaVal, err := l.ctx.Global().Get("Aluka")
+		if err == nil && alukaVal.IsObject() {
+			if ao, ok := alukaVal.AsObject(); ok {
+				if guiVal, err := ao.Get("gui"); err == nil {
+					return guiVal, nil
+				}
+			}
+		}
+	}
 	// 内置模块拦截：node: 前缀（如 node:fs、node:path、node:fs/promises）。
 	if isBuiltinSpecifier(specifier) {
 		return l.loadBuiltin(specifier)

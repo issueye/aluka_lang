@@ -13,7 +13,6 @@ import (
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
-
 // oldCollectRefsReflect 从 git 3a512b7 抄录的旧反射实现（用于对拍差分）。
 func oldCollectRefsReflect(node interface{}) map[string]int {
 	refs := make(map[string]int)

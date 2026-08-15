@@ -22,8 +22,8 @@ func setUmask(mask int) int {
 func getProcessUsage() (user, system int64) {
 	var ru syscall.Rusage
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err == nil {
-		user = ru.Utime.Sec*1e6 + ru.Utime.Usec
-		system = ru.Stime.Sec*1e6 + ru.Stime.Usec
+		user = ru.Utime.Sec*1e6 + int64(ru.Utime.Usec)
+		system = ru.Stime.Sec*1e6 + int64(ru.Stime.Usec)
 	}
 	return
 }

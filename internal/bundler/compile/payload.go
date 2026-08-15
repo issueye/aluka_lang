@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -104,9 +105,16 @@ type Manifest struct {
 	Resolutions map[string]map[string]string `json:"resolutions,omitempty"`
 	// Assets 是嵌入的 JSON 资源（M3，B2.3.4）：虚拟路径 → 原始 JSON 字节。
 	// import x from './data.json' 的依赖在构建期收集为资源而非模块。
-	Assets    map[string]string `json:"assets,omitempty"`
-	Platform  string            `json:"platform"` // 构建平台（GOOS/GOARCH）
-	CreatedAt string            `json:"createdAt"`
+	Assets map[string]string `json:"assets,omitempty"`
+	// WebAssets 是 GUI 模式（aluka build --gui）内嵌的前端静态资源：
+	// 相对路径 → base64 内容（HTML/CSS/JS/图片/字体等），运行时挂载到
+	// aluka://app/ 内存虚拟协议。与 Assets（JSON 模块资源）语义分离。
+	WebAssets map[string]string `json:"webAssets,omitempty"`
+	// Icon 是 GUI 模式（--icon）内嵌的应用图标（.ico 原始字节 base64），
+	// 运行时应用于窗口标题栏/任务栏与默认托盘图标。
+	Icon      string `json:"icon,omitempty"`
+	Platform  string `json:"platform"` // 构建平台（GOOS/GOARCH）
+	CreatedAt string `json:"createdAt"`
 }
 
 // EntryData 是一个待打包模块（编译产物）。
@@ -123,6 +131,26 @@ type EntryData struct {
 // modules 按路径排序保证输出确定性；resolutions 为构建期解析映射
 // （M2）；assets 为嵌入的 JSON 资源（M3，虚拟路径 → 原始字节）。
 func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[string]string, assets map[string][]byte) ([]byte, error) {
+	return PackWithOptions(entryPath, modules, resolutions, assets, PackOptions{})
+}
+
+// PackWithWebAssets 在 Pack 基础上追加 GUI 前端静态资源（--gui 模式）。
+// webAssets 为相对路径 → 原始字节；base64 编码后写入 manifest
+// （manifest 整体 zlib 压缩，体积膨胀可忽略）。
+func PackWithWebAssets(entryPath string, modules []*EntryData, resolutions map[string]map[string]string, assets map[string][]byte, webAssets map[string][]byte) ([]byte, error) {
+	return PackWithOptions(entryPath, modules, resolutions, assets, PackOptions{WebAssets: webAssets})
+}
+
+// PackOptions 是 GUI 产物（aluka build --gui）的附加打包项。
+type PackOptions struct {
+	// WebAssets 前端静态资源：相对路径 → 原始字节（aluka://app/ 虚拟协议）。
+	WebAssets map[string][]byte
+	// Icon 应用图标（.ico 文件原始字节），应用于窗口/任务栏/托盘。
+	Icon []byte
+}
+
+// PackWithOptions 打包 payload 并附带 GUI 选项（内嵌资源/图标）。
+func PackWithOptions(entryPath string, modules []*EntryData, resolutions map[string]map[string]string, assets map[string][]byte, opts PackOptions) ([]byte, error) {
 	sorted := make([]*EntryData, len(modules))
 	copy(sorted, modules)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
@@ -150,6 +178,19 @@ func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[str
 		assetStrings[k] = string(v)
 	}
 
+	var webAssetStrings map[string]string
+	if len(opts.WebAssets) > 0 {
+		webAssetStrings = make(map[string]string, len(opts.WebAssets))
+		for k, v := range opts.WebAssets {
+			webAssetStrings[k] = base64.StdEncoding.EncodeToString(v)
+		}
+	}
+
+	var iconStr string
+	if len(opts.Icon) > 0 {
+		iconStr = base64.StdEncoding.EncodeToString(opts.Icon)
+	}
+
 	manifest := Manifest{
 		PayloadVersion: PayloadVersion,
 		FormatVersion:  bytecode.FormatVersion,
@@ -157,6 +198,8 @@ func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[str
 		Modules:        entries,
 		Resolutions:    resolutions,
 		Assets:         assetStrings,
+		WebAssets:      webAssetStrings,
+		Icon:           iconStr,
 		Platform:       platformString(),
 		CreatedAt:      time.Now().Format(time.RFC3339),
 	}

@@ -2,6 +2,7 @@ package compile
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -210,5 +211,117 @@ func TestFooterRoundTrip(t *testing.T) {
 	}
 	if _, _, _, ok := ParseFooter([]byte("not-a-footer")); ok {
 		t.Error("non-footer parsed as footer")
+	}
+}
+
+// TestPackWebAssetsRoundTrip：--gui 模式内嵌前端资源的打包/解析往返。
+func TestPackWebAssetsRoundTrip(t *testing.T) {
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(main, []byte("export const x = 1;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := CompileFile(vm, main, "main.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	webAssets := map[string][]byte{
+		"index.html":      []byte("<!DOCTYPE html><html><body>hi</body></html>"),
+		"assets/app.css":  []byte("body { margin: 0 }"),
+		"assets/logo.png": {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A},
+	}
+
+	payload, err := PackWithWebAssets("main.ts", []*EntryData{entry}, nil, nil, webAssets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, _, err := ParsePayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.WebAssets) != 3 {
+		t.Fatalf("webAssets = %d entries, want 3", len(manifest.WebAssets))
+	}
+
+	// 经运行时挂载接口解码校验内容一致
+	decoded, err := decodeWebAssetsForTest(manifest.WebAssets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range webAssets {
+		if got := decoded[path]; !bytes.Equal(got, want) {
+			t.Errorf("web asset %q mismatch: got %d bytes, want %d bytes", path, len(got), len(want))
+		}
+	}
+
+	// 不带 webAssets 的普通产物：字段应为空（omitempty）
+	plainPayload, err := Pack("main.ts", []*EntryData{entry}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainManifest, _, err := ParsePayload(plainPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plainManifest.WebAssets) != 0 {
+		t.Errorf("plain payload unexpectedly carries %d web assets", len(plainManifest.WebAssets))
+	}
+}
+
+// decodeWebAssetsForTest 复刻 gui.MountEmbeddedWebAssets 的 base64 解码
+// （compile 包不便反向依赖 gui，避免引入 UI 层依赖）。
+func decodeWebAssetsForTest(webAssets map[string]string) (map[string][]byte, error) {
+	out := make(map[string][]byte, len(webAssets))
+	for path, b64 := range webAssets {
+		data, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return nil, err
+		}
+		out[path] = data
+	}
+	return out, nil
+}
+
+// TestPackIconRoundTrip：--icon 内嵌应用图标的打包/解析往返。
+func TestPackIconRoundTrip(t *testing.T) {
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(main, []byte("export const x = 1;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := CompileFile(vm, main, "main.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 最小合法 .ico：ICONDIR + 1 目录项 + 图像数据
+	ico := []byte{0, 0, 0, 1, 0, 1,
+		16, 16, 0, 0, 1, 0, 32, 0,
+		4, 0, 0, 0, 22, 0, 0, 0,
+		0xDE, 0xAD, 0xBE, 0xEF}
+
+	payload, err := PackWithOptions("main.ts", []*EntryData{entry}, nil, nil, PackOptions{Icon: ico})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, _, err := ParsePayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := base64.StdEncoding.DecodeString(manifest.Icon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, ico) {
+		t.Errorf("icon roundtrip mismatch: got %d bytes, want %d", len(got), len(ico))
 	}
 }
