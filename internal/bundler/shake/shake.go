@@ -55,6 +55,19 @@ type importInfo struct {
 // 在剪枝时删除（目标无副作用时目标可剪除）；side-effect import 与
 // 有副作用的目标模块始终保留（ESM 语义：import 语句执行目标模块）。
 func Shake(gr *graph.Result, entry string) (*Result, error) {
+	return ShakeOpts(gr, entry, Options{})
+}
+
+// Options 控制 tree-shaking 行为。
+type Options struct {
+	// KeepEntryExports 为真时，入口模块的全部导出视为已使用——
+	// web bundle（--target=web）的入口导出即产物公共 API，不可剪除；
+	// --compile（可执行产物）入口导出无消费者，保持默认剪除。
+	KeepEntryExports bool
+}
+
+// ShakeOpts 带选项的 tree-shaking。
+func ShakeOpts(gr *graph.Result, entry string, opts Options) (*Result, error) {
 	keys := make([]string, 0, len(gr.SourceUnits))
 	for key := range gr.SourceUnits {
 		keys = append(keys, key)
@@ -103,6 +116,16 @@ func Shake(gr *graph.Result, entry string) (*Result, error) {
 			}
 		}
 	}
+	// web bundle：入口导出即产物公共 API，全部标记为已使用。
+	seedEntryExports := func() {
+		if !opts.KeepEntryExports || infos[entry] == nil {
+			return
+		}
+		for name := range infos[entry].exports {
+			markUsed(entry, name)
+		}
+	}
+
 	// markImportUsed 把导入名映射到目标模块的导出名并保留目标。
 	markImportUsed := func(t, imported string) {
 		switch imported {
@@ -122,6 +145,8 @@ func Shake(gr *graph.Result, entry string) (*Result, error) {
 			markUsed(t, imported)
 		}
 	}
+
+	seedEntryExports()
 
 	for len(queue) > 0 {
 		key := queue[0]

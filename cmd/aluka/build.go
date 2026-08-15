@@ -35,6 +35,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/bundler/analyze"
 	"github.com/aluka-lang/aluka/internal/bundler/compile"
+	"github.com/aluka-lang/aluka/internal/bundler/emit"
 	"github.com/aluka-lang/aluka/internal/bundler/graph"
 	"github.com/aluka-lang/aluka/internal/bundler/minify"
 	"github.com/aluka-lang/aluka/internal/bundler/shake"
@@ -62,6 +63,7 @@ type buildOptions struct {
 	guiApp        bool
 	webDir        string
 	iconPath      string
+	target        string // ""=compile（默认） | "web"
 }
 
 type buildResult struct {
@@ -95,6 +97,13 @@ func buildFlags(opts *buildOptions, optimize *bool) *cli.FlagSet {
 	fs.Bool("gui", "Embed frontend web assets as a GUI desktop app (with --compile)", &opts.guiApp)
 	fs.String("web-dir", "Frontend web assets directory to embed (default: dist; requires --gui)", &opts.webDir).MissingMsg("--web-dir requires a path")
 	fs.String("icon", "Application .ico file embedded for window/taskbar/tray icons (requires --gui)", &opts.iconPath).MissingMsg("--icon requires a path")
+	fs.Var(cli.FuncValue{Fn: func(v string) error {
+		if v != "web" {
+			return errors.New("--target supports only web")
+		}
+		opts.target = v
+		return nil
+	}}, "target", "Build target: web (browser ESM bundle)")
 	return fs
 }
 
@@ -191,8 +200,11 @@ func cmdBuild(args []string) {
 	if opts.iconPath != "" && !opts.guiApp {
 		fatalErr("aluka build: --icon requires --gui")
 	}
-	if !opts.compileOnly {
-		fatalErr("aluka build: M1 supports only --compile (single-file executable); plain bundling is not implemented")
+	if opts.target == "web" && opts.compileOnly {
+		fatalErr("aluka build: --target=web conflicts with --compile")
+	}
+	if opts.target == "" && !opts.compileOnly {
+		fatalErr("aluka build: specify --compile (executable) or --target=web (browser bundle)")
 	}
 	if len(entries) == 0 {
 		fatalErr("aluka build: missing entry file")
@@ -222,6 +234,13 @@ func cmdBuild(args []string) {
 		} else {
 			fatalErr("aluka build: cannot locate base binary: " + err.Error())
 		}
+	}
+
+	if opts.target == "web" {
+		for _, entry := range entries {
+			webBuildOne(vm, resolver, entry, opts)
+		}
+		return
 	}
 
 	results := make([]buildResult, 0, len(entries))
@@ -596,4 +615,82 @@ func writeCompiledBinary(base, outfile string, payload []byte, icon []byte, guiA
 		return 0, fmt.Errorf("close %q: %w", outfile, err)
 	}
 	return payloadOffset, nil
+}
+
+// webBuildOne 实现 --target=web：graph → shake → minify → emit（浏览器 ESM 单文件）。
+func webBuildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts buildOptions) {
+	graphResult, err := graph.Build(vm, resolver, entry)
+	if err != nil {
+		fatalErr("aluka build: " + err.Error())
+	}
+
+	kept := make(map[string]bool, len(graphResult.SourceUnits))
+	for key := range graphResult.SourceUnits {
+		kept[key] = true
+	}
+	if opts.treeShake {
+		shaken, err := shake.ShakeOpts(graphResult, graphResult.Entry, shake.Options{KeepEntryExports: true})
+		if err != nil {
+			fatalErr("aluka build: " + err.Error())
+		}
+		kept = shaken.Kept
+	}
+
+	modules := make([]emit.Module, 0, len(kept))
+	for key, unit := range graphResult.SourceUnits {
+		if !kept[key] {
+			continue
+		}
+		if unit.SourceKind == module.SourceJSON {
+			fatalErr("aluka build: web target 暂不支持 JSON import（M2）：" + key)
+		}
+		if opts.minify {
+			minify.Program(unit.Program)
+		}
+		modules = append(modules, emit.Module{
+			ID:       key,
+			Prog:     unit.Program,
+			IsTLA:    unit.HasTLA,
+			Resolved: graphResult.Resolutions[key],
+		})
+	}
+
+	out, err := emit.Bundle{EntryID: graphResult.Entry, Modules: modules}.Build()
+	if err != nil {
+		fatalErr("aluka build: " + err.Error())
+	}
+
+	outPath := webOutputPath(entry, opts.outfile, opts.outdir)
+	if dir := filepath.Dir(outPath); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fatalErr("aluka build: " + err.Error())
+		}
+	}
+	if err := os.WriteFile(outPath, []byte(out), 0o644); err != nil {
+		fatalErr("aluka build: " + err.Error())
+	}
+	fmt.Printf("Bundled %s → %s (%d bytes, %d modules, tree-shaken %d)%s\n",
+		entry, outPath, len(out), len(modules), len(graphResult.SourceUnits)-len(kept),
+		func() string {
+			if opts.minify {
+				return ", minified"
+			}
+			return ""
+		}())
+}
+
+// webOutputPath 计算 web bundle 输出路径：--outfile / --outdir / 默认 <entry>.js。
+func webOutputPath(entry, outfile, outdir string) string {
+	if outfile != "" {
+		return outfile
+	}
+	base := filepath.Base(entry)
+	if ext := filepath.Ext(base); ext != "" {
+		base = base[:len(base)-len(ext)]
+	}
+	base += ".js"
+	if outdir != "" {
+		return filepath.Join(outdir, base)
+	}
+	return base
 }
