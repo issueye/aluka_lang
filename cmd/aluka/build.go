@@ -383,7 +383,7 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 			}
 		}
 		var err error
-		payloadOffset, err = writeCompiledBinary(opts.basePath, out, payload)
+		payloadOffset, err = writeCompiledBinary(opts.basePath, out, payload, packOpts.Icon)
 		if err != nil {
 			fatalErr("aluka build: " + err.Error())
 		}
@@ -554,16 +554,18 @@ func measureUnits(vm *interpreter.VM, units map[string]*module.SourceUnit, kept 
 }
 
 // writeCompiledBinary 复制基座到 outfile 并追加 payload + footer。
+// icon 非空时先对基座做 PE 图标注入（Explorer 展示应用图标）。
 // 返回 payload 在产物中的偏移。
-func writeCompiledBinary(base, outfile string, payload []byte) (int64, error) {
-	in, err := os.Open(base)
+func writeCompiledBinary(base, outfile string, payload []byte, icon []byte) (int64, error) {
+	exeData, err := os.ReadFile(base)
 	if err != nil {
-		return 0, fmt.Errorf("open base binary %q: %w", base, err)
+		return 0, fmt.Errorf("read base binary %q: %w", base, err)
 	}
-	defer in.Close()
-	info, err := in.Stat()
-	if err != nil {
-		return 0, fmt.Errorf("stat base binary: %w", err)
+	if len(icon) > 0 {
+		exeData, err = compile.InjectIcon(exeData, icon)
+		if err != nil {
+			return 0, fmt.Errorf("inject application icon into base: %w", err)
+		}
 	}
 
 	out, err := os.Create(outfile)
@@ -572,10 +574,10 @@ func writeCompiledBinary(base, outfile string, payload []byte) (int64, error) {
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, in); err != nil {
-		return 0, fmt.Errorf("copy base binary: %w", err)
+	if _, err := out.Write(exeData); err != nil {
+		return 0, fmt.Errorf("write base binary: %w", err)
 	}
-	payloadOffset := info.Size()
+	payloadOffset := int64(len(exeData))
 	if _, err := out.Write(payload); err != nil {
 		return 0, fmt.Errorf("write payload: %w", err)
 	}
