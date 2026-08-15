@@ -15,6 +15,14 @@ import (
 //
 // with locals [this, i, n, o, s]. The trace range [0, 64] ends at the
 // backedge; the loop-condition exit lands outside the range at pc 68.
+
+// numEq 数值相等比较（engine.Number 为 pointer-shaped 表示，interface ==
+// 是指针比较，同值双 box 不等；测试断言统一走数值）。
+func numEq(v engine.Value, want float64) bool {
+	f, ok := v.Float()
+	return ok && f == want
+}
+
 func sideEffectTraceTemplate() *bytecode.FuncTemplate {
 	var code []byte
 	add := func(ops ...[]byte) {
@@ -175,7 +183,7 @@ func TestNativeCommitValidatesAllWritesBeforeMutation(t *testing.T) {
 		t.Fatalf("committed=%t err=%v, want clean validation failure", committed, err)
 	}
 	value, err := first.Get("a")
-	if err != nil || value != engine.Number(1) {
+	if err != nil || !numEq(value, 1) {
 		t.Fatalf("first property = %v (err %v), want original value 1", value, err)
 	}
 }
@@ -207,7 +215,7 @@ func TestNativeRestoreValidatesAllPropertiesBeforeMutation(t *testing.T) {
 		t.Fatal("restore succeeded with an invalid second property")
 	}
 	value, err := first.Get("a")
-	if err != nil || value != engine.Number(1) {
+	if err != nil || !numEq(value, 1) {
 		t.Fatalf("first property = %v (err %v), want original value 1", value, err)
 	}
 }
@@ -232,7 +240,7 @@ func TestTraceCommitProtocolAppliesWritesExactlyOnce(t *testing.T) {
 	if err != nil || reason != Yielded {
 		t.Fatalf("slice 1: exit=%+v reason=%v err=%v", exit, reason, err)
 	}
-	if value, err := obj.Get("x"); err != nil || value != engine.Number(1) {
+	if value, err := obj.Get("x"); err != nil || !numEq(value, 1) {
 		t.Fatalf("after slice 1 o.x = %v (err %v), want 1 (committed once)", value, err)
 	}
 	if i, _ := locals[1].Float(); i != 2 {
@@ -246,7 +254,7 @@ func TestTraceCommitProtocolAppliesWritesExactlyOnce(t *testing.T) {
 	if err != nil || reason != Yielded {
 		t.Fatalf("slice 2: exit=%+v reason=%v err=%v", exit, reason, err)
 	}
-	if value, err := obj.Get("x"); err != nil || value != engine.Number(3) {
+	if value, err := obj.Get("x"); err != nil || !numEq(value, 3) {
 		t.Fatalf("after slice 2 o.x = %v (err %v), want 3 (no repeated write)", value, err)
 	}
 	if s, _ := locals[4].Float(); s != 6 {
@@ -260,7 +268,7 @@ func TestTraceCommitProtocolAppliesWritesExactlyOnce(t *testing.T) {
 	if exit.ResumePC != 68 {
 		t.Fatalf("slice 3 resume PC = %d, want 68", exit.ResumePC)
 	}
-	if value, err := obj.Get("x"); err != nil || value != engine.Number(3) {
+	if value, err := obj.Get("x"); err != nil || !numEq(value, 3) {
 		t.Fatalf("final o.x = %v (err %v), want 3", value, err)
 	}
 }
@@ -302,7 +310,7 @@ func TestTraceGuardFailureAfterCommittedSliceNoPartialWrite(t *testing.T) {
 	if err != nil || reason != Yielded {
 		t.Fatalf("slice 1: exit=%+v reason=%v err=%v", exit, reason, err)
 	}
-	if committedBeforePoll != engine.Number(1) {
+	if !numEq(committedBeforePoll, 1) {
 		t.Fatalf("slice 1 committed o.x = %v, want 1 (observed at the poll)", committedBeforePoll)
 	}
 	// Slice 2 starts with the poisoned property: the write guard fails at the

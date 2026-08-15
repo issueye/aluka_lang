@@ -114,20 +114,62 @@ func (b booleanValue) AsFunction() (Function, bool) { return nil, false }
 
 // --- number ----------------------------------------------------------------
 
-type numberValue float64
+// numberBox 是数字的不可变存储单元（slab 分配，见 newNumber）。
+type numberBox struct{ v float64 }
+
+// numberValue 是 JS Number 的表示：单指针字结构体（pointer-shaped），
+// 装入 interface 直接存进数据字、零分配——值类型 float64 每次转换都会
+// convT64 堆分配，Tier 0 算术/比较/计数热路径的分配大头由此消除。
+// 代价：interface 相等比较变为指针比较（同值双 box 不等）。JS 语义的
+// 相等（==/===）经 equality.go 走 Float() 数值比较，不受影响；仓库内
+// 已审计无 map 键与直接 == 比较依赖数值相等（structuredClone 的 seen
+// 仅对象键、domain forwarders 仅事件对象键）。
+type numberValue struct{ b *numberBox }
+
+// 数字 slab：64KB 块内原子 bump 分配（~几 ns），耗尽后加锁换新块。
+// 旧块由存活的 box 指针保活（含少数存活数字时最多浪费一个块）。
+const numSlabBoxes = 8192 // 8192 × 8B = 64KB
+
+var (
+	numSlabMu  sync.Mutex
+	numSlabPtr atomic.Pointer[[]numberBox]
+	numSlabIdx atomic.Int64
+)
+
+// newNumber 从当前 slab 原子 bump 分配一个数字单元。
+func newNumber(f float64) numberValue {
+	for {
+		sp := numSlabPtr.Load()
+		if sp != nil {
+			i := numSlabIdx.Add(1)
+			if int(i) <= len(*sp) {
+				box := &(*sp)[i-1]
+				box.v = f
+				return numberValue{b: box}
+			}
+		}
+		numSlabMu.Lock()
+		if sp := numSlabPtr.Load(); sp == nil || numSlabIdx.Load() >= int64(len(*sp)) {
+			fresh := make([]numberBox, numSlabBoxes)
+			numSlabPtr.Store(&fresh)
+			numSlabIdx.Store(0)
+		}
+		numSlabMu.Unlock()
+	}
+}
 
 // Number 包装 Go float64 为 JS Value。
 // JS 中所有数字都是 float64（除 BigInt），故统一用 float64 表示。
-func Number(n float64) Value { return numberValue(n) }
+func Number(n float64) Value { return newNumber(n) }
 
 // IntValue 包装 Go int 为 JS Value。
-func IntValue(n int) Value { return numberValue(float64(n)) }
+func IntValue(n int) Value { return newNumber(float64(n)) }
 
 func (n numberValue) Type() ValueType              { return TypeNumber }
-func (n numberValue) String() string               { return formatNumber(float64(n)) }
-func (n numberValue) Int() (int, bool)             { return int(float64(n)), true }
-func (n numberValue) Float() (float64, bool)       { return float64(n), true }
-func (n numberValue) Bool() (bool, bool)           { return float64(n) != 0 && !math.IsNaN(float64(n)), true }
+func (n numberValue) String() string               { return formatNumber(n.b.v) }
+func (n numberValue) Int() (int, bool)             { return int(n.b.v), true }
+func (n numberValue) Float() (float64, bool)       { return n.b.v, true }
+func (n numberValue) Bool() (bool, bool)           { return n.b.v != 0 && !math.IsNaN(n.b.v), true }
 func (n numberValue) IsUndefined() bool            { return false }
 func (n numberValue) IsNull() bool                 { return false }
 func (n numberValue) IsObject() bool               { return false }
@@ -828,7 +870,7 @@ func (a *ArrayValue) AppendNumberRange(start float64, count int) {
 	}
 	a.elems = a.elems[:oldLen+count]
 	for i := 0; i < count; i++ {
-		a.elems[oldLen+i] = numberValue(start + float64(i))
+		a.elems[oldLen+i] = newNumber(start + float64(i))
 	}
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
@@ -861,7 +903,7 @@ func (a *ArrayValue) WriteNumberRange(start int, valueStart float64, count int) 
 		}
 	}
 	for i := 0; i < count; i++ {
-		a.elems[start+i] = numberValue(valueStart + float64(i))
+		a.elems[start+i] = newNumber(valueStart + float64(i))
 	}
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
