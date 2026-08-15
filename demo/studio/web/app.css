@@ -33,6 +33,13 @@ body {
   background: var(--panel);
   border-bottom: 1px solid var(--line);
   user-select: none;
+  /* 无边框窗口拖拽区（Wails v3 同款写法）：按住标题栏移动窗口，双击最大化 */
+  --wails-draggable: drag;
+}
+
+/* 交互控件豁免拖拽 */
+.win-controls {
+  --wails-draggable: no-drag;
 }
 
 .brand { display: flex; align-items: center; gap: 10px; font-size: 13px; }

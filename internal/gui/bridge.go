@@ -15,11 +15,18 @@ type BridgeMessage struct {
 }
 
 // GenerateBridgeScript 生成自动注入到前端 WebView 中的 window.aluka 客户端代码。
-func GenerateBridgeScript(windowID uint64) string {
+// frameless 为真时启用无边框拖拽（--wails-draggable / -webkit-app-region /
+// data-aluka-drag 三种声明方式）与边缘缩放。
+func GenerateBridgeScript(windowID uint64, frameless bool) string {
+	framelessJS := "false"
+	if frameless {
+		framelessJS = "true"
+	}
 	return fmt.Sprintf(`(function() {
   if (window.aluka) return;
 
   var windowID = %d;
+  var frameless = %s;
   var eventListeners = {};
   var pendingRPC = {};
   var rpcCounter = 0;
@@ -51,6 +58,64 @@ func GenerateBridgeScript(windowID uint64) string {
       }
     }
   };
+
+  // ---------- 无边框拖拽 / 边缘缩放 ----------
+  // 拖拽区判定（自目标向上遍历，三种声明方式任选其一，命中即停止）：
+  //   1. --wails-draggable: drag|no-drag  （Wails v3 语义，CSS 自定义属性）
+  //   2. -webkit-app-region: drag|no-drag （Electron 语义）
+  //   3. data-aluka-drag / ="no-drag"     （Aluka 属性写法）
+  function inDragRegion(el) {
+    for (var n = el; n && n.nodeType === 1; n = n.parentElement) {
+      if (n.getAttribute) {
+        var attr = n.getAttribute('data-aluka-drag');
+        if (attr === 'no-drag') return false;
+        if (attr !== null) return true;
+      }
+      var s = window.getComputedStyle(n);
+      var d = s.getPropertyValue('--wails-draggable');
+      if (d === 'drag') return true;
+      if (d === 'no-drag') return false;
+      var r = s.getPropertyValue('-webkit-app-region') || s.appRegion || '';
+      if (r === 'drag') return true;
+      if (r === 'no-drag') return false;
+    }
+    return false;
+  }
+
+  var EDGE = 6; // 边缘缩放热区（px）
+  var CURSORS = {
+    left: 'ew-resize', right: 'ew-resize', top: 'ns-resize', bottom: 'ns-resize',
+    topLeft: 'nwse-resize', bottomRight: 'nwse-resize',
+    topRight: 'nesw-resize', bottomLeft: 'nesw-resize'
+  };
+  function edgeAt(e) {
+    var x = e.clientX, y = e.clientY;
+    var l = x < EDGE, r = x > window.innerWidth - EDGE;
+    var t = y < EDGE, b = y > window.innerHeight - EDGE;
+    if (!l && !r && !t && !b) return null;
+    var d = '';
+    if (t) d += 'top'; else if (b) d += 'bottom';
+    if (l) d += 'left'; else if (r) d += 'right';
+    return d;
+  }
+
+  if (frameless) {
+    document.addEventListener('mousemove', function(e) {
+      var d = edgeAt(e);
+      document.documentElement.style.cursor = d ? (CURSORS[d] || 'default') : '';
+    });
+    document.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
+      var d = edgeAt(e);
+      if (d) {
+        postToHost({ type: 'window_action', name: 'startResize', data: d });
+        return;
+      }
+      if (inDragRegion(e.target)) {
+        postToHost({ type: 'window_action', name: 'startDrag' });
+      }
+    });
+  }
 
   window.aluka = {
     windowID: windowID,
@@ -120,7 +185,7 @@ func GenerateBridgeScript(windowID uint64) string {
       }
     }
   };
-})();`, windowID)
+})();`, windowID, framelessJS)
 }
 
 // RPCRegistry 主进程注册给前端调用的 RPC 方法集合。
@@ -178,6 +243,18 @@ func (w *Window) HandleWebMessage(rawMessage string) {
 			var size [2]int
 			_ = json.Unmarshal(msg.Data, &size)
 			w.SetSize(size[0], size[1])
+		case "startDrag":
+			// 无边框拖拽：进入系统原生移动循环
+			if dr, ok := w.native.(interface{ StartDragMove() }); ok {
+				GetApp().PostAction(dr.StartDragMove)
+			}
+		case "startResize":
+			// 无边框边缘缩放：data 为方向（left/topRight/bottom…）
+			var dir string
+			_ = json.Unmarshal(msg.Data, &dir)
+			if rz, ok := w.native.(interface{ StartResize(dir string) }); ok {
+				GetApp().PostAction(func() { rz.StartResize(dir) })
+			}
 		}
 
 	case "event":

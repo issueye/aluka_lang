@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -426,7 +427,7 @@ func (w *windowsWindow) onWebView2Controller(controller uintptr) {
 		if _, err := comCall(eventArgs, wv2PFArgsGetKind, uintptr(unsafe.Pointer(&kind))); err != nil {
 			kind = 0xFFFFFFFF
 		}
-		fmt.Fprintf(os.Stderr, "[aluka:gui] WebView2 process failed: kind=%d (1=renderer无响应 2=renderer退出 0=浏览器进程退出)\n", int32(kind))
+		fmt.Fprintf(os.Stderr, "[aluka:gui] %s WebView2 process failed: kind=%d\n", time.Now().Format("15:04:05.000"), int32(kind))
 		// 仅 renderer 故障自愈：Reload 重载当前页面
 		if kind == 1 || kind == 2 {
 			GetApp().PostAction(func() {
@@ -460,9 +461,10 @@ func (w *windowsWindow) onWebView2Controller(controller uintptr) {
 	var token2 uintptr
 	_, _ = comCall(webview, wv2AddWebMessageReceived, msgHandler, uintptr(unsafe.Pointer(&token2)))
 
-	// 注入 window.aluka 前端桥接客户端
+	// 注入 window.aluka 前端桥接客户端（无边框时启用拖拽/边缘缩放热区）
 	if w.parent != nil {
-		bridge := newUTF16Buf(GenerateBridgeScript(w.parent.ID()))
+		frameless := w.opts.Frame != nil && !*w.opts.Frame
+		bridge := newUTF16Buf(GenerateBridgeScript(w.parent.ID(), frameless))
 		if bridge.ptr() != 0 {
 			_, _ = comCall(webview, wv2AddScriptToExecute, bridge.ptr(), noopComHandler)
 			runtime.KeepAlive(bridge)

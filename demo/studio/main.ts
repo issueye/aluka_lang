@@ -12,13 +12,17 @@ import { app, createWindow, createTray, setAssetDir, globalShortcut } from "aluk
 // （打包模式由 --web-dir 内嵌，此调用无害；相对路径以启动 cwd 为准）
 setAssetDir("./demo/studio/web");
 
-// 1. 主窗口：尺寸约束 + DevTools
+// 1. 主窗口：无边框 + 尺寸约束 + DevTools
+//    无边框拖拽：标题栏声明 --wails-draggable: drag（见 app.css，
+//    亦兼容 -webkit-app-region / data-aluka-drag 写法），
+//    边缘 6px 自动进入缩放热区，拖拽区双击最大化
 const win = createWindow({
   title: "Aluka Studio",
   width: 960,
   height: 640,
   minWidth: 720,
   minHeight: 480,
+  frame: false,
   devTools: true,
   url: "aluka://app/index.html",
 });
