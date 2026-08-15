@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -104,7 +105,11 @@ type Manifest struct {
 	Resolutions map[string]map[string]string `json:"resolutions,omitempty"`
 	// Assets 是嵌入的 JSON 资源（M3，B2.3.4）：虚拟路径 → 原始 JSON 字节。
 	// import x from './data.json' 的依赖在构建期收集为资源而非模块。
-	Assets    map[string]string `json:"assets,omitempty"`
+	Assets map[string]string `json:"assets,omitempty"`
+	// WebAssets 是 GUI 模式（aluka build --gui）内嵌的前端静态资源：
+	// 相对路径 → base64 内容（HTML/CSS/JS/图片/字体等），运行时挂载到
+	// aluka://app/ 内存虚拟协议。与 Assets（JSON 模块资源）语义分离。
+	WebAssets map[string]string `json:"webAssets,omitempty"`
 	Platform  string            `json:"platform"` // 构建平台（GOOS/GOARCH）
 	CreatedAt string            `json:"createdAt"`
 }
@@ -123,6 +128,13 @@ type EntryData struct {
 // modules 按路径排序保证输出确定性；resolutions 为构建期解析映射
 // （M2）；assets 为嵌入的 JSON 资源（M3，虚拟路径 → 原始字节）。
 func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[string]string, assets map[string][]byte) ([]byte, error) {
+	return PackWithWebAssets(entryPath, modules, resolutions, assets, nil)
+}
+
+// PackWithWebAssets 在 Pack 基础上追加 GUI 前端静态资源（--gui 模式）。
+// webAssets 为相对路径 → 原始字节；base64 编码后写入 manifest
+// （manifest 整体 zlib 压缩，体积膨胀可忽略）。
+func PackWithWebAssets(entryPath string, modules []*EntryData, resolutions map[string]map[string]string, assets map[string][]byte, webAssets map[string][]byte) ([]byte, error) {
 	sorted := make([]*EntryData, len(modules))
 	copy(sorted, modules)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
@@ -150,6 +162,14 @@ func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[str
 		assetStrings[k] = string(v)
 	}
 
+	var webAssetStrings map[string]string
+	if len(webAssets) > 0 {
+		webAssetStrings = make(map[string]string, len(webAssets))
+		for k, v := range webAssets {
+			webAssetStrings[k] = base64.StdEncoding.EncodeToString(v)
+		}
+	}
+
 	manifest := Manifest{
 		PayloadVersion: PayloadVersion,
 		FormatVersion:  bytecode.FormatVersion,
@@ -157,6 +177,7 @@ func Pack(entryPath string, modules []*EntryData, resolutions map[string]map[str
 		Modules:        entries,
 		Resolutions:    resolutions,
 		Assets:         assetStrings,
+		WebAssets:      webAssetStrings,
 		Platform:       platformString(),
 		CreatedAt:      time.Now().Format(time.RFC3339),
 	}

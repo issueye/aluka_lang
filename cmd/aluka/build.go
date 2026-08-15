@@ -7,6 +7,13 @@
 // 产物 = 当前 aluka 基座 + payload（预编译字节码 + manifest）+ footer。
 // 产物在无 aluka/Go 环境的机器上可直接运行（字节码平台无关，见计划 §3）。
 //
+// GUI 模式（docs/aluka-gui-architecture-plan.md GUI-4）：
+//
+//	aluka build --compile --gui --web-dir ./dist --outfile app.exe ./src/main.ts
+//
+// 前端静态资源目录递归内嵌进 payload（manifest.webAssets，base64 + zlib），
+// 产物启动时挂载到 aluka://app/ 内存虚拟协议并分离控制台（Windows 免黑框）。
+//
 // T2（docs/test-bundle-optimize-plan.md §5.2）扩展：
 //
 //	--tree-shake / --no-tree-shake  模块级 tree-shaking（默认开启）
@@ -52,6 +59,8 @@ type buildOptions struct {
 	maxPayload    int64
 	noTreeShake   bool
 	noBytecodeOpt bool
+	guiApp        bool
+	webDir        string
 }
 
 type buildResult struct {
@@ -82,6 +91,8 @@ func buildFlags(opts *buildOptions, optimize *bool) *cli.FlagSet {
 	fs.Var(cli.FuncValue{Fn: func(s string) error { opts.maxPayload = parsePayloadBudget(s); return nil }}, "max-payload", "Fail with exit code 2 when payload exceeds the budget").MissingMsg("--max-payload requires a size")
 	fs.Var(cli.ActionValue{Fn: func() error { return errors.New("--sourcemap not implemented (scope: --compile only)") }}, "sourcemap", "Source map generation (not implemented)")
 	fs.Var(cli.ActionValue{Fn: func() error { return errors.New("--target not implemented (scope: --compile only)") }}, "target", "Target platform (not implemented)")
+	fs.Bool("gui", "Embed frontend web assets as a GUI desktop app (with --compile)", &opts.guiApp)
+	fs.String("web-dir", "Frontend web assets directory to embed (default: dist; requires --gui)", &opts.webDir).MissingMsg("--web-dir requires a path")
 	return fs
 }
 
@@ -91,6 +102,54 @@ func stripBOM(src []byte) []byte {
 		return src[3:]
 	}
 	return src
+}
+
+// collectWebAssets 递归收集前端静态资源目录（--gui 模式），
+// 返回 相对路径（/ 分隔）→ 原始字节。单文件上限 64MB，总量上限 512MB。
+func collectWebAssets(dir string) (map[string][]byte, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("--web-dir %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("--web-dir %s: not a directory", dir)
+	}
+
+	const maxFileBytes = 64 << 20
+	const maxTotalBytes = 512 << 20
+	assets := make(map[string][]byte)
+	var total int64
+
+	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read web asset %s: %w", rel, err)
+		}
+		if len(data) > maxFileBytes {
+			return fmt.Errorf("web asset %s too large (%d bytes > 64MB)", rel, len(data))
+		}
+		total += int64(len(data))
+		if total > maxTotalBytes {
+			return fmt.Errorf("web assets total size exceeds 512MB")
+		}
+		assets[rel] = data
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return assets, nil
 }
 
 // cmdBuild 实现 `aluka build [--compile] [--outfile <path>] [--outdir <dir>]
@@ -123,6 +182,9 @@ func cmdBuild(args []string) {
 	}
 	if opts.analyzeOut != "" && opts.analyzeFormat == "" {
 		fatalErr("aluka build: --analyze-out requires --analyze")
+	}
+	if opts.webDir != "" && !opts.guiApp {
+		fatalErr("aluka build: --web-dir requires --gui")
 	}
 	if !opts.compileOnly {
 		fatalErr("aluka build: M1 supports only --compile (single-file executable); plain bundling is not implemented")
@@ -273,7 +335,20 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 		optimizedStage = mustMeasureStage(modules)
 	}
 
-	payload, err := compile.Pack(graphResult.Entry, modules, resolutions, assets)
+	// GUI 模式：收集前端静态资源目录（--web-dir，默认 dist）
+	var webAssets map[string][]byte
+	if opts.guiApp {
+		webDir := opts.webDir
+		if webDir == "" {
+			webDir = "dist"
+		}
+		webAssets, err = collectWebAssets(webDir)
+		if err != nil {
+			fatalErr("aluka build: " + err.Error())
+		}
+	}
+
+	payload, err := compile.PackWithWebAssets(graphResult.Entry, modules, resolutions, assets, webAssets)
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
 	}
@@ -301,15 +376,19 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 	if removed > 0 {
 		shakeNote = fmt.Sprintf(", tree-shaken %d modules", removed)
 	}
+	guiNote := ""
+	if opts.guiApp {
+		guiNote = fmt.Sprintf(", %d web assets", len(webAssets))
+	}
 	result := buildResult{budgetExceeded: budgetExceeded}
 	switch {
 	case budgetExceeded:
 		result.summary = fmt.Sprintf("Analyzed %s (payload %d bytes exceeds budget %d bytes; artifact not written)", entry, len(payload), opts.maxPayload)
 	case opts.analyzeOnly:
-		result.summary = fmt.Sprintf("Analyzed %s (%d payload bytes, %d modules%s; artifact not written)", entry, len(payload), len(modules), shakeNote)
+		result.summary = fmt.Sprintf("Analyzed %s (%d payload bytes, %d modules%s%s; artifact not written)", entry, len(payload), len(modules), shakeNote, guiNote)
 	default:
-		result.summary = fmt.Sprintf("Compiled %s → %s (%d bytes, payload at %d, %d modules%s, base %s)",
-			entry, out, artifactSize, payloadOffset, len(modules), shakeNote, opts.basePath)
+		result.summary = fmt.Sprintf("Compiled %s → %s (%d bytes, payload at %d, %d modules%s%s, base %s)",
+			entry, out, artifactSize, payloadOffset, len(modules), shakeNote, guiNote, opts.basePath)
 	}
 	if needAnalysis {
 		report, err := analyze.BuildReport(analyze.Input{

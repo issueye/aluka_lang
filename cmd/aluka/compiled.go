@@ -15,6 +15,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/bundler/compile"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/gui"
 	modmodule "github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
@@ -106,6 +107,16 @@ func runCompiled(payload []byte) int {
 	// M2：嵌入式模块存储——require/import 按构建期解析映射加载嵌入模块。
 	loader.SetEmbedded(compile.NewEmbedded(manifest, data))
 	loader.SetEntryPath(entry)
+
+	// GUI 产物模式：挂载内嵌前端资源到 aluka://app/ 虚拟协议，
+	// 并分离控制台（Windows 免黑框）。
+	if len(manifest.WebAssets) > 0 {
+		if err := gui.MountEmbeddedWebAssets(manifest.WebAssets); err != nil {
+			fmt.Fprintln(os.Stderr, "aluka: "+err.Error())
+			return 1
+		}
+		gui.ReleaseConsole()
+	}
 
 	// M3：产物模式 process.argv 语义（Bun 编译产物一致）：
 	// argv[0] = 可执行文件路径，argv[1] = 虚拟入口路径，其余为应用参数。

@@ -204,7 +204,7 @@ func transcodeBytes(units []uint16, toEnc string) []byte {
 		for i := 0; i < len(units); i++ {
 			u := units[i]
 			if u >= 0xD800 && u <= 0xDBFF && i+1 < len(units) && units[i+1] >= 0xDC00 && units[i+1] <= 0xDFFF {
-				r := 0x10000 + (int(u-0xD800)<<10) + int(units[i+1]-0xDC00)
+				r := 0x10000 + (int(u-0xD800) << 10) + int(units[i+1]-0xDC00)
 				sb.WriteRune(rune(r))
 				i++
 			} else {
