@@ -44,6 +44,15 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 		return engine.Undefined(), nil
 	}))
 
+	// 退出即终止进程：GUI 应用语义下 quit 后不应因残留定时器/任务而悬挂
+	// （宿主进程残留还会占用全局热键，导致下次启动 RegisterHotKey 失败）。
+	// 覆盖全部退出路径：app.quit()、托盘菜单、最后一个窗口关闭。
+	app.On("quit", func(data interface{}) {
+		if stopper, ok := ctx.(interface{ Stop() }); ok {
+			stopper.Stop()
+		}
+	})
+
 	// app.run()
 	// 持有 JS 上下文活跃句柄直到 GUI 循环退出：既保证 ready 事件的
 	// 回投任务不被事件循环空闲判定丢弃（竞态），又让应用退出后进程随之结束
