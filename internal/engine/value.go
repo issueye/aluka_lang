@@ -591,10 +591,10 @@ func GetOwnSlot(val Value, key string) (Value, bool) {
 	if o, ok := val.(*objectValue); ok {
 		return o.getSlot(key)
 	}
-	if a, ok := val.(*ArrayValue); ok && a.objectValue != nil {
+	if a, ok := val.(*ArrayValue); ok {
 		return a.objectValue.getSlot(key)
 	}
-	if f, ok := val.(*functionValue); ok && f.objectValue != nil {
+	if f, ok := val.(*functionValue); ok {
 		return f.objectValue.getSlot(key)
 	}
 	return Undefined(), false
@@ -676,7 +676,10 @@ func (o *objectValue) Delete(key string) bool {
 
 // ArrayValue 是 JS 数组的对象实现（带 length 属性）。
 type ArrayValue struct {
-	*objectValue
+	// objectValue 值嵌入（而非指针）：数组与其宿主对象合成一次分配，
+	// 省去每个数组一次独立 malloc。经 ArrayValue 指针访问时选择器
+	// 自动取址，既有 a.objectValue.xxx 调用点无需改动。
+	objectValue
 	elems []Value
 	// smallElems 是小数组（≤4 元素）的内嵌元素后备：字面量 [a, b] 类
 	// 高频短生命周期数组省去独立 elems 分配；更大数组走独立堆数组。
@@ -686,16 +689,17 @@ type ArrayValue struct {
 // NewArray 创建数组对象。elems 长度 ≤4 时拷贝进内嵌后备（调用方可让
 // 传入切片留在栈上避免逃逸）；更长时直接接管传入切片（零拷贝）。
 func NewArray(elems []Value) *ArrayValue {
-	a := &ArrayValue{objectValue: &objectValue{shape: rootShape}}
+	a := &ArrayValue{}
+	a.shape = rootShape
 	if len(elems) <= len(a.smallElems) {
 		copy(a.smallElems[:], elems)
 		a.elems = a.smallElems[:len(elems)]
 	} else {
 		a.elems = elems
 	}
-	register(a.objectValue)
+	register(&a.objectValue)
 	// 同步 length 属性
-	a.objectValue.setSlot("length", IntValue(len(elems)))
+	a.setSlot("length", IntValue(len(elems)))
 	return a
 }
 
@@ -706,10 +710,10 @@ func (a *ArrayValue) Type() ValueType { return TypeObject }
 func (a *ArrayValue) AsObject() (Object, bool) { return a, true }
 
 func (a *ArrayValue) String() string {
-	if !markStringify(a.objectValue) {
+	if !markStringify(&a.objectValue) {
 		return "[Circular]"
 	}
-	defer unmarkStringify(a.objectValue)
+	defer unmarkStringify(&a.objectValue)
 	if len(a.elems) == 0 {
 		return "[]"
 	}
@@ -865,8 +869,9 @@ func (a *ArrayValue) WriteNumberRange(start int, valueStart float64, count int) 
 // --- function --------------------------------------------------------------
 
 // functionValue 包装一个 Go Func 为 JS Function 对象。
+// objectValue 值嵌入：闭包/函数对象创建是热路径，合成一次分配。
 type functionValue struct {
-	*objectValue
+	objectValue
 	fn   Func
 	name string
 }
@@ -874,13 +879,13 @@ type functionValue struct {
 // NewFunction 创建函数对象。
 func NewFunction(name string, fn Func) Function {
 	f := &functionValue{
-		objectValue: &objectValue{shape: rootShape},
-		fn:          fn,
-		name:        name,
+		fn:   fn,
+		name: name,
 	}
-	register(f.objectValue)
-	_ = f.objectValue.Set("name", Str(name))
-	_ = f.objectValue.Set("length", IntValue(0)) // 形参数量，Phase 0 固定 0
+	f.shape = rootShape
+	register(&f.objectValue)
+	_ = f.Set("name", Str(name))
+	_ = f.Set("length", IntValue(0)) // 形参数量，Phase 0 固定 0
 	// ES 语义：普通函数都有 .prototype 属性（一个对象，constructor 指向自身）。
 	// engine.NewFunction 常用于原生模块构造器（如 stream.Transform），npm 包常
 	// 访问 <Ctor>.prototype（iconv-lite 的 Object.create(Transform.prototype)）。
@@ -901,7 +906,7 @@ func (f *functionValue) String() string {
 
 func (f *functionValue) IsFunction() bool             { return true }
 func (f *functionValue) IsObject() bool               { return true }
-func (f *functionValue) AsObject() (Object, bool)     { return f.objectValue, true }
+func (f *functionValue) AsObject() (Object, bool)     { return &f.objectValue, true }
 func (f *functionValue) AsFunction() (Function, bool) { return f, true }
 
 func (f *functionValue) Call(args []Value) (Value, error) {
@@ -964,9 +969,9 @@ func SetAccessor(obj Object, key string, getter, setter Value) {
 func embeddedObjectValue(obj Object) *objectValue {
 	switch v := obj.(type) {
 	case *functionValue:
-		return v.objectValue
+		return &v.objectValue
 	case *ArrayValue:
-		return v.objectValue
+		return &v.objectValue
 	case *BufferValue:
 		return v.objectValue
 	}
@@ -1020,7 +1025,7 @@ func FindAccessor(obj Value, key string) (*AccessorValue, bool) {
 			// 交给循环重新分发（functionValue/ArrayValue/闭包等原型类型）。
 			cur = o.proto
 		} else if a, ok := cur.(*ArrayValue); ok {
-			if a.objectValue != nil {
+			{
 				if v, exists := a.objectValue.getSlot(key); exists {
 					if acc, ok := v.(*AccessorValue); ok {
 						return acc, true
@@ -1030,7 +1035,7 @@ func FindAccessor(obj Value, key string) (*AccessorValue, bool) {
 			}
 			cur = GetProto(cur)
 		} else if f, ok := cur.(*functionValue); ok {
-			if f.objectValue != nil {
+			{
 				if v, exists := f.objectValue.getSlot(key); exists {
 					if acc, ok := v.(*AccessorValue); ok {
 						return acc, true

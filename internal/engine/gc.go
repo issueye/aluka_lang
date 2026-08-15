@@ -92,8 +92,9 @@ func register(obj *objectValue) {
 // freeOSInterval 控制后台归还 OS 内存的周期。默认 2s：在对话/交互的间隙
 // 触发 GC+FreeOSMemory，把已回收页归还 OS，而不阻塞分配热路径。可由环境
 // 变量 ALUKA_FREEOS_INTERVAL 覆盖：
-//   >0 ：以秒为单位的周期（如 3 = 每 3 秒）
-//   <=0：禁用后台归还（RSS 将单调增长，但零延迟开销）
+//
+//	>0 ：以秒为单位的周期（如 3 = 每 3 秒）
+//	<=0：禁用后台归还（RSS 将单调增长，但零延迟开销）
 var freeOSInterval = 2 * time.Second
 
 // freeOSSig 是 register→freeOSLoop 的非阻塞信号：达到分配阈值后 try-send，
@@ -234,14 +235,14 @@ func markFromRoots(roots []Value) map[*objectValue]bool {
 		case *objectValue:
 			o = t
 		case *ArrayValue:
-			o = t.objectValue
+			o = &t.objectValue
 			for _, e := range t.elems {
 				if e != nil {
 					worklist = append(worklist, e)
 				}
 			}
 		case *functionValue:
-			o = t.objectValue
+			o = &t.objectValue
 		case *BufferValue:
 			o = t.objectValue
 		case *DateValue:
