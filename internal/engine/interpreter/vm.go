@@ -51,6 +51,11 @@ type VM struct {
 	// 后续创建零哈希/零 transition 行走。
 	objLitCache map[objLitSite]*objLitEntry
 
+	// numSlab/numIdx 是 VM 私有数字 slab：JS 执行单线程独占 VM，
+	// 数字单元 bump 分配免全局原子（engine.Number 走全局原子 slab）。
+	numSlab []engine.NumberBox
+	numIdx  int
+
 	// 覆盖率统计（aluka test --coverage 启用；常态零开销）。
 	coverEnabled bool
 	coverMu      sync.Mutex
@@ -514,6 +519,18 @@ func (v *VM) local(slot int) *engine.Value {
 // === Main loop ============================================================
 
 // run executes the current top frame until it returns.
+// num 从 VM 私有 slab 分配数字（免全局原子；box 一经发布不可变）。
+func (v *VM) num(f float64) engine.Value {
+	if v.numIdx >= len(v.numSlab) {
+		v.numSlab = make([]engine.NumberBox, 4096)
+		v.numIdx = 0
+	}
+	b := &v.numSlab[v.numIdx]
+	b.V = f
+	v.numIdx++
+	return engine.NumberFromBox(b)
+}
+
 // fastInt64 判断 float64 是否为安全整数范围内的整数值（|x| < 2^53），
 // 是则返回整型值。用于取模等运算的整数快路径。
 func fastInt64(f float64) (int64, bool) {
@@ -596,9 +613,9 @@ func (v *VM) run() (engine.Value, error) {
 			case bytecode.OpPushConst:
 				v.push(tmpl.Constants[operand])
 			case bytecode.OpPushInt:
-				v.push(engine.Number(float64(operand)))
+				v.push(v.num(float64(operand)))
 			case bytecode.OpPushNegInt:
-				v.push(engine.Number(float64(-int(operand))))
+				v.push(v.num(float64(-int(operand))))
 			case bytecode.OpPop:
 				v.pop()
 			case bytecode.OpDup:
@@ -673,7 +690,7 @@ func (v *VM) run() (engine.Value, error) {
 				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
 					lf, _ := l.Float()
 					rf, _ := r.Float()
-					v.push(engine.Number(lf + rf))
+					v.push(v.num(lf + rf))
 				} else if isBigInt(l) || isBigInt(r) {
 					// BigInt 与非 BigInt 的加法必须显式转换；保持运行时
 					// 对混合 String/BigInt 的 TypeError 约定，避免静默拼接。
@@ -693,7 +710,7 @@ func (v *VM) run() (engine.Value, error) {
 				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
 					lf, _ := l.Float()
 					rf, _ := r.Float()
-					v.push(engine.Number(lf - rf))
+					v.push(v.num(lf - rf))
 				} else if isBigInt(l) || isBigInt(r) {
 					result, err := bigintArith2(l, r, '-')
 					if err != nil {
@@ -701,7 +718,7 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					v.push(engine.Number(jsToNumber(l) - jsToNumber(r)))
+					v.push(v.num(jsToNumber(l) - jsToNumber(r)))
 				}
 			case bytecode.OpMul:
 				r := v.pop()
@@ -709,7 +726,7 @@ func (v *VM) run() (engine.Value, error) {
 				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
 					lf, _ := l.Float()
 					rf, _ := r.Float()
-					v.push(engine.Number(lf * rf))
+					v.push(v.num(lf * rf))
 				} else if isBigInt(l) || isBigInt(r) {
 					result, err := bigintArith2(l, r, '*')
 					if err != nil {
@@ -717,7 +734,7 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					v.push(engine.Number(jsToNumber(l) * jsToNumber(r)))
+					v.push(v.num(jsToNumber(l) * jsToNumber(r)))
 				}
 			case bytecode.OpDiv:
 				r := v.pop()
@@ -725,7 +742,7 @@ func (v *VM) run() (engine.Value, error) {
 				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
 					lf, _ := l.Float()
 					rf, _ := r.Float()
-					v.push(engine.Number(lf / rf))
+					v.push(v.num(lf / rf))
 				} else if isBigInt(l) || isBigInt(r) {
 					result, err := bigintArith2(l, r, '/')
 					if err != nil {
@@ -733,7 +750,7 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					v.push(engine.Number(jsToNumber(l) / jsToNumber(r)))
+					v.push(v.num(jsToNumber(l) / jsToNumber(r)))
 				}
 			case bytecode.OpMod:
 				r := v.pop()
@@ -749,15 +766,15 @@ func (v *VM) run() (engine.Value, error) {
 							m := li % ri
 							// 余数为零时 fmod 结果符号随被除数（fmod(-1,1) = -0）
 							if m == 0 && li < 0 {
-								v.push(engine.Number(math.Copysign(0, -1)))
+								v.push(v.num(math.Copysign(0, -1)))
 							} else {
-								v.push(engine.Number(float64(m)))
+								v.push(v.num(float64(m)))
 							}
 							modFast = true
 						}
 					}
 					if !modFast {
-						v.push(engine.Number(math.Mod(lf, rf)))
+						v.push(v.num(math.Mod(lf, rf)))
 					}
 				} else if isBigInt(l) || isBigInt(r) {
 					result, err := bigintArith2(l, r, '%')
@@ -769,9 +786,9 @@ func (v *VM) run() (engine.Value, error) {
 					ln := jsToNumber(l)
 					rn := jsToNumber(r)
 					if rn == 0 {
-						v.push(engine.Number(math.NaN()))
+						v.push(v.num(math.NaN()))
 					} else {
-						v.push(engine.Number(math.Mod(ln, rn)))
+						v.push(v.num(math.Mod(ln, rn)))
 					}
 				}
 			case bytecode.OpPow:
@@ -780,7 +797,7 @@ func (v *VM) run() (engine.Value, error) {
 				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
 					lf, _ := l.Float()
 					rf, _ := r.Float()
-					v.push(engine.Number(math.Pow(lf, rf)))
+					v.push(v.num(math.Pow(lf, rf)))
 				} else if isBigInt(l) || isBigInt(r) {
 					result, err := bigintPow(l, r)
 					if err != nil {
@@ -788,7 +805,7 @@ func (v *VM) run() (engine.Value, error) {
 					}
 					v.push(result)
 				} else {
-					v.push(engine.Number(math.Pow(jsToNumber(l), jsToNumber(r))))
+					v.push(v.num(math.Pow(jsToNumber(l), jsToNumber(r))))
 				}
 			case bytecode.OpBitAnd:
 				r := v.pop()
@@ -802,7 +819,7 @@ func (v *VM) run() (engine.Value, error) {
 				} else {
 					ln := jsToNumber(l)
 					rn := jsToNumber(r)
-					v.push(engine.Number(float64(jsToInt32(ln) & jsToInt32(rn))))
+					v.push(v.num(float64(jsToInt32(ln) & jsToInt32(rn))))
 				}
 			case bytecode.OpBitOr:
 				r := v.pop()
@@ -816,7 +833,7 @@ func (v *VM) run() (engine.Value, error) {
 				} else {
 					ln := jsToNumber(l)
 					rn := jsToNumber(r)
-					v.push(engine.Number(float64(jsToInt32(ln) | jsToInt32(rn))))
+					v.push(v.num(float64(jsToInt32(ln) | jsToInt32(rn))))
 				}
 			case bytecode.OpBitXor:
 				r := v.pop()
@@ -830,7 +847,7 @@ func (v *VM) run() (engine.Value, error) {
 				} else {
 					ln := jsToNumber(l)
 					rn := jsToNumber(r)
-					v.push(engine.Number(float64(jsToInt32(ln) ^ jsToInt32(rn))))
+					v.push(v.num(float64(jsToInt32(ln) ^ jsToInt32(rn))))
 				}
 			case bytecode.OpShl:
 				r := v.pop()
@@ -844,7 +861,7 @@ func (v *VM) run() (engine.Value, error) {
 				} else {
 					ln := jsToNumber(l)
 					rn := jsToNumber(r)
-					v.push(engine.Number(float64(jsToInt32(ln) << (jsToUint32(rn) & 31))))
+					v.push(v.num(float64(jsToInt32(ln) << (jsToUint32(rn) & 31))))
 				}
 			case bytecode.OpShr:
 				r := v.pop()
@@ -858,7 +875,7 @@ func (v *VM) run() (engine.Value, error) {
 				} else {
 					ln := jsToNumber(l)
 					rn := jsToNumber(r)
-					v.push(engine.Number(float64(jsToInt32(ln) >> (jsToUint32(rn) & 31))))
+					v.push(v.num(float64(jsToInt32(ln) >> (jsToUint32(rn) & 31))))
 				}
 			case bytecode.OpUShr:
 				r := v.pop()
@@ -869,7 +886,7 @@ func (v *VM) run() (engine.Value, error) {
 				}
 				ln, _ := l.Float()
 				rn, _ := r.Float()
-				v.push(engine.Number(float64(jsToUint32(ln) >> (jsToUint32(rn) & 31))))
+				v.push(v.num(float64(jsToUint32(ln) >> (jsToUint32(rn) & 31))))
 
 			// --- Unary ---
 			case bytecode.OpNeg:
@@ -878,7 +895,7 @@ func (v *VM) run() (engine.Value, error) {
 					v.push(bigintNeg(val))
 				} else {
 					n, _ := val.Float()
-					v.push(engine.Number(-n))
+					v.push(v.num(-n))
 				}
 			case bytecode.OpNot:
 				b, _ := v.pop().Bool()
@@ -893,7 +910,7 @@ func (v *VM) run() (engine.Value, error) {
 					break
 				}
 				n, _ := value.Float()
-				v.push(engine.Number(float64(^jsToInt32(n))))
+				v.push(v.num(float64(^jsToInt32(n))))
 			case bytecode.OpTypeof:
 				v.push(engine.Str(v.pop().Type().String()))
 			case bytecode.OpTypeofGlobal:
@@ -905,7 +922,7 @@ func (v *VM) run() (engine.Value, error) {
 				if val.Type() == engine.TypeNumber {
 					v.push(val)
 				} else {
-					v.push(engine.Number(jsToNumber(val)))
+					v.push(v.num(jsToNumber(val)))
 				}
 
 			// --- Comparisons ---
@@ -2639,7 +2656,7 @@ func (v *VM) binAdd(l, r engine.Value) engine.Value {
 	// string -> StringToNumber, boolean -> 0/1, object -> ToPrimitive);
 	// the plain Float() path silently treated conversion failures as 0
 	// (1 + undefined returned 1 instead of NaN).
-	return engine.Number(jsToNumber(l) + jsToNumber(r))
+	return v.num(jsToNumber(l) + jsToNumber(r))
 }
 
 func (v *VM) instanceof(l, r engine.Value) bool {
