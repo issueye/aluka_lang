@@ -442,3 +442,25 @@ func bytesTrimZ(b []byte) []byte {
 	}
 	return b
 }
+
+// SetPESubsystemGUI 将 PE 子系统切换为 IMAGE_SUBSYSTEM_WINDOWS_GUI（=2）。
+// GUI 产物双击运行时 Windows 不再创建控制台（等效 go build -ldflags
+// -H=windowsgui），比运行期 FreeConsole 更彻底——不存在先闪后隐的黑框。
+// stdout/stderr 重定向到管道/文件仍然有效（仅跳过控制台自动附着）。
+func SetPESubsystemGUI(exe []byte) ([]byte, error) {
+	if len(exe) < 0x40 {
+		return nil, fmt.Errorf("peicon: too short for PE")
+	}
+	peOff := int(binary.LittleEndian.Uint32(exe[0x3C:0x40]))
+	if peOff+4+20+70 > len(exe) || string(exe[peOff:peOff+4]) != "PE\x00\x00" {
+		return nil, fmt.Errorf("peicon: bad PE signature")
+	}
+	opt := peOff + 4 + 20
+	switch binary.LittleEndian.Uint16(exe[opt : opt+2]) {
+	case 0x20b, 0x10b: // PE32+ / PE32（Subsystem 偏移两者相同：+68）
+	default:
+		return nil, fmt.Errorf("peicon: unknown optional header magic")
+	}
+	binary.LittleEndian.PutUint16(exe[opt+68:opt+70], 2)
+	return exe, nil
+}

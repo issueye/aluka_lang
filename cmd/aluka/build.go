@@ -383,7 +383,7 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 			}
 		}
 		var err error
-		payloadOffset, err = writeCompiledBinary(opts.basePath, out, payload, packOpts.Icon)
+		payloadOffset, err = writeCompiledBinary(opts.basePath, out, payload, packOpts.Icon, opts.guiApp)
 		if err != nil {
 			fatalErr("aluka build: " + err.Error())
 		}
@@ -554,12 +554,19 @@ func measureUnits(vm *interpreter.VM, units map[string]*module.SourceUnit, kept 
 }
 
 // writeCompiledBinary 复制基座到 outfile 并追加 payload + footer。
+// guiApp 为真时切换 PE 子系统为 WINDOWS_GUI（双击运行不闪控制台）；
 // icon 非空时先对基座做 PE 图标注入（Explorer 展示应用图标）。
 // 返回 payload 在产物中的偏移。
-func writeCompiledBinary(base, outfile string, payload []byte, icon []byte) (int64, error) {
+func writeCompiledBinary(base, outfile string, payload []byte, icon []byte, guiApp bool) (int64, error) {
 	exeData, err := os.ReadFile(base)
 	if err != nil {
 		return 0, fmt.Errorf("read base binary %q: %w", base, err)
+	}
+	if guiApp {
+		exeData, err = compile.SetPESubsystemGUI(exeData)
+		if err != nil {
+			return 0, fmt.Errorf("set PE subsystem to windows-gui: %w", err)
+		}
 	}
 	if len(icon) > 0 {
 		exeData, err = compile.InjectIcon(exeData, icon)

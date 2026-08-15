@@ -201,3 +201,24 @@ func TestParseICOErrors(t *testing.T) {
 		t.Errorf("valid ico rejected: %v", err)
 	}
 }
+
+// TestSetPESubsystemGUI：子系统切换为 WINDOWS_GUI。
+func TestSetPESubsystemGUI(t *testing.T) {
+	pe := makeSyntheticPE(t)
+	// 合成 PE 默认子系统字段未显式设置（0），先写入 CONSOLE(3) 模拟基座
+	peOff := int(binary.LittleEndian.Uint32(pe[0x3C:]))
+	opt := peOff + 4 + 20
+	binary.LittleEndian.PutUint16(pe[opt+68:opt+70], 3)
+
+	out, err := SetPESubsystemGUI(pe)
+	if err != nil {
+		t.Fatalf("SetPESubsystemGUI: %v", err)
+	}
+	if got := binary.LittleEndian.Uint16(out[opt+68 : opt+70]); got != 2 {
+		t.Fatalf("subsystem = %d, want 2 (WINDOWS_GUI)", got)
+	}
+
+	if _, err := SetPESubsystemGUI([]byte("garbage")); err == nil {
+		t.Error("expected error for non-PE input")
+	}
+}
