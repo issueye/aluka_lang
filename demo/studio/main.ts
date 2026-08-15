@@ -13,7 +13,7 @@ import { app, createWindow, createTray, setAssetDir, globalShortcut } from "aluk
 setAssetDir("./demo/studio/web");
 
 // 1. 主窗口：无边框 + 尺寸约束 + DevTools
-//    无边框拖拽：标题栏声明 --wails-draggable: drag（见 app.css，
+//    无边框拖拽：标题栏声明 --aluka-draggable: drag（见 app.css，
 //    亦兼容 -webkit-app-region / data-aluka-drag 写法），
 //    边缘 6px 自动进入缩放热区，拖拽区双击最大化
 const win = createWindow({

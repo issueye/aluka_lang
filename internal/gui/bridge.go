@@ -15,7 +15,7 @@ type BridgeMessage struct {
 }
 
 // GenerateBridgeScript 生成自动注入到前端 WebView 中的 window.aluka 客户端代码。
-// frameless 为真时启用无边框拖拽（--wails-draggable / -webkit-app-region /
+// frameless 为真时启用无边框拖拽（--aluka-draggable / -webkit-app-region /
 // data-aluka-drag 三种声明方式）与边缘缩放。
 func GenerateBridgeScript(windowID uint64, frameless bool) string {
 	framelessJS := "false"
@@ -61,7 +61,7 @@ func GenerateBridgeScript(windowID uint64, frameless bool) string {
 
   // ---------- 无边框拖拽 / 边缘缩放 ----------
   // 拖拽区判定（自目标向上遍历，三种声明方式任选其一，命中即停止）：
-  //   1. --wails-draggable: drag|no-drag  （Wails v3 语义，CSS 自定义属性）
+  //   1. --aluka-draggable: drag|no-drag  （CSS 自定义属性，Aluka 风格写法）
   //   2. -webkit-app-region: drag|no-drag （Electron 语义）
   //   3. data-aluka-drag / ="no-drag"     （Aluka 属性写法）
   function inDragRegion(el) {
@@ -72,7 +72,7 @@ func GenerateBridgeScript(windowID uint64, frameless bool) string {
         if (attr !== null) return true;
       }
       var s = window.getComputedStyle(n);
-      var d = s.getPropertyValue('--wails-draggable');
+      var d = s.getPropertyValue('--aluka-draggable');
       if (d === 'drag') return true;
       if (d === 'no-drag') return false;
       var r = s.getPropertyValue('-webkit-app-region') || s.appRegion || '';
