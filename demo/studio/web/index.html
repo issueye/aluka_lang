@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aluka Studio</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <header class="titlebar">
+    <div class="brand">
+      <span class="logo">A</span>
+      <span>Aluka Studio</span>
+      <span class="badge">GUI Demo</span>
+    </div>
+    <div class="win-controls">
+      <button id="btn-min" title="最小化">─</button>
+      <button id="btn-max" title="最大化/还原">▢</button>
+      <button id="btn-close" title="关闭" class="danger">✕</button>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="card">
+      <h2>系统信息 <small>via RPC</small></h2>
+      <dl id="sysinfo" class="kv"><dt>…</dt><dd>加载中</dd></dl>
+      <button id="btn-refresh" class="primary">刷新 (rpc.call)</button>
+      <button id="btn-echo">Echo 测试</button>
+    </section>
+
+    <section class="card">
+      <h2>原生对话框</h2>
+      <p class="hint">window.aluka.dialog —— 原生 Win32 弹窗，非 HTML 模拟</p>
+      <button id="btn-msgbox">showMessageBox</button>
+      <button id="btn-openfile">showOpenDialog</button>
+    </section>
+
+    <section class="card">
+      <h2>快捷键 / 托盘</h2>
+      <p class="hint">系统级全局快捷键，应用失焦仍可触发</p>
+      <ul class="tips">
+        <li><kbd>Ctrl+Alt+K</kbd> 触发主进程广播</li>
+        <li><kbd>Ctrl+Alt+D</kbd> 打开 DevTools</li>
+        <li>托盘右键菜单 →「向前端打招呼」</li>
+      </ul>
+    </section>
+
+    <section class="card wide">
+      <h2>事件总线 <small id="beat">beats: 0</small></h2>
+      <div id="log" class="log"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
