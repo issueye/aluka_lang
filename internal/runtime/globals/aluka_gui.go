@@ -277,7 +277,12 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 	_ = guiObj.Set("globalShortcut", shortcutObj)
 
 	// 6. setAssetDir(dir)
+	// 打包产物模式（--web-dir 内嵌资源）下自动忽略：开发用相对路径
+	// 在用户机器上不存在，若覆盖虚拟协议会导致全部请求 404
 	_ = guiObj.Set("setAssetDir", engine.NewFunction("setAssetDir", func(args []engine.Value) (engine.Value, error) {
+		if gui.EmbeddedAssetsActive() {
+			return engine.Undefined(), nil
+		}
 		if len(args) > 0 {
 			dir := args[0].String()
 			gui.SetAssetProvider(&gui.LocalDirectoryAssetProvider{BaseDir: dir})

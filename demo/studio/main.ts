@@ -9,7 +9,8 @@
 import { app, createWindow, createTray, setAssetDir, globalShortcut } from "aluka:gui";
 
 // 开发模式：前端资产目录映射到 aluka://app/* 虚拟协议。
-// （打包模式由 --web-dir 内嵌，此调用无害；相对路径以启动 cwd 为准）
+// （打包模式下此调用自动忽略——产物使用 --web-dir 内嵌资源；
+//   相对路径以启动 cwd 为准）
 setAssetDir("./demo/studio/web");
 
 // 1. 主窗口：无边框 + 尺寸约束 + DevTools
