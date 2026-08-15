@@ -540,6 +540,43 @@ func NewObjectFromPairs(pairs []Value) Object {
 	return o
 }
 
+// ResolveLiteralShape 解析对象字面量的最终 shape 与 pair→slot 索引。
+// 供 VM 字面量站点缓存使用：首次解析后缓存，后续经 NewObjectFromShape
+// 免哈希/免 transition 行走直接构建。
+func ResolveLiteralShape(pairs []Value) (*Shape, []int32) {
+	shape := rootShape
+	idxs := make([]int32, 0, len(pairs)/2)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		key := pairs[i].String()
+		if idx, exists := shape.lookup(key); exists {
+			idxs = append(idxs, int32(idx))
+			continue
+		}
+		idxs = append(idxs, int32(shape.NumProps()))
+		shape = shape.transition(key)
+	}
+	return shape, idxs
+}
+
+// NewObjectFromShape 以预解析的 shape 与 pair→slot 索引构建对象
+// （字面量站点缓存命中路径）。
+func NewObjectFromShape(shape *Shape, idxs []int32, pairs []Value) Object {
+	o := &objectValue{shape: shape}
+	n := shape.NumProps()
+	if n <= len(o.small) {
+		o.slots = o.small[:n]
+	} else {
+		o.slots = make([]Value, n)
+	}
+	for j, idx := range idxs {
+		if int(idx) < n {
+			o.slots[idx] = pairs[2*j+1]
+		}
+	}
+	register(o)
+	return o
+}
+
 // NewObjectFrom creates an object from a map (random order).
 func NewObjectFrom(m map[string]Value) Object {
 	o := NewObject()

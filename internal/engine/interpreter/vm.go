@@ -24,6 +24,18 @@ import (
 )
 
 // VM is a stack-based bytecode VM that shares builtins with the AST interpreter.
+// objLitSite 是对象字面量站点键：同一模板同一 PC 的字面量键序列恒定。
+type objLitSite struct {
+	tmpl *bytecode.FuncTemplate
+	pc   uint32
+}
+
+// objLitEntry 是字面量站点缓存项（解析好的 shape 与 pair→slot 索引）。
+type objLitEntry struct {
+	shape *engine.Shape
+	idxs  []int32
+}
+
 type VM struct {
 	interp *Interpreter // provides builtins, globalObj, prototypes, etc.
 	module *bytecode.Module
@@ -33,6 +45,11 @@ type VM struct {
 
 	// ic 是属性访问内联缓存（隐藏类 shape 缓存，1B.5）。
 	ic engine.ICache
+
+	// objLitCache 是对象字面量站点缓存：(模板,PC) → 解析好的 shape 与
+	// pair→slot 索引。同一字面量站点的键序列恒定，首次执行解析后缓存，
+	// 后续创建零哈希/零 transition 行走。
+	objLitCache map[objLitSite]*objLitEntry
 
 	// 覆盖率统计（aluka test --coverage 启用；常态零开销）。
 	coverEnabled bool
@@ -497,6 +514,22 @@ func (v *VM) local(slot int) *engine.Value {
 // === Main loop ============================================================
 
 // run executes the current top frame until it returns.
+// fastInt64 判断 float64 是否为安全整数范围内的整数值（|x| < 2^53），
+// 是则返回整型值。用于取模等运算的整数快路径。
+func fastInt64(f float64) (int64, bool) {
+	// 零值走慢路径：fmod 区分 -0（fmod(-0,x)=-0），int64 % 只会产出 +0
+	if f == 0 {
+		return 0, false
+	}
+	if f < 1<<53 && f > -(1<<53) {
+		i := int64(f)
+		if float64(i) == f {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 func (v *VM) run() (engine.Value, error) {
 	// 覆盖统计开关局部化（O1-C5）：coverage 在模块加载前启用、运行期间
 	// 不变——提为局部布尔，主循环零字段访问（常态分支预测为不跳转）。
@@ -708,7 +741,24 @@ func (v *VM) run() (engine.Value, error) {
 				if l.Type() == engine.TypeNumber && r.Type() == engine.TypeNumber {
 					lf, _ := l.Float()
 					rf, _ := r.Float()
-					v.push(engine.Number(math.Mod(lf, rf)))
+					// 整数快路径：安全整数范围内用 int64 取模（硬件 fmod 约慢一个量级；
+					// 整数操作数的 fmod 与整型 % 结果完全一致）
+					modFast := false
+					if li, ok1 := fastInt64(lf); ok1 {
+						if ri, ok2 := fastInt64(rf); ok2 && ri != 0 {
+							m := li % ri
+							// 余数为零时 fmod 结果符号随被除数（fmod(-1,1) = -0）
+							if m == 0 && li < 0 {
+								v.push(engine.Number(math.Copysign(0, -1)))
+							} else {
+								v.push(engine.Number(float64(m)))
+							}
+							modFast = true
+						}
+					}
+					if !modFast {
+						v.push(engine.Number(math.Mod(lf, rf)))
+					}
 				} else if isBigInt(l) || isBigInt(r) {
 					result, err := bigintArith2(l, r, '%')
 					if err != nil {
@@ -1071,7 +1121,20 @@ func (v *VM) run() (engine.Value, error) {
 				} else {
 					pairCount := propCount * 2
 					start := len(v.stack) - pairCount
-					obj = engine.NewObjectFromPairs(v.stack[start:])
+					pairs := v.stack[start:]
+					// 字面量站点缓存：命中则免哈希直接构建（热路径）；
+					// 未命中（首次执行）解析并缓存
+					site := objLitSite{tmpl: tmpl, pc: uint32(pc)}
+					if e := v.objLitCache[site]; e != nil {
+						obj = engine.NewObjectFromShape(e.shape, e.idxs, pairs)
+					} else {
+						shape, idxs := engine.ResolveLiteralShape(pairs)
+						if v.objLitCache == nil {
+							v.objLitCache = make(map[objLitSite]*objLitEntry, 8)
+						}
+						v.objLitCache[site] = &objLitEntry{shape: shape, idxs: idxs}
+						obj = engine.NewObjectFromShape(shape, idxs, pairs)
+					}
 					v.stack = v.stack[:start]
 				}
 				engine.SetProto(obj, v.interp.objectProto)

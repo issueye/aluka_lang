@@ -1,6 +1,6 @@
 # ADR：数字表示的分阶段优化（slab 装箱 → NaN-boxing）
 
-> 状态：Stage 1 已实施（perf/nan-boxing 分支）
+> 状态：Stage 1、Stage 2 已实施（perf/nan-boxing 分支）
 > 背景：docs/performance-report-v6.md §9 —— 数字装箱占剩余分配的 41%
 
 ## 背景
@@ -77,3 +77,31 @@ engine/value.go + shape IC + jit property PIC。
 - **大范围小整数缓存**：循环计数可达百万级，缓存命中率不足。
 - **VM 双栈（数值栈 + 引用栈）**：需重写 run() 全部 ~200 个 opcode 的
   栈纪律，风险/收益比劣于 Stage 1+2 渐进路线。
+
+## Stage 2 实施记录（同分支跟进）：按 CPU 剖面重定目标
+
+Stage 1 落地后，原 Stage 2（槽位 tagged 数组）的前提消失——数字装箱已由
+slab 消灭（槽位存储不再产生分配）。CPU 剖面（gcPressure 200K，160ms 样本）
+显示剩余热点为：
+
+1. `aeshashbody` 18.75%（Shape.lookup 字符串哈希，字面量创建逐属性查找）
+2. `math.mod` 12.5%（i % 100 走硬件 fmod）
+3. `sync/atomic.Add` 12.5%（slab bump + register 计数）
+
+实施两项（调整为 Stage 2 实际内容）：
+
+**对象字面量站点缓存**：同一 (模板,PC) 的字面量键序列恒定——首次执行经
+`engine.ResolveLiteralShape` 解析 shape 与 pair→slot 索引并缓存于 VM，
+后续经 `engine.NewObjectFromShape` 零哈希/零 transition 直接构建。
+
+**取模整数快路径**：`fastInt64`（|x|<2^53 精确整数）双操作数走 int64 取模
+（硬件 fmod 约慢一个量级）。语义对齐 jitdiff oracle 修正两处边界：
+零值输入（fmod(-0,x)=-0）与零余数符号随被除数（fmod(-1,1)=-0），
+配 700+ 输入对拍测试（mod_fastpath_test.go）。
+
+**实测**（交错 A/B，10 轮）：gcPressure 中位 300 → **249ms（-17%）**；
+较原始基线 401ms **累计 -38%**。perf-compare 合计 vs Node：
+**6.2x**（v6 8.8x、v5 13.6x）；fib25 0.7x、propSet 2.2x、closureCall 1.5x。
+门禁：全量测试、jitdiff 三档零失配。
+
+原"槽位 tagged 数组"目标并入 Stage 3 一并考虑（uint64 Value 下自然消解）。
