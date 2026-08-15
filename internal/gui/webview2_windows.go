@@ -145,18 +145,6 @@ func (b utf16Buf) ptr() uintptr {
 	return uintptr(unsafe.Pointer(&b[0]))
 }
 
-// utf16Ptr 仅供一次性传入 syscall 的场合使用（调用完成后指针即失效）。
-func utf16Ptr(s string) uintptr {
-	if s == "" {
-		return 0
-	}
-	p, err := syscall.UTF16PtrFromString(s)
-	if err != nil {
-		return 0
-	}
-	return uintptr(unsafe.Pointer(p))
-}
-
 // ---------- WebView2 运行时发现 ----------
 
 var wv2ChannelGUIDs = []string{
@@ -348,7 +336,9 @@ const (
 	wv2SettingsPutDevTools      = 12
 	wv2AddScriptToExecute       = 27
 	wv2ExecuteScript            = 29
+	wv2Reload                   = 31
 	wv2AddWebMessageReceived    = 34
+	wv2AddProcessFailed         = 25
 	wv2OpenDevTools             = 51
 	wv2AddWebResourceRequested  = 55
 	wv2AddWebResourceFilter     = 57
@@ -358,6 +348,7 @@ const (
 	wv2RespPutContent           = 4
 	wv2RespPutStatusCode        = 7
 	wv2MsgArgsTryGetAsString    = 5
+	wv2PFArgsGetKind            = 3
 )
 
 // initWebView2 在 UI 线程为窗口挂载 WebView2（异步）。
@@ -415,9 +406,11 @@ func (w *windowsWindow) onWebView2Controller(controller uintptr) {
 	env := wv2EnvState.env
 
 	// 拦截 aluka://app/* → http://aluka.app/* 的资源请求（内存虚拟协议，零 TCP 端口）
-	filterURI := utf16Ptr(alukaAppHTTPHost + "/*")
-	if filterURI != 0 {
-		_, _ = comCall(webview, wv2AddWebResourceFilter, filterURI, 0 /* COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL */)
+	// 注意：PCWSTR 实参必须以 utf16Buf 持引用，防止 GC 在调用前回收缓冲（悬垂指针）
+	filterURI := newUTF16Buf(alukaAppHTTPHost + "/*")
+	if filterURI.ptr() != 0 {
+		_, _ = comCall(webview, wv2AddWebResourceFilter, filterURI.ptr(), 0 /* COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL */)
+		runtime.KeepAlive(filterURI)
 	}
 	resHandler := newComHandler(func(sender, eventArgs uintptr) uintptr {
 		w.handleWebResourceRequested(env, eventArgs)
@@ -425,6 +418,31 @@ func (w *windowsWindow) onWebView2Controller(controller uintptr) {
 	})
 	var token uintptr
 	_, _ = comCall(webview, wv2AddWebResourceRequested, resHandler, uintptr(unsafe.Pointer(&token)))
+
+	// 渲染进程故障观测：白屏的最常见原因是 renderer 崩溃/失去响应，
+	// 记录日志并在 renderer 类故障时自动 Reload 自愈
+	pfHandler := newComHandler(func(sender, eventArgs uintptr) uintptr {
+		kind := uintptr(0xFFFFFFFF)
+		if _, err := comCall(eventArgs, wv2PFArgsGetKind, uintptr(unsafe.Pointer(&kind))); err != nil {
+			kind = 0xFFFFFFFF
+		}
+		fmt.Fprintf(os.Stderr, "[aluka:gui] WebView2 process failed: kind=%d (1=renderer无响应 2=renderer退出 0=浏览器进程退出)\n", int32(kind))
+		// 仅 renderer 故障自愈：Reload 重载当前页面
+		if kind == 1 || kind == 2 {
+			GetApp().PostAction(func() {
+				w.wvMu.RLock()
+				wv := w.wvWebview
+				w.wvMu.RUnlock()
+				if wv != 0 {
+					fmt.Fprintln(os.Stderr, "[aluka:gui] renderer 故障，自动 Reload 自愈")
+					_, _ = comCall(wv, wv2Reload)
+				}
+			})
+		}
+		return 0
+	})
+	var pfToken uintptr
+	_, _ = comCall(webview, wv2AddProcessFailed, pfHandler, uintptr(unsafe.Pointer(&pfToken)))
 
 	// 前端 → 主进程 WebMessage 通道（window.chrome.webview.postMessage）
 	msgHandler := newComHandler(func(sender, eventArgs uintptr) uintptr {
@@ -528,12 +546,21 @@ func (w *windowsWindow) handleWebResourceRequested(env, eventArgs uintptr) {
 	var stream uintptr
 	if len(content) > 0 {
 		stream, _, _ = procSHCreateMemStream.Call(uintptr(unsafe.Pointer(&content[0])), uintptr(len(content)))
+		runtime.KeepAlive(content)
 	}
 
+	// reasonPhrase/headers 的 PCWSTR 必须在 COM 调用期间持引用，
+	// 否则 GC 可能回收缓冲使浏览器读到悬垂字符串（间歇性渲染崩溃的隐患）
+	reasonBuf := newUTF16Buf(reason)
+	headersBuf := newUTF16Buf(headers)
 	var resp uintptr
-	if _, err := comCall(env, wv2EnvCreateResourceResp, stream, uintptr(int32(statusCode)), utf16Ptr(reason), utf16Ptr(headers), uintptr(unsafe.Pointer(&resp))); err != nil {
+	if _, err := comCall(env, wv2EnvCreateResourceResp, stream, uintptr(int32(statusCode)), reasonBuf.ptr(), headersBuf.ptr(), uintptr(unsafe.Pointer(&resp))); err != nil {
+		runtime.KeepAlive(reasonBuf)
+		runtime.KeepAlive(headersBuf)
 		return
 	}
+	runtime.KeepAlive(reasonBuf)
+	runtime.KeepAlive(headersBuf)
 	_, _ = comCall(eventArgs, wv2ArgsPutResponse, resp)
 }
 
