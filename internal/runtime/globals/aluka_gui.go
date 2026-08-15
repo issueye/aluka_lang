@@ -45,8 +45,12 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 	}))
 
 	// app.run()
+	// 持有 JS 上下文活跃句柄直到 GUI 循环退出：既保证 ready 事件的
+	// 回投任务不被事件循环空闲判定丢弃（竞态），又让应用退出后进程随之结束
 	_ = appObj.Set("run", engine.NewFunction("run", func(args []engine.Value) (engine.Value, error) {
+		release := ctx.AddRef()
 		go func() {
+			defer release()
 			_ = app.Run()
 		}()
 		return engine.Undefined(), nil
