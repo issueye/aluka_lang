@@ -104,3 +104,30 @@ GUI 子系统合并到 main 后的全面性能快照（引擎 + 运行时 + GUI�
    guard 开销；
 4. **强项稳固**：启动快于 Node 25%、内存持平、热路径 1.4-4x、单文件 26MB 分发、
    GUI 宿主内存仅为 Electron 同类指标的零头。
+
+## 10. 附：分配路径优化结果（2026-08-15 当日跟进，commit 198b94a + ef3b99f）
+
+针对 §5/§9 的 GC 短板当日落地第一轮分配路径优化：
+
+**改动**：小对象/小数组内嵌槽位（≤4 属性/元素免独立 slice 分配）、
+ArrayValue/functionValue 值嵌入合并分配、GC 节奏（分配阈值信号去
+FreeOSMemory madvise、CLI 默认 GOGC=400）。
+
+**效果**（gcPressure-500K，A/B 交错基线）：
+
+| 指标 | 优化前 | 优化后 |
+|------|-------:|-------:|
+| 每迭代堆分配 | 14.1 次 | **10.1 次（-28%）** |
+| gcPressure 耗时（auto 中位） | 401ms | **337ms（-16%）** |
+| arrayPush-1M（auto） | 92ms | **42ms（-54%）** |
+| fib30（auto） | 15.2ms | **8.9ms（-41%）** |
+| strConcat-100K | 42ms | 35ms（-15%） |
+
+**勘误（§5）**：当日多轮复测确认"JIT 回退 -28%"为测量噪声——
+gcPressure 循环含 NEW_OBJECT/NEW_ARRAY（JIT 不支持，直接拒绝编译，
+--jit-stats 可证），三档实际耗时在噪声范围内。
+
+**质量门禁**：jitdiff 三档零失配、optimize 对拍、全量测试零失败。
+
+**剩余空间**：数字装箱 ~3.6 次/迭代（占剩余分配 41%）需 Value
+NaN-boxing 引擎级重构；Closure.prototype 惰性物化（每闭包省 1 分配）。
