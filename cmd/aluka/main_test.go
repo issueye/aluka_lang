@@ -882,6 +882,125 @@ func TestWebProductionDefines(t *testing.T) {
 	}
 }
 
+// TestWebBuildVueOfficialBackend：--vue-compiler=official 用官方 compiler-sfc
+// （构建期在自研 VM 内执行）编译 demo，产物含 Vite 式代码生成标记且 SSR 通过。
+func TestWebBuildVueOfficialBackend(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(repoRoot, "demo", "web-bundle-vue-demo", "main.ts")
+	vuePackage := filepath.Join(repoRoot, "demo", "web-bundle-vue-demo", "node_modules", "vue", "package.json")
+	if _, err := os.Stat(vuePackage); err != nil {
+		t.Fatalf("vendored vue fixture missing: %v", err)
+	}
+
+	outDir := t.TempDir()
+	outFile := filepath.Join(outDir, "main.js")
+	build := exec.Command(bin, "build", "--target=web", "--vue-compiler=official", "--outfile", outFile, entry)
+	build.Dir = repoRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("official backend build failed: %v\n%s", err, out)
+	}
+	bundle, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 官方代码生成标记：helper 别名导入 + Vite 式 render 挂接。
+	for _, marker := range []string{"createElementVNode:_createElementVNode", "__sfc__.render = render", "_openBlock"} {
+		if !strings.Contains(string(bundle), marker) {
+			t.Errorf("official bundle missing marker %q", marker)
+		}
+	}
+
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node unavailable; official bundle execution skipped")
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "package.json"), []byte(`{"type":"module"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	check := `import {pathToFileURL} from "node:url";
+const m = await import(pathToFileURL(process.argv[1]).href);
+const first = await m.renderApp();
+if (!first.includes("Vue 3 Web Bundle") || !first.includes("x2 = 0")) throw new Error("bad first SSR");
+const stat = await m.loadStatsOnce();
+if (!stat.includes("来源：root")) throw new Error("bad chunk result");
+const second = await m.renderApp();
+if (!second.includes("动态 chunk")) throw new Error("bad second SSR");
+console.log("official vue ssr ok");`
+	run := exec.Command("node", "--input-type=module", "-e", check, outFile)
+	if out, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("execute official Vue bundle failed: %v\n%s", err, out)
+	} else if strings.TrimSpace(string(out)) != "official vue ssr ok" {
+		t.Fatalf("unexpected official execution output: %s", out)
+	}
+}
+
+// TestWebBuildVueCompilerFlagValidation：--vue-compiler 拒绝未知值。
+func TestWebBuildVueCompilerFlagValidation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.ts"), []byte("export const a = 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "build", "--target=web", "--vue-compiler", "fast", "a.ts")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("invalid --vue-compiler should fail, got success:\n%s", out)
+	}
+	if !strings.Contains(string(out), "--vue-compiler") {
+		t.Errorf("error output missing --vue-compiler message:\n%s", out)
+	}
+}
+
+// TestWebBuildVueOfficialErrorMapping：official 后端的 SFC 错误映射为带
+// .vue 文件名的构建错误（不静默回退 subset）。
+func TestWebBuildVueOfficialErrorMapping(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	demoDir := filepath.Join(repoRoot, "demo", "web-bundle-vue-demo")
+	// 错误 SFC 需位于 fixture 的 node_modules 解析范围内：在 demo 目录创建
+	// 临时文件（defer 清理）。
+	badSFC := filepath.Join(demoDir, "_bad_probe.vue")
+	if err := os.WriteFile(badSFC, []byte("<template><div>{{ a.b }}</template>\n<script>export default {};</script>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(badSFC)
+	cmd := exec.Command(bin, "build", "--target=web", "--vue-compiler=official", "--outfile", filepath.Join(t.TempDir(), "x.js"), "_bad_probe.vue")
+	cmd.Dir = repoRoot
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("bad SFC should fail official build, got success:\n%s", out)
+	}
+	if !strings.Contains(string(out), "_bad_probe.vue") {
+		t.Errorf("error output missing .vue filename:\n%s", out)
+	}
+	// subset 后端对同一文件的错误同样带文件名（对照组）。
+	cmd = exec.Command(bin, "build", "--target=web", "--outfile", filepath.Join(t.TempDir(), "x.js"), "_bad_probe.vue")
+	cmd.Dir = repoRoot
+	out, err = cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("bad SFC should fail subset build, got success:\n%s", out)
+	}
+	if !strings.Contains(string(out), "_bad_probe.vue") {
+		t.Errorf("subset error output missing .vue filename:\n%s", out)
+	}
+}
+
 // TestGUIWebEntryBuild 测试 aluka build --gui --web-entry 前端源码直出桌面 exe 闭环
 func TestGUIWebEntryBuild(t *testing.T) {
 	if testing.Short() {

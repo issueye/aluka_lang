@@ -42,6 +42,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/bundler/graph"
 	"github.com/aluka-lang/aluka/internal/bundler/minify"
 	"github.com/aluka-lang/aluka/internal/bundler/shake"
+	"github.com/aluka-lang/aluka/internal/bundler/vue"
 	"github.com/aluka-lang/aluka/internal/cli"
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
@@ -72,6 +73,7 @@ type buildOptions struct {
 	format        string
 	globalName    string
 	target        string // ""=compile（默认） | "web"
+	vueCompiler   string // ""=subset（默认） | "official"
 }
 
 type buildResult struct {
@@ -110,6 +112,13 @@ func buildFlags(opts *buildOptions, optimize *bool) *cli.FlagSet {
 		return nil
 	}}, "format", "Output format: esm|cjs|umd")
 	fs.String("global-name", "Global name for UMD output", &opts.globalName)
+	fs.Var(cli.FuncValue{Fn: func(v string) error {
+		if v != "subset" && v != "official" {
+			return errors.New("--vue-compiler supports only subset or official")
+		}
+		opts.vueCompiler = v
+		return nil
+	}}, "vue-compiler", "SFC compiler backend: subset|official (web target)")
 	fs.Bool("gui", "Embed frontend web assets as a GUI desktop app (with --compile)", &opts.guiApp)
 	fs.String("web-dir", "Frontend web assets directory to embed (default: dist; requires --gui)", &opts.webDir).MissingMsg("--web-dir requires a path")
 	fs.String("web-entry", "Frontend web entry point (e.g. index.tsx / index.html; requires --gui)", &opts.webEntry).MissingMsg("--web-entry requires a path")
@@ -782,7 +791,11 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 	}
 
 	// 3. JS / TS / TSX 入口打包（M1/M2）
-	graphResult, err := graph.Build(vm, resolver, entry)
+	var graphOpts []graph.Option
+	if opts.vueCompiler == "official" {
+		graphOpts = append(graphOpts, graph.WithVueCompiler(vue.NewOfficialCompiler(vm, entry)))
+	}
+	graphResult, err := graph.Build(vm, resolver, entry, graphOpts...)
 	if err != nil {
 		return nil, err
 	}

@@ -65,11 +65,32 @@ type Result struct {
 	UnresolvedDynamic []string
 }
 
+// buildConfig 收集 Build 的可选配置。
+type buildConfig struct {
+	vueCompiler vue.Compiler
+}
+
+// Option 是 Build 的可选配置项。
+type Option func(*buildConfig)
+
+// WithVueCompiler 指定 .vue 编译后端（nil 时用默认 subset）。
+func WithVueCompiler(c vue.Compiler) Option {
+	return func(cfg *buildConfig) { cfg.vueCompiler = c }
+}
+
 // Build 从入口构建模块图并解析所有模块（不编译）。
 // 模块标识使用虚拟路径（相对入口文件所在目录，/ 分隔）：产物运行时的
 // __filename/import.meta/错误堆栈均基于虚拟路径，与构建机位置无关。
-// vm 参数为兼容保留（旧调用方传 VM；Build 自身不再编译）。
-func Build(vm *interpreter.VM, resolver *module.Resolver, entry string) (*Result, error) {
+// vm 参数为兼容保留（旧调用方传 VM；Build 自身不再编译）——official
+// SFC 后端例外：它在 vm 上执行 compiler-sfc 依赖链。
+func Build(vm *interpreter.VM, resolver *module.Resolver, entry string, opts ...Option) (*Result, error) {
+	cfg := buildConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.vueCompiler == nil {
+		cfg.vueCompiler = vue.SubsetCompiler{}
+	}
 	entryAbs, err := filepath.Abs(entry)
 	if err != nil {
 		return nil, fmt.Errorf("graph: cannot resolve entry %q: %w", entry, err)
@@ -84,7 +105,7 @@ func Build(vm *interpreter.VM, resolver *module.Resolver, entry string) (*Result
 		Assets:      make(map[string][]byte),
 	}
 	visited := make(map[string]bool)
-	if err := r.walk(vm, resolver, entryAbs, virtualKey(entryDir, entryAbs), entryDir, visited); err != nil {
+	if err := r.walk(vm, resolver, entryAbs, virtualKey(entryDir, entryAbs), entryDir, visited, cfg.vueCompiler); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -103,7 +124,7 @@ func virtualKey(entryDir, absPath string) string {
 
 // walk 编译一个模块并递归收集其依赖。fsPath 用于文件系统操作，key 是
 // 模块标识（虚拟路径），entryDir 是入口目录（虚拟 key 的基准）。
-func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key, entryDir string, visited map[string]bool) error {
+func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key, entryDir string, visited map[string]bool, vueBackend vue.Compiler) error {
 	if visited[fsPath] {
 		return nil
 	}
@@ -129,7 +150,7 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 			return fmt.Errorf("graph: cannot read %q: %w", fsPath, err)
 		}
 		var js string
-		js, err = vue.TransformSFC(string(data), key)
+		js, err = vueBackend.Transform(string(data), key)
 		if err != nil {
 			return fmt.Errorf("graph: %w", err)
 		}
@@ -207,7 +228,7 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 		if dep.Dynamic {
 			r.DynamicDeps = append(r.DynamicDeps, DynamicDep{Source: key, Spec: dep.Spec, Target: depKey})
 		}
-		if err := r.walk(vm, resolver, rAbs, depKey, entryDir, visited); err != nil {
+		if err := r.walk(vm, resolver, rAbs, depKey, entryDir, visited, vueBackend); err != nil {
 
 			return err
 		}

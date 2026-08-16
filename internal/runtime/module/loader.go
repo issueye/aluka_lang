@@ -185,6 +185,13 @@ func (l *Loader) require(specifier, parentPath string) (engine.Value, error) {
 	return l.requireCtx(specifier, parentPath, false)
 }
 
+// RequireModule 以 require 语境按说明符加载并执行模块，返回 module.exports。
+// 供宿主（如 bundler 的 SFC 官方编译后端）在构建期执行依赖包；
+// 缓存语义与 require 一致（同进程同说明符只执行一次）。
+func (l *Loader) RequireModule(specifier, parentPath string) (engine.Value, error) {
+	return l.requireCtx(specifier, parentPath, false)
+}
+
 // requireCtx 是 require 的内部实现，importCtx 指定解析语境（false = require
 // 语境，true = import 语境）。Node 语义：ESM 静态导入/动态 import() 用
 // import 语境解析 exports 条件（含 "import"），CJS require 用 require 语境

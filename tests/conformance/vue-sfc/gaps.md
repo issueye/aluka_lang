@@ -26,3 +26,14 @@
 - SameValue 的 `+0/-0` 区分未实现（`+0 === -0` 视为相等）。
 - JIT Native 层属性直写不查 `attrs`（tier0 静默忽略 vs JIT 写入理论上可分歧）；
   jitdiff 三 tier 当前零失配，真实语料命中后再处理。
+
+## M4（official bundler 后端）实现要点
+
+- `internal/bundler/vue/official.go`：构建 VM 上经 `module.Loader.RequireModule`
+  加载 `vue/compiler-sfc`（SetNoCache 保持 webbuild 缓存约束；`builtin.RegisterAll`
+  补 path/util 等内置；裸 VM 补 `process.env.NODE_ENV=production` 与 no-op console）。
+- 驱动器挂接采用 Vite 同款模式：`export default` → `const __sfc__` +
+  `__sfc__.render = render`——遗漏挂接时选项式组件无 render，SSR 渲染为 `<!---->`
+  空占位（已由集成测试锁定）。
+- require 解析基准传入口**文件**（resolver 从父文件目录向上爬 node_modules，
+  传目录会差一层）。

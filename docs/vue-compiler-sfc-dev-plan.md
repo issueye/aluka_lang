@@ -6,7 +6,9 @@
 > 约束：全程遵守 AGENTS.md（纯 Go / CGO_ENABLED=0 / jitdiff 三 tier 零失配 / 表驱动测试）。
 >
 > **进度（2026-08-16）**：M0 ✅ / M1 ✅ / M2 ✅（探针首关即全绿，产物指纹与 node 字节一致；
-> G1 及次生缺口见 `tests/conformance/vue-sfc/gaps.md`）/ M3-M5 待启动。
+> G1 及次生缺口见 `tests/conformance/vue-sfc/gaps.md`）/ M4 ✅（`--vue-compiler=official`
+> 双后端落地：demo official 编译 SSR/动态 chunk 通过、错误映射带 .vue 文件名、
+> webbuild 缓存约束保持）/ M3 M5 待启动。
 
 ---
 
