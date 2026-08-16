@@ -173,6 +173,46 @@ func TestBuildDynamicDependency(t *testing.T) {
 	}
 }
 
+// TestBuildVueSFC：.vue 单文件组件在图构建期编译为 JS 模块，
+// script 内的 import 正常进入依赖图。
+func TestBuildVueSFC(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"main.ts": "import Counter from './Counter.vue';\nconsole.log(Counter);",
+		"Counter.vue": `<template>
+  <div class="counter"><span class="count">{{ count }}</span></div>
+</template>
+
+<script>
+import { ref } from './vue.ts';
+export default { setup() { return { count: ref(0) }; } };
+</script>`,
+		"vue.ts": `export function ref(v){ return { value: v }; }`,
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.SourceUnits["Counter.vue"]; !ok {
+		t.Fatalf("Counter.vue not compiled into SourceUnits: %+v", keysOf(res.SourceUnits))
+	}
+	table, ok := res.Resolutions["Counter.vue"]
+	if !ok || table["./vue.ts"] != "vue.ts" {
+		t.Errorf("Counter.vue script imports not resolved: %+v", table)
+	}
+}
+
+func keysOf(m map[string]*module.SourceUnit) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func TestBuildBuiltinSkipped(t *testing.T) {
 	dir := newTestEnv(t, map[string]string{
 		"main.ts": `import fs from 'node:fs'; console.log(typeof fs.readFileSync);`,

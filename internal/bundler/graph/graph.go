@@ -14,6 +14,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/bundler/astutil"
 	"github.com/aluka-lang/aluka/internal/bundler/compile"
+	"github.com/aluka-lang/aluka/internal/bundler/vue"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
@@ -118,9 +119,29 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 		return nil
 	}
 
-	unit, err := compile.ParseFileUnit(fsPath, key)
-	if err != nil {
-		return err
+	// .vue 单文件组件：构建期编译为 JS 模块（template → render(ctx)）。
+	var unit *module.SourceUnit
+	var err error
+	if strings.EqualFold(filepath.Ext(fsPath), ".vue") {
+		var data []byte
+		data, err = os.ReadFile(fsPath)
+		if err != nil {
+			return fmt.Errorf("graph: cannot read %q: %w", fsPath, err)
+		}
+		var js string
+		js, err = vue.TransformSFC(string(data), key)
+		if err != nil {
+			return fmt.Errorf("graph: %w", err)
+		}
+		unit, err = module.ParseSourceUnit([]byte(js), key, module.ModuleESM)
+		if err != nil {
+			return err
+		}
+	} else {
+		unit, err = compile.ParseFileUnit(fsPath, key)
+		if err != nil {
+			return err
+		}
 	}
 	if unit.SourceKind == module.SourceJSON {
 		r.Assets[key] = unit.Source
