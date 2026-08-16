@@ -63,7 +63,7 @@ func TestWriteWebAssetsTrackedRemovesStale(t *testing.T) {
 		"main.js":     []byte("v1"),
 		"chunk-aa.js": []byte("lazy-v1"),
 	}
-	if err := writeWebAssetsTracked(first, opts, written); err != nil {
+	if err := writeWebAssetsTracked("src/main.ts", first, opts, written); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"main.js", "chunk-aa.js"} {
@@ -73,7 +73,7 @@ func TestWriteWebAssetsTrackedRemovesStale(t *testing.T) {
 	}
 
 	second := map[string][]byte{"main.js": []byte("v2")}
-	if err := writeWebAssetsTracked(second, opts, written); err != nil {
+	if err := writeWebAssetsTracked("src/main.ts", second, opts, written); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "chunk-aa.js")); !os.IsNotExist(err) {

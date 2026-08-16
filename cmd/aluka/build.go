@@ -936,14 +936,14 @@ func webBuildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, op
 		}
 	}
 
+	// 主产物名：--outfile 指定主产物完整路径（扩展名可不同，如 .cjs），
+	// chunk/CSS/sourcemap 等伴随产物始终写 outDir。
+	primaryName := webPrimaryName(entry)
 	var primaryOut string
 	for name, data := range assets {
 		var targetPath string
-		if opts.outfile != "" && len(assets) == 1 {
+		if opts.outfile != "" && name == primaryName {
 			targetPath = opts.outfile
-		} else if opts.outfile != "" && name == filepath.Base(opts.outfile) {
-			targetPath = opts.outfile
-
 		} else {
 			targetPath = filepath.Join(outDir, name)
 		}
@@ -951,7 +951,7 @@ func webBuildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, op
 		if err := os.WriteFile(targetPath, data, 0o644); err != nil {
 			fatalErr("aluka build: " + err.Error())
 		}
-		if primaryOut == "" || strings.HasSuffix(name, ".js") || strings.HasSuffix(name, ".html") {
+		if primaryOut == "" || name == primaryName {
 			primaryOut = targetPath
 		}
 	}
@@ -1000,7 +1000,7 @@ func watchWebBuild(entry string, opts buildOptions) {
 		if err == nil {
 			if assets, buildErr := bundleWebEntry(vm, module.NewResolver(), entry, opts); buildErr != nil {
 				fmt.Fprintln(os.Stderr, "watch:", buildErr)
-			} else if writeErr := writeWebAssetsTracked(assets, opts, written); writeErr != nil {
+			} else if writeErr := writeWebAssetsTracked(entry, assets, opts, written); writeErr != nil {
 				fmt.Fprintln(os.Stderr, "watch:", writeErr)
 			} else {
 				fmt.Println("watch: rebuilt")
@@ -1064,15 +1064,15 @@ func watchSnapshot(entry, skipDir string) map[string]string {
 
 // writeWebAssetsTracked 写出产物并清理上一轮已写但本轮不再生成的文件，
 // 避免依赖删除后陈旧 chunk 残留在输出目录。
-func writeWebAssetsTracked(assets map[string][]byte, opts buildOptions, written map[string]bool) error {
-	if err := writeWebAssets(assets, opts); err != nil {
+func writeWebAssetsTracked(entry string, assets map[string][]byte, opts buildOptions, written map[string]bool) error {
+	if err := writeWebAssets(entry, assets, opts); err != nil {
 		return err
 	}
 	outDir := webOutputDir(opts)
 	current := map[string]bool{}
 	for name := range assets {
 		target := filepath.Join(outDir, name)
-		if opts.outfile != "" && name == filepath.Base(opts.outfile) {
+		if opts.outfile != "" && name == webPrimaryName(entry) {
 			target = opts.outfile
 		}
 		current[target] = true
@@ -1117,7 +1117,18 @@ func isValidJSIdentifier(name string) bool {
 	return true
 }
 
-func writeWebAssets(assets map[string][]byte, opts buildOptions) error {
+// webPrimaryName 返回 web 构建的主产物资产名：HTML/CSS 入口为同名文件，
+// JS/TS/TSX 入口为去扩展名 + ".js"。
+func webPrimaryName(entry string) string {
+	base := filepath.Base(entry)
+	ext := strings.ToLower(filepath.Ext(entry))
+	if ext == ".html" || ext == ".css" {
+		return base
+	}
+	return strings.TrimSuffix(base, filepath.Ext(base)) + ".js"
+}
+
+func writeWebAssets(entry string, assets map[string][]byte, opts buildOptions) error {
 	outDir := opts.outdir
 	if outDir == "" && opts.outfile != "" {
 		outDir = filepath.Dir(opts.outfile)
@@ -1132,7 +1143,7 @@ func writeWebAssets(assets map[string][]byte, opts buildOptions) error {
 	}
 	for name, data := range assets {
 		target := filepath.Join(outDir, name)
-		if opts.outfile != "" && name == filepath.Base(opts.outfile) {
+		if opts.outfile != "" && name == webPrimaryName(entry) {
 			target = opts.outfile
 		}
 		if err := os.WriteFile(target, data, 0o644); err != nil {

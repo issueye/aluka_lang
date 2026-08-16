@@ -777,6 +777,40 @@ func TestWebBuildCJSAndUMDOutput(t *testing.T) {
 	}
 }
 
+// TestWebBuildOutfileWithChunks：--outfile 与伴随 chunk 共存时主产物必须
+// 写到 --outfile 指定路径（扩展名可与生成名不同，如 .cjs），chunk 写同目录
+// （回归：旧逻辑按"资产名 == outfile 文件名"匹配，失配时主产物被写偏）。
+func TestWebBuildOutfileWithChunks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "lazy.ts"), []byte("export const v = 'lazy';"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.ts"), []byte("export const sync = 'main';\nexport async function load() { return (await import('./lazy.ts')).v; }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(dir, "dist", "app.cjs")
+	cmd := exec.Command(bin, "build", "--target=web", "--format=cjs", "--outfile", out, "main.ts")
+	cmd.Dir = dir
+	if res, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, res)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatalf("primary output missing at --outfile: %v", err)
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, "dist", "chunk-*.js"))
+	if len(matches) == 0 {
+		t.Fatal("companion chunk missing next to --outfile")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "dist", "main.js")); err == nil {
+		t.Error("primary output was additionally written under generated name; want only --outfile copy")
+	}
+}
+
 // TestGUIWebEntryBuild 测试 aluka build --gui --web-entry 前端源码直出桌面 exe 闭环
 func TestGUIWebEntryBuild(t *testing.T) {
 	if testing.Short() {

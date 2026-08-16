@@ -180,7 +180,7 @@ func (s *devServer) rebuild() error {
 		return err
 	}
 	opts := buildOptions{outdir: s.opts.outdir}
-	if err := writeWebAssetsTracked(assets, opts, s.written); err != nil {
+	if err := writeWebAssetsTracked(s.opts.entry, assets, opts, s.written); err != nil {
 		s.setErr(err)
 		return err
 	}
