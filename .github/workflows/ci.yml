@@ -61,6 +61,13 @@ jobs:
           go build -o /tmp/aluka ./cmd/aluka
           ALUKA=/tmp/aluka bash tests/conformance/build/run.sh
 
+      - name: React webbuild conformance
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          go build -o /tmp/aluka ./cmd/aluka
+          ALUKA=/tmp/aluka bash tests/conformance/webbuild/run.sh
+
       - name: Express-demo conformance
         if: matrix.os == 'ubuntu-latest'
         shell: bash

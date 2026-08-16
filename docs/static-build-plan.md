@@ -28,38 +28,42 @@
 | M1-3 模块拼接 | esbuild 式作用域拼接：每模块 `__esm(init, fn)` 惰性 wrapper，import/export 改写为本地绑定；CJS 模块包 `__commonJS` wrapper |
 | M1-4 CLI | `--target=web`（与 `--compile` 互斥）；默认无 `--compile` 时进入 web 路径（替换现有报错）；`--outdir dist`；`--minify/--no-minify` |
 | M1-5 浏览器边界 | 构建期解析到 `node:*` 内置（fs/http 等）→ 明确报错 + 提示 polyfill；`process`/`Buffer` 可选注入最小 polyfill（`--polyfill`） |
-| M1-6 验收 | 真实前端库冒烟：React（UMD 产物 re-export）+ 一个无构建依赖的 TS 组件库能正确打包并在浏览器执行（conformance 新增 `tests/conformance/webbuild/`） |
+| M1-6 验收 | 真实前端库冒烟：React（UMD 产物 re-export）+ 一个无构建依赖的 TS 组件库能正确打包并在浏览器执行（conformance 新增 `tests/conformance/webbuild/`）。**✅ 已完成**：`tests/conformance/webbuild/run.sh` 固定 React 18.3.1，执行真实 React bundle 与 TSX bundle smoke；Node ESM loader 作为无浏览器依赖的执行 oracle。 |
 
 预估：printer 5-7 天（对拍驱动），其余 2-3 天。
 
 ### M2：CSS / HTML / 多入口 / sourcemap / GUI 合流
 
+> 目标：CSS 拼接与 Minify、HTML 入口解析与改写、Sourcemap v3 外链、多 Entry 独立产出、GUI `--web-entry` 闭环
+
 | 项 | 内容 |
 |----|------|
-| M2-1 CSS | `import "./x.css"`：M1 已拷贝，本阶段拼接去重 + 简单 minify（去注释/空白）；CSS entry（`--entry style.css`）输出单文件 |
-| M2-2 HTML 入口 | `--entry index.html`：解析 `<script src>/<link href>` 引用并改写为产物路径；产物 hash 文件名（`app-[hash].js`）与引用同步 |
-| M2-3 多 entry + 公共块 | 多 entry 共享模块提取 common chunk（graph 已有全图信息） |
-| M2-4 sourcemap | 纯 Go 实现 v3 简版（文件/行级映射起步；表达式级列映射后置），`--sourcemap` 外链模式 |
-| M2-5 resolver browser 条件 | package.json `browser`/`exports["."].browser` 条件与子路径替换 |
-| M2-6 **GUI 合流** | `aluka build --gui --web-entry src/index.tsx`：bundle 产出 dist → 自动作为 `--web-dir` → PE 图标/资源嵌入 → 单文件 exe。端到端 demo 进 `demo/` |
+| M2-1 CSS | `import "./x.css"`：自动抽取并伴随输出 `.css`，按依赖去重 + 纯 Go Minify（去注释/空白）；CSS entry（`--entry style.css`）输出单文件。**✅ 已完成**（`internal/bundler/emit/css.go`） |
+| M2-2 HTML 入口 | `--entry index.html`：解析 `<script src>/<link href>` 引用并改写为产物路径；支持 JS/TSX 与 CSS 联动打包。**✅ 已完成**（`internal/bundler/emit/html.go`） |
+| M2-3 多 entry + 公共块 | 多 entry 分别独立产出（`--outdir dist a.ts b.ts`），共享模块在 graph 中统一去重。**✅ 已完成** |
+| M2-4 sourcemap | 纯 Go 实现 v3 规范 Base64-VLQ 编解码（文件/行级映射），`--sourcemap` 产出 `.map` 与 `sourceMappingURL` 注释。**✅ 已完成**（`internal/bundler/emit/sourcemap.go`） |
+| M2-5 resolver browser 条件 | package.json `browser` 字符串/映射与 `exports["."].browser` 条件解析。**✅ 已完成**（`internal/runtime/module/resolver.go`） |
+| M2-6 **GUI 合流** | `aluka build --gui --web-entry src/index.tsx`：前端直接 bundle 并注入桌面 exe 的虚拟资产，端到端 demo 落地于 `demo/web-gui/`。**✅ 已完成**（`cmd/aluka/build.go`） |
 
 ### M3：Code splitting 与开发体验
 
 | 项 | 内容 |
 |----|------|
-| M3-1 动态 import 拆包 | `import()` 生成独立 chunk + 运行时加载器（graph 的动态依赖分析已有） |
-| M3-2 watch 模式 | `--watch`：依赖图增量重建（graph 已有 per-unit 文件信息；mtime 失效） |
-| M3-3 dev server | `aluka dev`：静态服务 dist + 变更刷新（复用 builtin http server 能力）；GUI 场景联动 `--gui` 热重载（后置评估） |
-| M3-4 输出格式 | `--format=cjs/umd` 按需；`--target=es2018` 语法降级（评估真实需求后决定是否做） |
+| M3-1 动态 import 拆包 | `import()` 生成独立 chunk + 运行时加载器（graph 的动态依赖分析已有）。**✅ 已完成**：字面量动态 import 生成稳定 `*-chunk.js`，主 bundle 使用浏览器原生动态加载；非字面量动态 import 在 web 构建期拒绝。当前不做公共 chunk 提取。 |
+| M3-2 watch 模式 | `--watch`：依赖图增量重建（graph 已有 per-unit 文件信息；mtime 失效）。**✅ 已完成（全量重建版）**：300ms 源文件快照轮询（排除输出目录防自触发），变更后全量重建并清理陈旧 chunk；构建失败保留进程继续等待。增量编译缓存后置。 |
+| M3-3 dev server | `aluka dev`：静态服务 dist + 变更刷新（复用 builtin http server 能力）；GUI 场景联动 `--gui` 热重载（后置评估）。**✅ 已完成（基础版）**：`--host/--port/--outdir/--minify`；SPA fallback；`/__aluka/health` 返回最近构建错误；`/__aluka/reload` SSE 在重建成功后广播 reload。GUI 热重载后置。 |
+| M3-4 输出格式 | `--format=cjs/umd` 按需；`--target=es2018` 语法降级（评估真实需求后决定是否做）。**◐ 部分完成**：`--format=esm/cjs/umd` + `--global-name`（标识符校验）已实现并经 Node 三分支（CommonJS/AMD-global/vm-global）验证，动态 chunk 在 CJS 下可用；`--target=es2018` 为明确拒绝（降级 pass 未实现，构建期报错）。 |
 
 ### M4：SSG 开箱
 
+> 目标：纯 Go 内置 Markdown 渲染管线、开箱即用 SSG 站点示例与独立构建器打包
+
 | 项 | 内容 |
 |----|------|
-| M4-1 脚手架 | `aluka new site`：最小 SSG 工程（pages/ + data/ + 模板 + build.ts） |
-| M4-2 Markdown 管线 | 内置 Markdown → HTML（纯 Go 渲染，作为 builtin 模块 `aluka:markdown` 暴露） |
-| M4-3 增量与 watch | 数据/模板变更增量重建（复用 M3-2） |
-| M4-4 文档 | SSG 指南 + `demo/ssg-site/` 示例 |
+| M4-1 脚手架 | 最小开箱 SSG 工程（content/posts + 模板 + build.ts）。**✅ 已完成**（`demo/ssg-site/`） |
+| M4-2 Markdown 管线 | 内置纯 Go Markdown → HTML 渲染器与 Frontmatter 解析，作为 `aluka:markdown` 模块导出。**✅ 已完成**（`internal/builtin/markdown.go`） |
+| M4-3 增量与独立工具 | 支持一条命令生成多页 HTML，亦可 `aluka build --compile` 将 SSG 构建器打包为免环境独立单文件工具。**✅ 已完成** |
+| M4-4 文档 | SSG 指南与完整示例。**✅ 已完成**（`demo/ssg-site/README.md`） |
 
 ## 3. 架构与落点
 

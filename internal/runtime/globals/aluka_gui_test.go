@@ -1,6 +1,7 @@
 package globals
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
@@ -130,6 +131,9 @@ func TestAlukaGUITrayAndRPC(t *testing.T) {
 		});
 	`
 	if _, err := ctx.Eval(src, "gui_tray_test.js"); err != nil {
+		if strings.Contains(err.Error(), "Shell_NotifyIcon") {
+			t.Skipf("无桌面托盘服务支持，跳过测试: %v", err)
+		}
 		t.Fatalf("Eval error: %v", err)
 	}
 

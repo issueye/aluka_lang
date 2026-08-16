@@ -17,24 +17,45 @@ import (
 	"github.com/aluka-lang/aluka/internal/engine/ast"
 )
 
-// RuntimePrelude 是产物内嵌的微型模块运行时（__def/__req）。
-const RuntimePrelude = `var __alukaMods={},__alukaCache={};function __def(i,f){__alukaMods[i]=f}function __req(i){var m=__alukaCache[i];if(m)return m.exports;m={exports:{}};__alukaCache[i]=m;__alukaMods[i](m.exports);return m.exports}`
+// RuntimePrelude 是产物内嵌的微型模块运行时（__def/__req/__mkreq/__interop）。
+// 包装签名为 (exports, module, require)，兼容 CJS 依赖（module.exports /
+// require()）；__resolve 表由 Bundle.Build 按解析映射生成（仅含 CJS 运行
+// 期 require 所需条目；ESM import 在构建期已内联解析后的模块 ID）。
+const RuntimePrelude = `var __alukaMods=globalThis.__alukaMods||{},__alukaCache=globalThis.__alukaCache||{},__alukaRes=globalThis.__alukaRes||{};function __def(i,f){__alukaMods[i]=f}function __mkreq(from){return function(s){var t=__alukaRes[from];var id=t?t[s]:s;if(!__alukaMods[id])throw new Error("Cannot resolve module '"+s+"' from "+from);return __req(id)}}function __interop(m){return m&&m.__esModule?m.default:m}function __req(i){var m=__alukaCache[i];if(m)return m.exports;m={exports:{}};__alukaCache[i]=m;__alukaMods[i](m.exports,m,__mkreq(i));return m.exports}function __alukaImport(c,i){return import("./"+c).then(function(){return __req(i)})}globalThis.__alukaMods=__alukaMods;globalThis.__alukaCache=__alukaCache;globalThis.__alukaRes=__alukaRes;globalThis.__alukaRegister=__def;`
 
 // Module 是参与拼接的一个模块。
 type Module struct {
 	ID       string            // 模块标识（graph 解析键，产物内唯一）
 	Prog     *ast.Program      // 模块 AST（已 shake/minify）
 	IsTLA    bool              // 是否含顶层 await
+	IsCJS    bool              // CJS 模块（module.exports / require）
 	Resolved map[string]string // import specifier → 模块 ID（graph 构建期解析）
+	// DynamicImports 将动态 import 的 specifier 映射到 chunk 文件与模块 ID。
+	DynamicImports map[string]DynamicImport
+}
+
+// DynamicImport 描述一个异步 chunk 的加载目标。
+type DynamicImport struct {
+	Chunk  string
+	Target string
+}
+
+// bundleCtx 是一次 Bundle.Build 的跨模块上下文。
+type bundleCtx struct {
+	cjsMods map[string]bool // ID → 是否 CJS（default 导入互操作用）
 }
 
 // WrapModule 将模块 AST 变换为包裹函数体语句序列并打印。
 func WrapModule(m Module) (string, error) {
+	return wrapModule(&bundleCtx{}, m)
+}
+
+func wrapModule(ctx *bundleCtx, m Module) (string, error) {
 	if m.IsTLA {
 		return "", fmt.Errorf("emit: 模块 %s 含顶层 await，web target 暂不支持（M2）", m.ID)
 	}
 	var body strings.Builder
-	p := &printer{sb: &body, resolved: m.Resolved}
+	p := &printer{sb: &body, resolved: m.Resolved, ctx: ctx, dynamic: m.DynamicImports}
 
 	for _, stmt := range m.Prog.Body {
 		switch t := stmt.(type) {
@@ -78,7 +99,7 @@ func WrapModule(m Module) (string, error) {
 	var out strings.Builder
 	out.WriteString("__def(")
 	quoteJS(&out, m.ID)
-	out.WriteString(",(exports)=>{")
+	out.WriteString(",(exports,module,require)=>{")
 	out.WriteString(inner)
 	out.WriteString("});")
 	return out.String(), nil
@@ -89,12 +110,23 @@ func (p *printer) importToReq(d *ast.ImportDecl) {
 	var named []string
 	for _, spec := range d.Specifiers {
 		switch spec.Imported {
-		case "": // default
+		case "": // default：目标为 CJS 时取 module.exports（__esModule 互操作）
 			p.w("var ")
 			p.w(spec.Local)
 			p.w("=")
-			p.reqCall(d.Source)
-			p.w(".default;")
+			target, ok := "", false
+			if p.resolved != nil {
+				target, ok = p.resolved[d.Source]
+			}
+			if ok && p.ctx != nil && p.ctx.cjsMods[target] {
+				p.w("__interop(")
+				p.reqCall(d.Source)
+				p.w(")")
+			} else {
+				p.reqCall(d.Source)
+				p.w(".default")
+			}
+			p.w(";")
 		case "*": // namespace
 			p.w("var ")
 			p.w(spec.Local)
@@ -225,17 +257,80 @@ func patternIdentifiers(pat ast.Pattern) []string {
 	return out
 }
 
-// Bundle 输入：入口与全部模块。
+// Bundle 输入：入口、全部模块与静态资源。
 type Bundle struct {
 	EntryID string
 	Modules []Module
+	Assets  map[string][]byte
+	Format  string // esm（默认）、cjs、umd
+	Global  string // UMD global name
 }
 
-// Build 拼接最终产物（ESM 单文件）。
+// Build 拼接最终产物（ESM/CJS/UMD）。
 func (b Bundle) Build() (string, error) {
+	format := b.Format
+	if format == "" {
+		format = "esm"
+	}
+	if format != "esm" && format != "cjs" && format != "umd" {
+		return "", fmt.Errorf("emit: unsupported format %q", format)
+	}
+	ctx := &bundleCtx{cjsMods: map[string]bool{}}
+	hasCJS := false
+	for _, m := range b.Modules {
+		if m.IsCJS {
+			ctx.cjsMods[m.ID] = true
+			hasCJS = true
+		}
+	}
+
 	var out strings.Builder
 	out.WriteString(RuntimePrelude)
 	out.WriteString(";")
+	if hasCJS {
+		// CJS 依赖的运行期 require() 解析表：from → {specifier → ID}
+		out.WriteString("__alukaRes={")
+		pq := &printer{sb: &out}
+		first := true
+		for _, m := range b.Modules {
+			if !m.IsCJS || len(m.Resolved) == 0 {
+				continue
+			}
+			if !first {
+				out.WriteString(",")
+			}
+			first = false
+			pq.string(m.ID)
+			out.WriteString(":{")
+			firstSpec := true
+			for spec, id := range m.Resolved {
+				if !firstSpec {
+					out.WriteString(",")
+				}
+				firstSpec = false
+				pq.string(spec)
+				out.WriteString(":")
+				pq.string(id)
+			}
+			out.WriteString("}")
+		}
+		out.WriteString("};")
+	}
+
+	// 注册静态资源模块（JSON 数据内联、CSS 副作用占位）
+	for id, data := range b.Assets {
+		if strings.HasSuffix(id, ".json") {
+			out.WriteString("__def(")
+			quoteJS(&out, id)
+			out.WriteString(",(exports,module)=>{module.exports=")
+			out.WriteString(strings.TrimSpace(string(data)))
+			out.WriteString(";exports.default=module.exports;});")
+		} else if strings.HasSuffix(id, ".css") {
+			out.WriteString("__def(")
+			quoteJS(&out, id)
+			out.WriteString(",()=>{});")
+		}
+	}
 
 	entry := findModule(b.Modules, b.EntryID)
 	if entry == nil {
@@ -248,18 +343,41 @@ func (b Bundle) Build() (string, error) {
 	}
 
 	for _, m := range b.Modules {
-		text, err := WrapModule(m)
+		text, err := wrapModule(ctx, m)
 		if err != nil {
 			return "", err
 		}
 		out.WriteString(text)
 	}
 
+	if format == "cjs" || format == "umd" {
+		var body strings.Builder
+		body.WriteString("var __entry=__req(")
+		quoteJS(&body, b.EntryID)
+		body.WriteString(");")
+		body.WriteString("var __out={};")
+		for _, name := range entryExports {
+			body.WriteString("__out[")
+			quoteJS(&body, name)
+			body.WriteString("]=__entry[")
+			quoteJS(&body, name)
+			body.WriteString("];")
+		}
+		if format == "cjs" {
+			body.WriteString("module.exports=__out;")
+			return out.String() + body.String(), nil
+		}
+		global := b.Global
+		if global == "" {
+			global = "AlukaBundle"
+		}
+		wrapped := "(function(root,factory){if(typeof module===\"object\"&&module.exports)module.exports=factory();else if(typeof define===\"function\"&&define.amd)define([],factory);else root[\"" + global + "\"]=factory()})(typeof globalThis!==\"undefined\"?globalThis:this,function(){" + body.String() + "return __out;});"
+		return out.String() + wrapped, nil
+	}
+
 	out.WriteString("var __entry=__req(")
 	quoteJS(&out, b.EntryID)
 	out.WriteString(");")
-
-	// 入口导出映射为产物顶层 ESM export
 	hasDefault := false
 	for _, name := range entryExports {
 		if name == "default" {
@@ -274,6 +392,27 @@ func (b Bundle) Build() (string, error) {
 	}
 	if hasDefault {
 		out.WriteString("export default __entry.default;")
+	}
+	return out.String(), nil
+}
+
+// BuildChunk 生成可由主 bundle 动态加载的模块 chunk。
+func (b Bundle) BuildChunk() (string, error) {
+	ctx := &bundleCtx{cjsMods: map[string]bool{}}
+	for _, m := range b.Modules {
+		if m.IsCJS {
+			ctx.cjsMods[m.ID] = true
+		}
+	}
+	var out strings.Builder
+	out.WriteString(RuntimePrelude)
+	for _, m := range b.Modules {
+		text, err := wrapModule(ctx, m)
+		if err != nil {
+			return "", err
+		}
+		text = strings.Replace(text, "__def(", "globalThis.__alukaRegister(", 1)
+		out.WriteString(text)
 	}
 	return out.String(), nil
 }

@@ -245,6 +245,7 @@ func buildCLI() *cli.App {
 		Run:     runTest,
 	})
 	app.AddCommand(&cli.Command{Name: "build", Summary: "Bundle project", Run: runBuild})
+	app.AddCommand(&cli.Command{Name: "dev", Summary: "Build and serve a web project", Run: runDev})
 	app.SetDefaultCommand(&cli.Command{
 		Name:    "(file)",
 		Summary: "Shorthand for 'run'",
@@ -338,6 +339,10 @@ func runTest(pos []string, _ string) error {
 func runBuild(pos []string, _ string) error {
 	cmdBuild(pos)
 	return nil
+}
+
+func runDev(pos []string, _ string) error {
+	return cmdDev(pos)
 }
 
 // runFileShortcut 实现 aluka <file>（run 的简写）。

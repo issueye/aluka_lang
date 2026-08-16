@@ -749,9 +749,9 @@ func (l *Loader) rejectImport(err error) (engine.Value, error) {
 	return engine.Undefined(), err
 }
 
-// isBuiltinSpecifier 判断 specifier 是否为内置模块（node: 前缀形式）。
+// isBuiltinSpecifier 判断 specifier 是否为内置模块（node: 或 aluka: 前缀形式）。
 func isBuiltinSpecifier(specifier string) bool {
-	return strings.HasPrefix(specifier, "node:")
+	return strings.HasPrefix(specifier, "node:") || strings.HasPrefix(specifier, "aluka:")
 }
 
 // isBareSpecifier 判断是否为裸模块名（非相对/绝对/盘符路径）。
@@ -776,11 +776,12 @@ func (l *Loader) hasBuiltin(name string) bool {
 	return ok
 }
 
-// loadBuiltin 加载内置模块。specifier 形如 "node:path" 或 "node:fs/promises"。
+// loadBuiltin 加载内置模块。specifier 形如 "node:path"、"aluka:markdown" 或 "node:fs/promises"。
 // 首次加载调用注册的工厂函数构造导出对象，之后缓存。
 func (l *Loader) loadBuiltin(specifier string) (engine.Value, error) {
-	// 去掉 node: 前缀，得到模块名（可能含子路径，如 "fs/promises"）。
+	// 去掉 node: 或 aluka: 前缀，得到模块名（可能含子路径，如 "fs/promises"）。
 	name := strings.TrimPrefix(specifier, "node:")
+	name = strings.TrimPrefix(name, "aluka:")
 
 	l.mu.Lock()
 	if cached, ok := l.builtins[name]; ok {

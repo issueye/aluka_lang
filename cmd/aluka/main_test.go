@@ -13,11 +13,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aluka-lang/aluka/internal/bundler/graph"
 	"github.com/aluka-lang/aluka/internal/engine/jit"
 	"github.com/aluka-lang/aluka/internal/monitor"
 )
 
-// TestParseMemorySize 验证 --max-memory 大小解析（bytes/KB/MB/GB）。
+func TestValidateWebBuiltins(t *testing.T) {
+	if err := validateWebBuiltins(nil); err != nil {
+		t.Fatalf("validateWebBuiltins(nil) = %v, want nil", err)
+	}
+	err := validateWebBuiltins([]graph.BuiltinDep{{Spec: "node:fs", Source: "src/main.ts"}})
+	if err == nil {
+		t.Fatal("validateWebBuiltins() = nil, want error")
+	}
+	for _, want := range []string{"web target", `"node:fs"`, "src/main.ts", "Web API", "--polyfill"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
 func TestParseMemorySize(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -510,5 +525,293 @@ func TestOptimizePipelineCombination(t *testing.T) {
 	}
 	if optimized != "3\n" {
 		t.Errorf("optimized output = %q, want %q", optimized, "3\n")
+	}
+}
+
+// TestWebBuildHTMLAndCSSAndSourcemap 测试 Web 构建全链路（HTML、CSS抽取、Sourcemap、JSON内联）
+func TestWebBuildHTMLAndCSSAndSourcemap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(dir, "style.css"), []byte("body { background: #fff; }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "theme.css"), []byte("h1 { color: #007acc; }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "data.json"), []byte(`{"title":"Aluka Static Build","count":42}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	appTS := `import info from './data.json';
+import './theme.css';
+export const title = info.title;
+export const count = info.count;
+`
+	if err := os.WriteFile(filepath.Join(dir, "app.ts"), []byte(appTS), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	htmlContent := `<!DOCTYPE html>
+<html>
+<head>
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+    <div id="root"></div>
+    <script type="module" src="./app.ts"></script>
+</body>
+</html>`
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(htmlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	distDir := filepath.Join(dir, "dist")
+	cmd := exec.Command(bin, "build", "--target=web", "--sourcemap", "--minify", "--outdir", distDir, "index.html")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build web HTML entry failed: %v\n%s", err, out)
+	}
+
+	// 1. 验证 HTML 生成与引用改写
+	htmlOut, err := os.ReadFile(filepath.Join(distDir, "index.html"))
+	if err != nil {
+		t.Fatalf("read output index.html failed: %v", err)
+	}
+	if !strings.Contains(string(htmlOut), `src="app.js"`) {
+		t.Errorf("rewritten HTML does not reference app.js:\n%s", htmlOut)
+	}
+	if !strings.Contains(string(htmlOut), `href="style.css"`) {
+		t.Errorf("rewritten HTML does not reference style.css:\n%s", htmlOut)
+	}
+
+	// 2. 验证 JS 产物与 JSON 内联与 sourcemap 注释
+	jsOut, err := os.ReadFile(filepath.Join(distDir, "app.js"))
+	if err != nil {
+		t.Fatalf("read output app.js failed: %v", err)
+	}
+	jsStr := string(jsOut)
+	if !strings.Contains(jsStr, "Aluka Static Build") {
+		t.Errorf("app.js missing inlined JSON data: %s", jsStr)
+	}
+	if !strings.Contains(jsStr, "//# sourceMappingURL=app.js.map") {
+		t.Errorf("app.js missing sourceMappingURL comment: %s", jsStr)
+	}
+
+	// 3. 验证 Sourcemap 文件
+	mapOut, err := os.ReadFile(filepath.Join(distDir, "app.js.map"))
+	if err != nil {
+		t.Fatalf("read output app.js.map failed: %v", err)
+	}
+	var sm map[string]interface{}
+	if err := json.Unmarshal(mapOut, &sm); err != nil {
+		t.Fatalf("invalid sourcemap json: %v", err)
+	}
+	if sm["version"] != float64(3) {
+		t.Errorf("sourcemap version = %v, want 3", sm["version"])
+	}
+
+	// 4. 验证 CSS 文件输出（独立 style.css 与 伴随 app.css）
+	styleOut, err := os.ReadFile(filepath.Join(distDir, "style.css"))
+	if err != nil {
+		t.Fatalf("read output style.css failed: %v", err)
+	}
+	if len(styleOut) == 0 {
+		t.Errorf("style.css is empty")
+	}
+
+	themeOut, err := os.ReadFile(filepath.Join(distDir, "app.css"))
+	if err != nil {
+		t.Fatalf("read output app.css failed: %v", err)
+	}
+	if !strings.Contains(string(themeOut), "color:#007acc") {
+		t.Errorf("app.css does not contain minified theme styles: %s", themeOut)
+	}
+}
+
+// TestWebBuildMultipleEntries 测试 Web 构建多 Entry 独立产出
+func TestWebBuildMultipleEntries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(dir, "page1.ts"), []byte("export const a = 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "page2.ts"), []byte("export const b = 2;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	distDir := filepath.Join(dir, "dist")
+	cmd := exec.Command(bin, "build", "--target=web", "--outdir", distDir, "page1.ts", "page2.ts")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build multiple web entries failed: %v\n%s", err, out)
+	}
+
+	if _, err := os.Stat(filepath.Join(distDir, "page1.js")); err != nil {
+		t.Errorf("missing page1.js: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(distDir, "page2.js")); err != nil {
+		t.Errorf("missing page2.js: %v", err)
+	}
+}
+
+// TestBuildCompileTargetWebConflict：--compile 与 --target=web 互斥（回归：
+// watch 接入期间该校验曾被移除）。
+func TestBuildCompileTargetWebConflict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.ts"), []byte("export const a = 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "build", "--compile", "--target=web", "a.ts")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("--compile --target=web should fail, got success:\n%s", out)
+	}
+	if !strings.Contains(string(out), "conflicts with --compile") {
+		t.Errorf("error output missing conflict message:\n%s", out)
+	}
+}
+
+// TestBuildInvalidGlobalName：--global-name 拒绝非法标识符（防 UMD 注入）。
+func TestBuildInvalidGlobalName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.ts"), []byte("export const a = 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "build", "--target=web", "--format=umd", "--global-name", `x"];alert(1)//`, "a.ts")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("invalid --global-name should fail, got success:\n%s", out)
+	}
+	if !strings.Contains(string(out), "--global-name") {
+		t.Errorf("error output missing --global-name message:\n%s", out)
+	}
+}
+
+// TestBuildFormatRequiresWeb：--format 只在 web target 下可用。
+func TestBuildFormatRequiresWeb(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.ts"), []byte("export const a = 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "build", "--compile", "--format=cjs", "a.ts")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("--compile --format=cjs should fail, got success:\n%s", out)
+	}
+	if !strings.Contains(string(out), "require --target=web") {
+		t.Errorf("error output missing format/web message:\n%s", out)
+	}
+}
+
+// TestWebBuildCJSAndUMDOutput：CJS/UMD 产物的入口导出形态正确
+// （无 ESM export 语句；CJS 挂 module.exports，UMD 含三分支 wrapper）。
+func TestWebBuildCJSAndUMDOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.ts"), []byte("export const a = 1;\nexport default 2;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cjsOut := filepath.Join(dir, "a.cjs")
+	cmd := exec.Command(bin, "build", "--target=web", "--format=cjs", "--outfile", cjsOut, "a.ts")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build --format=cjs failed: %v\n%s", err, out)
+	}
+	cjs, err := os.ReadFile(cjsOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(cjs), "export ") {
+		t.Errorf("cjs output contains ESM export:\n%s", cjs)
+	}
+	if !strings.Contains(string(cjs), "module.exports") {
+		t.Errorf("cjs output missing module.exports:\n%s", cjs)
+	}
+	if strings.Count(string(cjs), "var __entry=__req(") != 1 {
+		t.Errorf("cjs output should execute entry exactly once:\n%s", cjs)
+	}
+
+	umdOut := filepath.Join(dir, "a.umd.js")
+	cmd = exec.Command(bin, "build", "--target=web", "--format=umd", "--global-name", "MyLib", "--outfile", umdOut, "a.ts")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build --format=umd failed: %v\n%s", err, out)
+	}
+	umd, err := os.ReadFile(umdOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"define.amd", `root["MyLib"]`, "module.exports"} {
+		if !strings.Contains(string(umd), want) {
+			t.Errorf("umd output missing %q:\n%s", want, umd)
+		}
+	}
+	if strings.Count(string(umd), "var __entry=__req(") != 1 {
+		t.Errorf("umd output should execute entry exactly once:\n%s", umd)
+	}
+}
+
+// TestGUIWebEntryBuild 测试 aluka build --gui --web-entry 前端源码直出桌面 exe 闭环
+func TestGUIWebEntryBuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+
+	// 桌面主进程源码
+	mainTS := `console.log("GUI backend initialized");`
+	if err := os.WriteFile(filepath.Join(dir, "main.ts"), []byte(mainTS), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 前端 TSX 源码
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	webTSX := `export const App = () => "<div>Aluka GUI Studio</div>";`
+	if err := os.WriteFile(filepath.Join(dir, "src", "index.tsx"), []byte(webTSX), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	artifact := filepath.Join(dir, "gui-app"+exeSuffix())
+	cmd := exec.Command(bin, "build", "--compile", "--gui", "--web-entry", "src/index.tsx", "--outfile", artifact, "main.ts")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build --gui --web-entry failed: %v\n%s", err, out)
+	}
+
+	info, err := os.Stat(artifact)
+	if err != nil {
+		t.Fatalf("cannot stat artifact: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("artifact is empty")
 	}
 }

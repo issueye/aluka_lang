@@ -90,6 +90,8 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("console", NewConsoleModule)
 	loader.RegisterBuiltin("test", NewTest)
 	loader.RegisterBuiltin("test/reporters", NewTestReporters)
+	loader.RegisterBuiltin("markdown", NewMarkdownModule)
+	loader.RegisterBuiltin("aluka:markdown", NewMarkdownModule)
 	// node:sys —— node:util 兼容别名（废弃，DEP0140）。与 util 同一对象身份。
 	loader.RegisterBuiltin("sys", func(ctx engine.Context) (engine.Value, error) {
 		// 仅首次加载打印一次废弃警告（Node 每次 require 发出，这里由缓存保证一次）。

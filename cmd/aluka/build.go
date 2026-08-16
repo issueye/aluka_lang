@@ -30,8 +30,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aluka-lang/aluka/internal/bundler/analyze"
 	"github.com/aluka-lang/aluka/internal/bundler/compile"
@@ -62,7 +65,12 @@ type buildOptions struct {
 	noBytecodeOpt bool
 	guiApp        bool
 	webDir        string
+	webEntry      string
 	iconPath      string
+	sourcemap     bool
+	watch         bool
+	format        string
+	globalName    string
 	target        string // ""=compile（默认） | "web"
 }
 
@@ -92,18 +100,27 @@ func buildFlags(opts *buildOptions, optimize *bool) *cli.FlagSet {
 	fs.Bool("analyze-only", "Analyze payload without writing an executable", &opts.analyzeOnly)
 	fs.Var(cli.FuncValue{Fn: func(s string) error { opts.analyzeTop = parseAnalyzeTop(s); return nil }}, "analyze-top", "Top N hotspots in the analysis report").MissingMsg("--analyze-top requires a number")
 	fs.Var(cli.FuncValue{Fn: func(s string) error { opts.maxPayload = parsePayloadBudget(s); return nil }}, "max-payload", "Fail with exit code 2 when payload exceeds the budget").MissingMsg("--max-payload requires a size")
-	fs.Var(cli.ActionValue{Fn: func() error { return errors.New("--sourcemap not implemented (scope: --compile only)") }}, "sourcemap", "Source map generation (not implemented)")
-	fs.Var(cli.ActionValue{Fn: func() error { return errors.New("--target not implemented (scope: --compile only)") }}, "target", "Target platform (not implemented)")
+	fs.Bool("sourcemap", "Generate source map files (for web target)", &opts.sourcemap)
+	fs.Bool("watch", "Rebuild web bundle when source files change", &opts.watch)
+	fs.Var(cli.FuncValue{Fn: func(v string) error {
+		if v != "esm" && v != "cjs" && v != "umd" {
+			return errors.New("--format supports only esm, cjs, or umd")
+		}
+		opts.format = v
+		return nil
+	}}, "format", "Output format: esm|cjs|umd")
+	fs.String("global-name", "Global name for UMD output", &opts.globalName)
 	fs.Bool("gui", "Embed frontend web assets as a GUI desktop app (with --compile)", &opts.guiApp)
 	fs.String("web-dir", "Frontend web assets directory to embed (default: dist; requires --gui)", &opts.webDir).MissingMsg("--web-dir requires a path")
+	fs.String("web-entry", "Frontend web entry point (e.g. index.tsx / index.html; requires --gui)", &opts.webEntry).MissingMsg("--web-entry requires a path")
 	fs.String("icon", "Application .ico file embedded for window/taskbar/tray icons (requires --gui)", &opts.iconPath).MissingMsg("--icon requires a path")
 	fs.Var(cli.FuncValue{Fn: func(v string) error {
-		if v != "web" {
-			return errors.New("--target supports only web")
+		if v != "web" && v != "es2018" {
+			return errors.New("--target supports only web or es2018")
 		}
 		opts.target = v
 		return nil
-	}}, "target", "Build target: web (browser ESM bundle)")
+	}}, "target", "Build target: web or es2018")
 	return fs
 }
 
@@ -197,11 +214,41 @@ func cmdBuild(args []string) {
 	if opts.webDir != "" && !opts.guiApp {
 		fatalErr("aluka build: --web-dir requires --gui")
 	}
+	if opts.webEntry != "" && !opts.guiApp {
+		fatalErr("aluka build: --web-entry requires --gui")
+	}
+	if opts.webEntry != "" && opts.webDir != "" {
+		fatalErr("aluka build: --web-entry and --web-dir are mutually exclusive")
+	}
 	if opts.iconPath != "" && !opts.guiApp {
 		fatalErr("aluka build: --icon requires --gui")
 	}
+	if opts.sourcemap && opts.target != "web" {
+		fatalErr("aluka build: --sourcemap requires --target=web")
+	}
 	if opts.target == "web" && opts.compileOnly {
 		fatalErr("aluka build: --target=web conflicts with --compile")
+	}
+	if opts.watch && opts.compileOnly {
+		fatalErr("aluka build: --watch conflicts with --compile")
+	}
+	if opts.watch && opts.target != "web" {
+		fatalErr("aluka build: --watch requires --target=web")
+	}
+	if opts.watch && len(entries) != 1 {
+		fatalErr("aluka build: --watch requires one entry")
+	}
+	if opts.analyzeOnly && opts.watch {
+		fatalErr("aluka build: --watch conflicts with --analyze-only")
+	}
+	if opts.target == "es2018" {
+		fatalErr("aluka build: --target=es2018 syntax lowering is not implemented")
+	}
+	if (opts.format != "" || opts.globalName != "") && opts.target != "web" {
+		fatalErr("aluka build: --format/--global-name require --target=web")
+	}
+	if opts.globalName != "" && !isValidJSIdentifier(opts.globalName) {
+		fatalErr("aluka build: --global-name must be a valid JavaScript identifier")
 	}
 	if opts.target == "" && !opts.compileOnly {
 		fatalErr("aluka build: specify --compile (executable) or --target=web (browser bundle)")
@@ -237,6 +284,10 @@ func cmdBuild(args []string) {
 	}
 
 	if opts.target == "web" {
+		if opts.watch {
+			watchWebBuild(entries[0], opts)
+			return
+		}
 		for _, entry := range entries {
 			webBuildOne(vm, resolver, entry, opts)
 		}
@@ -359,17 +410,51 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 		optimizedStage = mustMeasureStage(modules)
 	}
 
-	// GUI 模式：收集前端静态资源目录（--web-dir，默认 dist）与应用图标（--icon）
+	// GUI 模式：收集前端静态资源目录（--web-dir，默认 dist）或通过 --web-entry 实时打包，以及应用图标（--icon）
 	var webAssets map[string][]byte
 	packOpts := compile.PackOptions{}
 	if opts.guiApp {
-		webDir := opts.webDir
-		if webDir == "" {
-			webDir = "dist"
-		}
-		webAssets, err = collectWebAssets(webDir)
-		if err != nil {
-			fatalErr("aluka build: " + err.Error())
+		if opts.webEntry != "" {
+			webEntryPath := opts.webEntry
+			if !filepath.IsAbs(webEntryPath) {
+				if _, err := os.Stat(webEntryPath); err != nil {
+					cand := filepath.Join(filepath.Dir(entry), webEntryPath)
+					if _, err2 := os.Stat(cand); err2 == nil {
+						webEntryPath = cand
+					}
+				}
+			}
+			webVM, err := interpreter.NewVM()
+			if err != nil {
+				fatalErr("aluka build: " + err.Error())
+			}
+			webResolver := module.NewResolver()
+			webAssets, err = bundleWebEntry(webVM, webResolver, webEntryPath, opts)
+			if err != nil {
+				fatalErr("aluka build: bundle --web-entry: " + err.Error())
+			}
+			if _, hasHTML := webAssets["index.html"]; !hasHTML {
+				var mainScript string
+				for assetName := range webAssets {
+					if strings.HasSuffix(assetName, ".js") {
+						mainScript = assetName
+						break
+					}
+				}
+				if mainScript != "" {
+					defaultHTML := fmt.Sprintf(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Aluka App</title></head><body><div id="root"></div><script type="module" src="%s"></script></body></html>`, mainScript)
+					webAssets["index.html"] = []byte(defaultHTML)
+				}
+			}
+		} else {
+			webDir := opts.webDir
+			if webDir == "" {
+				webDir = "dist"
+			}
+			webAssets, err = collectWebAssets(webDir)
+			if err != nil {
+				fatalErr("aluka build: " + err.Error())
+			}
 		}
 		packOpts.WebAssets = webAssets
 
@@ -617,11 +702,95 @@ func writeCompiledBinary(base, outfile string, payload []byte, icon []byte, guiA
 	return payloadOffset, nil
 }
 
-// webBuildOne 实现 --target=web：graph → shake → minify → emit（浏览器 ESM 单文件）。
-func webBuildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts buildOptions) {
+// validateWebBuiltins 返回浏览器目标下 Node 内置模块的可操作诊断。
+func validateWebBuiltins(builtins []graph.BuiltinDep) error {
+	if len(builtins) == 0 {
+		return nil
+	}
+	b := builtins[0]
+	return fmt.Errorf(
+		"web target 不支持 Node 内置模块 %q（来源 %s）——浏览器环境请改用 Web API（如 node:fs → fetch/File System Access API），或经 --polyfill 注入（M2）",
+		b.Spec, b.Source)
+}
+
+// bundleWebEntry 实现对单个 web 入口（.html / .css / .js / .ts / .tsx）的编译打包，
+// 返回相对产物路径 → 文件内容字节。
+func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string, opts buildOptions) (map[string][]byte, error) {
+	module.SetWebConditions()
+	ext := strings.ToLower(filepath.Ext(entry))
+	assets := make(map[string][]byte)
+
+	// 1. HTML 入口处理（M2-2）
+	if ext == ".html" {
+		htmlData, err := os.ReadFile(entry)
+		if err != nil {
+			return nil, fmt.Errorf("read HTML entry %q: %w", entry, err)
+		}
+		htmlStr := string(htmlData)
+		parsed := emit.ParseHTMLEntry(htmlStr)
+		replacements := make(map[string]string)
+		entryDir := filepath.Dir(entry)
+
+		for _, script := range parsed.Scripts {
+			scriptPath := filepath.Join(entryDir, filepath.FromSlash(script.Original))
+			subAssets, err := bundleWebEntry(vm, resolver, scriptPath, opts)
+			if err != nil {
+				return nil, err
+			}
+			for k, v := range subAssets {
+				assets[k] = v
+			}
+			baseScript := filepath.Base(script.Original)
+			baseName := strings.TrimSuffix(baseScript, filepath.Ext(baseScript)) + ".js"
+			replacements[script.Original] = baseName
+		}
+
+		for _, sheet := range parsed.Stylesheets {
+			sheetPath := filepath.Join(entryDir, filepath.FromSlash(sheet.Original))
+			cssData, err := os.ReadFile(sheetPath)
+			if err != nil {
+				return nil, fmt.Errorf("read stylesheet %q: %w", sheetPath, err)
+			}
+			content := string(cssData)
+			if opts.minify {
+				content = emit.MinifyCSS(content)
+			}
+			baseSheet := filepath.Base(sheet.Original)
+			baseName := strings.TrimSuffix(baseSheet, filepath.Ext(baseSheet)) + ".css"
+			assets[baseName] = []byte(content)
+			replacements[sheet.Original] = baseName
+		}
+
+		rewritten := emit.RewriteHTML(htmlStr, replacements)
+		assets[filepath.Base(entry)] = []byte(rewritten)
+		return assets, nil
+	}
+
+	// 2. 独立 CSS 入口（M2-1）
+	if ext == ".css" {
+		cssData, err := os.ReadFile(entry)
+		if err != nil {
+			return nil, fmt.Errorf("read CSS entry %q: %w", entry, err)
+		}
+		content := string(cssData)
+		if opts.minify {
+			content = emit.MinifyCSS(content)
+		}
+		base := filepath.Base(entry)
+		assets[base] = []byte(content)
+		return assets, nil
+	}
+
+	// 3. JS / TS / TSX 入口打包（M1/M2）
 	graphResult, err := graph.Build(vm, resolver, entry)
 	if err != nil {
-		fatalErr("aluka build: " + err.Error())
+		return nil, err
+	}
+	if err := validateWebBuiltins(graphResult.Builtins); err != nil {
+		return nil, err
+	}
+	if len(graphResult.UnresolvedDynamic) > 0 {
+		return nil, fmt.Errorf("web target requires a string literal for dynamic import() (source %s)", graphResult.UnresolvedDynamic[0])
 	}
 
 	kept := make(map[string]bool, len(graphResult.SourceUnits))
@@ -631,46 +800,164 @@ func webBuildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, op
 	if opts.treeShake {
 		shaken, err := shake.ShakeOpts(graphResult, graphResult.Entry, shake.Options{KeepEntryExports: true})
 		if err != nil {
-			fatalErr("aluka build: " + err.Error())
+			return nil, err
 		}
 		kept = shaken.Kept
 	}
 
-	modules := make([]emit.Module, 0, len(kept))
-	for key, unit := range graphResult.SourceUnits {
-		if !kept[key] {
+	asyncTargets := make(map[string]bool, len(graphResult.DynamicDeps))
+	for _, dep := range graphResult.DynamicDeps {
+		asyncTargets[dep.Target] = true
+	}
+	moduleSources := make(map[string]string)
+	mainModules := staticModuleClosure(graphResult, graphResult.Entry, kept)
+	modules := make([]emit.Module, 0, len(mainModules))
+	mainKeys := make([]string, 0, len(mainModules))
+	for key := range mainModules {
+		mainKeys = append(mainKeys, key)
+	}
+	sort.Strings(mainKeys)
+	for _, key := range mainKeys {
+		unit := graphResult.SourceUnits[key]
+		if unit == nil || !kept[key] {
 			continue
 		}
-		if unit.SourceKind == module.SourceJSON {
-			fatalErr("aluka build: web target 暂不支持 JSON import（M2）：" + key)
+		if opts.sourcemap {
+			moduleSources[key] = string(unit.Source)
 		}
 		if opts.minify {
 			minify.Program(unit.Program)
 		}
 		modules = append(modules, emit.Module{
-			ID:       key,
-			Prog:     unit.Program,
-			IsTLA:    unit.HasTLA,
-			Resolved: graphResult.Resolutions[key],
+			ID:             key,
+			Prog:           unit.Program,
+			IsTLA:          unit.HasTLA,
+			IsCJS:          unit.ModuleKind == module.ModuleCommonJS,
+			Resolved:       graphResult.Resolutions[key],
+			DynamicImports: dynamicImportsFor(key, graphResult.DynamicDeps),
 		})
 	}
 
-	out, err := emit.Bundle{EntryID: graphResult.Entry, Modules: modules}.Build()
+	outJS, err := emit.Bundle{
+		EntryID: graphResult.Entry,
+		Modules: modules,
+		Assets:  graphResult.Assets,
+		Format:  opts.format,
+		Global:  opts.globalName,
+	}.Build()
+
+	if err != nil {
+		return nil, err
+	}
+
+	baseName := filepath.Base(entry)
+	if e := filepath.Ext(baseName); e != "" {
+		baseName = baseName[:len(baseName)-len(e)]
+	}
+	jsFileName := baseName + ".js"
+	for _, dep := range graphResult.DynamicDeps {
+		unit := graphResult.SourceUnits[dep.Target]
+		if unit == nil {
+			continue
+		}
+		chunkKeys := staticModuleClosure(graphResult, dep.Target, kept)
+		chunkIDs := make([]string, 0, len(chunkKeys))
+		for key := range chunkKeys {
+			chunkIDs = append(chunkIDs, key)
+		}
+		sort.Strings(chunkIDs)
+		chunkModules := make([]emit.Module, 0, len(chunkIDs))
+		for _, key := range chunkIDs {
+			chunkUnit := graphResult.SourceUnits[key]
+			if chunkUnit == nil {
+				continue
+			}
+			if opts.minify {
+				minify.Program(chunkUnit.Program)
+			}
+			chunkModules = append(chunkModules, emit.Module{ID: key, Prog: chunkUnit.Program, IsTLA: chunkUnit.HasTLA, IsCJS: chunkUnit.ModuleKind == module.ModuleCommonJS, Resolved: graphResult.Resolutions[key], DynamicImports: dynamicImportsFor(key, graphResult.DynamicDeps)})
+		}
+		chunkText, err := (emit.Bundle{EntryID: dep.Target, Modules: chunkModules}).BuildChunk()
+		if err != nil {
+			return nil, err
+		}
+		assets[dynamicChunkName(dep.Target)] = []byte(chunkText)
+	}
+
+	if opts.sourcemap {
+
+		mapFileName := jsFileName + ".map"
+		smJSON, err := emit.GenerateSimpleSourceMap(jsFileName, moduleSources)
+		if err != nil {
+			return nil, fmt.Errorf("generate sourcemap: %w", err)
+		}
+		assets[mapFileName] = []byte(smJSON)
+		outJS += "\n//# sourceMappingURL=" + mapFileName + "\n"
+	}
+
+	// 提取伴随 CSS 模块（M2-1）
+	var cssFiles []emit.CSSFile
+	for assetKey, data := range graphResult.Assets {
+		if strings.HasSuffix(assetKey, ".css") {
+			cssFiles = append(cssFiles, emit.CSSFile{ID: assetKey, Content: string(data)})
+		}
+	}
+	if len(cssFiles) > 0 {
+		cssBundle, err := emit.BundleCSS(cssFiles, opts.minify)
+		if err != nil {
+			return nil, fmt.Errorf("bundle CSS: %w", err)
+		}
+		if len(cssBundle) > 0 {
+			assets[baseName+".css"] = []byte(cssBundle)
+		}
+	}
+
+	assets[jsFileName] = []byte(outJS)
+	return assets, nil
+}
+
+func webBuildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts buildOptions) {
+	assets, err := bundleWebEntry(vm, resolver, entry, opts)
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
 	}
 
-	outPath := webOutputPath(entry, opts.outfile, opts.outdir)
-	if dir := filepath.Dir(outPath); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+	outDir := opts.outdir
+	if outDir == "" && opts.outfile != "" {
+		outDir = filepath.Dir(opts.outfile)
+	}
+	if outDir == "" {
+		outDir = "."
+	}
+
+	if outDir != "." {
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
 			fatalErr("aluka build: " + err.Error())
 		}
 	}
-	if err := os.WriteFile(outPath, []byte(out), 0o644); err != nil {
-		fatalErr("aluka build: " + err.Error())
+
+	var primaryOut string
+	for name, data := range assets {
+		var targetPath string
+		if opts.outfile != "" && len(assets) == 1 {
+			targetPath = opts.outfile
+		} else if opts.outfile != "" && name == filepath.Base(opts.outfile) {
+			targetPath = opts.outfile
+
+		} else {
+			targetPath = filepath.Join(outDir, name)
+		}
+
+		if err := os.WriteFile(targetPath, data, 0o644); err != nil {
+			fatalErr("aluka build: " + err.Error())
+		}
+		if primaryOut == "" || strings.HasSuffix(name, ".js") || strings.HasSuffix(name, ".html") {
+			primaryOut = targetPath
+		}
 	}
-	fmt.Printf("Bundled %s → %s (%d bytes, %d modules, tree-shaken %d)%s\n",
-		entry, outPath, len(out), len(modules), len(graphResult.SourceUnits)-len(kept),
+
+	fmt.Printf("Bundled %s → %s (%d assets)%s\n",
+		entry, primaryOut, len(assets),
 		func() string {
 			if opts.minify {
 				return ", minified"
@@ -679,18 +966,199 @@ func webBuildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, op
 		}())
 }
 
-// webOutputPath 计算 web bundle 输出路径：--outfile / --outdir / 默认 <entry>.js。
-func webOutputPath(entry, outfile, outdir string) string {
-	if outfile != "" {
-		return outfile
+func staticModuleClosure(gr *graph.Result, entry string, kept map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	queue := []string{entry}
+	for len(queue) > 0 {
+		key := queue[0]
+		queue = queue[1:]
+		if out[key] || !kept[key] {
+			continue
+		}
+		out[key] = true
+		for spec, target := range gr.Resolutions[key] {
+			dynamic := false
+			for _, dep := range gr.DynamicDeps {
+				if dep.Source == key && dep.Spec == spec {
+					dynamic = true
+					break
+				}
+			}
+			if !dynamic && kept[target] {
+				queue = append(queue, target)
+			}
+		}
 	}
-	base := filepath.Base(entry)
-	if ext := filepath.Ext(base); ext != "" {
-		base = base[:len(base)-len(ext)]
+	return out
+}
+
+func watchWebBuild(entry string, opts buildOptions) {
+	outDir := webOutputDir(opts)
+	written := map[string]bool{}
+	for {
+		vm, err := interpreter.NewVM()
+		if err == nil {
+			if assets, buildErr := bundleWebEntry(vm, module.NewResolver(), entry, opts); buildErr != nil {
+				fmt.Fprintln(os.Stderr, "watch:", buildErr)
+			} else if writeErr := writeWebAssetsTracked(assets, opts, written); writeErr != nil {
+				fmt.Fprintln(os.Stderr, "watch:", writeErr)
+			} else {
+				fmt.Println("watch: rebuilt")
+			}
+		}
+		snapshot := watchSnapshot(entry, outDir)
+		for {
+			time.Sleep(300 * time.Millisecond)
+			next := watchSnapshot(entry, outDir)
+			if !reflect.DeepEqual(snapshot, next) {
+				break
+			}
+		}
 	}
-	base += ".js"
-	if outdir != "" {
-		return filepath.Join(outdir, base)
+}
+
+// webOutputDir 统一计算 web 产物输出目录（--outfile 时为其父目录）。
+func webOutputDir(opts buildOptions) string {
+	if opts.outdir != "" {
+		return opts.outdir
 	}
-	return base
+	if opts.outfile != "" {
+		return filepath.Dir(opts.outfile)
+	}
+	return "."
+}
+
+// watchSnapshot 收集入口目录下源文件的 (mtime:size) 快照；skipDir 下的文件
+// （构建产物目录）不纳入，避免重建写盘再次触发变更检测。
+func watchSnapshot(entry, skipDir string) map[string]string {
+	out := make(map[string]string)
+	root := filepath.Dir(entry)
+	var skipAbs string
+	if abs, err := filepath.Abs(skipDir); err == nil {
+		skipAbs = abs
+	}
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			if err == nil && d.IsDir() && skipAbs != "" {
+				if abs, absErr := filepath.Abs(path); absErr == nil && abs == skipAbs {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext == ".js" || ext == ".jsx" || ext == ".ts" || ext == ".tsx" || ext == ".css" || ext == ".html" || filepath.Base(path) == "package.json" {
+			if skipAbs != "" {
+				if abs, absErr := filepath.Abs(filepath.Dir(path)); absErr == nil && abs == skipAbs {
+					return nil
+				}
+			}
+			if info, statErr := d.Info(); statErr == nil {
+				out[path] = fmt.Sprintf("%d:%d", info.ModTime().UnixNano(), info.Size())
+			}
+		}
+		return nil
+	})
+	return out
+}
+
+// writeWebAssetsTracked 写出产物并清理上一轮已写但本轮不再生成的文件，
+// 避免依赖删除后陈旧 chunk 残留在输出目录。
+func writeWebAssetsTracked(assets map[string][]byte, opts buildOptions, written map[string]bool) error {
+	if err := writeWebAssets(assets, opts); err != nil {
+		return err
+	}
+	outDir := webOutputDir(opts)
+	current := map[string]bool{}
+	for name := range assets {
+		target := filepath.Join(outDir, name)
+		if opts.outfile != "" && name == filepath.Base(opts.outfile) {
+			target = opts.outfile
+		}
+		current[target] = true
+	}
+	for target := range written {
+		if !current[target] {
+			_ = os.Remove(target)
+		}
+	}
+	for target := range current {
+		written[target] = true
+	}
+	return nil
+}
+
+// isValidJSIdentifier 校验 UMD global 名：字母/数字/_/$ 且不以数字开头，
+// 且不为保留字（保留字作为全局名会生成非法脚本）。
+func isValidJSIdentifier(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if r == '_' || r == '$' {
+			continue
+		}
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	switch name {
+	case "break", "case", "catch", "class", "const", "continue", "debugger",
+		"default", "delete", "do", "else", "enum", "export", "extends",
+		"false", "finally", "for", "function", "if", "import", "in",
+		"instanceof", "new", "null", "return", "super", "switch", "this",
+		"throw", "true", "try", "typeof", "var", "void", "while", "with":
+		return false
+	}
+	return true
+}
+
+func writeWebAssets(assets map[string][]byte, opts buildOptions) error {
+	outDir := opts.outdir
+	if outDir == "" && opts.outfile != "" {
+		outDir = filepath.Dir(opts.outfile)
+	}
+	if outDir == "" {
+		outDir = "."
+	}
+	if outDir != "." {
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			return err
+		}
+	}
+	for name, data := range assets {
+		target := filepath.Join(outDir, name)
+		if opts.outfile != "" && name == filepath.Base(opts.outfile) {
+			target = opts.outfile
+		}
+		if err := os.WriteFile(target, data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func dynamicChunkName(target string) string {
+	clean := filepath.ToSlash(target)
+	var h uint32 = 2166136261
+	for i := 0; i < len(clean); i++ {
+		h ^= uint32(clean[i])
+		h *= 16777619
+	}
+	return fmt.Sprintf("chunk-%08x.js", h)
+}
+
+func dynamicImportsFor(source string, deps []graph.DynamicDep) map[string]emit.DynamicImport {
+	out := make(map[string]emit.DynamicImport)
+	for _, dep := range deps {
+		if dep.Source != source {
+			continue
+		}
+		out[dep.Spec] = emit.DynamicImport{Chunk: dynamicChunkName(dep.Target), Target: dep.Target}
+	}
+	return out
 }

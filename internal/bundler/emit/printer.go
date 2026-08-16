@@ -37,6 +37,8 @@ func PrintExpression(e ast.Expression) string {
 type printer struct {
 	sb       *strings.Builder
 	resolved map[string]string // import specifier → 模块 ID（nil 时原样保留；web bundle 用）
+	ctx      *bundleCtx        // web bundle 跨模块上下文（可为 nil）
+	dynamic  map[string]DynamicImport
 }
 
 func (p *printer) w(s string) { p.sb.WriteString(s) }
@@ -142,9 +144,10 @@ func exprPrec(e ast.Expression) int {
 		return precUpdate
 	case *ast.AwaitExpr:
 		return precUnary
-	case *ast.ArrowFunc:
+	case *ast.ArrowFunc, *ast.YieldExpr:
 		return precAssign
-	case *ast.YieldExpr:
+	// 函数/类/对象字面量作为操作数（如 IIFE callee、new callee）必须括号化
+	case *ast.FunctionExpr, *ast.ClassExpr, *ast.ObjectLit:
 		return precAssign
 	}
 	return precCallMember
@@ -245,6 +248,18 @@ func (p *printer) exprInner(e ast.Expression) {
 		}
 
 	case *ast.CallExpr:
+		if id, ok := t.Callee.(*ast.Identifier); ok && id.Name == "__import" && len(t.Arguments) > 0 {
+			if lit, ok := t.Arguments[0].(*ast.StringLit); ok {
+				if d, found := p.dynamic[lit.Value]; found {
+					p.w("__alukaImport(")
+					p.string(d.Chunk)
+					p.w(",")
+					p.string(d.Target)
+					p.w(")")
+					return
+				}
+			}
+		}
 		// 可选调用 a?.(b) 的 callee 已含 ?.；普通调用 callee 需成员级优先级
 		p.expr(t.Callee, precCallMember)
 		if t.Optional {

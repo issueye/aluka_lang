@@ -23,6 +23,20 @@ import (
 type Dep struct {
 	Spec      string
 	ImportCtx bool // true = import 语境（ESM 导入/动态 import），false = require 语境
+	Dynamic   bool // true = 字面量动态 import()
+}
+
+// DynamicDep 是一个可拆分为异步 chunk 的动态依赖边。
+type DynamicDep struct {
+	Source string
+	Spec   string
+	Target string
+}
+
+// BuiltinDep 是构建图中被识别为 Node 内置模块的依赖。
+type BuiltinDep struct {
+	Spec   string
+	Source string
 }
 
 // SourceUnitByPath 缓存构建期已读取并解析的模块中间表示；同一模块的
@@ -42,6 +56,10 @@ type Result struct {
 	SourceUnits SourceUnitByPath
 	Resolutions map[string]map[string]string
 	Assets      map[string][]byte // JSON 资源：虚拟路径 → 原始字节（M3）
+	// Builtins 是源码中静态引用的 node:* 内置模块及其来源。
+	Builtins []BuiltinDep
+	// DynamicDeps 是字面量动态 import() 的已解析边。
+	DynamicDeps []DynamicDep
 	// UnresolvedDynamic 无法静态解析的动态 import 所在模块。
 	UnresolvedDynamic []string
 }
@@ -90,8 +108,8 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 	}
 	visited[fsPath] = true
 
-	// JSON 文件是资源而非模块：读取原始字节嵌入（M3，B2.3.4）。
-	if strings.EqualFold(filepath.Ext(fsPath), ".json") {
+	// JSON 与 CSS 文件是资源而非 JS 模块：读取原始字节嵌入（M2/M3）。
+	if strings.EqualFold(filepath.Ext(fsPath), ".json") || strings.EqualFold(filepath.Ext(fsPath), ".css") {
 		data, err := os.ReadFile(fsPath)
 		if err != nil {
 			return fmt.Errorf("graph: cannot read %q: %w", fsPath, err)
@@ -120,6 +138,12 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 		r.Entry = key
 	}
 	deps := collectDeps(unit.Program, key, &r.UnresolvedDynamic)
+	for _, dep := range deps {
+		if isBuiltinSpecifier(dep.Spec) {
+			r.Builtins = append(r.Builtins, BuiltinDep{Spec: dep.Spec, Source: key})
+		}
+	}
+
 	// 反射遍历可能重复收集同一调用节点——去重。
 	if len(r.UnresolvedDynamic) > 0 {
 		seen := make(map[string]bool)
@@ -159,7 +183,11 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 		}
 		depKey := virtualKey(entryDir, rAbs)
 		table[dep.Spec] = depKey
+		if dep.Dynamic {
+			r.DynamicDeps = append(r.DynamicDeps, DynamicDep{Source: key, Spec: dep.Spec, Target: depKey})
+		}
 		if err := r.walk(vm, resolver, rAbs, depKey, entryDir, visited); err != nil {
+
 			return err
 		}
 	}
@@ -202,13 +230,13 @@ func collectDeps(prog *ast.Program, key string, unresolved *[]string) []Dep {
 					}
 				case "__import": // 动态 import() 经 parser lower 的形式
 					if lit, ok := arg.(*ast.StringLit); ok {
-						deps = append(deps, Dep{Spec: lit.Value, ImportCtx: true})
+						deps = append(deps, Dep{Spec: lit.Value, ImportCtx: true, Dynamic: true})
 						break
 					}
 					// T2-B4：非字面量 → 常量折叠（字符串拼接/无插值模板等）。
 					if v, ok := astutil.FoldConst(arg); ok {
 						if s, isStr := v.(string); isStr {
-							deps = append(deps, Dep{Spec: s, ImportCtx: true})
+							deps = append(deps, Dep{Spec: s, ImportCtx: true, Dynamic: true})
 							break
 						}
 					}
@@ -222,9 +250,9 @@ func collectDeps(prog *ast.Program, key string, unresolved *[]string) []Dep {
 	return deps
 }
 
-// isBuiltinSpecifier 判断是否为 node: 前缀的内置模块。
+// isBuiltinSpecifier 判断是否为 node: 或 aluka: 前缀的内置模块。
 func isBuiltinSpecifier(spec string) bool {
-	return strings.HasPrefix(spec, "node:")
+	return strings.HasPrefix(spec, "node:") || strings.HasPrefix(spec, "aluka:")
 }
 
 // isBareSpecifier 判断是否为裸模块名（非相对/绝对路径）。

@@ -55,6 +55,11 @@ func (r *Resolver) ResolveImport(specifier, parentPath string) (string, error) {
 	return r.resolve(specifier, parentPath, importConditions)
 }
 
+// ResolveWithConditions 以指定的条件集合解析模块路径。
+func (r *Resolver) ResolveWithConditions(specifier, parentPath string, conditions []string) (string, error) {
+	return r.resolve(specifier, parentPath, conditions)
+}
+
 func (r *Resolver) resolve(specifier, parentPath string, conditions []string) (string, error) {
 	// Absolute path (e.g. /foo/bar.js or C:\foo\bar.js)
 	if filepath.IsAbs(specifier) {
@@ -206,17 +211,31 @@ func (r *Resolver) tryFile(path string) (string, bool) {
 	return "", false
 }
 
+// isBrowserCondition 判断当前条件集合是否包含 "browser"。
+func isBrowserCondition(conditions []string) bool {
+	for _, c := range conditions {
+		if c == "browser" {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveDir resolves a directory by reading package.json, then trying index files.
 func (r *Resolver) resolveDir(dir string) (string, error) {
-	// Read package.json for "main" field
-	if main, ok := r.readPackageMain(dir); ok {
+	return r.resolveDirWithConditions(dir, requireConditions)
+}
+
+func (r *Resolver) resolveDirWithConditions(dir string, conditions []string) (string, error) {
+	// Read package.json for "main" / "browser" / "module" field
+	if main, ok := r.readPackageMainWithConditions(dir, conditions); ok {
 		candidate := filepath.Join(dir, filepath.FromSlash(main))
 		if resolved, ok := r.tryFile(candidate); ok {
 			return resolved, nil
 		}
 		// "main" might point to a sub-directory (e.g. "dist/")
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			if resolved, err := r.resolveDir(candidate); err == nil {
+			if resolved, err := r.resolveDirWithConditions(candidate, conditions); err == nil {
 				return resolved, nil
 			}
 		}
@@ -233,21 +252,50 @@ func (r *Resolver) resolveDir(dir string) (string, error) {
 	return "", fmt.Errorf("module: cannot resolve directory %q", dir)
 }
 
-// readPackageMain reads the "main" field from package.json in dir.
+// readPackageMain reads the "main" / "browser" / "module" field from package.json in dir.
 func (r *Resolver) readPackageMain(dir string) (string, bool) {
+	return r.readPackageMainWithConditions(dir, requireConditions)
+}
+
+func (r *Resolver) readPackageMainWithConditions(dir string, conditions []string) (string, bool) {
 	pkgPath := filepath.Join(dir, "package.json")
 	data, err := os.ReadFile(pkgPath)
 	if err != nil {
 		return "", false
 	}
 	var pkg struct {
-		Main   string `json:"main"`
-		Module string `json:"module"`
-		Type   string `json:"type"`
+		Main    string          `json:"main"`
+		Module  string          `json:"module"`
+		Type    string          `json:"type"`
+		Browser json.RawMessage `json:"browser"`
 	}
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		return "", false
 	}
+
+	if isBrowserCondition(conditions) && len(pkg.Browser) > 0 {
+		var browserStr string
+		if json.Unmarshal(pkg.Browser, &browserStr) == nil && browserStr != "" {
+			return browserStr, true
+		}
+		var browserMap map[string]interface{}
+		if json.Unmarshal(pkg.Browser, &browserMap) == nil {
+			for _, key := range []string{".", "./index.js", "./index", pkg.Main} {
+				if key != "" {
+					if target, ok := browserMap[key].(string); ok && target != "" {
+						return target, true
+					}
+				}
+			}
+		}
+		if pkg.Module != "" {
+			return pkg.Module, true
+		}
+		if pkg.Main != "" {
+			return pkg.Main, true
+		}
+	}
+
 	// Prefer "main"; fall back to "module" (ESM entry point)
 	if pkg.Main != "" {
 		return pkg.Main, true
@@ -306,7 +354,7 @@ func (r *Resolver) resolveBare(specifier, parentPath string, conditions []string
 				target := filepath.Join(candidate, filepath.FromSlash(subPath))
 				return r.resolveFileOrDir(target)
 			}
-			return r.resolveDir(candidate)
+			return r.resolveDirWithConditions(candidate, conditions)
 		}
 
 		// Go up one directory
@@ -449,6 +497,15 @@ var (
 	requireConditions = []string{"require", "node", "default"}
 	importConditions  = []string{"import", "node", "default"}
 )
+
+// SetWebConditions 将 exports 条件解析切换为浏览器目标（aluka build
+// --target=web）：优先 browser 条件（如 react-dom 的 ./server 解析到
+// server.browser.js 而非依赖 Node 内置的 server.node.js）。
+// 进程级设置——web 构建进程只服务 web 目标，无交叉污染。
+func SetWebConditions() {
+	requireConditions = []string{"require", "browser", "default"}
+	importConditions = []string{"import", "browser", "default"}
+}
 
 func conditionalExportTarget(raw json.RawMessage, conditions []string) string {
 	var target string

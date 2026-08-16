@@ -121,7 +121,58 @@ func TestBuildCircularDeps(t *testing.T) {
 	}
 }
 
-// TestBuildBuiltinSkipped：内置模块（node:fs）不嵌入也不报错。
+// TestBuildBuiltinReferences：所有静态引用语境都记录 node:*，但不嵌入模块图。
+func TestBuildBuiltinReferences(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"main.ts": `import fs from 'node:fs'; export { join } from 'node:path'; const http = require('node:http'); import('node:crypto'); console.log(fs, http);`,
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Modules) != 1 {
+		t.Fatalf("modules = %d, want 1", len(res.Modules))
+	}
+	if len(res.Builtins) != 4 {
+		t.Fatalf("builtins = %d, want 4", len(res.Builtins))
+	}
+	want := map[string]bool{"node:fs": true, "node:path": true, "node:http": true, "node:crypto": true}
+	for _, dep := range res.Builtins {
+		if !want[dep.Spec] {
+			t.Errorf("unexpected builtin %q", dep.Spec)
+		}
+		if dep.Source != "main.ts" {
+			t.Errorf("builtin %q source = %q, want main.ts", dep.Spec, dep.Source)
+		}
+	}
+}
+
+func TestBuildDynamicDependency(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"main.ts": `export async function load() { return await import('./lazy.ts'); }`,
+		"lazy.ts": `export const value = 7;`,
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.DynamicDeps) != 1 {
+		t.Fatalf("dynamic deps = %d, want 1", len(res.DynamicDeps))
+	}
+	dep := res.DynamicDeps[0]
+	if dep.Source != "main.ts" || dep.Spec != "./lazy.ts" || dep.Target != "lazy.ts" {
+		t.Fatalf("dynamic dep = %+v", dep)
+	}
+}
+
 func TestBuildBuiltinSkipped(t *testing.T) {
 	dir := newTestEnv(t, map[string]string{
 		"main.ts": `import fs from 'node:fs'; console.log(typeof fs.readFileSync);`,

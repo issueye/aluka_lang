@@ -3,6 +3,7 @@ package module
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
@@ -659,5 +660,56 @@ func TestImportHoistingSideEffectOrder(t *testing.T) {
 	env.run(t, "main.mjs")
 	if got := env.globalGet("__log"); got != "|a|b|body" {
 		t.Errorf("import hoisting side-effect order = %q, want '|a|b|body'", got)
+	}
+}
+
+// TestResolverBrowserCondition 测试 package.json 的 browser 字段与 browser 条件导出解析
+func TestResolverBrowserCondition(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "node_modules", "isomorphic-lib")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgJSON := `{
+		"name": "isomorphic-lib",
+		"main": "./main.node.js",
+		"browser": "./main.browser.js",
+		"exports": {
+			".": {
+				"browser": "./main.browser.js",
+				"node": "./main.node.js",
+				"default": "./main.node.js"
+			}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "main.node.js"), []byte(`module.exports = "node";`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "main.browser.js"), []byte(`module.exports = "browser";`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := NewResolver()
+	// Node 环境下解析
+	resNode, err := resolver.ResolveWithConditions("isomorphic-lib", filepath.Join(dir, "app.js"), requireConditions)
+	if err != nil {
+		t.Fatalf("resolve node: %v", err)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(resNode), "main.node.js") {
+		t.Errorf("node resolve got %s, want main.node.js", resNode)
+	}
+
+	// 切换至 Web 条件
+	webConditions := []string{"require", "browser", "default"}
+	resWeb, err := resolver.ResolveWithConditions("isomorphic-lib", filepath.Join(dir, "app.js"), webConditions)
+	if err != nil {
+		t.Fatalf("resolve browser: %v", err)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(resWeb), "main.browser.js") {
+		t.Errorf("browser resolve got %s, want main.browser.js", resWeb)
 	}
 }
