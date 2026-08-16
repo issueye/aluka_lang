@@ -11,7 +11,9 @@
 > 回溯步数总预算护栏；对拍驱动修复懒量词捕获终点/字符类区间端点/`[^]`
 > 三类真实 bug）/ M4 ✅（`--vue-compiler=official` 双后端落地：demo official
 > 编译 SSR/动态 chunk 通过、错误映射带 .vue 文件名、webbuild 缓存约束保持）/
-> M5 待启动。
+> M5 ✅（Windows amd64 / i5-13420H 基线：subset CLI 中位 173ms；official CLI
+> 冷构建中位 1.73s，约 10x；同 VM official 热 Transform 10–15ms/SFC（subset
+> 7–9µs/SFC）；主 bundle 体积 +739B / +0.23%；README/static-build-plan/安全边界已同步）。
 
 ---
 
@@ -169,15 +171,16 @@ CGO_ENABLED=0 go test ./internal/engine/regex/... -count=1   # 对拍零差异 +
 
 ---
 
-## 7. Phase 5（T5）：性能与收官
+## 7. Phase 5（T5）：性能与收官 ✅
 
-| ID | 子任务 | 内容 | 规模 |
-|----|--------|------|------|
-| T5.1 | 基线数据 | 冷/热（`.aluka-cache` 复用 demo `node_modules` 字节码缓存）构建耗时 vs Node 基线，数据写入本计划附录 | 0.5d |
-| T5.2 | 度量 | regex 编译缓存命中率、回退引擎触发率（临时 instrumentation 或 `--monitor` 扩展）；据数据决定是否做针对性优化 | 0.5-1d |
-| T5.3 | 文档 | README（双后端说明 + "构建即执行依赖代码"安全声明）、`docs/static-build-plan.md` 状态表、CLI help | 0.5d |
+| ID | 子任务 | 完成结果 |
+|----|--------|----------|
+| T5.1 | 基线数据 | Windows amd64 / i5-13420H：subset CLI 5 次 = 224/161/153/173/189ms（中位 173ms）；official CLI 5 次 = 1689/1732/1962/1758/1551ms（中位 1732ms，约 10x）。同 VM/Loader official 热 Transform = 10–15ms/SFC；subset = 7–9µs/SFC。冷成本用独立 CLI 进程度量（最贴近实际构建）；Go benchmark 只保留可重复的两条热路径，避免同测试进程反复 NewVM 的全局状态/GC 污染数据。 |
+| T5.2 | 体积与成本归因 | demo 主 bundle：subset 328,454B，official 329,193B（+739B / +0.23%）。主要成本是每个 CLI 进程首次解析/执行 compiler-sfc 依赖链，不是每个 SFC 的热编译。official 后端保持 `SetNoCache(true)`，有意遵守 webbuild “不写 `.aluka-cache`”门禁；同一次 build 内由 Loader/module cache 复用。 |
+| T5.3 | 文档/边界 | README 双后端命令、性能数据与“构建即执行依赖代码”安全声明；static-build-plan 状态同步；`<style>`/custom block 在 graph 资产管线接入前明确拒绝（不静默丢内容）。 |
 
-**验收**：性能数据入档；文档与实际行为一致；`make test` 全绿。
+**验收**：`CGO_ENABLED=0 go test ./... -count=1`、vue-sfc 差分 gate、
+webbuild conformance（11/11）均通过；性能数据入档，文档与实际行为一致。
 
 ---
 

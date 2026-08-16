@@ -34,6 +34,32 @@
 - **CSS / HTML 入口**：`styles.css` 随构建拷贝，`<script src="./main.ts">`
   自动改写为产物路径
 
+## SFC 编译后端
+
+Aluka 提供两个后端，均输出从 `vue` 导入运行时 helper 的 ESM 模块：
+
+| 后端 | 启用方式 | 支持范围 | 特点 |
+|---|---|---|---|
+| `subset` | 默认，或 `--vue-compiler=subset` | 本文“模板语法子集（v1）” | 纯 Go，约微秒级/SFC；不执行依赖代码，超出子集明确报错 |
+| `official` | `--vue-compiler=official` | 官方 script/template 编译（含 `<script setup>`、指令、官方模板优化）；`<style>`/custom block 在资产管线接入前明确拒绝 | 在 Aluka 自研 VM 内执行 vendored compiler-sfc；无需 Node/外部工具链 |
+
+```bash
+# 官方 compiler-sfc 后端
+go run ./cmd/aluka build --target=web --vue-compiler=official \
+  --outdir demo/web-bundle-vue-demo/dist demo/web-bundle-vue-demo/index.html
+```
+
+> `official` 构建期会执行项目 `node_modules` 中的 compiler-sfc 及其依赖代码，
+> 权限与 `aluka run` 相同；只对可信依赖启用。失败直接报错，禁止静默回退
+> `subset`（两者产物语义不同）。
+
+本机基线（Windows amd64，i5-13420H，2026-08-16）：subset CLI 构建中位
+约 173ms；official CLI 冷构建中位约 1.73s（约 10x，主要是首次加载/
+解析 compiler 依赖链）；同一 VM 内 official 热 Transform 约 10–15ms/SFC，
+subset 约 7–9µs/SFC（`go test ./internal/bundler/vue -run '^$' -bench
+'Benchmark(SubsetTransform|OfficialTransformWarm)'`）。主 bundle
+328,454B → 329,193B，仅 +739B（+0.23%）。
+
 ## 模板语法子集（v1）
 
 | 支持 | 形式 |

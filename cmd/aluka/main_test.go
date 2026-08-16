@@ -940,7 +940,8 @@ console.log("official vue ssr ok");`
 	}
 }
 
-// TestWebBuildVueCompilerFlagValidation：--vue-compiler 拒绝未知值。
+// TestWebBuildVueCompilerFlagValidation：--vue-compiler 拒绝未知值，且只在
+// web target 下可用（compile 路径不能静默忽略）。
 func TestWebBuildVueCompilerFlagValidation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: requires building the aluka binary")
@@ -958,6 +959,16 @@ func TestWebBuildVueCompilerFlagValidation(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "--vue-compiler") {
 		t.Errorf("error output missing --vue-compiler message:\n%s", out)
+	}
+
+	cmd = exec.Command(bin, "build", "--compile", "--vue-compiler=official", "a.ts")
+	cmd.Dir = dir
+	out, err = cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("--compile --vue-compiler should fail, got success:\n%s", out)
+	}
+	if !strings.Contains(string(out), "requires --target=web") {
+		t.Errorf("target conflict output missing --target=web message:\n%s", out)
 	}
 }
 

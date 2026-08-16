@@ -256,6 +256,9 @@ func cmdBuild(args []string) {
 	if (opts.format != "" || opts.globalName != "") && opts.target != "web" {
 		fatalErr("aluka build: --format/--global-name require --target=web")
 	}
+	if opts.vueCompiler != "" && opts.target != "web" {
+		fatalErr("aluka build: --vue-compiler requires --target=web")
+	}
 	if opts.globalName != "" && !isValidJSIdentifier(opts.globalName) {
 		fatalErr("aluka build: --global-name must be a valid JavaScript identifier")
 	}

@@ -23,6 +23,14 @@ const officialDriver = `(function () {
     return;
   }
   var d = r.descriptor;
+  if (d.styles && d.styles.length) {
+    globalThis.__sfcResult = { error: "official backend: <style> blocks are not wired into the graph asset pipeline; use an entry CSS file" };
+    return;
+  }
+  if (d.customBlocks && d.customBlocks.length) {
+    globalThis.__sfcResult = { error: "official backend: custom SFC blocks are not supported" };
+    return;
+  }
   var id = globalThis.__sfcId;
   var script = "";
   var bindings;
@@ -45,18 +53,13 @@ const officialDriver = `(function () {
     }
     tpl = t.code;
   }
-  // Vite 同款挂接：script 的 export default 改写为 const __sfc__，
-  // 编译出的 render 挂到组件后再导出（否则选项式组件无 render，
-  // 运行时渲染为空占位节点）。
+  // Vite 同款挂接：用 compiler-sfc 官方 rewriteDefault 做 AST 感知的默认
+  // 导出改写（不能用 lastIndexOf 文本替换——注释/字符串里可能含同名文本）。
+  // 编译出的 render 挂到组件后再导出，否则选项式组件无 render，运行时
+  // 静默渲染为空占位节点。
   var code = "";
   if (tpl) {
-    var marker = "export default";
-    var idx = script.lastIndexOf(marker);
-    if (idx >= 0) {
-      code += script.slice(0, idx) + "const __sfc__ =" + script.slice(idx + marker.length);
-    } else {
-      code += (script ? script + "\n" : "") + "const __sfc__ = {};";
-    }
+    code += script ? ns.rewriteDefault(script, "__sfc__") : "const __sfc__ = {};";
     code += "\n" + tpl + "\n__sfc__.render = render;\nexport default __sfc__;";
   } else {
     code += script || "export default {};";
@@ -87,6 +90,13 @@ func (c *OfficialCompiler) Transform(src, name string) (string, error) {
 		return "", err
 	}
 	g := c.vm.Global()
+	// 每次编译的输入/输出都可能很大；所有返回路径（含异常）统一清理，
+	// 防 watch/多 SFC 构建在 globalThis 上累计保活源码与产物字符串。
+	defer func() {
+		for _, key := range []string{"__sfcSrc", "__sfcName", "__sfcId", "__sfcResult"} {
+			_ = g.Delete(key)
+		}
+	}()
 	id := sfcScopeID(name)
 	_ = g.Set("__sfcSrc", engine.Str(src))
 	_ = g.Set("__sfcName", engine.Str(name))
@@ -106,7 +116,6 @@ func (c *OfficialCompiler) Transform(src, name string) (string, error) {
 		return "", fmt.Errorf("vue: %s: %s", name, e.String())
 	}
 	code, _ := obj.Get("code")
-	_ = g.Delete("__sfcResult")
 	return code.String(), nil
 }
 
