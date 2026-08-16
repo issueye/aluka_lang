@@ -910,8 +910,8 @@ func TestWebBuildVueOfficialBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 官方代码生成标记：helper 别名导入 + Vite 式 render 挂接。
-	for _, marker := range []string{"createElementVNode:_createElementVNode", "__sfc__.render = render", "_openBlock"} {
+	// 官方代码生成标记：helper 别名导入 + 独立模板模块的 render 挂接。
+	for _, marker := range []string{"createElementVNode:_createElementVNode", "__sfc_render__", "_openBlock"} {
 		if !strings.Contains(string(bundle), marker) {
 			t.Errorf("official bundle missing marker %q", marker)
 		}
@@ -972,8 +972,8 @@ func TestWebBuildVueCompilerFlagValidation(t *testing.T) {
 	}
 }
 
-// TestWebBuildVueOfficialErrorMapping：official 后端的 SFC 错误映射为带
-// .vue 文件名的构建错误（不静默回退 subset）。
+// TestWebBuildVueOfficialErrorMapping：official 后端的 SFC 错误映射为结构化
+// filename:line:column 诊断，并验证相邻修复不会被误报。
 func TestWebBuildVueOfficialErrorMapping(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: requires building the aluka binary")
@@ -984,31 +984,67 @@ func TestWebBuildVueOfficialErrorMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 	demoDir := filepath.Join(repoRoot, "demo", "web-bundle-vue-demo")
-	// 错误 SFC 需位于 fixture 的 node_modules 解析范围内：在 demo 目录创建
-	// 临时文件（defer 清理）。
 	badSFC := filepath.Join(demoDir, "_bad_probe.vue")
-	if err := os.WriteFile(badSFC, []byte("<template><div>{{ a.b }}</template>\n<script>export default {};</script>\n"), 0o644); err != nil {
+	badSource := "<template>\n  <div>{{ total + }}</div>\n</template>\n<script>export default {};</script>\n"
+	if err := os.WriteFile(badSFC, []byte(badSource), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	defer os.Remove(badSFC)
 	cmd := exec.Command(bin, "build", "--target=web", "--vue-compiler=official", "--outfile", filepath.Join(t.TempDir(), "x.js"), "_bad_probe.vue")
-	cmd.Dir = repoRoot
+	cmd.Dir = demoDir
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("bad SFC should fail official build, got success:\n%s", out)
 	}
-	if !strings.Contains(string(out), "_bad_probe.vue") {
-		t.Errorf("error output missing .vue filename:\n%s", out)
+	if !strings.Contains(string(out), "_bad_probe.vue:2:11") {
+		t.Errorf("error output missing structured .vue location:\n%s", out)
 	}
-	// subset 后端对同一文件的错误同样带文件名（对照组）。
-	cmd = exec.Command(bin, "build", "--target=web", "--outfile", filepath.Join(t.TempDir(), "x.js"), "_bad_probe.vue")
-	cmd.Dir = repoRoot
-	out, err = cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("bad SFC should fail subset build, got success:\n%s", out)
+
+	validSource := "<template>\n  <div>{{ total + 1 }}</div>\n</template>\n<script>export default { data(){ return { total: 1 }; } };</script>\n"
+	if err := os.WriteFile(badSFC, []byte(validSource), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "_bad_probe.vue") {
-		t.Errorf("subset error output missing .vue filename:\n%s", out)
+	cmd = exec.Command(bin, "build", "--target=web", "--vue-compiler=official", "--outfile", filepath.Join(t.TempDir(), "x.js"), "_bad_probe.vue")
+	cmd.Dir = demoDir
+	if repairedOut, repairedErr := cmd.CombinedOutput(); repairedErr != nil {
+		t.Fatalf("repaired SFC should build, got %v:\n%s", repairedErr, repairedOut)
+	}
+}
+
+// TestWebBuildVueOfficialTypeScriptScopes 验证 official 的 TS script 通过 graph
+// 独立模块解析，并允许 script/template 生成同名 render 绑定。
+func TestWebBuildVueOfficialTypeScriptScopes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	demoDir := filepath.Join(repoRoot, "demo", "web-bundle-vue-demo")
+	sfcPath := filepath.Join(demoDir, "_ts_scope_probe.vue")
+	src := `<template><div>{{ render }}</div></template>
+<script lang="ts">
+const render: string = "scope-ok";
+export default { data(): { render: string } { return { render }; } };
+</script>`
+	if err := os.WriteFile(sfcPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(sfcPath)
+	outFile := filepath.Join(t.TempDir(), "scope.js")
+	cmd := exec.Command(bin, "build", "--target=web", "--vue-compiler=official", "--outfile", outFile, "_ts_scope_probe.vue")
+	cmd.Dir = demoDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("official TS scope build failed: %v\n%s", err, out)
+	}
+	bundle, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(bundle), "scope-ok") {
+		t.Fatalf("official TS scope bundle missing script content:\n%s", bundle)
 	}
 }
 

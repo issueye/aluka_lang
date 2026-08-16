@@ -69,7 +69,7 @@
 
 | 项 | 内容 |
 |----|------|
-| .vue 单文件组件 | `internal/bundler/vue` 双后端：默认 `subset` 是纯 Go 子集编译器，架构对齐 Vite / @vitejs/plugin-vue——**编译器只产出 import 运行时 helper 的代码**（`import { h as _h, toDisplayString as _toDisplayString, unref as _unref } from 'vue'`，`render(_ctx)` 调用 `_h(...)` 构造 vnode）；`--vue-compiler=official` 在 Aluka 自研 VM 内执行 vendored `@vue/compiler-sfc`，支持官方 script/template 编译（含 `<script setup>`/指令/模板 hoist/事件缓存），`<style>`/custom block 在资产管线接入前明确拒绝；零 Node/外部工具链，失败不静默回退。两后端产物均由 graph 正常解析 `vue` runtime，再走相同 emit/define/chunk 管线。**✅ 已完成** |
+| .vue 单文件组件 | `internal/bundler/vue` 双后端：默认 `subset` 是纯 Go 子集编译器，架构对齐 Vite / @vitejs/plugin-vue——**编译器只产出 import 运行时 helper 的代码**（`import { h as _h, toDisplayString as _toDisplayString, unref as _unref } from 'vue'`，`render(_ctx)` 调用 `_h(...)` 构造 vnode）；`--vue-compiler=official` 在 Aluka 自研 VM 内执行 vendored `@vue/compiler-sfc`，支持官方 script/template 编译（含 `<script setup>`/TypeScript/指令/模板 hoist/事件缓存）。official 把 facade、script、template 生成为同一构建作用域内的独立虚拟模块，避免顶层绑定冲突，TS script 由既有 TS 前端处理；`<script src>`/`<template src>`、`<style>`、custom block 在对应加载/资产管线接入前明确拒绝。compiler loader 与 browser resolver 均为构建实例私有，失败不静默回退；默认仍为 subset。两后端产物均由 graph 正常解析 `vue` runtime，再走相同 emit/define/chunk 管线。**✅ 已完成** |
 | demo | `demo/web-bundle-vue-demo/`：官方 `vue@3.5.13` 及完整传递依赖作为离线 fixture 随仓库分发，`package-lock.json` 固定依赖闭包；Node 端到端验证真实 `vue/server-renderer` 首屏 SSR、响应式状态与动态 chunk。**✅ 已完成** |
 
 ## 3. 架构与落点

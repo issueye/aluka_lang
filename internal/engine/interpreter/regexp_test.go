@@ -90,6 +90,11 @@ func TestRegexpLastIndex(t *testing.T) {
 		{`var re = /b/y; re.lastIndex = 1; re.test("abc")`, "true"},
 		// lastIndex 是数据属性，可读写。
 		{`var re = /a/g; re.lastIndex = 2; re.lastIndex`, "2"},
+		// 规范 RegExpBuiltinExec 不推进零宽命中；上层迭代协议负责推进。
+		{`var re = /(?:)/g; re.exec("a"); re.lastIndex`, "0"},
+		{`var re = /(?:)/y; re.lastIndex = 1; re.exec("a"); re.lastIndex`, "1"},
+		// 非 u 模式从代理对内部按 UTF-16 code unit 执行 sticky/global。
+		{`var re = /./y; re.lastIndex = 1; var m = re.exec("😀"); m.index + ":" + re.lastIndex + ":" + m[0].length`, "1:2:1"},
 	}
 	for _, c := range cases {
 		if got := vmEvalStr(t, c.code); got != c.want {
@@ -141,14 +146,36 @@ func TestRegexpConstructor(t *testing.T) {
 	}
 }
 
+func TestRegexpUTF16Indices(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{`/a/.exec("😀a").index`, "2"},
+		{`"😀a".search(/a/)`, "2"},
+		{`"😀a".replace(/a/, function(m, offset) { return offset; })`, "😀2"},
+		{`var re = /a/g; re.exec("😀a"); re.lastIndex`, "3"},
+		{`/(?<=😀)a/u.exec("😀a").index`, "2"},
+		{`var re = /a/gy; re.lastIndex = 2; re.exec("😀a")[0] + ":" + re.lastIndex`, "a:3"},
+		{`var re = /./g; var a = re.exec("😀"), b = re.exec("😀"); a.index + ":" + a[0].length + "," + b.index + ":" + b[0].length + "," + re.lastIndex`, "0:1,1:1,2"},
+		{`var re = /./gu; var m = re.exec("😀"); m.index + ":" + m[0] + ":" + re.lastIndex`, "0:😀:2"},
+		{`var re = /\uD83D/g; var m = re.exec("😀"); m.index + ":" + m[0].length + ":" + re.lastIndex`, "0:1:1"},
+	}
+	for _, tc := range cases {
+		if got := vmEvalStr(t, tc.code); got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.code, got, tc.want)
+		}
+	}
+}
+
 // === RegExp 非法输入(语法错误) ===
 
 func TestRegexpErrors(t *testing.T) {
 	bad := []string{
 		`new RegExp("(", "")`,
-		`/a/gg`,                 // 重复 flags
-		`new RegExp("a", "x")`,  // 非法 flags
-		`new RegExp("[a-z")`,    // 未闭合字符类
+		`/a/gg`,                // 重复 flags
+		`new RegExp("a", "x")`, // 非法 flags
+		`new RegExp("[a-z")`,   // 未闭合字符类
 	}
 	for _, code := range bad {
 		_, err := vmEvalStrErr(t, code)
@@ -198,6 +225,11 @@ func TestStringRegexpMethods(t *testing.T) {
 		{`"a1b2".matchAll(/(\w)(\d)/g)[0][1]`, "a"},
 		{`"a1b2".matchAll(/(\w)(\d)/g).length`, "2"},
 		{`"a-b_c".split(/[-_]/).join("|")`, "a|b|c"},
+		{`"😀".match(/./g).map(function(x) { return x.length; }).join(",")`, "1,1"},
+		{`"😀".match(/./gu)[0]`, "😀"},
+		{`"😀".matchAll(/(?=)/g).map(function(x) { return x.index; }).join(",")`, "0,1,2"},
+		{`"😀".matchAll(/(?=)/gu).map(function(x) { return x.index; }).join(",")`, "0,2"},
+		{`"😀".replace(/(?=)/g, "|").length`, "5"},
 	}
 	for _, c := range cases {
 		if got := vmEvalStr(t, c.code); got != c.want {
@@ -231,4 +263,3 @@ func TestRegexpEscapes(t *testing.T) {
 		}
 	}
 }
-

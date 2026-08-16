@@ -1499,6 +1499,11 @@ func TestVMDeleteProp(t *testing.T) {
 	if got != "2" {
 		t.Errorf("delete keys count = %q, want 2", got)
 	}
+	// Computed delete must use [[Delete]] and leave an array hole.
+	got = vmEvalStr(t, `var a = [1, 2]; var i = 0; var ok = delete a[i]; JSON.stringify([ok, a.length, 0 in a, Object.keys(a)])`)
+	if got != `[true,2,false,["1"]]` {
+		t.Errorf("delete computed array element = %q, want hole", got)
+	}
 }
 
 // === Iterator protocol & generators ======================================

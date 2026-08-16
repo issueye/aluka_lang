@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // 不支持的正则特性对应的错误。
@@ -186,12 +187,12 @@ func translateEscape(pattern string, i int, f Flags) (string, int, error) {
 			if end >= len(pattern) {
 				return "", 0, errors.New("invalid regular expression: unterminated \\u escape")
 			}
-			return goCodePoint(hexVal(pattern[i+3 : end])), end + 1, nil
+			return goCodePoint(patternCodeUnit(hexVal(pattern[i+3:end]), f)), end + 1, nil
 		}
 		if i+6 > len(pattern) {
 			return "", 0, errors.New("invalid regular expression: incomplete \\u escape")
 		}
-		return goCodePoint(hexVal(pattern[i+2 : i+6])), i + 6, nil
+		return goCodePoint(patternCodeUnit(hexVal(pattern[i+2:i+6]), f)), i + 6, nil
 	case esc == 'x':
 		if i+4 > len(pattern) {
 			return "", 0, errors.New("invalid regular expression: incomplete \\x escape")
@@ -215,7 +216,8 @@ func translateEscape(pattern string, i int, f Flags) (string, int, error) {
 		if f.Unicode || f.UnicodeSets {
 			return "", 0, fmt.Errorf("invalid regular expression: invalid escape \\%c", esc)
 		}
-		return string(esc), i + 2, nil
+		literal, size := utf8.DecodeRuneInString(pattern[i+1:])
+		return string(literal), i + 1 + size, nil
 	}
 }
 
@@ -251,6 +253,13 @@ func translateClass(pattern string, i int, f Flags) (string, int, error) {
 				hasAtom = true
 			}
 			b.WriteString(out)
+			if ni < len(pattern) && pattern[ni] == '-' && ni+1 < len(pattern) && pattern[ni+1] != ']' && isShorthandEscape(pattern[i+1]) {
+				if f.Unicode || f.UnicodeSets {
+					return "", 0, errors.New("invalid regular expression: invalid character class range")
+				}
+				b.WriteString(`\-`)
+				ni++
+			}
 			i = ni
 			firstContent = false
 			continue
@@ -301,8 +310,22 @@ func translateClass(pattern string, i int, f Flags) (string, int, error) {
 		hasAtom = true
 		firstContent = false
 		i++
+		if c == '-' && i < len(pattern) && pattern[i] == '\\' && i+1 < len(pattern) && isShorthandEscape(pattern[i+1]) {
+			if f.Unicode || f.UnicodeSets {
+				return "", 0, errors.New("invalid regular expression: invalid character class range")
+			}
+			// Annex B legacy：shorthand 不能作为范围端点，'-' 按字面量。
+			text := b.String()
+			b.Reset()
+			b.WriteString(strings.TrimSuffix(text, "-"))
+			b.WriteString(`\-`)
+		}
 	}
 	return "", 0, errors.New("invalid regular expression: unterminated character class")
+}
+
+func isShorthandEscape(esc byte) bool {
+	return strings.ContainsRune("dDsSwW", rune(esc))
 }
 
 // hasClosingBracket 判断 pattern[from:] 中是否存在下一个未转义的 ']'。
@@ -351,12 +374,12 @@ func translateClassEscape(pattern string, i int, f Flags) (string, int, error) {
 			if end >= len(pattern) {
 				return "", 0, errors.New("invalid regular expression: unterminated \\u escape")
 			}
-			return goCodePoint(hexVal(pattern[i+3 : end])), end + 1, nil
+			return goCodePoint(patternCodeUnit(hexVal(pattern[i+3:end]), f)), end + 1, nil
 		}
 		if i+6 > len(pattern) {
 			return "", 0, errors.New("invalid regular expression: incomplete \\u escape")
 		}
-		return goCodePoint(hexVal(pattern[i+2 : i+6])), i + 6, nil
+		return goCodePoint(patternCodeUnit(hexVal(pattern[i+2:i+6]), f)), i + 6, nil
 	case esc == 'x':
 		if i+4 > len(pattern) {
 			return "", 0, errors.New("invalid regular expression: incomplete \\x escape")
@@ -412,8 +435,11 @@ func translateClassEscape(pattern string, i int, f Flags) (string, int, error) {
 		}
 		return string(esc), i + 2, nil
 	default:
-		// 字符类内未知转义为 identity（JS 规范，u 模式同样允许部分）。
-		return string(esc), i + 2, nil
+		if f.Unicode || f.UnicodeSets {
+			return "", 0, fmt.Errorf("invalid regular expression: invalid escape \\%c", esc)
+		}
+		literal, size := utf8.DecodeRuneInString(pattern[i+1:])
+		return string(literal), i + 1 + size, nil
 	}
 }
 

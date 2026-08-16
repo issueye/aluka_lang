@@ -289,5 +289,6 @@ func (g *GeneratorValue) Get(key string) (engine.Value, error) { return g.obj.Ge
 func (g *GeneratorValue) Set(key string, val engine.Value) error {
 	return g.obj.Set(key, val)
 }
-func (g *GeneratorValue) Keys() []string       { return g.obj.Keys() }
-func (g *GeneratorValue) Delete(key string) bool { return g.obj.Delete(key) }
+func (g *GeneratorValue) Keys() []string              { return g.obj.Keys() }
+func (g *GeneratorValue) Delete(key string) bool      { return g.obj.Delete(key) }
+func (g *GeneratorValue) UnwrapObject() engine.Object { return g.obj }

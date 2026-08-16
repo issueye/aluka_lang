@@ -5,6 +5,28 @@ import "testing"
 // 本文件覆盖 Array.prototype 与 Array 静态方法的新增实现（ES5+/ES2019/ES2022/ES2023）。
 // 风格对齐 vm_test.go：使用 vmEvalStr / vmEvalStrErr 辅助函数 + 表格驱动。
 
+func TestVMFrozenArrayMutatorsThrow(t *testing.T) {
+	cases := []struct{ method, call string }{
+		{"push", `a.push(4)`},
+		{"pop", `a.pop()`},
+		{"shift", `a.shift()`},
+		{"unshift", `a.unshift(0)`},
+		{"splice", `a.splice(1,1)`},
+		{"sort", `a.sort()`},
+		{"reverse", `a.reverse()`},
+		{"fill", `a.fill(0)`},
+		{"copyWithin", `a.copyWithin(0,1)`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			code := `var a=[3,2,1]; Object.freeze(a); var threw=false; try { ` + tc.call + `; } catch(e) { threw=true; } JSON.stringify([threw,a.join(",")])`
+			if got := vmEvalStr(t, code); got != `[true,"3,2,1"]` {
+				t.Fatalf("got %q", got)
+			}
+		})
+	}
+}
+
 // === ES5 基础方法 ========================================================
 
 func TestVMArraySplice(t *testing.T) {
@@ -169,8 +191,8 @@ func TestVMArrayFlat(t *testing.T) {
 	}{
 		{`JSON.stringify([1,[2,3]].flat())`, "[1,2,3]"},
 		{`JSON.stringify([1,[2,[3,[4]]]].flat())`, "[1,2,[3,[4]]]"}, // 默认深度 1
-		{`JSON.stringify([1,[2,[3,[4]]]].flat(2))`, "[1,2,3,[4]]"},   // 深度 2
-		{`JSON.stringify([1,[2,[3,[4]]]].flat(3))`, "[1,2,3,4]"},     // 深度 3
+		{`JSON.stringify([1,[2,[3,[4]]]].flat(2))`, "[1,2,3,[4]]"},  // 深度 2
+		{`JSON.stringify([1,[2,[3,[4]]]].flat(3))`, "[1,2,3,4]"},    // 深度 3
 		{`JSON.stringify([1,[2,[3,[4]]]].flat(Infinity))`, "[1,2,3,4]"},
 		{`JSON.stringify([1,[2,3],[4]].flat())`, "[1,2,3,4]"},
 		// flatMap

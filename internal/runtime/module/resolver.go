@@ -24,6 +24,11 @@ type Resolver struct {
 	// IndexNames lists the index file names tried for directory resolution.
 	IndexNames []string
 
+	// requireConditions/importConditions 是当前解析器实例的 exports 条件。
+	// 每个 Resolver 独立持有，避免 web 构建污染同进程的 Node loader。
+	requireConditions []string
+	importConditions  []string
+
 	// tsconfigCache 缓存已解析的 tsconfig.json（路径别名支持，1C.12/1C.13）。
 	tsconfigCache *tsconfigCache
 }
@@ -32,9 +37,11 @@ type Resolver struct {
 // 扩展名补全顺序遵循需求文档 3.3.2（含 TS 扩展名）。
 func NewResolver() *Resolver {
 	return &Resolver{
-		Extensions:    []string{".tsx", ".jsx", ".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"},
-		IndexNames:    []string{"index.tsx", "index.jsx", "index.ts", "index.mts", "index.cts", "index.js", "index.mjs", "index.cjs", "index.json"},
-		tsconfigCache: newTsconfigCache(),
+		Extensions:        []string{".tsx", ".jsx", ".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"},
+		IndexNames:        []string{"index.tsx", "index.jsx", "index.ts", "index.mts", "index.cts", "index.js", "index.mjs", "index.cjs", "index.json"},
+		requireConditions: append([]string(nil), nodeRequireConditions...),
+		importConditions:  append([]string(nil), nodeImportConditions...),
+		tsconfigCache:     newTsconfigCache(),
 	}
 }
 
@@ -45,14 +52,14 @@ func NewResolver() *Resolver {
 // 以 require 语境解析（CJS require / require.resolve）——exports 条件集合
 // 不含 "import"，与 Node 的 require() 语义一致。
 func (r *Resolver) Resolve(specifier, parentPath string) (string, error) {
-	return r.resolve(specifier, parentPath, requireConditions)
+	return r.resolve(specifier, parentPath, r.requireConditions)
 }
 
 // ResolveImport 以 import 语境解析（ESM 静态导入 / 动态 import() /
 // import.meta.resolve）——exports 条件集合含 "import" 不含 "require"，
 // 与 Node 的 import 语义一致。
 func (r *Resolver) ResolveImport(specifier, parentPath string) (string, error) {
-	return r.resolve(specifier, parentPath, importConditions)
+	return r.resolve(specifier, parentPath, r.importConditions)
 }
 
 // ResolveWithConditions 以指定的条件集合解析模块路径。
@@ -63,20 +70,20 @@ func (r *Resolver) ResolveWithConditions(specifier, parentPath string, condition
 func (r *Resolver) resolve(specifier, parentPath string, conditions []string) (string, error) {
 	// Absolute path (e.g. /foo/bar.js or C:\foo\bar.js)
 	if filepath.IsAbs(specifier) {
-		return r.resolveFileOrDir(specifier)
+		return r.resolveFileOrDirWithConditions(specifier, conditions)
 	}
 
 	// Relative path: ./ or ../
 	if strings.HasPrefix(specifier, "./") || strings.HasPrefix(specifier, "../") {
 		base := filepath.Dir(parentPath)
 		full := filepath.Join(base, filepath.FromSlash(specifier))
-		return r.resolveFileOrDir(full)
+		return r.resolveFileOrDirWithConditions(full, conditions)
 	}
 
 	// Bare specifier: 先尝试 tsconfig paths 别名（1C.13），再回退 node_modules。
 	if candidates := r.resolvePaths(specifier, filepath.Dir(parentPath)); len(candidates) > 0 {
 		for _, cand := range candidates {
-			if resolved, err := r.resolveFileOrDir(cand); err == nil {
+			if resolved, err := r.resolveFileOrDirWithConditions(cand, conditions); err == nil {
 				return resolved, nil
 			}
 		}
@@ -117,7 +124,7 @@ func (r *Resolver) resolvePackageImports(specifier, parentPath string, condition
 						target = strings.ReplaceAll(target, "*", star)
 					}
 					full := filepath.Join(dir, filepath.FromSlash(target))
-					if resolved, err := r.resolveFileOrDir(full); err == nil {
+					if resolved, err := r.resolveFileOrDirWithConditions(full, conditions); err == nil {
 						return resolved, true
 					}
 				}
@@ -161,6 +168,10 @@ func matchPackageImport(imports map[string]json.RawMessage, specifier string) (j
 
 // resolveFileOrDir tries the path as a file, then as a directory.
 func (r *Resolver) resolveFileOrDir(path string) (string, error) {
+	return r.resolveFileOrDirWithConditions(path, r.requireConditions)
+}
+
+func (r *Resolver) resolveFileOrDirWithConditions(path string, conditions []string) (string, error) {
 	// Try as a file (exact path or with extensions)
 	if resolved, ok := r.tryFile(path); ok {
 		return resolved, nil
@@ -168,7 +179,7 @@ func (r *Resolver) resolveFileOrDir(path string) (string, error) {
 
 	// Try as a directory
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		return r.resolveDir(path)
+		return r.resolveDirWithConditions(path, conditions)
 	}
 
 	return "", fmt.Errorf("module: cannot resolve %q", path)
@@ -223,7 +234,7 @@ func isBrowserCondition(conditions []string) bool {
 
 // resolveDir resolves a directory by reading package.json, then trying index files.
 func (r *Resolver) resolveDir(dir string) (string, error) {
-	return r.resolveDirWithConditions(dir, requireConditions)
+	return r.resolveDirWithConditions(dir, r.requireConditions)
 }
 
 func (r *Resolver) resolveDirWithConditions(dir string, conditions []string) (string, error) {
@@ -254,7 +265,7 @@ func (r *Resolver) resolveDirWithConditions(dir string, conditions []string) (st
 
 // readPackageMain reads the "main" / "browser" / "module" field from package.json in dir.
 func (r *Resolver) readPackageMain(dir string) (string, bool) {
-	return r.readPackageMainWithConditions(dir, requireConditions)
+	return r.readPackageMainWithConditions(dir, r.requireConditions)
 }
 
 func (r *Resolver) readPackageMainWithConditions(dir string, conditions []string) (string, bool) {
@@ -352,7 +363,7 @@ func (r *Resolver) resolveBare(specifier, parentPath string, conditions []string
 			}
 			if subPath != "" {
 				target := filepath.Join(candidate, filepath.FromSlash(subPath))
-				return r.resolveFileOrDir(target)
+				return r.resolveFileOrDirWithConditions(target, conditions)
 			}
 			return r.resolveDirWithConditions(candidate, conditions)
 		}
@@ -420,7 +431,7 @@ func (r *Resolver) resolvePackageExports(pkgDir, subPath string, conditions []st
 		return "", true, fmt.Errorf("subpath %q has no supported target", requestKey)
 	}
 	full := filepath.Join(pkgDir, filepath.FromSlash(strings.TrimPrefix(target, "./")))
-	resolved, resolveErr := r.resolveFileOrDir(full)
+	resolved, resolveErr := r.resolveFileOrDirWithConditions(full, conditions)
 	if resolveErr != nil {
 		return "", true, resolveErr
 	}
@@ -483,28 +494,20 @@ func matchPackageExport(exports json.RawMessage, requestKey string, conditions [
 	return replaced, true
 }
 
-// requireConditions / importConditions 是 exports 条件解析的候选条件集合，
-// 按加载语境区分（Node 语义：条件集合由解析语境决定）。
-//
-//   - require 语境（CJS require）：["require", "node", "default"]——不含
-//     "import"。若把 "import" 列为候选，require 一个带 exports 条件的包
-//     （如 is-promise 的 {"import": "./index.mjs", "require": "./index.js"}）
-//     会错误匹配 import 条件加载 ESM 入口，返回 {default: fn} 命名空间对象，
-//     导致 `require(...) is not a function`。
-//   - import 语境（ESM 静态导入/动态 import/import.meta.resolve）：
-//     ["import", "node", "default"]。
+// nodeRequireConditions/nodeImportConditions 是新 Resolver 的 Node 默认值。
+// Resolver 会复制这些切片，调用方不能通过一个实例影响另一个实例。
 var (
-	requireConditions = []string{"require", "node", "default"}
-	importConditions  = []string{"import", "node", "default"}
+	nodeRequireConditions = []string{"require", "node", "default"}
+	nodeImportConditions  = []string{"import", "node", "default"}
+	webRequireConditions  = []string{"require", "browser", "default"}
+	webImportConditions   = []string{"import", "browser", "default"}
 )
 
-// SetWebConditions 将 exports 条件解析切换为浏览器目标（aluka build
-// --target=web）：优先 browser 条件（如 react-dom 的 ./server 解析到
-// server.browser.js 而非依赖 Node 内置的 server.node.js）。
-// 进程级设置——web 构建进程只服务 web 目标，无交叉污染。
-func SetWebConditions() {
-	requireConditions = []string{"require", "browser", "default"}
-	importConditions = []string{"import", "browser", "default"}
+// SetWebConditions 将当前 Resolver 切换为浏览器目标。设置只作用于该实例，
+// 同进程中的 Node loader 和其他构建不会被污染。
+func (r *Resolver) SetWebConditions() {
+	r.requireConditions = append(r.requireConditions[:0], webRequireConditions...)
+	r.importConditions = append(r.importConditions[:0], webImportConditions...)
 }
 
 func conditionalExportTarget(raw json.RawMessage, conditions []string) string {

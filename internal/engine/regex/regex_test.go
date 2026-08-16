@@ -1,6 +1,7 @@
 package regex
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -138,14 +139,18 @@ func TestCompileMatch(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Compile(%q, %q): %v", c.pattern, c.flags, err)
 			}
-			m := compiled.MatchIndex(c.input)
+			m, err := compiled.Exec(c.input)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if c.match != (m != nil) {
 				t.Errorf("MatchIndex(%q) match=%v, want %v", c.input, m != nil, c.match)
 				return
 			}
-			if c.match && !strings.HasPrefix(c.input[m[0]:m[1]], c.full) {
-				t.Errorf("MatchIndex(%q) full=%q, want %q", c.input, c.input[m[0]:m[1]], c.full)
+			if c.match && UTF16Slice(c.input, m[0], m[1]) != c.full {
+				t.Errorf("Exec(%q) full=%q, want %q", c.input, UTF16Slice(c.input, m[0], m[1]), c.full)
 			}
+
 		})
 	}
 }
@@ -219,7 +224,10 @@ func TestBacktrackLookahead(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Compile(%q, %q): %v", c.pattern, c.flags, err)
 			}
-			m := compiled.MatchIndex(c.input)
+			m, err := compiled.Exec(c.input)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if c.match != (m != nil) {
 				t.Errorf("MatchIndex(%q) match=%v, want %v", c.input, m != nil, c.match)
 			}
@@ -247,7 +255,10 @@ func TestBtCaptures(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Compile(%q): %v", c.pattern, err)
 		}
-		m := compiled.MatchIndex(c.input)
+		m, err := compiled.Exec(c.input)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if m == nil {
 			t.Errorf("MatchIndex(%q) = nil, want %v", c.input, c.want)
 			continue
@@ -305,11 +316,235 @@ func TestUnicodeSetsV(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Compile(%q, v): %v", c.pattern, err)
 			}
-			m := compiled.MatchIndex(c.input)
+			m, err := compiled.Exec(c.input)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if (m != nil) != c.want {
 				t.Errorf("MatchIndex(%q) match=%v, want %v", c.input, m != nil, c.want)
 			}
 		})
+	}
+}
+
+func TestExecReportsBacktrackBudgetExhaustion(t *testing.T) {
+	compiled, err := Compile(`(?=(a+)+b)`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := compiled.Exec(strings.Repeat("a", 4096))
+	if m != nil {
+		t.Fatalf("Exec returned match %v after budget exhaustion", m)
+	}
+	if !errors.Is(err, ErrBacktrackLimit) {
+		t.Fatalf("Exec error = %v, want ErrBacktrackLimit", err)
+	}
+}
+
+func TestUnicodeIndicesAndFallbackAtoms(t *testing.T) {
+	cases := []struct {
+		name, pattern, flags, input string
+		want                        []int
+	}{
+		{"re2-index", `a`, "", "😀a", []int{2, 3}},
+		{"fallback-literal", `(?=é)é`, "", "xé", []int{1, 2}},
+		{"fallback-class", `(?=[é])[é]`, "", "xé", []int{1, 2}},
+		{"fallback-dot", `(?=.).`, "", "x😀", []int{0, 1}},
+		{"fallback-lookbehind", `(?<=😀)a`, "u", "😀a", []int{2, 3}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			compiled, err := Compile(tc.pattern, tc.flags)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := compiled.Exec(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !equalIdx(got, tc.want) {
+				t.Fatalf("Exec = %v, want UTF-16 indices %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFallbackDotAllAndLineTerminators(t *testing.T) {
+	for _, sep := range []string{"\n", "\r", "\u2028", "\u2029"} {
+		plain, err := Compile(`(?=a.b)a.b`, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := plain.Exec("a" + sep + "b"); err != nil || got != nil {
+			t.Errorf("plain dot matched %q: got=%v err=%v", sep, got, err)
+		}
+		dotAll, err := Compile(`(?=a.b)a.b`, "s")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := dotAll.Exec("a" + sep + "b"); err != nil || got == nil {
+			t.Errorf("dotAll failed for %q: got=%v err=%v", sep, got, err)
+		}
+	}
+}
+
+func TestFallbackNestedLazyCaptures(t *testing.T) {
+	compiled, err := Compile(`(?=((a(.*?))$))`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := compiled.Exec("abcd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{0, 0, 0, 4, 0, 4, 1, 4}
+	if !equalIdx(got, want) {
+		t.Fatalf("nested lazy captures = %v, want %v", got, want)
+	}
+}
+
+func TestFallbackShorthandClassRanges(t *testing.T) {
+	for _, class := range []string{`[\d-a]`, `[a-\d]`} {
+		for _, pattern := range []string{class, `(?=` + class + `)` + class} {
+			compiled, err := Compile(pattern, "")
+			if err != nil {
+				t.Fatalf("legacy Compile(%q): %v", pattern, err)
+			}
+			for _, input := range []string{"a", "5", "-"} {
+				if got, err := compiled.Exec(input); err != nil || got == nil {
+					t.Errorf("legacy %q on %q: got=%v err=%v", pattern, input, got, err)
+				}
+			}
+			if _, err := Compile(pattern, "u"); err == nil {
+				t.Errorf("Unicode Compile(%q) succeeded, want invalid class range", pattern)
+			}
+		}
+	}
+}
+
+func TestNonUnicodeAstralCodeUnits(t *testing.T) {
+	tests := []struct {
+		name, pattern, flags string
+		all                  bool
+		want                 [][]int
+	}{
+		{"dot", `.`, "", false, [][]int{{0, 1}}},
+		{"dot-global", `.`, "g", true, [][]int{{0, 1}, {1, 2}}},
+		{"dot-unicode", `.`, "u", false, [][]int{{0, 2}}},
+		{"astral-literal", `😀`, "", false, [][]int{{0, 2}}},
+		{"high-surrogate", `\uD83D`, "", false, [][]int{{0, 1}}},
+		{"low-surrogate", `\uDE00`, "", false, [][]int{{1, 2}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			compiled, err := Compile(tc.pattern, tc.flags)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got [][]int
+			if tc.all {
+				got, err = compiled.ExecAll("😀")
+			} else {
+				m, execErr := compiled.Exec("😀")
+				err = execErr
+				if m != nil {
+					got = [][]int{m}
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("matches = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if !equalIdx(got[i], tc.want[i]) {
+					t.Fatalf("matches = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+
+	sticky, err := Compile(`.`, "y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := sticky.ExecAt("😀", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalIdx(got, []int{1, 2}) {
+		t.Fatalf("ExecAt inside surrogate pair = %v, want [1 2]", got)
+	}
+}
+
+func TestExecAllAdvancesZeroWidth(t *testing.T) {
+	for _, tc := range []struct {
+		flags string
+		want  [][]int
+	}{
+		{"g", [][]int{{0, 0}, {1, 1}, {2, 2}}},
+		{"gu", [][]int{{0, 0}, {2, 2}}},
+	} {
+		compiled, err := Compile(`(?=)`, tc.flags)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := compiled.ExecAll("😀")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(tc.want) {
+			t.Fatalf("ExecAll flags=%q = %v, want %v", tc.flags, got, tc.want)
+		}
+		for i := range got {
+			if !equalIdx(got[i], tc.want[i]) {
+				t.Fatalf("ExecAll flags=%q = %v, want %v", tc.flags, got, tc.want)
+			}
+		}
+	}
+}
+
+func TestUTF8IdentityEscapes(t *testing.T) {
+	for _, tc := range []struct {
+		name, pattern string
+	}{
+		{"re2-literal", `\é`},
+		{"re2-class", `[\é]`},
+		{"fallback-literal", `(?=\é)\é`},
+		{"fallback-class", `(?=[\é])[\é]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			compiled, err := Compile(tc.pattern, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := compiled.Exec("xé")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !equalIdx(got, []int{1, 2}) {
+				t.Fatalf("Exec = %v, want [1 2]", got)
+			}
+			if _, err := Compile(tc.pattern, "u"); err == nil {
+				t.Fatal("Unicode identity escape compiled, want SyntaxError")
+			}
+		})
+	}
+}
+
+func TestFallbackClearsRepeatedCaptures(t *testing.T) {
+	compiled, err := Compile(`(?=z)(z)((a+)?(b+)?(c))*`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := compiled.Exec("zaacbbbcac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{0, 10, 0, 1, 8, 10, 8, 9, -1, -1, 9, 10}
+	if !equalIdx(got, want) {
+		t.Fatalf("repeated captures = %v, want %v", got, want)
 	}
 }
 
@@ -336,7 +571,10 @@ func TestCompileCache(t *testing.T) {
 		t.Error("different flags must not share the cache entry")
 	}
 	// 缓存的 Compiled 可正常匹配。
-	m := a.MatchIndex("prefix abc123 suffix")
+	m, err := a.Exec("prefix abc123 suffix")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if m == nil {
 		t.Fatal("cached compiled regex should match")
 	}

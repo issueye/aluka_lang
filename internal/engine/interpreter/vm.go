@@ -1315,7 +1315,13 @@ func (v *VM) run() (engine.Value, error) {
 					break
 				}
 				result := true
-				if o, ok := obj.AsObject(); ok {
+				if p, ok := obj.(*ProxyValue); ok {
+					deleted, err := p.proxyDelete(name)
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					result = deleted
+				} else if o, ok := obj.AsObject(); ok {
 					result = o.Delete(name)
 				}
 				v.push(engine.Boolean(result))
@@ -1323,7 +1329,13 @@ func (v *VM) run() (engine.Value, error) {
 				key := propertyKeyOf(v.pop())
 				obj := v.pop()
 				result := true
-				if o, ok := obj.AsObject(); ok {
+				if p, ok := obj.(*ProxyValue); ok {
+					deleted, err := p.proxyDelete(key)
+					if err != nil {
+						return v.handleThrow(err)
+					}
+					result = deleted
+				} else if o, ok := obj.AsObject(); ok {
 					result = o.Delete(key)
 				}
 				v.push(engine.Boolean(result))
@@ -2412,15 +2424,21 @@ func (v *VM) tryArrayIndexGet(obj, key engine.Value) (engine.Value, bool) {
 		return engine.Undefined(), false
 	}
 	f, _ := key.Float()
-	if f < 0 || f != math.Trunc(f) || f > 9007199254740991 { // 2^53-1
+	if f < 0 || f != math.Trunc(f) || f > float64(uint64(1)<<32-2) {
 		return engine.Undefined(), false
 	}
 	n := int(f)
 	elems := arr.Elems()
 	if n < len(elems) {
-		return elems[n], true
+		if value, exists := engine.GetOwnSlot(arr, strconv.Itoa(n)); exists {
+			if _, accessor := value.(*engine.AccessorValue); accessor {
+				return engine.Undefined(), false
+			}
+			return value, true
+		}
+		return engine.Undefined(), false
 	}
-	return engine.Undefined(), true
+	return engine.Undefined(), false
 }
 
 // tryArrayIndexSet 处理数组的数值下标写快路径（M1-2 写侧）：obj 为
@@ -2439,8 +2457,16 @@ func (v *VM) tryArrayIndexSet(obj, key, val engine.Value) bool {
 	if !ok {
 		return false
 	}
+	keyString := propertyKeyOf(key)
+	if desc, exists := engine.OwnPropertyDescriptor(arr, keyString); exists {
+		if desc.HasGet || !desc.Writable {
+			return false
+		}
+	} else if !engine.IsExtensible(arr) {
+		return false
+	}
 	f, _ := key.Float()
-	if f < 0 || f != math.Trunc(f) || f > 9007199254740991 { // 2^53-1
+	if f < 0 || f != math.Trunc(f) || f > float64(uint64(1)<<32-2) {
 		return false
 	}
 	arr.SetIndex(int(f), val)
@@ -2499,12 +2525,19 @@ func (v *VM) getPropertyWithReceiver(obj engine.Value, key string, receiver engi
 		if key == "length" {
 			return engine.IntValue(len(arr.Elems())), nil
 		}
-		// 仅非负规范索引走元素路径；负索引（如 jsdiff 的 bestPath[-1]）
-		// 是普通自有属性，须落到下方 own 属性查找。
-		if n, err := strconv.Atoi(key); err == nil && n >= 0 {
-			elems := arr.Elems()
-			if n < len(elems) {
-				return elems[n], nil
+		if own, exists := engine.GetOwnSlot(arr, key); exists {
+			if acc, ok := own.(*engine.AccessorValue); ok {
+				if !orUndefinedValue(acc.Getter).IsUndefined() {
+					return v.invoke(acc.Getter, receiver, nil, false)
+				}
+				return engine.Undefined(), nil
+			}
+			return own, nil
+		}
+		// hole 或越界索引须继续查原型链。
+		if _, err := strconv.ParseUint(key, 10, 32); err == nil {
+			if proto := engine.GetProto(arr); proto != nil {
+				return v.getPropertyWithReceiver(proto, key, receiver)
 			}
 			return engine.Undefined(), nil
 		}
@@ -2580,30 +2613,12 @@ func (v *VM) getPropertyWithReceiver(obj engine.Value, key string, receiver engi
 	return engine.Undefined(), nil
 }
 
-// backingObj returns the underlying engine.Object for custom value types
-// (PromiseValue, GeneratorValue, MapValue, SetValue, WeakMapValue, WeakSetValue)
-// whose proto chain lives on a backing obj. For other values, returns val as-is.
+// backingObj returns the underlying property storage for delegated wrappers.
 func (v *VM) backingObj(val engine.Value) engine.Value {
-	if p, ok := val.(*PromiseValue); ok {
-		return p.obj
-	}
-	if g, ok := val.(*GeneratorValue); ok {
-		return g.obj
-	}
-	if m, ok := val.(*MapValue); ok {
-		return m.obj
-	}
-	if s, ok := val.(*SetValue); ok {
-		return s.obj
-	}
-	if w, ok := val.(*WeakMapValue); ok {
-		return w.obj
-	}
-	if w, ok := val.(*WeakSetValue); ok {
-		return w.obj
-	}
-	if r, ok := val.(*RegexpValue); ok {
-		return r.obj
+	if wrapper, ok := val.(engine.ObjectUnwrapper); ok {
+		if inner := wrapper.UnwrapObject(); inner != nil {
+			return inner
+		}
 	}
 	return val
 }
@@ -2747,32 +2762,28 @@ func (v *VM) getProto(val engine.Value) engine.Object {
 }
 
 func (v *VM) inOp(l, r engine.Value) bool {
+	has, _ := v.hasProperty(l, r)
+	return has
+}
+
+func (v *VM) hasProperty(l, r engine.Value) (bool, error) {
 	// Proxy interception: dispatch to the has trap if defined.
 	if p, ok := r.(*ProxyValue); ok {
-		has, err := p.proxyHas(propertyKeyOf(l))
-		if err != nil {
-			return false
-		}
-		return has
+		return p.proxyHas(propertyKeyOf(l))
 	}
 	o, ok := r.AsObject()
 	if !ok {
-		return false
+		return false, nil
 	}
 	key := propertyKeyOf(l)
-	// Walk the prototype chain checking key existence. We cannot rely on
-	// Get() returning an error for missing keys (it returns Undefined, nil),
-	// so we check Keys() membership at each level.
 	cur := o
 	for cur != nil {
-		for _, k := range cur.Keys() {
-			if k == key {
-				return true
-			}
+		if engine.HasOwnProperty(cur, key) {
+			return true, nil
 		}
 		cur = v.getProto(cur)
 	}
-	return false
+	return false, nil
 }
 
 // === Try / catch =========================================================

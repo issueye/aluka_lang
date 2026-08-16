@@ -3,8 +3,10 @@ package graph
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/aluka-lang/aluka/internal/bundler/vue"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
@@ -25,7 +27,60 @@ func newTestEnv(t *testing.T, files map[string]string) string {
 	return dir
 }
 
-// TestBuildMultiFile：ESM 导入 + CJS require + node_modules 包的多模块图。
+type isolatedSFCCompiler struct{}
+
+func (isolatedSFCCompiler) Compile(src, name string) (*vue.CompileResult, error) {
+	return &vue.CompileResult{
+		Facade: `import C from "./Component.vue.__aluka_script.ts"; export * from "./Component.vue.__aluka_script.ts"; import { render } from "./Component.vue.__aluka_template.js"; C.render = render; export default C;`,
+		Modules: []vue.GeneratedModule{
+			{Name: "Component.vue.__aluka_script.ts", Source: `import helper from "./helper.ts"; export const answer: number = helper; export default { answer };`},
+			{Name: "Component.vue.__aluka_template.js", Source: `export function render() { return "template"; }`},
+		},
+	}, nil
+}
+
+func TestBuildVueGeneratedModulesAreIsolated(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"main.ts":       `import Component, { answer } from "./Component.vue"; export { Component, answer };`,
+		"Component.vue": `<template/>`,
+		"helper.ts":     `export default 1;`,
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.ts"), WithVueCompiler(isolatedSFCCompiler{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"Component.vue", "Component.vue.__aluka_script.ts", "Component.vue.__aluka_template.js", "helper.ts"} {
+		if _, ok := res.SourceUnits[key]; !ok {
+			t.Fatalf("source unit %q missing; got %v", key, keysOf(res.SourceUnits))
+		}
+	}
+	if got := res.SourceUnits["Component.vue.__aluka_script.ts"].SourceKind; got != module.SourceTypeScript {
+		t.Fatalf("generated script source kind = %v, want TypeScript", got)
+	}
+	if strings.Contains(string(res.SourceUnits["Component.vue"].Source), "function render") {
+		t.Fatal("facade contains template implementation; scopes were merged")
+	}
+	if got := res.Resolutions["Component.vue"]["./Component.vue.__aluka_script.ts"]; got != "Component.vue.__aluka_script.ts" {
+		t.Fatalf("facade script resolution = %q", got)
+	}
+	if !strings.Contains(string(res.SourceUnits["Component.vue"].Source), "export * from") {
+		t.Fatalf("facade lost named export forwarding: %s", res.SourceUnits["Component.vue"].Source)
+	}
+	if !strings.Contains(string(res.SourceUnits["Component.vue.__aluka_script.ts"].Source), "export const answer") {
+		t.Fatalf("generated script lost named export: %s", res.SourceUnits["Component.vue.__aluka_script.ts"].Source)
+	}
+	if got := res.Resolutions["Component.vue.__aluka_template.js"]; got != nil {
+		t.Fatalf("template should not have unexpected resolutions: %+v", got)
+	}
+	if got := res.Resolutions["Component.vue.__aluka_script.ts"]["./helper.ts"]; got != "helper.ts" {
+		t.Fatalf("script relative resolution = %q, want helper.ts", got)
+	}
+}
+
 // 模块标识为相对入口的虚拟路径（M3，B2.3.1）。
 func TestBuildMultiFile(t *testing.T) {
 	dir := newTestEnv(t, map[string]string{

@@ -319,7 +319,8 @@ func (g *AsyncGeneratorValue) Get(key string) (engine.Value, error) {
 func (g *AsyncGeneratorValue) Set(key string, val engine.Value) error {
 	return g.obj.Set(key, val)
 }
-func (g *AsyncGeneratorValue) Keys() []string         { return g.obj.Keys() }
-func (g *AsyncGeneratorValue) Delete(key string) bool { return g.obj.Delete(key) }
+func (g *AsyncGeneratorValue) Keys() []string              { return g.obj.Keys() }
+func (g *AsyncGeneratorValue) Delete(key string) bool      { return g.obj.Delete(key) }
+func (g *AsyncGeneratorValue) UnwrapObject() engine.Object { return g.obj }
 
 var _ engine.Object = (*AsyncGeneratorValue)(nil)

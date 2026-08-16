@@ -6,11 +6,8 @@
 > 约束：全程遵守 AGENTS.md（纯 Go / CGO_ENABLED=0 / jitdiff 三 tier 零失配 / 表驱动测试）。
 >
 > **进度（2026-08-16）**：M0 ✅ / M1 ✅ / M2 ✅（探针首关即全绿，产物指纹与 node 字节一致；
-> G1 及次生缺口见 `tests/conformance/vue-sfc/gaps.md`）/ M3 ✅（Vue 依赖闭包
-> 提取 182 个正则模式；174 个可双引擎对拍 × 30 输入 = 5220 次零差异；
-> 回溯步数总预算护栏；对拍驱动修复懒量词捕获终点/字符类区间端点/`[^]`
-> 三类真实 bug）/ M4 ✅（`--vue-compiler=official` 双后端落地：demo official
-> 编译 SSR/动态 chunk 通过、错误映射带 .vue 文件名、webbuild 缓存约束保持）/
+> G1 及次生缺口见 `tests/conformance/vue-sfc/gaps.md`）/ M3 ✅（AST 语料提取、Node oracle、RE2/fallback 对拍、UTF-16 索引、legacy/u 模式、回溯预算与 lazy capture 回归均已覆盖；预算耗尽通过 `ErrBacktrackLimit` 暴露，不再伪装为普通不匹配）/ M4 ✅（`--vue-compiler=official` 双后端落地：demo official
+> 编译 SSR/动态 chunk 通过、错误映射带 .vue 文件名、webbuild 缓存约束保持；普通脚本 named exports、TypeScript 和 external src 明确拒绝边界已锁定）/
 > M5 ✅（Windows amd64 / i5-13420H 基线：subset CLI 中位 173ms；official CLI
 > 冷构建中位 1.73s，约 10x；同 VM official 热 Transform 10–15ms/SFC（subset
 > 7–9µs/SFC）；主 bundle 体积 +739B / +0.23%；README/static-build-plan/安全边界已同步）。
@@ -24,7 +21,7 @@
 **非目标**：
 
 - 不替换默认 SFC 子集后端（`--vue-compiler` 默认 `subset`）；
-- 不实现 `/u` unicode 码点语义、sticky 完整语义（实测闭包 0 需求，归 pi-compat 主线）；
+- 正则 fallback 已覆盖 `/u`、`/y`、`/s` 的实际匹配与 UTF-16 索引语义；孤立 surrogate 的字符串物化仍受当前 Go 字符串表示限制；
 - 不引入任何 Node/esbuild/Rollup 外部工具链；
 - 不预支修复未验证的引擎猜测（一切以差分 gate 驱动）。
 
@@ -139,7 +136,7 @@ bash tests/conformance/vue-sfc/run.sh   # 失败点不再是 prototype TypeError
 |----|--------|----------|------|------|
 | T3.1 | 语料提取 | `tools/extract-regex-corpus.mjs`（新增）+ `internal/engine/regex/testdata/corpus.txt` | 扫描 fixture 依赖闭包，提取正则字面量（含 flag）与 17 个动态构造形态，落 testdata | 0.5d |
 | T3.2 | 双引擎对拍 | `internal/engine/regex/parity_test.go`（新增） | 同一 pattern 分别经 RE2 翻译层与回溯引擎执行，结果必须一致；需要测试钩子显式选择引擎路径（暴露内部构造或编译选项）；语料 + 构造用例逐条对拍 | 1d |
-| T3.3 | 回溯护栏 | `internal/engine/regex/backtrack.go` | 回溯步数上限（防灾难性回溯挂死构建）；超限行为定义为"匹配失败 + 计数器"（不抛错，语义保守）；护栏用例：经典指数 pattern 在上限内返回 | 1d |
+| T3.3 | 回溯护栏 | `internal/engine/regex/backtrack.go` | 回溯步数上限（防灾难性回溯挂死构建）；超限返回显式 `ErrBacktrackLimit`，由解释器映射为 `RangeError`，不得伪装为无匹配；护栏用例覆盖合法后缀匹配不被吞掉 | 1d |
 | T3.4 | flag 差分 | `internal/engine/regex/regex_test.go` | `i` 的 unicode 大小写折叠边界、`m` 的行锚语义，逐类 node 差分断言（沿用 `bt_debug_test.go` 的"期望值以 V8 实测为准"注释约定） | 0.5d |
 
 **验收**：

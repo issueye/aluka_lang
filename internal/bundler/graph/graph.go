@@ -78,6 +78,11 @@ func WithVueCompiler(c vue.Compiler) Option {
 	return func(cfg *buildConfig) { cfg.vueCompiler = c }
 }
 
+// generatedSource 是单次 Build 内的 SFC 虚拟模块，不落盘也不跨构建共享。
+type generatedSource struct {
+	code string
+}
+
 // Build 从入口构建模块图并解析所有模块（不编译）。
 // 模块标识使用虚拟路径（相对入口文件所在目录，/ 分隔）：产物运行时的
 // __filename/import.meta/错误堆栈均基于虚拟路径，与构建机位置无关。
@@ -105,7 +110,8 @@ func Build(vm *interpreter.VM, resolver *module.Resolver, entry string, opts ...
 		Assets:      make(map[string][]byte),
 	}
 	visited := make(map[string]bool)
-	if err := r.walk(vm, resolver, entryAbs, virtualKey(entryDir, entryAbs), entryDir, visited, cfg.vueCompiler); err != nil {
+	generated := make(map[string]generatedSource)
+	if err := r.walk(vm, resolver, entryAbs, virtualKey(entryDir, entryAbs), entryDir, visited, generated, cfg.vueCompiler); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -124,7 +130,7 @@ func virtualKey(entryDir, absPath string) string {
 
 // walk 编译一个模块并递归收集其依赖。fsPath 用于文件系统操作，key 是
 // 模块标识（虚拟路径），entryDir 是入口目录（虚拟 key 的基准）。
-func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key, entryDir string, visited map[string]bool, vueBackend vue.Compiler) error {
+func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key, entryDir string, visited map[string]bool, generated map[string]generatedSource, vueBackend vue.Compiler) error {
 	if visited[fsPath] {
 		return nil
 	}
@@ -140,29 +146,34 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 		return nil
 	}
 
-	// .vue 单文件组件：构建期编译为 JS 模块（template → render(ctx)）。
+	// .vue 单文件组件：构建期编译为 facade，并把 official 后端产生的
+	// script/template 注册为本次 Build 私有的虚拟模块。
 	var unit *module.SourceUnit
 	var err error
 	if strings.EqualFold(filepath.Ext(fsPath), ".vue") {
-		var data []byte
-		data, err = os.ReadFile(fsPath)
-		if err != nil {
-			return fmt.Errorf("graph: cannot read %q: %w", fsPath, err)
+		data, readErr := os.ReadFile(fsPath)
+		if readErr != nil {
+			return fmt.Errorf("graph: cannot read %q: %w", fsPath, readErr)
 		}
-		var js string
-		js, err = vueBackend.Transform(string(data), key)
-		if err != nil {
-			return fmt.Errorf("graph: %w", err)
+		compiled, compileErr := vueBackend.Compile(string(data), key)
+		if compileErr != nil {
+			return fmt.Errorf("graph: %w", compileErr)
 		}
-		unit, err = module.ParseSourceUnit([]byte(js), key, module.ModuleESM)
-		if err != nil {
-			return err
+		for _, generatedModule := range compiled.Modules {
+			generatedPath := filepath.Join(filepath.Dir(fsPath), filepath.FromSlash(generatedModule.Name))
+			if _, exists := generated[generatedPath]; exists {
+				return fmt.Errorf("graph: duplicate generated Vue module %q", generatedModule.Name)
+			}
+			generated[generatedPath] = generatedSource{code: generatedModule.Source}
 		}
+		unit, err = module.ParseSourceUnit([]byte(compiled.Facade), key, module.ModuleESM)
+	} else if source, ok := generated[fsPath]; ok {
+		unit, err = module.ParseSourceUnit([]byte(source.code), key, module.ModuleESM)
 	} else {
 		unit, err = compile.ParseFileUnit(fsPath, key)
-		if err != nil {
-			return err
-		}
+	}
+	if err != nil {
+		return err
 	}
 	if unit.SourceKind == module.SourceJSON {
 		r.Assets[key] = unit.Source
@@ -206,7 +217,11 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 			continue // 运行时内置模块（node:fs 等），不嵌入。
 		}
 		var resolved string
-		if dep.ImportCtx {
+		generatedCandidate := filepath.Clean(filepath.Join(filepath.Dir(fsPath), filepath.FromSlash(dep.Spec)))
+		if _, ok := generated[generatedCandidate]; ok {
+			resolved = generatedCandidate
+			err = nil
+		} else if dep.ImportCtx {
 			resolved, err = resolver.ResolveImport(dep.Spec, fsPath)
 		} else {
 			resolved, err = resolver.Resolve(dep.Spec, fsPath)
@@ -228,7 +243,7 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 		if dep.Dynamic {
 			r.DynamicDeps = append(r.DynamicDeps, DynamicDep{Source: key, Spec: dep.Spec, Target: depKey})
 		}
-		if err := r.walk(vm, resolver, rAbs, depKey, entryDir, visited, vueBackend); err != nil {
+		if err := r.walk(vm, resolver, rAbs, depKey, entryDir, visited, generated, vueBackend); err != nil {
 
 			return err
 		}

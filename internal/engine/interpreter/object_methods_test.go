@@ -243,3 +243,136 @@ func TestVMDefinePropertyDescriptorSemantics(t *testing.T) {
 		})
 	}
 }
+
+func TestVMPostImplementationDescriptorReviewRegressions(t *testing.T) {
+	cases := []struct{ name, code, want string }{
+		{"array-holes-delete-and-prototype", `
+			var a = [undefined, 2]; Reflect.deleteProperty(a,"1"); Array.prototype[1] = 9;
+			var out = [0 in a, 1 in a, a[1], Object.keys(a).join(","), Object.hasOwn(a, "0"), Object.hasOwn(a, "1")];
+			delete Array.prototype[1]; JSON.stringify(out)`, `[true,true,9,"0",true,false]`},
+		{"array-index-boundary", `
+			var a = []; a[4294967295] = 7;
+			JSON.stringify([a.length, a[4294967295], Object.hasOwn(a,"4294967295")])`, `[0,7,true]`},
+		{"fractional-length-rejected", `
+			var a=[1,2], s=[];
+			try { a.length=1.5; } catch(e) { s.push("set"); }
+			try { Object.defineProperty(a,"length",{value:1.5}); } catch(e) { s.push("define"); }
+			JSON.stringify([a.length,s])`, `[2,["set","define"]]`},
+		{"shrink-nonconfigurable-atomic", `
+			var a=[1,2,3]; Object.defineProperty(a,"2",{configurable:false});
+			var reflected=Reflect.defineProperty(a,"length",{value:1});
+			JSON.stringify([reflected,a.length,a[2]])`, `[false,3,3]`},
+		{"array-index-accessor-atomic", `
+			var a=[], calls=0; Object.defineProperty(a,"2",{get(){calls++; return 7}, configurable:true});
+			JSON.stringify([a.length,a[2],calls,Object.hasOwn(a,"0"),Object.hasOwn(a,"2")])`, `[3,7,1,false,true]`},
+		{"descriptor-getter-and-has-errors", `
+			var calls=0, d={get value(){calls++; return 8}}; var o={}; Object.defineProperty(o,"x",d);
+			var p=new Proxy({}, {has(){throw "has"}}), threw=false;
+			try { Object.defineProperty({},"y",p); } catch(e) { threw=e==="has"; }
+			JSON.stringify([o.x,calls,threw])`, `[8,1,true]`},
+		{"accessor-data-resets-writable", `
+			var o={}; Object.defineProperty(o,"x",{get(){return 1},configurable:true});
+			Object.defineProperty(o,"x",{value:2}); o.x=3;
+			JSON.stringify([o.x,Object.getOwnPropertyDescriptor(o,"x").writable])`, `[2,false]`},
+		{"reflect-ordinary-rejection", `
+			var o={}; Object.defineProperty(o,"x",{value:1,configurable:false});
+			Reflect.defineProperty(o,"x",{value:2})`, `false`},
+		{"nonextensible-prototype", `
+			var o={}, p={}; Object.preventExtensions(o);
+			JSON.stringify([Reflect.setPrototypeOf(o,p),Object.getPrototypeOf(o)===Object.prototype])`, `[false,true]`},
+		{"proxy-invariants-symbols", `
+			var s=Symbol("s"), target={}; Object.defineProperty(target,s,{value:1,configurable:false});
+			var p=new Proxy(target,{ownKeys(){return []}}), threw=false;
+			try { Reflect.ownKeys(p); } catch(e) { threw=true; }
+			var q=new Proxy(target,{ownKeys(){return [s]}});
+			JSON.stringify([threw,Reflect.ownKeys(q)[0]===s])`, `[true,true]`},
+		{"proxy-getown-set-extensibility", `
+			var t={}; Object.defineProperty(t,"x",{value:1,writable:false,configurable:false}); Object.preventExtensions(t);
+			var g=new Proxy(t,{getOwnPropertyDescriptor(){return undefined}}), s=new Proxy(t,{set(){return true}}), e=new Proxy(t,{isExtensible(){return true}});
+			var out=[]; for (var p of [g,s,e]) { try { p===s ? Reflect.set(p,"x",2) : p===e ? Reflect.isExtensible(p) : Object.hasOwn(p,"x"); out.push(false); } catch(err) { out.push(true); } }
+			JSON.stringify(out)`, `[true,true,true]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := vmEvalStr(t, tc.code); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestVMPropertyDescriptorReviewedRegressions(t *testing.T) {
+	cases := []struct{ name, code, want string }{
+		{"array-index-and-length", `
+			var a = [1, 2];
+			Object.defineProperty(a, "0", {value: 7, writable: false, enumerable: false, configurable: false});
+			Object.defineProperty(a, "length", {writable: false});
+			a[0] = 9; a[2] = 3;
+			var d0 = Object.getOwnPropertyDescriptor(a, "0");
+			var dl = Object.getOwnPropertyDescriptor(a, "length");
+			JSON.stringify([a[0], a.length, Object.keys(a), d0.writable, d0.enumerable, dl.enumerable, dl.configurable])`,
+			`[7,2,["1"],false,false,false,false]`},
+		{"function-setter", `
+			var f = function(){}, seen = 0;
+			Object.defineProperty(f, "x", {set(v){ seen = v; }});
+			f.x = 8; seen`, "8"},
+		{"map-regexp-backing", `
+			var m = new Map(), r = /x/;
+			Object.defineProperty(m, "hidden", {value: 1});
+			Object.defineProperty(r, "hidden", {value: 2});
+			JSON.stringify([m.hidden, r.hidden, Object.hasOwn(m, "hidden"), Object.hasOwn(r, "hidden"), Object.keys(m).length])`,
+			`[1,2,true,true,0]`},
+		{"proxy-descriptor-traps", `
+			var log = [], target = {};
+			var p = new Proxy(target, {
+				defineProperty(t, k, d) { log.push("d:" + k + ":" + d.value); return Reflect.defineProperty(t, k, d); },
+				getOwnPropertyDescriptor(t, k) { log.push("g:" + k); return Reflect.getOwnPropertyDescriptor(t, k); }
+			});
+			var ok = Reflect.defineProperty(p, "x", {value: 4, enumerable: true, configurable: true});
+			var d = Object.getOwnPropertyDescriptor(p, "x");
+			JSON.stringify([ok, d.value, log])`,
+			`[true,4,["d:x:4","g:x"]]`},
+		{"proxy-define-false", `
+			var p = new Proxy({}, {defineProperty(){ return false; }});
+			var reflect = Reflect.defineProperty(p, "x", {value: 1});
+			var object; try { Object.defineProperty(p, "x", {value: 1}); object = "no"; } catch (e) { object = "throw"; }
+			reflect + ":" + object`, "false:throw"},
+		{"reflect-reuses-semantics", `
+			var o = {};
+			Reflect.defineProperty(o, "x", {value: 3});
+			var d = Reflect.getOwnPropertyDescriptor(o, "x");
+			JSON.stringify([d.value, d.writable, d.enumerable, d.configurable, Object.hasOwn(o, "x")])`,
+			`[3,false,false,false,true]`},
+		{"to-property-descriptor-inherited-hidden", `
+			var proto = {};
+			Object.defineProperty(proto, "enumerable", {value: true});
+			var d = Object.create(proto); d.value = 5;
+			var o = {}; Object.defineProperty(o, "x", d);
+			JSON.stringify([o.x, Object.keys(o)])`, `[5,["x"]]`},
+		{"nonconfigurable-writable-narrow", `
+			var o = {};
+			Object.defineProperty(o, "x", {value: 1, writable: true, configurable: false});
+			Object.defineProperty(o, "x", {writable: false});
+			o.x = 2; Object.getOwnPropertyDescriptor(o, "x").writable + ":" + o.x`, "false:1"},
+		{"same-value-signed-zero", `
+			var o = {}; Object.defineProperty(o, "x", {value: 0, writable: false, configurable: false});
+			try { Object.defineProperty(o, "x", {value: -0}); "no" } catch (e) { "throw" }`, "throw"},
+		{"symbol-name-split", `
+			var s = Symbol("k"), o = {plain: 1}; Object.defineProperty(o, s, {value: 2});
+			var names = Object.getOwnPropertyNames(o), syms = Object.getOwnPropertySymbols(o), own = Reflect.ownKeys(o);
+			JSON.stringify([names, syms.length, syms[0] === s, own.length, own[1] === s])`,
+			`[["plain"],1,true,2,true]`},
+		{"integrity-levels", `
+			var o = {x: 1}; Object.freeze(o); o.x = 2; o.y = 3;
+			var s = {x: 1}; Object.seal(s); delete s.x; s.x = 4;
+			JSON.stringify([o.x, Object.hasOwn(o,"y"), Object.isFrozen(o), Reflect.isExtensible(o), s.x, Object.isSealed(s)])`,
+			`[1,false,true,false,4,true]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := vmEvalStr(t, tc.code); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

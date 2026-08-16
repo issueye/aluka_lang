@@ -1771,6 +1771,9 @@ func (v *VM) executeArrayPushTrace(trace *arrayPushTraceState, locals []engine.V
 	if count > budget {
 		count = budget
 	}
+	if !receiver.CanAppend(count) {
+		return 0, jit.GuardFailed, nil
+	}
 	receiver.AppendNumberRange(index, count)
 	locals[trace.indexLocal] = engine.Number(index + float64(count))
 	if count >= budget {
@@ -2658,6 +2661,9 @@ func (v *VM) executeArrayBatchWriteTrace(trace *arrayBatchWriteTraceState, local
 	// safe integer domain so the length synchronization is exact.
 	const maxSafeInteger = float64(1<<53 - 1)
 	if key+float64(count) > maxSafeInteger+1 {
+		return 0, jit.GuardFailed, nil
+	}
+	if !receiver.CanWriteRange(int(key), count) {
 		return 0, jit.GuardFailed, nil
 	}
 	receiver.WriteNumberRange(int(key), value, count)

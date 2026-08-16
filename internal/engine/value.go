@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -397,6 +398,11 @@ type SymbolValue struct {
 
 var symbolCounter uint64
 
+var symbolKeys = struct {
+	sync.RWMutex
+	values map[string]*SymbolValue
+}{values: make(map[string]*SymbolValue)}
+
 // NewSymbol creates a new unique symbol with the given description.
 func NewSymbol(desc string) *SymbolValue {
 	symbolCounter++
@@ -486,8 +492,23 @@ func (s *SymbolValue) AsFunction() (Function, bool) { return nil, false }
 // Since our object implementation uses string keys, we map symbols to unique
 // internal strings.
 func (s *SymbolValue) SymbolKey() string {
-	return fmt.Sprintf("\x00symbol:%d:%s", s.id, s.desc)
+	key := fmt.Sprintf("\x00symbol:%d:%s", s.id, s.desc)
+	symbolKeys.Lock()
+	symbolKeys.values[key] = s
+	symbolKeys.Unlock()
+	return key
 }
+
+// SymbolFromKey returns the Symbol represented by an internal property key.
+func SymbolFromKey(key string) (*SymbolValue, bool) {
+	symbolKeys.RLock()
+	sym, ok := symbolKeys.values[key]
+	symbolKeys.RUnlock()
+	return sym, ok
+}
+
+// IsSymbolKey reports whether key is an internal symbol property key.
+func IsSymbolKey(key string) bool { return strings.HasPrefix(key, "\x00symbol:") }
 
 // IsWellKnown returns true if this is a well-known symbol (id < 100).
 func (s *SymbolValue) IsWellKnown() bool { return s.id < 100 }
@@ -505,6 +526,8 @@ type objectValue struct {
 	// （writable/enumerable/configurable）。惰性分配：普通对象无此 map，
 	// 热路径（IC 直写/Keys）只多一次 nil 判断。
 	attrs map[string]PropAttrs
+	// nonExtensible models [[Extensible]] without penalizing the default case.
+	nonExtensible bool
 	// small 是小对象（≤4 属性）的内嵌槽位后备：slots 指向它即可省去
 	// 一次独立 slice 分配（字面量/短生命周期对象分配热路径的主力开销）。
 	// 超过 4 属性时 append 自动迁移到独立堆数组，语义与纯 slice 一致。
@@ -611,6 +634,24 @@ func SetProto(obj Value, proto Object) {
 	}
 }
 
+// TrySetProto applies [[SetPrototypeOf]] restrictions and reports ordinary rejection.
+func TrySetProto(obj Value, proto Object) bool {
+	current := GetProto(obj)
+	if current == proto {
+		return true
+	}
+	if o, ok := obj.AsObject(); ok && !IsExtensible(o) {
+		return false
+	}
+	for cur := proto; cur != nil; cur = GetProto(cur) {
+		if cur == obj {
+			return false
+		}
+	}
+	SetProto(obj, proto)
+	return true
+}
+
 // GetProto returns the [[Prototype]] of the value, or nil if not available.
 func GetProto(obj Value) Object {
 	if getter, ok := obj.(interface{ Proto() Object }); ok {
@@ -679,11 +720,17 @@ func (o *objectValue) GetSlot(key string) (Value, bool) {
 
 // GetOwnSlot 尝试从值中直接读取自有属性（不走原型链）。
 func GetOwnSlot(val Value, key string) (Value, bool) {
+	if a, ok := val.(*ArrayValue); ok {
+		if key == "length" {
+			return IntValue(len(a.elems)), true
+		}
+		if idx, isIndex := arrayIndex(key); isIndex && idx < len(a.elems) && a.present[idx] {
+			return a.elems[idx], true
+		}
+		return a.objectValue.getSlot(key)
+	}
 	if o, ok := val.(*objectValue); ok {
 		return o.getSlot(key)
-	}
-	if a, ok := val.(*ArrayValue); ok {
-		return a.objectValue.getSlot(key)
 	}
 	if f, ok := val.(*functionValue); ok {
 		return f.objectValue.getSlot(key)
@@ -744,6 +791,9 @@ func (o *objectValue) Set(key string, value Value) error {
 	if a, ok := o.attrs[key]; ok && !a.Writable {
 		return nil
 	}
+	if _, exists := o.getSlot(key); !exists && o.nonExtensible {
+		return nil
+	}
 	o.setSlot(key, value)
 	return nil
 }
@@ -753,6 +803,9 @@ func (o *objectValue) Keys() []string {
 	out := make([]string, 0, len(names))
 	for _, name := range names {
 		if o.deleted != nil && o.deleted[name] {
+			continue
+		}
+		if IsSymbolKey(name) {
 			continue
 		}
 		if a, ok := o.attrs[name]; ok && !a.Enumerable {
@@ -788,7 +841,8 @@ type ArrayValue struct {
 	// 省去每个数组一次独立 malloc。经 ArrayValue 指针访问时选择器
 	// 自动取址，既有 a.objectValue.xxx 调用点无需改动。
 	objectValue
-	elems []Value
+	elems   []Value
+	present []bool // false 表示 hole；值为 undefined 的自有属性仍为 true
 	// smallElems 是小数组（≤4 元素）的内嵌元素后备：字面量 [a, b] 类
 	// 高频短生命周期数组省去独立 elems 分配；更大数组走独立堆数组。
 	smallElems [4]Value
@@ -805,9 +859,29 @@ func NewArray(elems []Value) *ArrayValue {
 	} else {
 		a.elems = elems
 	}
+	a.present = make([]bool, len(elems))
+	for i := range a.present {
+		a.present[i] = true
+	}
 	register(&a.objectValue)
 	// 同步 length 属性
 	a.setSlot("length", IntValue(len(elems)))
+	a.attrs = map[string]PropAttrs{
+		"length": {Writable: true, Enumerable: false, Configurable: false},
+	}
+	return a
+}
+
+// NewArrayHoles creates an array with length n and no own indexed properties.
+func NewArrayHoles(n int) *ArrayValue {
+	if n < 0 {
+		n = 0
+	}
+	a := NewArray(make([]Value, n))
+	for i := range a.present {
+		a.present[i] = false
+		a.elems[i] = Undefined()
+	}
 	return a
 }
 
@@ -843,8 +917,14 @@ func (a *ArrayValue) Get(key string) (Value, error) {
 		return IntValue(len(a.elems)), nil
 	}
 	// 尝试解析为索引
-	if idx, err := strconv.Atoi(key); err == nil && idx >= 0 && idx < len(a.elems) {
-		return a.elems[idx], nil
+	if idx, ok := arrayIndex(key); ok && idx < len(a.elems) {
+		if a.present[idx] {
+			return a.elems[idx], nil
+		}
+		if a.proto != nil {
+			return a.proto.Get(key)
+		}
+		return Undefined(), nil
 	}
 	return a.objectValue.Get(key)
 }
@@ -852,27 +932,47 @@ func (a *ArrayValue) Get(key string) (Value, error) {
 // Set 重写以支持数字索引写入与 length 同步。
 func (a *ArrayValue) Set(key string, value Value) error {
 	if key == "length" {
-		n, ok := value.Int()
-		if !ok {
+		if attrs := a.attrOf("length"); !attrs.Writable {
+			return nil
+		}
+		f, ok := value.Float()
+		if !ok || math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) || f < 0 || f > float64(uint64(1)<<32-1) {
 			return fmt.Errorf("%w: invalid length", ErrTypeError)
 		}
-		if n >= 0 {
-			if n < len(a.elems) {
-				a.elems = a.elems[:n]
-			} else {
-				for i := len(a.elems); i < n; i++ {
-					a.elems = append(a.elems, Undefined())
+		n := int(f)
+		if n < len(a.elems) {
+			for i := n; i < len(a.elems); i++ {
+				if a.present[i] {
+					if attrs, ok := a.attrs[strconv.Itoa(i)]; ok && !attrs.Configurable {
+						return fmt.Errorf("%w: cannot delete array index %d", ErrTypeError, i)
+					}
 				}
 			}
-			a.objectValue.setSlot("length", IntValue(n))
+			a.elems = a.elems[:n]
+			a.present = a.present[:n]
+		} else {
+			for i := len(a.elems); i < n; i++ {
+				a.elems = append(a.elems, Undefined())
+				a.present = append(a.present, false)
+			}
 		}
+		a.objectValue.setSlot("length", IntValue(n))
 		return nil
 	}
-	if idx, err := strconv.Atoi(key); err == nil && idx >= 0 {
+	if idx, ok := arrayIndex(key); ok {
+		if idx < len(a.elems) {
+			if attrs, constrained := a.attrs[key]; constrained && !attrs.Writable {
+				return nil
+			}
+		} else if a.nonExtensible || !a.attrOf("length").Writable {
+			return nil
+		}
 		for len(a.elems) <= idx {
 			a.elems = append(a.elems, Undefined())
+			a.present = append(a.present, false)
 		}
 		a.elems[idx] = value
+		a.present[idx] = true
 		a.objectValue.setSlot("length", IntValue(len(a.elems)))
 		return nil
 	}
@@ -880,13 +980,18 @@ func (a *ArrayValue) Set(key string, value Value) error {
 }
 
 func (a *ArrayValue) Keys() []string {
-	out := make([]string, 0, len(a.elems)+1)
+	out := make([]string, 0, len(a.elems))
 	for i := range a.elems {
-		out = append(out, strconv.Itoa(i))
+		if !a.present[i] {
+			continue
+		}
+		key := strconv.Itoa(i)
+		if attrs, ok := a.attrs[key]; !ok || attrs.Enumerable {
+			out = append(out, key)
+		}
 	}
-	out = append(out, "length")
 	// 合并对象自有属性（负索引/非规范键，如 jsdiff 的 bestPath[-1]）。
-	// objectValue.Keys() 含 "length"（setSlot 写入），去重。
+	// objectValue.Keys() 会过滤不可枚举的 length，seen 保持其余属性去重。
 	seen := make(map[string]bool, len(out))
 	for _, k := range out {
 		seen[k] = true
@@ -900,12 +1005,95 @@ func (a *ArrayValue) Keys() []string {
 	return out
 }
 
+// Delete removes an array index or delegates ordinary properties to the
+// embedded object storage.
+func (a *ArrayValue) Delete(key string) bool {
+	if key == "length" {
+		return false
+	}
+	if idx, ok := arrayIndex(key); ok && idx < len(a.elems) {
+		if !a.present[idx] {
+			return true
+		}
+		if attrs, constrained := a.attrs[key]; constrained && !attrs.Configurable {
+			return false
+		}
+		a.elems[idx] = Undefined()
+		a.present[idx] = false
+		delete(a.attrs, key)
+		return true
+	}
+	return a.objectValue.Delete(key)
+}
+
+func arrayIndex(key string) (int, bool) {
+	if key == "" || key == "-0" {
+		return 0, false
+	}
+	idx64, err := strconv.ParseInt(key, 10, 64)
+	if err != nil || idx64 < 0 || idx64 > int64(^uint32(0)-1) {
+		return 0, false
+	}
+	idx := int(idx64)
+	if strconv.Itoa(idx) != key {
+		return 0, false
+	}
+	return idx, true
+}
+
 // Elems 返回数组元素切片（只读视图）。
 func (a *ArrayValue) Elems() []Value { return a.elems }
+
+// CanAppend reports whether Array.prototype.push/JIT may create count trailing indices.
+func (a *ArrayValue) CanAppend(count int) bool {
+	if count < 0 || uint64(len(a.elems))+uint64(count) > uint64(1)<<32-1 {
+		return false
+	}
+	return !a.nonExtensible && a.attrOf("length").Writable
+}
+
+// CanWriteRange reports whether a bulk JIT write matches individual assignments.
+func (a *ArrayValue) CanWriteRange(start, count int) bool {
+	if start < 0 || count < 0 || uint64(start)+uint64(count) > uint64(1)<<32-1 {
+		return false
+	}
+	for i := start; i < start+count && i < len(a.elems); i++ {
+		if a.present[i] {
+			d, _ := OwnPropertyDescriptor(a, strconv.Itoa(i))
+			if d.HasGet || !d.Writable {
+				return false
+			}
+		} else if a.nonExtensible {
+			return false
+		}
+	}
+	return start+count <= len(a.elems) || a.CanAppend(start+count-len(a.elems))
+}
+
+// IsFullyWritable reports whether mutating Array methods may update all elements.
+func (a *ArrayValue) IsFullyWritable() bool {
+	if !a.attrOf("length").Writable {
+		return false
+	}
+	for i := range a.elems {
+		if !a.present[i] {
+			if a.nonExtensible {
+				return false
+			}
+			continue
+		}
+		d, _ := OwnPropertyDescriptor(a, strconv.Itoa(i))
+		if d.HasGet || !d.Writable || !d.Configurable {
+			return false
+		}
+	}
+	return true
+}
 
 // Append appends a value to the array and updates the length property.
 func (a *ArrayValue) Append(v Value) {
 	a.elems = append(a.elems, v)
+	a.present = append(a.present, true)
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
@@ -914,10 +1102,20 @@ func (a *ArrayValue) Append(v Value) {
 // length property once. It mirrors the numeric-key branch of Set without the
 // string conversion, for the VM's array-index write fast path (M1-2 写侧).
 func (a *ArrayValue) SetIndex(idx int, value Value) {
+	key := strconv.Itoa(idx)
+	if idx < len(a.elems) {
+		if attrs, ok := a.attrs[key]; ok && !attrs.Writable {
+			return
+		}
+	} else if a.nonExtensible || !a.attrOf("length").Writable {
+		return
+	}
 	for len(a.elems) <= idx {
 		a.elems = append(a.elems, Undefined())
+		a.present = append(a.present, false)
 	}
 	a.elems[idx] = value
+	a.present[idx] = true
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
@@ -935,8 +1133,10 @@ func (a *ArrayValue) AppendNumberRange(start float64, count int) {
 		a.elems = grown
 	}
 	a.elems = a.elems[:oldLen+count]
+	a.present = append(a.present, make([]bool, count)...)
 	for i := 0; i < count; i++ {
 		a.elems[oldLen+i] = newNumber(start + float64(i))
+		a.present[oldLen+i] = true
 	}
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
@@ -964,12 +1164,14 @@ func (a *ArrayValue) WriteNumberRange(start int, valueStart float64, count int) 
 			a.elems = grown
 		}
 		a.elems = a.elems[:end]
+		a.present = append(a.present, make([]bool, end-oldLen)...)
 		for i := oldLen; i < end; i++ {
 			a.elems[i] = Undefined() // holes above the previous length
 		}
 	}
 	for i := 0; i < count; i++ {
 		a.elems[start+i] = newNumber(valueStart + float64(i))
+		a.present[start+i] = true
 	}
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
@@ -1146,6 +1348,30 @@ func IsAccessorValue(v Value) bool {
 // AllOwnKeys 返回全部自有属性名（含不可枚举；不含已删除）。
 // 与 Object.Keys()（仅可枚举）互补，供 getOwnPropertyNames 等使用。
 func AllOwnKeys(obj Object) []string {
+	if a, ok := obj.(*ArrayValue); ok {
+		out := make([]string, 0, len(a.elems)+len(a.shape.names))
+		for i := range a.elems {
+			if a.present[i] {
+				out = append(out, strconv.Itoa(i))
+			}
+		}
+		out = append(out, "length")
+		for _, name := range a.shape.names {
+			if name == "length" {
+				continue
+			}
+			if a.deleted != nil && a.deleted[name] {
+				continue
+			}
+			out = append(out, name)
+		}
+		return out
+	}
+	if uw, ok := obj.(ObjectUnwrapper); ok {
+		if inner := uw.UnwrapObject(); inner != nil && inner != obj {
+			return AllOwnKeys(inner)
+		}
+	}
 	ov := unwrapObjectValue(obj)
 	if ov == nil {
 		return obj.Keys()
@@ -1195,6 +1421,9 @@ func sameValue(a, b Value) bool {
 			return false
 		}
 		if af == bf {
+			if af == 0 {
+				return math.Signbit(af) == math.Signbit(bf)
+			}
 			return true
 		}
 		return math.IsNaN(af) && math.IsNaN(bf)
@@ -1205,10 +1434,64 @@ func sameValue(a, b Value) bool {
 	return a == b
 }
 
+// ErrDefineRejected marks an ordinary [[DefineOwnProperty]] rejection. Object.defineProperty
+// converts it to TypeError, while Reflect.defineProperty reports false.
+var ErrDefineRejected = errors.New("property definition rejected")
+
+// IsDefineRejected reports whether err represents an ordinary descriptor rejection.
+func IsDefineRejected(err error) bool { return errors.Is(err, ErrDefineRejected) }
+
+func defineRejected(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrDefineRejected, fmt.Sprintf(format, args...))
+}
+
+// SameValue reports ECMAScript SameValue equality for descriptor invariant checks.
+func SameValue(a, b Value) bool { return sameValue(a, b) }
+
+// IsCompatibleDescriptor checks whether d may describe key without changing target.
+func IsCompatibleDescriptor(obj Object, key string, d Descriptor) bool {
+	current, exists := OwnPropertyDescriptor(obj, key)
+	if !exists {
+		return IsExtensible(obj)
+	}
+	if current.Configurable {
+		return true
+	}
+	if d.HasConfigurable && d.Configurable || d.HasEnumerable && d.Enumerable != current.Enumerable {
+		return false
+	}
+	currentAccessor := current.HasGet || current.HasSet
+	descAccessor := d.HasGet || d.HasSet
+	descData := d.HasValue || d.HasWritable
+	if descAccessor && !currentAccessor || descData && currentAccessor {
+		return false
+	}
+	if currentAccessor {
+		if d.HasGet && !sameValue(orUndefined(d.Get), orUndefined(current.Get)) || d.HasSet && !sameValue(orUndefined(d.Set), orUndefined(current.Set)) {
+			return false
+		}
+		return true
+	}
+	if !current.Writable {
+		if d.HasWritable && d.Writable || d.HasValue && !sameValue(d.Value, current.Value) {
+			return false
+		}
+	}
+	return true
+}
+
 // DefineOwnProperty 实现 [[DefineOwnProperty]] 的规范子集：
 // 部分描述符合并、accessor/data 互斥校验、非可配置重定义限制、
 // 新属性缺省标志为 false。返回 nil 表示成功。
 func DefineOwnProperty(obj Object, key string, d Descriptor) error {
+	if a, ok := obj.(*ArrayValue); ok {
+		return defineArrayOwnProperty(a, key, d)
+	}
+	if uw, ok := obj.(ObjectUnwrapper); ok {
+		if inner := uw.UnwrapObject(); inner != nil && inner != obj {
+			return DefineOwnProperty(inner, key, d)
+		}
+	}
 	ov := unwrapObjectValue(obj)
 	if ov == nil {
 		// 非 objectValue 存储：退化为纯数据写入（保持既有兼容）。
@@ -1230,37 +1513,42 @@ func DefineOwnProperty(obj Object, key string, d Descriptor) error {
 	}
 
 	curVal, exists := ov.getSlot(key)
+	if !exists && ov.nonExtensible {
+		return defineRejected("Cannot define property %s, object is not extensible", key)
+	}
 	curIsAcc := exists && IsAccessorValue(curVal)
 	cur := ov.attrOf(key)
 
 	// 非可配置属性的重定义限制。
 	if exists && !cur.Configurable {
 		if d.HasConfigurable && d.Configurable {
-			return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+			return defineRejected("Cannot redefine property: %s is not configurable", key)
 		}
 		if d.HasEnumerable && d.Enumerable != cur.Enumerable {
-			return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+			return defineRejected("Cannot redefine property: %s is not configurable", key)
 		}
 		if (d.HasGet || d.HasSet) && !curIsAcc {
-			return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+			return defineRejected("Cannot redefine property: %s is not configurable", key)
 		}
 		if (d.HasValue || d.HasWritable) && curIsAcc {
-			return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+			return defineRejected("Cannot redefine property: %s is not configurable", key)
 		}
 		if curIsAcc {
 			acc := curVal.(*AccessorValue)
 			if d.HasGet && !sameValue(orUndefined(d.Get), orUndefined(acc.Getter)) {
-				return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+				return defineRejected("Cannot redefine property: %s is not configurable", key)
 			}
 			if d.HasSet && !sameValue(orUndefined(d.Set), orUndefined(acc.Setter)) {
-				return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+				return defineRejected("Cannot redefine property: %s is not configurable", key)
 			}
 		} else {
-			if d.HasValue && !sameValue(d.Value, curVal) {
-				return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
-			}
-			if d.HasWritable && d.Writable != cur.Writable {
-				return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+			if !cur.Writable {
+				if d.HasWritable && d.Writable {
+					return defineRejected("Cannot redefine property: %s is not configurable", key)
+				}
+				if d.HasValue && !sameValue(d.Value, curVal) {
+					return defineRejected("Cannot redefine property: %s is not configurable", key)
+				}
 			}
 		}
 	}
@@ -1269,6 +1557,10 @@ func DefineOwnProperty(obj Object, key string, d Descriptor) error {
 	eff := cur
 	if !exists {
 		eff = PropAttrs{}
+	}
+	// 属性种类转换时，未指定的种类特有标志使用新种类缺省值。
+	if exists && curIsAcc && (d.HasValue || d.HasWritable) {
+		eff.Writable = false
 	}
 	if d.HasWritable {
 		eff.Writable = d.Writable
@@ -1311,6 +1603,223 @@ func DefineOwnProperty(obj Object, key string, d Descriptor) error {
 		ov.attrs[key] = eff
 	}
 	return nil
+}
+
+func defineArrayOwnProperty(a *ArrayValue, key string, d Descriptor) error {
+	if key != "length" {
+		idx, isIndex := arrayIndex(key)
+		if !isIndex {
+			return DefineOwnProperty(&a.objectValue, key, d)
+		}
+		if (d.HasGet || d.HasSet) && (d.HasValue || d.HasWritable) {
+			return fmt.Errorf("%w: Invalid property descriptor", ErrTypeError)
+		}
+		if d.HasGet && !orUndefined(d.Get).IsUndefined() && !d.Get.IsFunction() || d.HasSet && !orUndefined(d.Set).IsUndefined() && !d.Set.IsFunction() {
+			return fmt.Errorf("%w: accessor must be a function or undefined", ErrTypeError)
+		}
+		value, exists := GetOwnSlot(a, key)
+		if !exists && (a.nonExtensible || idx >= len(a.elems) && !a.attrOf("length").Writable) {
+			return defineRejected("Cannot define property %s", key)
+		}
+		cur := a.attrOf(key)
+		if !exists {
+			cur = PropAttrs{}
+		}
+		curIsAcc := exists && IsAccessorValue(value)
+		if exists && !cur.Configurable {
+			if d.HasConfigurable && d.Configurable || d.HasEnumerable && d.Enumerable != cur.Enumerable ||
+				(d.HasGet || d.HasSet) && !curIsAcc || (d.HasValue || d.HasWritable) && curIsAcc {
+				return defineRejected("Cannot redefine property: %s is not configurable", key)
+			}
+			if curIsAcc {
+				acc := value.(*AccessorValue)
+				if d.HasGet && !sameValue(orUndefined(d.Get), orUndefined(acc.Getter)) || d.HasSet && !sameValue(orUndefined(d.Set), orUndefined(acc.Setter)) {
+					return defineRejected("Cannot redefine property: %s is not configurable", key)
+				}
+			} else if !cur.Writable && (d.HasWritable && d.Writable || d.HasValue && !sameValue(d.Value, value)) {
+				return defineRejected("Cannot redefine property: %s is not configurable", key)
+			}
+		}
+		eff := cur
+		if curIsAcc && (d.HasValue || d.HasWritable) {
+			eff.Writable = false
+		}
+		if d.HasWritable {
+			eff.Writable = d.Writable
+		}
+		if d.HasEnumerable {
+			eff.Enumerable = d.Enumerable
+		}
+		if d.HasConfigurable {
+			eff.Configurable = d.Configurable
+		}
+		newValue := value
+		if d.HasGet || d.HasSet {
+			getter, setter := Undefined(), Undefined()
+			if curIsAcc {
+				acc := value.(*AccessorValue)
+				getter, setter = acc.Getter, acc.Setter
+			}
+			if d.HasGet {
+				getter = orUndefined(d.Get)
+			}
+			if d.HasSet {
+				setter = orUndefined(d.Set)
+			}
+			newValue = NewAccessor(getter, setter)
+		} else if d.HasValue {
+			newValue = d.Value
+		} else if !exists {
+			newValue = Undefined()
+		}
+		for len(a.elems) <= idx {
+			a.elems = append(a.elems, Undefined())
+			a.present = append(a.present, false)
+		}
+		a.elems[idx] = newValue
+		a.present[idx] = true
+		if a.attrs == nil {
+			a.attrs = make(map[string]PropAttrs)
+		}
+		if eff == defaultPropAttrs {
+			delete(a.attrs, key)
+		} else {
+			a.attrs[key] = eff
+		}
+		a.objectValue.setSlot("length", IntValue(len(a.elems)))
+		return nil
+	}
+
+	if d.HasGet || d.HasSet || d.HasEnumerable && d.Enumerable || d.HasConfigurable && d.Configurable {
+		return defineRejected("Cannot redefine property: length")
+	}
+	cur := a.attrOf("length")
+	if !cur.Writable && d.HasWritable && d.Writable {
+		return defineRejected("Cannot redefine property: length")
+	}
+	if d.HasValue {
+		f, ok := d.Value.Float()
+		if !ok || math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) || f < 0 || f > float64(uint64(1)<<32-1) {
+			return fmt.Errorf("%w: invalid array length", ErrRangeError)
+		}
+		n := int(f)
+		if !cur.Writable && n != len(a.elems) {
+			return defineRejected("Cannot redefine property: length")
+		}
+		if n < len(a.elems) {
+			for i := len(a.elems) - 1; i >= n; i-- {
+				if a.present[i] {
+					if attrs, ok := a.attrs[strconv.Itoa(i)]; ok && !attrs.Configurable {
+						return defineRejected("Cannot delete non-configurable array index %d", i)
+					}
+				}
+			}
+			a.elems = a.elems[:n]
+			a.present = a.present[:n]
+		} else {
+			for len(a.elems) < n {
+				a.elems = append(a.elems, Undefined())
+				a.present = append(a.present, false)
+			}
+		}
+		a.objectValue.setSlot("length", IntValue(n))
+	}
+	if d.HasWritable {
+		cur.Writable = d.Writable
+	}
+	if a.attrs == nil {
+		a.attrs = make(map[string]PropAttrs)
+	}
+	a.attrs["length"] = cur
+	return nil
+}
+
+// OwnPropertyDescriptor returns an effective own property descriptor.
+func OwnPropertyDescriptor(obj Object, key string) (Descriptor, bool) {
+	value, exists := GetOwnSlot(obj, key)
+	if !exists {
+		return Descriptor{}, false
+	}
+	attrs := AttrsOf(obj, key)
+	d := Descriptor{
+		HasEnumerable: true, HasConfigurable: true,
+		Enumerable: attrs.Enumerable, Configurable: attrs.Configurable,
+	}
+	if acc, ok := value.(*AccessorValue); ok {
+		d.HasGet, d.HasSet = true, true
+		d.Get, d.Set = orUndefined(acc.Getter), orUndefined(acc.Setter)
+	} else {
+		d.HasValue, d.HasWritable = true, true
+		d.Value, d.Writable = value, attrs.Writable
+	}
+	return d, true
+}
+
+// HasOwnProperty reports own-property existence independent of enumerability.
+func HasOwnProperty(obj Object, key string) bool {
+	_, ok := GetOwnSlot(obj, key)
+	return ok
+}
+
+// IsExtensible reports the object's [[Extensible]] state.
+func IsExtensible(obj Object) bool {
+	if uw, ok := obj.(ObjectUnwrapper); ok {
+		if inner := uw.UnwrapObject(); inner != nil && inner != obj {
+			return IsExtensible(inner)
+		}
+	}
+	if ov := unwrapObjectValue(obj); ov != nil {
+		return !ov.nonExtensible
+	}
+	return true
+}
+
+// PreventExtensions sets [[Extensible]] to false when the backing storage is known.
+func PreventExtensions(obj Object) bool {
+	if uw, ok := obj.(ObjectUnwrapper); ok {
+		if inner := uw.UnwrapObject(); inner != nil && inner != obj {
+			return PreventExtensions(inner)
+		}
+	}
+	if ov := unwrapObjectValue(obj); ov != nil {
+		ov.nonExtensible = true
+		return true
+	}
+	return false
+}
+
+// SetIntegrityLevel implements the shared Object.seal/Object.freeze operation.
+func SetIntegrityLevel(obj Object, frozen bool) error {
+	if !PreventExtensions(obj) {
+		return fmt.Errorf("%w: Cannot prevent extensions", ErrTypeError)
+	}
+	for _, key := range AllOwnKeys(obj) {
+		d := Descriptor{HasConfigurable: true, Configurable: false}
+		if frozen {
+			if current, ok := OwnPropertyDescriptor(obj, key); ok && current.HasValue {
+				d.HasWritable = true
+				d.Writable = false
+			}
+		}
+		if err := DefineOwnProperty(obj, key, d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// TestIntegrityLevel implements Object.isSealed/Object.isFrozen.
+func TestIntegrityLevel(obj Object, frozen bool) bool {
+	if IsExtensible(obj) {
+		return false
+	}
+	for _, key := range AllOwnKeys(obj) {
+		d, ok := OwnPropertyDescriptor(obj, key)
+		if !ok || d.Configurable || frozen && d.HasValue && d.Writable {
+			return false
+		}
+	}
+	return true
 }
 
 // orUndefined 把 nil 归一为 Undefined。

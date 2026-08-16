@@ -231,6 +231,14 @@ func (c *ICache) SetCached(obj Value, key string, val Value) bool {
 		c.setMiss++
 		return false
 	}
+	if ov.nonExtensible {
+		// Existing properties remain writable; this guard documents that IC only
+		// ever writes an existing slot and cannot add a property.
+		if _, exists := ov.getSlot(key); !exists {
+			c.setMiss++
+			return false
+		}
+	}
 	c.setHit++
 	ov.slots[e.idx] = val
 	return true

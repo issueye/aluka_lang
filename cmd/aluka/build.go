@@ -728,7 +728,7 @@ func validateWebBuiltins(builtins []graph.BuiltinDep) error {
 // bundleWebEntry 实现对单个 web 入口（.html / .css / .js / .ts / .tsx）的编译打包，
 // 返回相对产物路径 → 文件内容字节。
 func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string, opts buildOptions) (map[string][]byte, error) {
-	module.SetWebConditions()
+	resolver.SetWebConditions()
 	ext := strings.ToLower(filepath.Ext(entry))
 	assets := make(map[string][]byte)
 

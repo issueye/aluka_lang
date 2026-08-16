@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/regex"
 )
 
 // setupBuiltins initializes all built-in prototypes, constructors, and global functions.
@@ -162,17 +163,16 @@ func (interp *Interpreter) setupObjectProto() {
 		if len(args) == 0 {
 			return engine.Boolean(false), nil
 		}
-		key := args[0].String()
+		key := propertyKeyOf(args[0])
+		if p, ok := this.(*ProxyValue); ok {
+			desc, err := p.proxyGetOwnPropertyDescriptor(key)
+			return engine.Boolean(err == nil && desc != nil && !desc.IsUndefined()), err
+		}
 		o, ok := this.AsObject()
 		if !ok {
 			return engine.Boolean(false), nil
 		}
-		for _, k := range o.Keys() {
-			if k == key {
-				return engine.Boolean(true), nil
-			}
-		}
-		return engine.Boolean(false), nil
+		return engine.Boolean(engine.HasOwnProperty(o, key)), nil
 	}))
 	_ = p.Set("toString", interp.nativeMethod("toString", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		switch this.Type() {
@@ -256,9 +256,25 @@ func (interp *Interpreter) setupObjectCtor() {
 		if p, ok := args[0].(*ProxyValue); ok {
 			keys, err := p.proxyOwnKeys()
 			if err != nil {
-				return interp.newArray(nil), nil
+				return interp.newArray(nil), err
 			}
-			return interp.newArray(toValues(keys)), nil
+			values := make([]engine.Value, 0, len(keys))
+			for _, key := range keys {
+				if engine.IsSymbolKey(key) {
+					continue
+				}
+				desc, err := interp.getOwnPropertyDescriptor(p, key)
+				if err != nil {
+					return interp.newArray(nil), err
+				}
+				if d, ok := desc.AsObject(); ok {
+					enumerable, _ := d.Get("enumerable")
+					if b, _ := enumerable.Bool(); b {
+						values = append(values, engine.Str(key))
+					}
+				}
+			}
+			return interp.newArray(values), nil
 		}
 		o, ok := args[0].AsObject()
 		if !ok {
@@ -270,6 +286,10 @@ func (interp *Interpreter) setupObjectCtor() {
 	_ = obj.Set("hasOwn", interp.makeFunc("hasOwn", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Boolean(false), nil
+		}
+		if p, ok := args[0].(*ProxyValue); ok {
+			desc, err := p.proxyGetOwnPropertyDescriptor(propertyKeyOf(args[1]))
+			return engine.Boolean(err == nil && desc != nil && !desc.IsUndefined()), err
 		}
 		o, ok := args[0].AsObject()
 		if !ok {
@@ -366,10 +386,15 @@ func (interp *Interpreter) setupObjectCtor() {
 		return target, nil
 	}))
 	_ = obj.Set("freeze", interp.makeFunc("freeze", func(args []engine.Value) (engine.Value, error) {
-		if len(args) > 0 {
-			return args[0], nil
+		if len(args) == 0 {
+			return engine.Undefined(), nil
 		}
-		return engine.Undefined(), nil
+		if o, ok := args[0].AsObject(); ok {
+			if err := engine.SetIntegrityLevel(o, true); err != nil {
+				return nil, err
+			}
+		}
+		return args[0], nil
 	}))
 	_ = obj.Set("getPrototypeOf", interp.makeFunc("getPrototypeOf", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
@@ -527,10 +552,22 @@ func (interp *Interpreter) setArrayLength(this engine.Value, length int) error {
 	return nil
 }
 
+func requireMutableArray(arr *engine.ArrayValue) error {
+	if arr != nil && !arr.IsFullyWritable() {
+		return fmt.Errorf("%w: Cannot modify frozen or sealed array", engine.ErrTypeError)
+	}
+	return nil
+}
+
 func (interp *Interpreter) setupArrayProto() {
 	p := interp.arrayProto
 	_ = p.Set("push", interp.nativeMethod("push", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		if arr, ok := this.(*engine.ArrayValue); ok {
+			if len(args) > 0 {
+				if err := requireMutableArray(arr); err != nil {
+					return nil, err
+				}
+			}
 			for _, a := range args {
 				_ = arr.Set(strconv.Itoa(len(arr.Elems())), a)
 			}
@@ -550,6 +587,9 @@ func (interp *Interpreter) setupArrayProto() {
 			if len(elems) == 0 {
 				return engine.Undefined(), nil
 			}
+			if err := requireMutableArray(arr); err != nil {
+				return nil, err
+			}
 			last := elems[len(elems)-1]
 			_ = arr.Set("length", engine.IntValue(len(elems)-1))
 			return last, nil
@@ -567,6 +607,9 @@ func (interp *Interpreter) setupArrayProto() {
 			elems := arr.Elems()
 			if len(elems) == 0 {
 				return engine.Undefined(), nil
+			}
+			if err := requireMutableArray(arr); err != nil {
+				return nil, err
 			}
 			first := elems[0]
 			rest := elems[1:]
@@ -589,6 +632,11 @@ func (interp *Interpreter) setupArrayProto() {
 	}))
 	_ = p.Set("unshift", interp.nativeMethod("unshift", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		if arr, ok := this.(*engine.ArrayValue); ok {
+			if len(args) > 0 {
+				if err := requireMutableArray(arr); err != nil {
+					return nil, err
+				}
+			}
 			old := arr.Elems()
 			newElems := append(append([]engine.Value{}, args...), old...)
 			for i, e := range newElems {
@@ -803,6 +851,9 @@ func (interp *Interpreter) setupArrayProto() {
 		if !ok {
 			return this, nil
 		}
+		if err := requireMutableArray(arr); err != nil {
+			return nil, err
+		}
 		elems := arr.Elems()
 		for i, j := 0, len(elems)-1; i < j; i, j = i+1, j-1 {
 			// 先取出两侧值再写回（Elems() 是实时视图，先写会覆盖未读值）。
@@ -941,12 +992,11 @@ func (interp *Interpreter) setupArrayProto() {
 func (interp *Interpreter) setupArrayCtor() {
 	ctor := interp.makeFunc("Array", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 1 && args[0].Type() == engine.TypeNumber {
-			n, _ := args[0].Int()
-			elems := make([]engine.Value, n)
-			for i := range elems {
-				elems[i] = engine.Undefined()
+			f, _ := args[0].Float()
+			if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f != math.Trunc(f) || f > float64(uint64(1)<<32-1) {
+				return nil, fmt.Errorf("%w: invalid array length", engine.ErrRangeError)
 			}
-			arr := engine.NewArray(elems)
+			arr := engine.NewArrayHoles(int(f))
 			engine.SetProto(arr, interp.arrayProto)
 			return arr, nil
 		}
@@ -1245,13 +1295,17 @@ func (interp *Interpreter) setupStringProto() {
 			if !r.compiled.Flags.Global {
 				return r.execString(s)
 			}
-			matches := r.compiled.MatchAllIndex(s)
+			matches, err := r.compiled.ExecAll(s)
+			if err != nil {
+				return engine.Undefined(), regexpExecError(err)
+			}
 			if len(matches) == 0 {
 				return engine.Null(), nil
 			}
 			elems := make([]engine.Value, 0, len(matches))
 			for _, m := range matches {
-				elems = append(elems, engine.Str(s[m[0]:m[1]]))
+				elems = append(elems, engine.Str(regex.UTF16Slice(s, m[0], m[1])))
+
 			}
 			out := engine.NewArray(elems)
 			engine.SetProto(out, interp.arrayProto)
@@ -1266,11 +1320,15 @@ func (interp *Interpreter) setupStringProto() {
 			return engine.IntValue(-1), nil
 		}
 		if r, ok := args[0].(*RegexpValue); ok {
-			m := r.compiled.MatchIndex(s)
+			m, err := r.compiled.Exec(s)
+			if err != nil {
+				return engine.Undefined(), regexpExecError(err)
+			}
 			if m == nil {
 				return engine.IntValue(-1), nil
 			}
 			return engine.IntValue(m[0]), nil
+
 		}
 		idx := strings.Index(s, args[0].String())
 		return engine.IntValue(idx), nil
@@ -1287,7 +1345,10 @@ func (interp *Interpreter) setupStringProto() {
 		if !r.compiled.Flags.Global {
 			return engine.Undefined(), fmt.Errorf("%w: String.prototype.matchAll called with a non-global RegExp", engine.ErrTypeError)
 		}
-		matches := r.compiled.MatchAllIndex(s)
+		matches, err := r.compiled.ExecAll(s)
+		if err != nil {
+			return engine.Undefined(), regexpExecError(err)
+		}
 		elems := make([]engine.Value, 0, len(matches))
 		for _, m := range matches {
 			v, err := r.execStringAt(s, m)

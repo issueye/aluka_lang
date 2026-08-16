@@ -41,7 +41,7 @@ Aluka 提供两个后端，均输出从 `vue` 导入运行时 helper 的 ESM 模
 | 后端 | 启用方式 | 支持范围 | 特点 |
 |---|---|---|---|
 | `subset` | 默认，或 `--vue-compiler=subset` | 本文“模板语法子集（v1）” | 纯 Go，约微秒级/SFC；不执行依赖代码，超出子集明确报错 |
-| `official` | `--vue-compiler=official` | 官方 script/template 编译（含 `<script setup>`、指令、官方模板优化）；`<style>`/custom block 在资产管线接入前明确拒绝 | 在 Aluka 自研 VM 内执行 vendored compiler-sfc；无需 Node/外部工具链 |
+| `official` | `--vue-compiler=official` | 官方 script/template 编译（含 `<script setup>`、TypeScript、named exports、指令、官方模板优化）；`<script src>`/`<template src>`、`<style>`/custom block 在输入/资产管线接入前明确拒绝 | 在 Aluka 自研 VM 内执行 vendored compiler-sfc；无需 Node/外部工具链 |
 
 ```bash
 # 官方 compiler-sfc 后端

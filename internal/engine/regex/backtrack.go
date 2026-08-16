@@ -1,6 +1,9 @@
 package regex
 
-import "errors"
+import (
+	"errors"
+	"unicode/utf8"
+)
 
 // Backtracking regex engine (fallback).
 //
@@ -100,11 +103,9 @@ type btState struct {
 	captures []int
 	pos      int
 	frames   []btFrame // 本序列及内层序列的重复回退帧（LIFO）
-	// 当前"打开中"的捕获组（其子序列正在匹配）。帧压入时若处于组内，
-	// 记录组索引与起始位置，回退恢复后按新位置重算该组的捕获终点——
-	// 否则组捕获（在组完成时才写入）会停留在旧值。
-	openGroupIdx   int
-	openGroupStart int
+	// 当前打开中的捕获组上下文。量词帧保存完整栈，使嵌套捕获内的懒重复
+	// 回退后能更新每一层捕获终点。
+	openGroups []btOpenGroup
 	// steps 是本轮匹配的步数预算（灾难性回溯护栏）：超限后 aborted 置位，
 	// 所有匹配路径立即短路失败，exec 不再尝试后续起始位置（本轮整体
 	// 返回不匹配）。lookaround 子状态与父状态共享预算。
@@ -146,6 +147,11 @@ func (st *btState) syncBudget(sub *btState) {
 	}
 }
 
+type btOpenGroup struct {
+	idx   int
+	start int
+}
+
 // btFrame 是序列内重复量词的回退帧。贪心重复在"少吃一次"时压帧；
 // 懒重复在"多吃一次"时压帧。帧保存压入时刻的位置与捕获组。
 type btFrame struct {
@@ -155,9 +161,8 @@ type btFrame struct {
 	caps  []int
 	more  bool // lazy：弹帧后先多吃一个子节点再继续
 	child *btNode
-	// 帧压入时处于打开状态的捕获组（-1 = 无）。恢复时重算其捕获终点。
-	grpIdx   int
-	grpStart int
+	// 帧压入时的完整打开捕获组栈。
+	openGroups []btOpenGroup
 }
 
 // exec finds the first match at or after a given start byte offset.
@@ -171,7 +176,7 @@ func (r *btRegexp) exec(s string, start int) []int {
 // 测试用低上限明确验证护栏实际触发（而非仅凭"执行很快"推断）。
 func (r *btRegexp) execWithLimit(s string, start, limit int) (match []int, aborted bool, steps int) {
 	n := len(s)
-	for p := start; p <= n; p++ {
+	for p := start; p <= n; p = nextRuneBoundary(s, p) {
 		caps := make([]int, (r.numGroups+1)*2)
 		for i := range caps {
 			caps[i] = -1
@@ -180,7 +185,7 @@ func (r *btRegexp) execWithLimit(s string, start, limit int) (match []int, abort
 		if remaining <= 0 {
 			return nil, true, steps
 		}
-		st := &btState{captures: caps, pos: p, openGroupIdx: -1, limit: remaining}
+		st := &btState{captures: caps, pos: p, limit: remaining}
 		ok := r.matchSeq(s, st, r.root) && matchEnd(r, s, st)
 		steps += st.steps
 		if st.aborted {
@@ -208,20 +213,20 @@ func (r *btRegexp) matchNode(s string, st *btState, n *btNode) bool {
 	}
 	switch n.kind {
 	case btLit:
-		if r.matchAtomAt(s, st.pos, n.lit) {
-			st.pos++
+		if size := r.matchAtomAt(s, st.pos, n.lit); size > 0 {
+			st.pos += size
 			return true
 		}
 		return false
 	case btClass:
-		if r.matchClassAt(s, st.pos, n) {
-			st.pos++
+		if size := r.matchClassAt(s, st.pos, n); size > 0 {
+			st.pos += size
 			return true
 		}
 		return false
 	case btDot:
-		if r.matchDotAt(s, st.pos, n.dotAll) {
-			st.pos++
+		if size := r.matchDotAt(s, st.pos, n.dotAll || r.dotAll); size > 0 {
+			st.pos += size
 			return true
 		}
 		return false
@@ -233,24 +238,22 @@ func (r *btRegexp) matchNode(s string, st *btState, n *btNode) bool {
 		switch n.grpKind {
 		case grpCapture, grpNoncap:
 			start := st.pos
-			// 记录打开中的捕获组（仅 grpCapture），供回退帧恢复时
-			// 重算捕获终点；嵌套组保存并恢复外层上下文。
-			savedGrpIdx, savedGrpStart := st.openGroupIdx, st.openGroupStart
+			openBase := len(st.openGroups)
 			if n.grpKind == grpCapture {
-				st.openGroupIdx, st.openGroupStart = n.groupIdx, start
+				st.openGroups = append(st.openGroups, btOpenGroup{idx: n.groupIdx, start: start})
 			}
 			if !r.matchSeq(s, st, n.sub) {
-				st.openGroupIdx, st.openGroupStart = savedGrpIdx, savedGrpStart
+				st.openGroups = st.openGroups[:openBase]
 				return false
 			}
-			st.openGroupIdx, st.openGroupStart = savedGrpIdx, savedGrpStart
+			st.openGroups = st.openGroups[:openBase]
 			if n.grpKind == grpCapture {
 				r.setCapture(st, n.groupIdx, start, st.pos)
 			}
 			return true
 		case grpLookahead:
 			// V8 语义：前瞻内的捕获组会写入整体匹配结果（如 /(?=(a))b/ 组1 = "a"）。
-			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos, openGroupIdx: -1, steps: st.steps, limit: st.limit}
+			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos, steps: st.steps, limit: st.limit}
 			if r.matchSeq(s, sub, n.sub) {
 				copy(st.captures, sub.captures)
 				st.syncBudget(sub)
@@ -259,7 +262,7 @@ func (r *btRegexp) matchNode(s string, st *btState, n *btNode) bool {
 			st.syncBudget(sub)
 			return false
 		case grpNegLookahead:
-			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos, openGroupIdx: -1, steps: st.steps, limit: st.limit}
+			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos, steps: st.steps, limit: st.limit}
 			matched := r.matchSeq(s, sub, n.sub)
 			st.syncBudget(sub)
 			return !matched
@@ -332,9 +335,13 @@ func (r *btRegexp) matchSeq(s string, st *btState, nodes []btNode) bool {
 // 压回退帧。pc 是该重复节点在 nodes 中的索引（后继为 pc+1）。
 func (r *btRegexp) repeatInSeq(s string, st *btState, n *btNode, nodes []btNode, pc int) bool {
 	count := 0
+	clearFrom := firstCaptureIndex(n.child)
 	// 先满足 min 次（不可回退）。
 	for count < n.min {
 		before := st.pos
+		if count > 0 {
+			clearCaptures(st.captures, clearFrom)
+		}
 		if !r.matchNode(s, st, n.child) {
 			return false
 		}
@@ -349,9 +356,12 @@ func (r *btRegexp) repeatInSeq(s string, st *btState, n *btNode, nodes []btNode,
 			before := st.pos
 			st.frames = append(st.frames, btFrame{
 				nodes: nodes, pc: pc + 1, pos: st.pos, caps: cloneCaps(st.captures),
-				grpIdx: st.openGroupIdx, grpStart: st.openGroupStart,
+				openGroups: cloneOpenGroups(st.openGroups),
 			})
+			clearCaptures(st.captures, clearFrom)
 			if !r.matchNode(s, st, n.child) {
+				last := st.frames[len(st.frames)-1]
+				copy(st.captures, last.caps)
 				break
 			}
 			if st.pos == before {
@@ -366,7 +376,7 @@ func (r *btRegexp) repeatInSeq(s string, st *btState, n *btNode, nodes []btNode,
 		st.frames = append(st.frames, btFrame{
 			nodes: nodes, pc: pc + 1, pos: st.pos, caps: cloneCaps(st.captures),
 			more: true, child: n.child,
-			grpIdx: st.openGroupIdx, grpStart: st.openGroupStart,
+			openGroups: cloneOpenGroups(st.openGroups),
 		})
 	}
 	return true
@@ -383,26 +393,18 @@ func (r *btRegexp) backtrackSeq(s string, st *btState, nodes []btNode, pc *int, 
 		st.frames = st.frames[:len(st.frames)-1]
 		st.pos = f.pos
 		copy(st.captures, f.caps)
-		// 帧压入时组捕获尚未写入（组在其子序列完成后才 setCapture）：
-		// 按恢复后的位置重算打开中捕获组的终点。
-		if f.grpIdx >= 0 {
-			r.setCapture(st, f.grpIdx, f.grpStart, st.pos)
-		}
+		st.openGroups = cloneOpenGroups(f.openGroups)
+		r.updateOpenCaptures(st)
 		if f.more {
 			// 懒重复：先多吃一个子节点，并压新的"再吃一个"帧。
 			if !r.matchNode(s, st, f.child) {
 				continue
 			}
-			// 多吃之后重算打开中捕获组的终点（吃之前重算会把
-			// 上一轮的零宽/短终点留在捕获里——(.*?)$ 类模式
-			// 的组会卡在首次停止点）。
-			if f.grpIdx >= 0 {
-				r.setCapture(st, f.grpIdx, f.grpStart, st.pos)
-			}
+			r.updateOpenCaptures(st)
 			st.frames = append(st.frames, btFrame{
 				nodes: f.nodes, pc: f.pc, pos: st.pos, caps: cloneCaps(st.captures),
 				more: true, child: f.child,
-				grpIdx: f.grpIdx, grpStart: f.grpStart, // 继承组上下文（弹出时已退出组作用域）
+				openGroups: cloneOpenGroups(f.openGroups),
 			})
 		}
 		if sameSeq(f.nodes, nodes) {
@@ -492,12 +494,12 @@ func (r *btRegexp) matchAnchor(s string, pos int, kind btAnchorKind) bool {
 	switch kind {
 	case ancStart:
 		if r.multiline {
-			return pos == 0 || s[pos-1] == '\n'
+			return pos == 0 || isLineTerminatorBefore(s, pos)
 		}
 		return pos == 0
 	case ancEnd:
 		if r.multiline {
-			return pos == len(s) || s[pos] == '\n'
+			return pos == len(s) || isLineTerminatorAt(s, pos)
 		}
 		return pos == len(s)
 	case ancWord:
@@ -509,36 +511,50 @@ func (r *btRegexp) matchAnchor(s string, pos int, kind btAnchorKind) bool {
 }
 
 func (r *btRegexp) isWordAt(s string, pos int, boundary bool) bool {
-	before := pos > 0 && isWordByte(s[pos-1])
-	after := pos < len(s) && isWordByte(s[pos])
+	before := false
+	if pos > 0 {
+		ch, _ := utf8.DecodeLastRuneInString(s[:pos])
+		before = isWordRune(ch)
+	}
+	after := false
+	if pos < len(s) {
+		ch, _ := utf8.DecodeRuneInString(s[pos:])
+		after = isWordRune(ch)
+	}
 	if boundary {
 		return before != after
 	}
 	return before == after
 }
 
-func isWordByte(b byte) bool {
-	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
+func isWordRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_'
 }
 
-// matchAtomAt matches a single literal rune at pos.
-func (r *btRegexp) matchAtomAt(s string, pos int, lit rune) bool {
+// matchAtomAt 匹配 pos 处的单个字面量，返回消费的字节数。
+func (r *btRegexp) matchAtomAt(s string, pos int, lit rune) int {
 	if pos >= len(s) {
-		return false
+		return 0
 	}
-	ch := rune(s[pos])
+	ch, size := utf8.DecodeRuneInString(s[pos:])
 	if r.ignoreCase {
-		return lower(ch) == lower(lit)
+		if lower(ch) == lower(lit) {
+			return size
+		}
+		return 0
 	}
-	return ch == lit
+	if ch == lit {
+		return size
+	}
+	return 0
 }
 
-// matchClassAt matches a character class at pos (byte-oriented for ASCII).
-func (r *btRegexp) matchClassAt(s string, pos int, n *btNode) bool {
+// matchClassAt 匹配 pos 处的单个字符，返回消费的字节数。
+func (r *btRegexp) matchClassAt(s string, pos int, n *btNode) int {
 	if pos >= len(s) {
-		return false
+		return 0
 	}
-	ch := rune(s[pos])
+	ch, size := utf8.DecodeRuneInString(s[pos:])
 	if r.ignoreCase {
 		ch = lower(ch)
 	}
@@ -565,24 +581,37 @@ func (r *btRegexp) matchClassAt(s string, pos int, n *btNode) bool {
 		}
 	}
 	if n.negated {
-		return !m
+		if !m {
+			return size
+		}
+		return 0
 	}
-	return m
+	if m {
+		return size
+	}
+	return 0
 }
 
-func (r *btRegexp) matchDotAt(s string, pos int, dotAll bool) bool {
+func (r *btRegexp) matchDotAt(s string, pos int, dotAll bool) int {
 	if pos >= len(s) {
-		return false
+		return 0
 	}
-	if dotAll {
-		return true
+	ch, size := utf8.DecodeRuneInString(s[pos:])
+	if dotAll || !isLineTerminator(ch) {
+		return size
 	}
-	return s[pos] != '\n' && s[pos] != '\r'
+	return 0
 }
 
 func (r *btRegexp) setCapture(st *btState, idx, start, end int) {
 	st.captures[idx*2] = start
 	st.captures[idx*2+1] = end
+}
+
+func (r *btRegexp) updateOpenCaptures(st *btState) {
+	for _, group := range st.openGroups {
+		r.setCapture(st, group.idx, group.start, st.pos)
+	}
 }
 
 func (r *btRegexp) matchBackref(s string, st *btState, n *btNode) bool {
@@ -618,9 +647,9 @@ func (r *btRegexp) matchLookbehind(s string, st *btState, n *btNode) bool {
 	neg := n.grpKind == grpNegLookbehind
 	start := st.pos
 	ok := false
-	// Try each possible start position up to st.pos.
-	for p := 0; p <= start; p++ {
-		sub := &btState{captures: cloneCaps(st.captures), pos: p, openGroupIdx: -1, steps: st.steps, limit: st.limit}
+	// Try each possible rune boundary up to st.pos.
+	for p := 0; p <= start; p = nextRuneBoundary(s, p) {
+		sub := &btState{captures: cloneCaps(st.captures), pos: p, steps: st.steps, limit: st.limit}
 		if r.matchSeq(s, sub, n.sub) && sub.pos == start {
 			ok = true
 			// 与前瞻一致：后行断言内的捕获组写入整体结果。
@@ -645,6 +674,71 @@ func cloneCaps(c []int) []int {
 	return out
 }
 
+func cloneOpenGroups(groups []btOpenGroup) []btOpenGroup {
+	return append([]btOpenGroup(nil), groups...)
+}
+
+func firstCaptureIndex(n *btNode) int {
+	first := 0
+	var visit func(*btNode)
+	visit = func(node *btNode) {
+		if node == nil {
+			return
+		}
+		if node.kind == btGroup && node.grpKind == grpCapture && (first == 0 || node.groupIdx < first) {
+			first = node.groupIdx
+		}
+		for i := range node.sub {
+			visit(&node.sub[i])
+		}
+		visit(node.child)
+		for _, alt := range node.alts {
+			for i := range alt {
+				visit(&alt[i])
+			}
+		}
+	}
+	visit(n)
+	return first
+}
+
+func clearCaptures(captures []int, from int) {
+	if from <= 0 {
+		return
+	}
+	for i := from * 2; i < len(captures); i++ {
+		captures[i] = -1
+	}
+}
+
+func nextRuneBoundary(s string, pos int) int {
+	if pos >= len(s) {
+		return len(s) + 1
+	}
+	_, size := utf8.DecodeRuneInString(s[pos:])
+	return pos + size
+}
+
+func isLineTerminator(r rune) bool {
+	return r == '\n' || r == '\r' || r == '\u2028' || r == '\u2029'
+}
+
+func isLineTerminatorAt(s string, pos int) bool {
+	if pos >= len(s) {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(s[pos:])
+	return isLineTerminator(r)
+}
+
+func isLineTerminatorBefore(s string, pos int) bool {
+	if pos <= 0 {
+		return false
+	}
+	r, _ := utf8.DecodeLastRuneInString(s[:pos])
+	return isLineTerminator(r)
+}
+
 func lower(r rune) rune {
 	if r >= 'A' && r <= 'Z' {
 		return r + ('a' - 'A')
@@ -658,13 +752,14 @@ func lower(r rune) rune {
 type btParser struct {
 	src        string
 	i          int
+	unicode    bool
 	numGroups  int
 	groupNames map[string]int
 }
 
 // compileBacktrack parses pattern into a backtracking matcher.
 func compileBacktrack(pattern string, f Flags) (*btRegexp, error) {
-	p := &btParser{src: pattern, groupNames: map[string]int{}}
+	p := &btParser{src: pattern, unicode: f.Unicode || f.UnicodeSets, groupNames: map[string]int{}}
 	nodes, err := p.parseSeq(')')
 	if err != nil {
 		return nil, err
@@ -824,8 +919,9 @@ func (p *btParser) parseAtom() (btNode, error) {
 		p.i++
 		return btNode{kind: btLit, lit: rune(c)}, nil
 	default:
-		p.i++
-		return btNode{kind: btLit, lit: rune(c)}, nil
+		lit, size := utf8.DecodeRuneInString(p.src[p.i:])
+		p.i += size
+		return btNode{kind: btLit, lit: lit}, nil
 	}
 }
 
@@ -954,11 +1050,18 @@ func (p *btParser) parseClass() (btNode, error) {
 				return btNode{}, err
 			}
 			if ch.kind == 0 && hi.kind == 0 {
+				if ch.lo > hi.lo {
+					return btNode{}, errors.New("invalid regular expression: range out of order in character class")
+				}
 				node.parts = append(node.parts, btClassPart{ranges: []btRange{{ch.lo, hi.lo}}})
 				continue
 			}
-			// Escape as range endpoint: approximate by appending both.
+			if p.unicode {
+				return btNode{}, errors.New("invalid regular expression: invalid character class range")
+			}
+			// Annex B legacy 模式：shorthand 不能作为范围端点，'-' 按字面量。
 			node.parts = append(node.parts, ch.parts...)
+			node.parts = append(node.parts, btClassPart{ranges: []btRange{{'-', '-'}}})
 			node.parts = append(node.parts, hi.parts...)
 			continue
 		}
@@ -982,8 +1085,9 @@ func (p *btParser) parseClassChar() (classChar, error) {
 	if c == '\\' {
 		return p.parseClassEscape()
 	}
-	p.i++
-	return classChar{kind: 0, lo: rune(c), parts: []btClassPart{{ranges: []btRange{{rune(c), rune(c)}}}}}, nil
+	lit, size := utf8.DecodeRuneInString(p.src[p.i:])
+	p.i += size
+	return classChar{kind: 0, lo: lit, parts: []btClassPart{{ranges: []btRange{{lit, lit}}}}}, nil
 }
 
 func (p *btParser) parseClassEscape() (classChar, error) {
@@ -1030,7 +1134,7 @@ func (p *btParser) parseClassEscape() (classChar, error) {
 			if j >= len(p.src) {
 				return classChar{}, errors.New("invalid regular expression: unterminated \\u escape")
 			}
-			v := hexVal(p.src[p.i+2 : j])
+			v := patternCodeUnit(hexVal(p.src[p.i+2:j]), Flags{Unicode: p.unicode})
 			p.i = j + 1
 			return classChar{kind: 0, lo: v, parts: []btClassPart{{ranges: []btRange{{v, v}}}}}, nil
 		}
@@ -1038,15 +1142,18 @@ func (p *btParser) parseClassEscape() (classChar, error) {
 		if !ok {
 			return classChar{}, errors.New("invalid regular expression: incomplete \\u escape")
 		}
+		v = patternCodeUnit(v, Flags{Unicode: p.unicode})
 		return classChar{kind: 0, lo: v, parts: []btClassPart{{ranges: []btRange{{v, v}}}}}, nil
 	case '0':
 		p.i++
 		return classChar{kind: 0, lo: 0, parts: []btClassPart{{ranges: []btRange{{0, 0}}}}}, nil
 	default:
-		// Literal metachar or ident char.
-		p.i++
-		ch := rune(e)
-		return classChar{kind: 0, lo: ch, parts: []btClassPart{{ranges: []btRange{{ch, ch}}}}}, nil
+		if p.unicode {
+			return classChar{}, errors.New("invalid regular expression: invalid escape")
+		}
+		literal, size := utf8.DecodeRuneInString(p.src[p.i:])
+		p.i += size
+		return classChar{kind: 0, lo: literal, parts: []btClassPart{{ranges: []btRange{{literal, literal}}}}}, nil
 	}
 }
 
@@ -1121,7 +1228,7 @@ func (p *btParser) parseEscape() (btNode, error) {
 			if j >= len(p.src) {
 				return btNode{}, errors.New("invalid regular expression: unterminated \\u escape")
 			}
-			v := hexVal(p.src[p.i+2 : j])
+			v := patternCodeUnit(hexVal(p.src[p.i+2:j]), Flags{Unicode: p.unicode})
 			p.i = j + 1
 			return btNode{kind: btLit, lit: v}, nil
 		}
@@ -1129,7 +1236,7 @@ func (p *btParser) parseEscape() (btNode, error) {
 		if !ok {
 			return btNode{}, errors.New("invalid regular expression: incomplete \\u escape")
 		}
-		return btNode{kind: btLit, lit: v}, nil
+		return btNode{kind: btLit, lit: patternCodeUnit(v, Flags{Unicode: p.unicode})}, nil
 	case e == '0':
 		p.i++
 		return btNode{kind: btLit, lit: 0}, nil
@@ -1144,9 +1251,12 @@ func (p *btParser) parseEscape() (btNode, error) {
 		}
 		return btNode{kind: btLit, lit: 'c'}, nil
 	default:
-		// Literal metachar escape.
-		p.i++
-		return btNode{kind: btLit, lit: rune(e)}, nil
+		if p.unicode {
+			return btNode{}, errors.New("invalid regular expression: invalid escape")
+		}
+		literal, size := utf8.DecodeRuneInString(p.src[p.i:])
+		p.i += size
+		return btNode{kind: btLit, lit: literal}, nil
 	}
 }
 

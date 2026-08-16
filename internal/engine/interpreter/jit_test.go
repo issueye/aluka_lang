@@ -1770,6 +1770,32 @@ func TestJITTraceGuardedTrivialMethodGetter(t *testing.T) {
 	}
 }
 
+func TestJITArrayPushGuardsFrozenArray(t *testing.T) {
+	for _, mode := range []jit.Mode{jit.Quick, jit.Auto} {
+		t.Run(mode.String(), func(t *testing.T) {
+			vm, err := NewVM()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer vm.Close()
+			vm.ConfigureJIT(jit.Config{Mode: mode, Threshold: ^uint32(0), BackedgeThreshold: 1, TraceBudget: 8, Stats: true})
+			_, err = vm.Eval(`
+				function append(a,n){ for(let i=0;i<n;i++) a.push(i); }
+				const a=[]; Object.freeze(a);
+				try { append(a,4); } catch(e) {}
+				globalThis.jitFrozenPush = a.length;
+			`, "jit-frozen-push.js")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, _ := vm.Global().Get("jitFrozenPush")
+			if got.String() != "0" {
+				t.Fatalf("length = %s, want 0", got.String())
+			}
+		})
+	}
+}
+
 func TestJITTraceGuardedArrayPushRange(t *testing.T) {
 	for _, mode := range []jit.Mode{jit.Quick, jit.Auto} {
 		t.Run(mode.String(), func(t *testing.T) {

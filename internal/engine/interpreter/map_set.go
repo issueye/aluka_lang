@@ -77,9 +77,9 @@ type mapEntry struct {
 // MapValue is a JS Map: an ordered collection of key/value pairs with
 // SameValueZero key equality.
 type MapValue struct {
-	obj    engine.Object
-	interp *Interpreter
-	keys   []string          // canonical keys in insertion order
+	obj     engine.Object
+	interp  *Interpreter
+	keys    []string // canonical keys in insertion order
 	entries map[string]*mapEntry
 }
 
@@ -95,22 +95,23 @@ func NewMapValue(interp *Interpreter) *MapValue {
 	return m
 }
 
-func (m *MapValue) Type() engine.ValueType { return engine.TypeObject }
-func (m *MapValue) String() string         { return "[object Map]" }
-func (m *MapValue) Int() (int, bool)       { return 0, false }
-func (m *MapValue) Float() (float64, bool) { return 0, false }
-func (m *MapValue) Bool() (bool, bool)     { return true, true }
-func (m *MapValue) IsUndefined() bool      { return false }
-func (m *MapValue) IsNull() bool           { return false }
-func (m *MapValue) IsObject() bool         { return true }
-func (m *MapValue) IsFunction() bool       { return false }
-func (m *MapValue) AsObject() (engine.Object, bool) { return m, true }
+func (m *MapValue) Type() engine.ValueType              { return engine.TypeObject }
+func (m *MapValue) String() string                      { return "[object Map]" }
+func (m *MapValue) Int() (int, bool)                    { return 0, false }
+func (m *MapValue) Float() (float64, bool)              { return 0, false }
+func (m *MapValue) Bool() (bool, bool)                  { return true, true }
+func (m *MapValue) IsUndefined() bool                   { return false }
+func (m *MapValue) IsNull() bool                        { return false }
+func (m *MapValue) IsObject() bool                      { return true }
+func (m *MapValue) IsFunction() bool                    { return false }
+func (m *MapValue) AsObject() (engine.Object, bool)     { return m, true }
 func (m *MapValue) AsFunction() (engine.Function, bool) { return nil, false }
 
 func (m *MapValue) Get(key string) (engine.Value, error) { return m.obj.Get(key) }
 func (m *MapValue) Set(key string, v engine.Value) error { return m.obj.Set(key, v) }
 func (m *MapValue) Keys() []string                       { return m.obj.Keys() }
 func (m *MapValue) Delete(key string) bool               { return m.obj.Delete(key) }
+func (m *MapValue) UnwrapObject() engine.Object          { return m.obj }
 
 // mapGet returns the value associated with key, or undefined if absent.
 func (m *MapValue) mapGet(key engine.Value) engine.Value {
@@ -183,22 +184,23 @@ func NewSetValue(interp *Interpreter) *SetValue {
 	return s
 }
 
-func (s *SetValue) Type() engine.ValueType { return engine.TypeObject }
-func (s *SetValue) String() string         { return "[object Set]" }
-func (s *SetValue) Int() (int, bool)       { return 0, false }
-func (s *SetValue) Float() (float64, bool) { return 0, false }
-func (s *SetValue) Bool() (bool, bool)     { return true, true }
-func (s *SetValue) IsUndefined() bool      { return false }
-func (s *SetValue) IsNull() bool           { return false }
-func (s *SetValue) IsObject() bool         { return true }
-func (s *SetValue) IsFunction() bool       { return false }
-func (s *SetValue) AsObject() (engine.Object, bool) { return s, true }
+func (s *SetValue) Type() engine.ValueType              { return engine.TypeObject }
+func (s *SetValue) String() string                      { return "[object Set]" }
+func (s *SetValue) Int() (int, bool)                    { return 0, false }
+func (s *SetValue) Float() (float64, bool)              { return 0, false }
+func (s *SetValue) Bool() (bool, bool)                  { return true, true }
+func (s *SetValue) IsUndefined() bool                   { return false }
+func (s *SetValue) IsNull() bool                        { return false }
+func (s *SetValue) IsObject() bool                      { return true }
+func (s *SetValue) IsFunction() bool                    { return false }
+func (s *SetValue) AsObject() (engine.Object, bool)     { return s, true }
 func (s *SetValue) AsFunction() (engine.Function, bool) { return nil, false }
 
 func (s *SetValue) Get(key string) (engine.Value, error) { return s.obj.Get(key) }
 func (s *SetValue) Set(key string, v engine.Value) error { return s.obj.Set(key, v) }
 func (s *SetValue) Keys() []string                       { return s.obj.Keys() }
 func (s *SetValue) Delete(key string) bool               { return s.obj.Delete(key) }
+func (s *SetValue) UnwrapObject() engine.Object          { return s.obj }
 
 func (s *SetValue) setAdd(val engine.Value) {
 	k := mapKey(val)
@@ -258,22 +260,23 @@ func NewWeakMapValue(interp *Interpreter) *WeakMapValue {
 	return w
 }
 
-func (w *WeakMapValue) Type() engine.ValueType { return engine.TypeObject }
-func (w *WeakMapValue) String() string         { return "[object WeakMap]" }
-func (w *WeakMapValue) Int() (int, bool)       { return 0, false }
-func (w *WeakMapValue) Float() (float64, bool) { return 0, false }
-func (w *WeakMapValue) Bool() (bool, bool)     { return true, true }
-func (w *WeakMapValue) IsUndefined() bool      { return false }
-func (w *WeakMapValue) IsNull() bool           { return false }
-func (w *WeakMapValue) IsObject() bool         { return true }
-func (w *WeakMapValue) IsFunction() bool       { return false }
-func (w *WeakMapValue) AsObject() (engine.Object, bool) { return w, true }
+func (w *WeakMapValue) Type() engine.ValueType              { return engine.TypeObject }
+func (w *WeakMapValue) String() string                      { return "[object WeakMap]" }
+func (w *WeakMapValue) Int() (int, bool)                    { return 0, false }
+func (w *WeakMapValue) Float() (float64, bool)              { return 0, false }
+func (w *WeakMapValue) Bool() (bool, bool)                  { return true, true }
+func (w *WeakMapValue) IsUndefined() bool                   { return false }
+func (w *WeakMapValue) IsNull() bool                        { return false }
+func (w *WeakMapValue) IsObject() bool                      { return true }
+func (w *WeakMapValue) IsFunction() bool                    { return false }
+func (w *WeakMapValue) AsObject() (engine.Object, bool)     { return w, true }
 func (w *WeakMapValue) AsFunction() (engine.Function, bool) { return nil, false }
 
 func (w *WeakMapValue) Get(key string) (engine.Value, error) { return w.obj.Get(key) }
 func (w *WeakMapValue) Set(key string, v engine.Value) error { return w.obj.Set(key, v) }
 func (w *WeakMapValue) Keys() []string                       { return w.obj.Keys() }
 func (w *WeakMapValue) Delete(key string) bool               { return w.obj.Delete(key) }
+func (w *WeakMapValue) UnwrapObject() engine.Object          { return w.obj }
 
 func weakKey(key engine.Value) (uintptr, bool) {
 	if !key.IsObject() {
@@ -342,22 +345,23 @@ func NewWeakSetValue(interp *Interpreter) *WeakSetValue {
 	return w
 }
 
-func (w *WeakSetValue) Type() engine.ValueType { return engine.TypeObject }
-func (w *WeakSetValue) String() string         { return "[object WeakSet]" }
-func (w *WeakSetValue) Int() (int, bool)       { return 0, false }
-func (w *WeakSetValue) Float() (float64, bool) { return 0, false }
-func (w *WeakSetValue) Bool() (bool, bool)     { return true, true }
-func (w *WeakSetValue) IsUndefined() bool      { return false }
-func (w *WeakSetValue) IsNull() bool           { return false }
-func (w *WeakSetValue) IsObject() bool         { return true }
-func (w *WeakSetValue) IsFunction() bool       { return false }
-func (w *WeakSetValue) AsObject() (engine.Object, bool) { return w, true }
+func (w *WeakSetValue) Type() engine.ValueType              { return engine.TypeObject }
+func (w *WeakSetValue) String() string                      { return "[object WeakSet]" }
+func (w *WeakSetValue) Int() (int, bool)                    { return 0, false }
+func (w *WeakSetValue) Float() (float64, bool)              { return 0, false }
+func (w *WeakSetValue) Bool() (bool, bool)                  { return true, true }
+func (w *WeakSetValue) IsUndefined() bool                   { return false }
+func (w *WeakSetValue) IsNull() bool                        { return false }
+func (w *WeakSetValue) IsObject() bool                      { return true }
+func (w *WeakSetValue) IsFunction() bool                    { return false }
+func (w *WeakSetValue) AsObject() (engine.Object, bool)     { return w, true }
 func (w *WeakSetValue) AsFunction() (engine.Function, bool) { return nil, false }
 
 func (w *WeakSetValue) Get(key string) (engine.Value, error) { return w.obj.Get(key) }
 func (w *WeakSetValue) Set(key string, v engine.Value) error { return w.obj.Set(key, v) }
 func (w *WeakSetValue) Keys() []string                       { return w.obj.Keys() }
 func (w *WeakSetValue) Delete(key string) bool               { return w.obj.Delete(key) }
+func (w *WeakSetValue) UnwrapObject() engine.Object          { return w.obj }
 
 func (w *WeakSetValue) wsAdd(val engine.Value) bool {
 	k, ok := weakKey(val)

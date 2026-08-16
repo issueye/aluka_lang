@@ -1,6 +1,8 @@
 package regex
 
 import (
+	"bufio"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -42,6 +44,10 @@ var paritySubjects = []string{
 	"undefined",
 	"true null",
 	"class=\"btn\" :id=\"x\"",
+	"éclair",
+	"😀a",
+	"a\u2028b",
+	"a\u2029b",
 }
 
 // loadCorpus 读取 testdata/corpus.txt（pattern \t flags）。
@@ -118,7 +124,11 @@ func TestEngineParityOnCorpus(t *testing.T) {
 		}
 		for _, subj := range paritySubjects {
 			want := re.FindStringSubmatchIndex(subj)
-			got := bt.exec(subj, 0)
+			got, aborted, _ := bt.execWithLimit(subj, 0, btMaxSteps)
+			if aborted {
+				t.Errorf("fallback budget exhausted %q flags=%q subj=%q", c.pat, c.flags, subj)
+				continue
+			}
 			if !equalIdx(want, got) {
 				t.Errorf("parity drift %q flags=%q subj=%q:\n  RE2=%v\n  bt =%v", c.pat, c.flags, subj, want, got)
 			}
@@ -128,6 +138,60 @@ func TestEngineParityOnCorpus(t *testing.T) {
 	t.Logf("corpus parity: checked=%d skipped=%d subjects=%d", checked, skipped, len(paritySubjects))
 	if checked == 0 {
 		t.Fatal("no corpus pattern was parity-checkable")
+	}
+}
+
+type nodeOracleCase struct {
+	Name    string `json:"name"`
+	Pattern string `json:"pattern"`
+	Flags   string `json:"flags"`
+	Input   string `json:"input"`
+	Indices []int  `json:"indices"`
+	Error   string `json:"error"`
+}
+
+func TestNodeOracleFixture(t *testing.T) {
+	file, err := os.Open(filepath.Join("testdata", "node_oracle.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var tc nodeOracleCase
+		if err := json.Unmarshal(scanner.Bytes(), &tc); err != nil {
+			t.Fatalf("decode Node oracle: %v", err)
+		}
+		t.Run(tc.Name, func(t *testing.T) {
+			compiled, err := Compile(tc.Pattern, tc.Flags)
+			if tc.Error != "" {
+				if err == nil {
+					t.Fatalf("Compile succeeded, want %s", tc.Error)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := compiled.Exec(tc.Input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == nil || tc.Indices == nil {
+				if !equalIdx(got, tc.Indices) {
+					t.Fatalf("Exec = %v, Node indices = %v", got, tc.Indices)
+				}
+				return
+			}
+			if !equalIdx(got, tc.Indices) {
+				t.Fatalf("UTF-16 indices = %v, Node indices = %v", got, tc.Indices)
+			}
+
+		})
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -151,7 +215,10 @@ func TestFlagSemanticsV8Baseline(t *testing.T) {
 			t.Errorf("Compile(%q, %q): %v", c.pat, c.flags, err)
 			continue
 		}
-		got := compiled.MatchIndex(c.subj)
+		got, err := compiled.Exec(c.subj)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !equalIdx(got, c.want) {
 			t.Errorf("%q flags=%q subj=%q: got %v, want %v", c.pat, c.flags, c.subj, got, c.want)
 		}

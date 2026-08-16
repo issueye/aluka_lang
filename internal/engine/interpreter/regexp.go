@@ -31,25 +31,26 @@ func NewRegexpValue(interp *Interpreter, compiled *regex.Compiled, source, flags
 	return r
 }
 
-func (r *RegexpValue) SetProto(proto engine.Object)     { engine.SetProto(r.obj, proto) }
-func (r *RegexpValue) Proto() engine.Object             { return engine.GetProto(r.obj) }
+func (r *RegexpValue) SetProto(proto engine.Object) { engine.SetProto(r.obj, proto) }
+func (r *RegexpValue) Proto() engine.Object         { return engine.GetProto(r.obj) }
 
-func (r *RegexpValue) Type() engine.ValueType             { return engine.TypeObject }
-func (r *RegexpValue) String() string                     { return "/" + escapeRegExpSource(r.source) + "/" + r.flags }
-func (r *RegexpValue) Int() (int, bool)                   { return 0, false }
-func (r *RegexpValue) Float() (float64, bool)             { return 0, false }
-func (r *RegexpValue) Bool() (bool, bool)                 { return true, true }
-func (r *RegexpValue) IsUndefined() bool                  { return false }
-func (r *RegexpValue) IsNull() bool                       { return false }
-func (r *RegexpValue) IsObject() bool                     { return true }
-func (r *RegexpValue) IsFunction() bool                   { return false }
-func (r *RegexpValue) AsObject() (engine.Object, bool)    { return r, true }
+func (r *RegexpValue) Type() engine.ValueType              { return engine.TypeObject }
+func (r *RegexpValue) String() string                      { return "/" + escapeRegExpSource(r.source) + "/" + r.flags }
+func (r *RegexpValue) Int() (int, bool)                    { return 0, false }
+func (r *RegexpValue) Float() (float64, bool)              { return 0, false }
+func (r *RegexpValue) Bool() (bool, bool)                  { return true, true }
+func (r *RegexpValue) IsUndefined() bool                   { return false }
+func (r *RegexpValue) IsNull() bool                        { return false }
+func (r *RegexpValue) IsObject() bool                      { return true }
+func (r *RegexpValue) IsFunction() bool                    { return false }
+func (r *RegexpValue) AsObject() (engine.Object, bool)     { return r, true }
 func (r *RegexpValue) AsFunction() (engine.Function, bool) { return nil, false }
 
 func (r *RegexpValue) Get(key string) (engine.Value, error) { return r.obj.Get(key) }
 func (r *RegexpValue) Set(key string, v engine.Value) error { return r.obj.Set(key, v) }
 func (r *RegexpValue) Keys() []string                       { return r.obj.Keys() }
 func (r *RegexpValue) Delete(key string) bool               { return r.obj.Delete(key) }
+func (r *RegexpValue) UnwrapObject() engine.Object          { return r.obj }
 
 // isRegexpValue 判断一个值是否为 RegExp 实例。
 func isRegexpValue(v engine.Value) bool {
@@ -75,50 +76,52 @@ func (r *RegexpValue) lastIndex() int {
 	return 0
 }
 
-// matchIndex 在 str 中执行匹配并返回 Go 索引数组（整体 + 捕获组）。
-// 遵循 g/y 的 lastIndex 语义：命中后更新 lastIndex，失败时重置为 0。
-func (r *RegexpValue) matchIndex(str string) ([]int, bool) {
+// matchIndex 在 str 中执行匹配并返回 UTF-16 索引数组（整体 + 捕获组）。
+// 遵循 g/y 的 lastIndex 语义：命中后更新，失败时重置为 0。直接 exec/test
+// 命中零宽匹配时不主动推进；需要循环的上层协议负责 AdvanceStringIndex。
+func (r *RegexpValue) matchIndex(str string) ([]int, bool, error) {
 	f := r.compiled.Flags
 	if !f.Global && !f.Sticky {
-		m := r.compiled.MatchIndex(str)
-		return m, m != nil
+		m, err := r.compiled.Exec(str)
+		return m, m != nil, regexpExecError(err)
 	}
 	li := r.lastIndex()
 	if li < 0 {
 		li = 0
 	}
-	if li > len(str) {
+	if li > regex.UTF16Index(str, len(str)) {
 		_ = r.obj.Set("lastIndex", engine.IntValue(0))
-		return nil, false
+		return nil, false, nil
 	}
-	m := r.compiled.MatchIndex(str[li:])
+	m, err := r.compiled.ExecAt(str, li)
+	if err != nil {
+		return nil, false, regexpExecError(err)
+	}
 	if m == nil {
 		_ = r.obj.Set("lastIndex", engine.IntValue(0))
-		return nil, false
+		return nil, false, nil
 	}
-	// sticky：匹配必须从 lastIndex 开始。
-	if f.Sticky && m[0] != 0 {
+	if f.Sticky && m[0] != li {
 		_ = r.obj.Set("lastIndex", engine.IntValue(0))
-		return nil, false
+		return nil, false, nil
 	}
-	// 索引偏移回原串。
-	for j := range m {
-		if m[j] >= 0 {
-			m[j] += li
-		}
+	_ = r.obj.Set("lastIndex", engine.IntValue(m[1]))
+	return m, true, nil
+}
+
+func regexpExecError(err error) error {
+	if err == nil {
+		return nil
 	}
-	// 更新 lastIndex；零宽匹配前进一个字符避免死循环。
-	end := m[1]
-	if end == m[0] {
-		end++
-	}
-	_ = r.obj.Set("lastIndex", engine.IntValue(end))
-	return m, true
+	return fmt.Errorf("%w: %v", engine.ErrRangeError, err)
 }
 
 // execString 执行匹配并构造 RegExp.exec 的结果数组。
 func (r *RegexpValue) execString(str string) (engine.Value, error) {
-	m, ok := r.matchIndex(str)
+	m, ok, err := r.matchIndex(str)
+	if err != nil {
+		return engine.Undefined(), err
+	}
 	if !ok {
 		return engine.Null(), nil
 	}
@@ -134,7 +137,7 @@ func (r *RegexpValue) execStringAt(str string, m []int) (engine.Value, error) {
 		if m[i] < 0 {
 			v = engine.Undefined()
 		} else {
-			v = engine.Str(str[m[i]:m[i+1]])
+			v = engine.Str(regex.UTF16Slice(str, m[i], m[i+1]))
 		}
 		elems = append(elems, v)
 		if i > 0 {
@@ -159,9 +162,9 @@ func (r *RegexpValue) execStringAt(str string, m []int) (engine.Value, error) {
 }
 
 // testString 返回是否有匹配（与 exec 相同的 lastIndex 语义）。
-func (r *RegexpValue) testString(str string) bool {
-	_, ok := r.matchIndex(str)
-	return ok
+func (r *RegexpValue) testString(str string) (bool, error) {
+	_, ok, err := r.matchIndex(str)
+	return ok, err
 }
 
 // escapeRegExpSource 转义 source 中未转义的 '/' 为 '\/'（RegExp.prototype.source）。
@@ -285,7 +288,11 @@ func (interp *Interpreter) setupRegexp() {
 		if len(args) > 0 {
 			str = args[0].String()
 		}
-		return engine.Boolean(r.testString(str)), nil
+		matched, err := r.testString(str)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.Boolean(matched), nil
 	}))
 	_ = p.Set("toString", interp.nativeMethod("toString", func(this engine.Value, _ []engine.Value) (engine.Value, error) {
 		r, err := getRegexp(this)
@@ -313,13 +320,16 @@ func (interp *Interpreter) setupRegexp() {
 		if !r.compiled.Flags.Global {
 			return r.execString(str)
 		}
-		matches := r.compiled.MatchAllIndex(str)
+		matches, execErr := r.compiled.ExecAll(str)
+		if execErr != nil {
+			return engine.Undefined(), regexpExecError(execErr)
+		}
 		if len(matches) == 0 {
 			return engine.Null(), nil
 		}
 		elems := make([]engine.Value, 0, len(matches))
 		for _, m := range matches {
-			elems = append(elems, engine.Str(str[m[0]:m[1]]))
+			elems = append(elems, engine.Str(regex.UTF16Slice(str, m[0], m[1])))
 		}
 		out := engine.NewArray(elems)
 		engine.SetProto(out, r.interp.arrayProto)
@@ -350,7 +360,10 @@ func (interp *Interpreter) setupRegexp() {
 		if len(args) > 0 {
 			str = args[0].String()
 		}
-		m := r.compiled.MatchIndex(str)
+		m, execErr := r.compiled.Exec(str)
+		if execErr != nil {
+			return engine.Undefined(), regexpExecError(execErr)
+		}
 		if m == nil {
 			return engine.IntValue(-1), nil
 		}
@@ -406,9 +419,17 @@ func (interp *Interpreter) setupRegexp() {
 func regexpReplace(interp *Interpreter, r *RegexpValue, str string, replacement engine.Value, global bool) (engine.Value, error) {
 	var matches [][]int
 	if global {
-		matches = r.compiled.MatchAllIndex(str)
+		var err error
+		matches, err = r.compiled.ExecAll(str)
+		if err != nil {
+			return engine.Undefined(), regexpExecError(err)
+		}
 	} else {
-		if m := r.compiled.MatchIndex(str); m != nil {
+		m, err := r.compiled.Exec(str)
+		if err != nil {
+			return engine.Undefined(), regexpExecError(err)
+		}
+		if m != nil {
 			matches = [][]int{m}
 		}
 	}
@@ -421,14 +442,14 @@ func regexpReplace(interp *Interpreter, r *RegexpValue, str string, replacement 
 		var b strings.Builder
 		last := 0
 		for _, m := range matches {
-			b.WriteString(str[last:m[0]])
-			args := []engine.Value{engine.Str(str[m[0]:m[1]])}
+			b.WriteString(regex.UTF16Slice(str, last, m[0]))
+			args := []engine.Value{engine.Str(regex.UTF16Slice(str, m[0], m[1]))}
 			// 捕获组从索引 2 起（m[0:2] 为整体匹配）。
 			for i := 2; i+1 < len(m); i += 2 {
 				if m[i] < 0 {
 					args = append(args, engine.Undefined())
 				} else {
-					args = append(args, engine.Str(str[m[i]:m[i+1]]))
+					args = append(args, engine.Str(regex.UTF16Slice(str, m[i], m[i+1])))
 				}
 			}
 			args = append(args, engine.IntValue(m[0]), engine.Str(str))
@@ -442,7 +463,7 @@ func regexpReplace(interp *Interpreter, r *RegexpValue, str string, replacement 
 			b.WriteString(v.String())
 			last = m[1]
 		}
-		b.WriteString(str[last:])
+		b.WriteString(regex.UTF16Slice(str, last, regex.UTF16Index(str, len(str))))
 		return engine.Str(b.String()), nil
 	}
 
@@ -451,11 +472,11 @@ func regexpReplace(interp *Interpreter, r *RegexpValue, str string, replacement 
 	var b strings.Builder
 	last := 0
 	for _, m := range matches {
-		b.WriteString(str[last:m[0]])
+		b.WriteString(regex.UTF16Slice(str, last, m[0]))
 		b.WriteString(expandReplacement(template, str, m, r))
 		last = m[1]
 	}
-	b.WriteString(str[last:])
+	b.WriteString(regex.UTF16Slice(str, last, regex.UTF16Index(str, len(str))))
 	return engine.Str(b.String()), nil
 }
 
@@ -474,13 +495,13 @@ func expandReplacement(template, str string, m []int, r *RegexpValue) string {
 			b.WriteByte('$')
 			i++
 		case n == '&':
-			b.WriteString(str[m[0]:m[1]])
+			b.WriteString(regex.UTF16Slice(str, m[0], m[1]))
 			i++
 		case n == '`':
-			b.WriteString(str[:m[0]])
+			b.WriteString(regex.UTF16Slice(str, 0, m[0]))
 			i++
 		case n == '\'':
-			b.WriteString(str[m[1]:])
+			b.WriteString(regex.UTF16Slice(str, m[1], regex.UTF16Index(str, len(str))))
 			i++
 		case n == '<':
 			end := strings.IndexByte(template[i+2:], '>')
@@ -498,7 +519,7 @@ func expandReplacement(template, str string, m []int, r *RegexpValue) string {
 				}
 			}
 			if gi >= 0 && m[gi] >= 0 {
-				b.WriteString(str[m[gi]:m[gi+1]])
+				b.WriteString(regex.UTF16Slice(str, m[gi], m[gi+1]))
 			}
 			i += 2 + end
 		case n >= '0' && n <= '9':
@@ -511,7 +532,7 @@ func expandReplacement(template, str string, m []int, r *RegexpValue) string {
 			if num >= 1 && num <= r.compiled.NumGroups() {
 				gi := 2 * num
 				if m[gi] >= 0 {
-					b.WriteString(str[m[gi]:m[gi+1]])
+					b.WriteString(regex.UTF16Slice(str, m[gi], m[gi+1]))
 				}
 				i = j - 1
 			} else {
@@ -535,7 +556,7 @@ func namedGroups(r *RegexpValue, str string, m []int) engine.Value {
 			}
 			gi := 2 * g
 			if m[gi] >= 0 {
-				groups[name] = engine.Str(str[m[gi]:m[gi+1]])
+				groups[name] = engine.Str(regex.UTF16Slice(str, m[gi], m[gi+1]))
 			} else {
 				groups[name] = engine.Undefined()
 			}
@@ -559,19 +580,22 @@ func regexpSplit(interp *Interpreter, r *RegexpValue, str string, limit int) (en
 		}
 		elems = append(elems, v)
 	}
-	matches := r.compiled.MatchAllIndex(str)
+	matches, err := r.compiled.ExecAll(str)
+	if err != nil {
+		return engine.Undefined(), regexpExecError(err)
+	}
 	last := 0
 	for _, m := range matches {
-		push(engine.Str(str[last:m[0]]))
+		push(engine.Str(regex.UTF16Slice(str, last, m[0])))
 		// 捕获组从索引 2 起（m[0:2] 为整体匹配）。
 		for i := 2; i+1 < len(m); i += 2 {
 			if m[i] >= 0 {
-				push(engine.Str(str[m[i]:m[i+1]]))
+				push(engine.Str(regex.UTF16Slice(str, m[i], m[i+1])))
 			}
 		}
 		last = m[1]
 	}
-	push(engine.Str(str[last:]))
+	push(engine.Str(regex.UTF16Slice(str, last, regex.UTF16Index(str, len(str)))))
 	out := engine.NewArray(elems)
 	engine.SetProto(out, interp.arrayProto)
 	return out, nil

@@ -30,7 +30,10 @@ func TestBtDebug(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Compile(%q): %v", c.pat, err)
 		}
-		m := compiled.MatchIndex(c.inp)
+		m, err := compiled.Exec(c.inp)
+		if err != nil {
+			t.Fatal(err)
+		}
 		got := m != nil
 		if got != c.want {
 			t.Errorf("MatchIndex(%q) on %q = %v (m=%v), want %v", c.pat, c.inp, got, m, c.want)

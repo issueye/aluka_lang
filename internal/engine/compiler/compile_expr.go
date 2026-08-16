@@ -601,10 +601,16 @@ func (c *Compiler) compileUnary(n *ast.UnaryExpr) error {
 		}
 	}
 	if n.Op == "delete" {
-		// delete obj.prop  (non-computed member access)
-		if member, ok := n.Arg.(*ast.MemberExpr); ok && !member.Computed {
+		if member, ok := n.Arg.(*ast.MemberExpr); ok {
 			if err := c.compileExpr(member.Object); err != nil {
 				return err
+			}
+			if member.Computed {
+				if err := c.compileExpr(member.Property); err != nil {
+					return err
+				}
+				c.emit(bytecode.OpDelElem, 0)
+				return nil
 			}
 			propName := ""
 			if id, ok := member.Property.(*ast.Identifier); ok {
@@ -617,6 +623,7 @@ func (c *Compiler) compileUnary(n *ast.UnaryExpr) error {
 			return nil
 		}
 		// Fallback: evaluate and discard, return true.
+
 		if err := c.compileExpr(n.Arg); err != nil {
 			return err
 		}

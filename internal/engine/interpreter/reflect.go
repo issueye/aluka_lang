@@ -72,7 +72,11 @@ func (interp *Interpreter) setupReflect() {
 		if len(args) < 2 {
 			return engine.Boolean(false), nil
 		}
-		return engine.Boolean(vm.inOp(args[1], t)), nil
+		has, err := vm.hasProperty(args[1], t)
+		if err != nil {
+			return engine.Boolean(false), err
+		}
+		return engine.Boolean(has), nil
 	}))
 
 	// Reflect.deleteProperty(target, key)
@@ -113,11 +117,15 @@ func (interp *Interpreter) setupReflect() {
 				return engine.Undefined(), err
 			}
 		} else if o, ok := t.AsObject(); ok {
-			keys = o.Keys()
+			keys = engine.AllOwnKeys(o)
 		}
 		vals := make([]engine.Value, 0, len(keys))
 		for _, k := range keys {
-			vals = append(vals, engine.Str(k))
+			if sym, ok := engine.SymbolFromKey(k); ok {
+				vals = append(vals, sym)
+			} else {
+				vals = append(vals, engine.Str(k))
+			}
 		}
 		return interp.newArray(vals), nil
 	}))
@@ -154,8 +162,10 @@ func (interp *Interpreter) setupReflect() {
 			}
 			protoObj = po
 		}
-		engine.SetProto(o, protoObj)
-		return engine.Boolean(true), nil
+		if p, ok := t.(*ProxyValue); ok {
+			return p.proxySetPrototypeOf(protoObj)
+		}
+		return engine.Boolean(engine.TrySetProto(o, protoObj)), nil
 	}))
 
 	// Reflect.apply(target, thisArg, argsList)
@@ -188,38 +198,23 @@ func (interp *Interpreter) setupReflect() {
 	}))
 
 	// Reflect.defineProperty(target, key, descriptor)
-	// Simplified: honors descriptor.value, descriptor.get/set accessors.
 	_ = reflectObj.Set("defineProperty", interp.makeFunc("defineProperty", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 3 {
 			return engine.Boolean(false), nil
 		}
-		t := args[0]
+		if _, _, err := requireObj(args, "defineProperty", 0); err != nil {
+			return engine.Boolean(false), err
+		}
 		desc, ok := args[2].AsObject()
 		if !ok {
-			return engine.Boolean(false), nil
+			return engine.Boolean(false), fmt.Errorf("%w: Property descriptor must be an object", engine.ErrTypeError)
 		}
-		o, ok := t.AsObject()
-		if !ok {
-			return engine.Boolean(false), nil
+		d, err := descriptorFrom(desc, interp.currentVM)
+		if err != nil {
+			return engine.Boolean(false), err
 		}
-		key := propertyKeyOf(args[1])
-		// Accessor descriptor: get/set take precedence over value.
-		if getVal, err := desc.Get("get"); err == nil && !getVal.IsUndefined() {
-			setVal, _ := desc.Get("set")
-			acc := &engine.AccessorValue{}
-			if !getVal.IsUndefined() {
-				acc.Getter = getVal
-			}
-			if !setVal.IsUndefined() {
-				acc.Setter = setVal
-			}
-			_ = o.Set(key, acc)
-			return engine.Boolean(true), nil
-		}
-		if val, err := desc.Get("value"); err == nil {
-			_ = o.Set(key, val)
-		}
-		return engine.Boolean(true), nil
+		returnValue, err := interp.defineOwnProperty(args[0], propertyKeyOf(args[1]), d)
+		return engine.Boolean(returnValue), err
 	}))
 
 	// Reflect.getOwnPropertyDescriptor(target, key)
@@ -227,45 +222,40 @@ func (interp *Interpreter) setupReflect() {
 		if len(args) < 2 {
 			return engine.Undefined(), nil
 		}
-		o, ok := args[0].AsObject()
-		if !ok {
-			return engine.Undefined(), nil
+		if _, _, err := requireObj(args, "getOwnPropertyDescriptor", 0); err != nil {
+			return engine.Undefined(), err
 		}
-		key := propertyKeyOf(args[1])
-		val, err := o.Get(key)
-		if err != nil || val.IsUndefined() {
-			return engine.Undefined(), nil
+		desc, err := interp.getOwnPropertyDescriptor(args[0], propertyKeyOf(args[1]))
+		if err != nil || desc == nil {
+			return engine.Undefined(), err
 		}
-		desc := engine.NewObject()
-		engine.SetProto(desc, interp.objectProto)
-		if acc, ok := val.(*engine.AccessorValue); ok {
-			if acc.Getter != nil && !acc.Getter.IsUndefined() {
-				_ = desc.Set("get", acc.Getter)
-			}
-			if acc.Setter != nil && !acc.Setter.IsUndefined() {
-				_ = desc.Set("set", acc.Setter)
-			}
-		} else {
-			_ = desc.Set("value", val)
-			_ = desc.Set("writable", engine.Boolean(true))
-		}
-		_ = desc.Set("enumerable", engine.Boolean(true))
-		_ = desc.Set("configurable", engine.Boolean(true))
 		return desc, nil
 	}))
 
-	// Reflect.isExtensible(target) — extension tracking is not enforced, so
-	// report true for objects.
 	_ = reflectObj.Set("isExtensible", interp.makeFunc("isExtensible", func(args []engine.Value) (engine.Value, error) {
-		if len(args) == 0 || !args[0].IsObject() {
-			return engine.Boolean(false), nil
+		t, _, err := requireObj(args, "isExtensible", 0)
+		if err != nil {
+			return engine.Boolean(false), err
 		}
-		return engine.Boolean(true), nil
+		if p, ok := t.(*ProxyValue); ok {
+			result, err := p.proxyIsExtensible()
+			return engine.Boolean(result), err
+		}
+		o, _ := t.AsObject()
+		return engine.Boolean(engine.IsExtensible(o)), nil
 	}))
 
-	// Reflect.preventExtensions(target) — no-op, returns true.
 	_ = reflectObj.Set("preventExtensions", interp.makeFunc("preventExtensions", func(args []engine.Value) (engine.Value, error) {
-		return engine.Boolean(true), nil
+		t, _, err := requireObj(args, "preventExtensions", 0)
+		if err != nil {
+			return engine.Boolean(false), err
+		}
+		if p, ok := t.(*ProxyValue); ok {
+			result, err := p.proxyPreventExtensions()
+			return engine.Boolean(result), err
+		}
+		o, _ := t.AsObject()
+		return engine.Boolean(engine.PreventExtensions(o)), nil
 	}))
 
 	_ = interp.globalObj.Set("Reflect", reflectObj)

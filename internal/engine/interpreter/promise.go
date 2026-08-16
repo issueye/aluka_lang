@@ -290,8 +290,9 @@ func (p *PromiseValue) Get(key string) (engine.Value, error) { return p.obj.Get(
 func (p *PromiseValue) Set(key string, val engine.Value) error {
 	return p.obj.Set(key, val)
 }
-func (p *PromiseValue) Keys() []string         { return p.obj.Keys() }
-func (p *PromiseValue) Delete(key string) bool { return p.obj.Delete(key) }
+func (p *PromiseValue) Keys() []string              { return p.obj.Keys() }
+func (p *PromiseValue) Delete(key string) bool      { return p.obj.Delete(key) }
+func (p *PromiseValue) UnwrapObject() engine.Object { return p.obj }
 
 // === setupPromise: register Promise constructor and prototype ==============
 

@@ -693,23 +693,26 @@ func TestResolverBrowserCondition(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resolver := NewResolver()
-	// Node 环境下解析
-	resNode, err := resolver.ResolveWithConditions("isomorphic-lib", filepath.Join(dir, "app.js"), requireConditions)
-	if err != nil {
-		t.Fatalf("resolve node: %v", err)
-	}
-	if !strings.HasSuffix(filepath.ToSlash(resNode), "main.node.js") {
-		t.Errorf("node resolve got %s, want main.node.js", resNode)
-	}
+	nodeResolver := NewResolver()
+	webResolver := NewResolver()
+	webResolver.SetWebConditions()
+	parent := filepath.Join(dir, "app.js")
 
-	// 切换至 Web 条件
-	webConditions := []string{"require", "browser", "default"}
-	resWeb, err := resolver.ResolveWithConditions("isomorphic-lib", filepath.Join(dir, "app.js"), webConditions)
+	// 两个实例在同一进程交错解析，web 设置不能改变 Node 实例。
+	resWeb, err := webResolver.Resolve("isomorphic-lib", parent)
 	if err != nil {
 		t.Fatalf("resolve browser: %v", err)
 	}
 	if !strings.HasSuffix(filepath.ToSlash(resWeb), "main.browser.js") {
 		t.Errorf("browser resolve got %s, want main.browser.js", resWeb)
+	}
+	for i := 0; i < 2; i++ {
+		resNode, err := nodeResolver.Resolve("isomorphic-lib", parent)
+		if err != nil {
+			t.Fatalf("resolve node after web resolver use: %v", err)
+		}
+		if !strings.HasSuffix(filepath.ToSlash(resNode), "main.node.js") {
+			t.Errorf("node resolve got %s, want main.node.js", resNode)
+		}
 	}
 }

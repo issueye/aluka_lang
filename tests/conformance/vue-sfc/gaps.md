@@ -17,15 +17,13 @@
   指针断言失败后落到结构体 `==`（比较不同 slab box 指针）→ 等值重定义误判为不等。
   修复：`sameValue` 按数值比较（含 NaN 相等）。
 
-## 已知边界（未修，按需驱动）
+## 当前边界
 
-- 严格模式下 `writable:false` 赋值应抛 TypeError——当前统一 sloppy 静默
-  （VM 未建模严格性，接入后区分）。
-- `Object.freeze/seal/preventExtensions` 仍为 stub——非可扩展目标拒绝
-  新属性定义的校验待 extensibility 建模后补。
-- SameValue 的 `+0/-0` 区分未实现（`+0 === -0` 视为相等）。
-- JIT Native 层属性直写不查 `attrs`（tier0 静默忽略 vs JIT 写入理论上可分歧）；
-  jitdiff 三 tier 当前零失配，真实语料命中后再处理。
+- `Object.defineProperty`、`Reflect`、数组 exotic properties、Proxy invariants、`preventExtensions/seal/freeze` 和 JIT 属性写入均已接入同一描述符语义并有回归覆盖。
+- SameValue 已区分 `+0/-0`，并正确处理 NaN；符号 own keys 在 names/symbols/Reflect.ownKeys API 间保持分类。
+- fallback 正则已使用 UTF-16 可见索引；非 `u` 模式按 code unit、`u` 模式按 code point 匹配。孤立 surrogate 在当前 Go UTF-8 字符串物化路径中可能显示为 U+FFFD，但索引和匹配边界保持正确。
+- official 后端支持普通 script、script setup、TypeScript 和 named exports；`<script src>`、`<template src>`、`<style>`、custom block 在 graph/asset 输入管线接入前明确报错，不会静默丢弃。
+
 
 ## M4（official bundler 后端）实现要点
 

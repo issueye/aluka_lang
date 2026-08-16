@@ -32,6 +32,9 @@ func (interp *Interpreter) setupArrayProtoExt() {
 		if len(args) == 0 {
 			return engine.NewArray(nil), nil
 		}
+		if err := requireMutableArray(arr); err != nil {
+			return nil, err
+		}
 
 		start := toIndex(args[0], len_)
 		deleteCount := len_ - start // 默认删到末尾
@@ -71,7 +74,10 @@ func (interp *Interpreter) setupArrayProtoExt() {
 		if !ok {
 			return this, nil
 		}
-		elems := arr.Elems()
+		if err := requireMutableArray(arr); err != nil {
+			return nil, err
+		}
+		elems := append([]engine.Value(nil), arr.Elems()...)
 
 		var cmp func(a, b engine.Value) int
 		if len(args) > 0 {
@@ -131,8 +137,11 @@ func (interp *Interpreter) setupArrayProtoExt() {
 			return nil, sortErr
 		}
 
-		// sort.SliceStable 已在原切片上重排，写回确保 length 正确。
-		_ = arr.Set("length", engine.IntValue(len(elems)))
+		for i, value := range elems {
+			if err := arr.Set(strconv.Itoa(i), value); err != nil {
+				return nil, err
+			}
+		}
 		return arr, nil
 	}))
 
@@ -278,6 +287,9 @@ func (interp *Interpreter) setupArrayProtoExt() {
 		if !ok {
 			return this, nil
 		}
+		if err := requireMutableArray(arr); err != nil {
+			return nil, err
+		}
 		value := engine.Undefined()
 		if len(args) > 0 {
 			value = args[0]
@@ -296,6 +308,9 @@ func (interp *Interpreter) setupArrayProtoExt() {
 		arr, ok := this.(*engine.ArrayValue)
 		if !ok {
 			return this, nil
+		}
+		if err := requireMutableArray(arr); err != nil {
+			return nil, err
 		}
 		elems := arr.Elems()
 		len_ := len(elems)
