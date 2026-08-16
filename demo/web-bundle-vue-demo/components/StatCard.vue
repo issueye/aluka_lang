@@ -6,6 +6,8 @@
 </template>
 
 <script>
-// 纯展示组件：无 setup 时模板直接消费 props。
-export default {};
+// 纯展示组件：真实 vue 需显式声明 props，模板 _ctx.text 才有值。
+export default {
+  props: ['text'],
+};
 </script>

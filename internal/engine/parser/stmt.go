@@ -99,7 +99,16 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 		case "enum":
 			return p.parseEnumDecl()
 		case "namespace":
-			return p.parseNamespaceDecl()
+			// `namespace` 是 TS 上下文关键字：仅 `namespace Name {` /
+			// `namespace A.B {` 是声明；`namespace = x`、`namespace.foo()`
+			// 等是普通标识符用法（vue runtime 等真实代码大量存在）。
+			next := p.peekAt(1)
+			if next.Type == lexer.TokenIdent || next.Type == lexer.TokenString {
+				after := p.peekAt(2)
+				if after.Type == lexer.TokenPunct && (after.Value == "{" || after.Value == ".") {
+					return p.parseNamespaceDecl()
+				}
+			}
 		case "type":
 			// `type X = ...;` is a type alias. But `type` can also be a
 			// regular identifier (e.g. `type === 'foo'`). Only treat as a
@@ -160,7 +169,6 @@ func (p *Parser) parseBlock() (*ast.BlockStmt, error) {
 	}
 	return block, nil
 }
-
 
 func (p *Parser) parseIf() (*ast.IfStmt, error) {
 	t := p.next()

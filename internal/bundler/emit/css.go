@@ -20,12 +20,12 @@ var (
 	// cssSpaceRe 匹配连续的空白字符
 	cssSpaceRe = regexp.MustCompile(`\s+`)
 	// cssSymbolsRe 匹配符号周围的空格
-	cssSymbolsColonRe     = regexp.MustCompile(`\s*:\s*`)
-	cssSymbolsSemiRe      = regexp.MustCompile(`\s*;\s*`)
-	cssSymbolsBraceOpenRe = regexp.MustCompile(`\s*\{\s*`)
+	cssSymbolsColonRe      = regexp.MustCompile(`\s*:\s*`)
+	cssSymbolsSemiRe       = regexp.MustCompile(`\s*;\s*`)
+	cssSymbolsBraceOpenRe  = regexp.MustCompile(`\s*\{\s*`)
 	cssSymbolsBraceCloseRe = regexp.MustCompile(`\s*\}\s*`)
-	cssSymbolsCommaRe     = regexp.MustCompile(`\s*,\s*`)
-	cssTrailingSemiRe     = regexp.MustCompile(`;\}`)
+	cssSymbolsCommaRe      = regexp.MustCompile(`\s*,\s*`)
+	cssTrailingSemiRe      = regexp.MustCompile(`;\}`)
 )
 
 // MinifyCSS 对 CSS 源码进行纯 Go 极速压缩。

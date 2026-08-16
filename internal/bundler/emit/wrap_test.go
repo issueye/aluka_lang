@@ -18,6 +18,37 @@ func parseMod(t *testing.T, id, src string) Module {
 	return Module{ID: id, Prog: prog}
 }
 
+// TestBundleDefinesReplaceExpressionsOnly 验证 define 只替换表达式，
+// 不改写字符串字面量或成员属性名。
+func TestBundleDefinesReplaceExpressionsOnly(t *testing.T) {
+	bundle := Bundle{
+		EntryID: "main",
+		Modules: []Module{parseMod(t, "main", `
+			export const prod = process.env.NODE_ENV === "production";
+			export const options = __VUE_OPTIONS_API__;
+			export const diagnostic = "__VUE_OPTIONS_API__";
+			export const globalOption = globalThis.__VUE_OPTIONS_API__;
+		`)},
+		Defines: map[string]string{
+			"process.env.NODE_ENV": `"production"`,
+			"__VUE_OPTIONS_API__":  "true",
+		},
+	}
+
+	out, err := bundle.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "process.env.NODE_ENV") {
+		t.Fatalf("member define was not replaced:\n%s", out)
+	}
+	for _, want := range []string{`const prod="production" === "production"`, "const options=true", "exports.options=options", `"__VUE_OPTIONS_API__"`, "globalThis.__VUE_OPTIONS_API__"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // TestBundleSmoke：多模块 bundle 产物在本引擎执行，import/export 语义正确。
 func TestBundleSmoke(t *testing.T) {
 	mainMod := parseMod(t, "main", `

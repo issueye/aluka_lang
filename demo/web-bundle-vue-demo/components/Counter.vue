@@ -8,7 +8,7 @@
 </template>
 
 <script>
-import { ref, computed } from '../vue.ts';
+import { ref, computed } from 'vue';
 
 export default {
   setup() {

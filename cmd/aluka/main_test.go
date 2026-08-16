@@ -725,6 +725,63 @@ func TestBuildFormatRequiresWeb(t *testing.T) {
 	}
 }
 
+func TestWebBuildRealVueDemo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(repoRoot, "demo", "web-bundle-vue-demo", "main.ts")
+	vuePackage := filepath.Join(repoRoot, "demo", "web-bundle-vue-demo", "node_modules", "vue", "package.json")
+	if _, err := os.Stat(vuePackage); err != nil {
+		t.Fatalf("vendored vue fixture missing: %v", err)
+	}
+
+	outDir := t.TempDir()
+	outFile := filepath.Join(outDir, "main.js")
+	build := exec.Command(bin, "build", "--target=web", "--outfile", outFile, entry)
+	build.Dir = repoRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build real Vue demo failed: %v\n%s", err, out)
+	}
+	chunks, err := filepath.Glob(filepath.Join(outDir, "chunk-*.js"))
+	if err != nil || len(chunks) == 0 {
+		t.Fatalf("Vue demo dynamic chunk missing: matches=%v err=%v", chunks, err)
+	}
+	bundle, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(bundle), "process.env.NODE_ENV") {
+		t.Fatal("Vue bundle retained process.env.NODE_ENV")
+	}
+
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node unavailable; Vue bundle execution skipped")
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "package.json"), []byte(`{"type":"module"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	check := `import {pathToFileURL} from "node:url";
+const m = await import(pathToFileURL(process.argv[1]).href);
+const first = await m.renderApp();
+if (!first.includes("Vue 3 Web Bundle") || !first.includes("x2 = 0")) throw new Error("bad first SSR");
+const stat = await m.loadStatsOnce();
+if (!stat.includes("chunk 加载成功") || !stat.includes("来源：root")) throw new Error("bad chunk result");
+const second = await m.renderApp();
+if (!second.includes("动态 chunk") || !second.includes("来源：root")) throw new Error("bad second SSR");
+console.log("vue ssr ok");`
+	run := exec.Command("node", "--input-type=module", "-e", check, outFile)
+	if out, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("execute real Vue bundle failed: %v\n%s", err, out)
+	} else if strings.TrimSpace(string(out)) != "vue ssr ok" {
+		t.Fatalf("unexpected Vue execution output: %s", out)
+	}
+}
+
 // TestWebBuildCJSAndUMDOutput：CJS/UMD 产物的入口导出形态正确
 // （无 ESM export 语句；CJS 挂 module.exports，UMD 含三分支 wrapper）。
 func TestWebBuildCJSAndUMDOutput(t *testing.T) {
@@ -808,6 +865,20 @@ func TestWebBuildOutfileWithChunks(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "dist", "main.js")); err == nil {
 		t.Error("primary output was additionally written under generated name; want only --outfile copy")
+	}
+}
+
+func TestWebProductionDefines(t *testing.T) {
+	defines := webProductionDefines()
+	for key, want := range map[string]string{
+		"process.env.NODE_ENV":                    `"production"`,
+		"__VUE_OPTIONS_API__":                     "true",
+		"__VUE_PROD_DEVTOOLS__":                   "false",
+		"__VUE_PROD_HYDRATION_MISMATCH_DETAILS__": "false",
+	} {
+		if got := defines[key]; got != want {
+			t.Errorf("define %s = %q, want %q", key, got, want)
+		}
 	}
 }
 

@@ -29,6 +29,10 @@ Thumbs.db
 .aluka-cache/
 node_modules/
 
+# web bundle Vue demo：真实 vue@3.5.13 离线 fixture 需随仓库分发
+!demo/web-bundle-vue-demo/node_modules/
+!demo/web-bundle-vue-demo/node_modules/**
+
 # ZCode plan/agent workspace
 .zcode/
 demo/express-demo/probe.js

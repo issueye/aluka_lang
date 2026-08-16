@@ -39,6 +39,7 @@ type printer struct {
 	resolved map[string]string // import specifier → 模块 ID（nil 时原样保留；web bundle 用）
 	ctx      *bundleCtx        // web bundle 跨模块上下文（可为 nil）
 	dynamic  map[string]DynamicImport
+	defines  map[string]string // 构建期 define：点分成员链 → 替换文本（web bundle 用）
 }
 
 func (p *printer) w(s string) { p.sb.WriteString(s) }
@@ -153,10 +154,34 @@ func exprPrec(e ast.Expression) int {
 	return precCallMember
 }
 
+func defineMemberKey(e ast.Expression) (string, bool) {
+	m, ok := e.(*ast.MemberExpr)
+	if !ok || m.Computed || m.Optional {
+		return "", false
+	}
+	prop, ok := m.Property.(*ast.Identifier)
+	if !ok {
+		return "", false
+	}
+	left, ok := defineMemberKey(m.Object)
+	if ok {
+		return left + "." + prop.Name, true
+	}
+	id, ok := m.Object.(*ast.Identifier)
+	if !ok {
+		return "", false
+	}
+	return id.Name + "." + prop.Name, true
+}
+
 func (p *printer) exprInner(e ast.Expression) {
 	switch t := e.(type) {
 	case *ast.Identifier:
-		p.w(t.Name)
+		if value, ok := p.defines[t.Name]; ok {
+			p.w(value)
+		} else {
+			p.w(t.Name)
+		}
 
 	case *ast.NumberLit:
 		p.number(t)
@@ -224,6 +249,12 @@ func (p *printer) exprInner(e ast.Expression) {
 		p.w("new.target")
 
 	case *ast.MemberExpr:
+		if key, ok := defineMemberKey(t); ok {
+			if value, found := p.defines[key]; found {
+				p.w(value)
+				return
+			}
+		}
 		// `?.` 上下文中的对象必须可链式：new X().y 场景括号由 prec 处理
 		p.expr(t.Object, precCallMember)
 		if t.Optional {

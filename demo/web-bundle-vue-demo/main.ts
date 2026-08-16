@@ -1,9 +1,10 @@
-import { ref, h, createApp, renderToString } from './vue.ts';
+import { createSSRApp, ref, h } from 'vue';
+import { renderToString } from 'vue/server-renderer';
 import Counter from './components/Counter.vue';
 import StatCard from './components/StatCard.vue';
 
 export { renderToString };
-export { Counter };
+export { Counter, StatCard };
 
 const stats = ref('');
 
@@ -13,40 +14,39 @@ async function loadStats() {
   return stats.value;
 }
 
+// 真实 vue 组件：选项式 setup + 渲染函数（render 的 _ctx 是实例代理，
+// ref 自动解包——与 SFC 编译产物 render(_ctx) 的调用约定一致）。
 const App = {
   setup() {
     return { stats, loadStats };
   },
   render(ctx) {
-    return h('main', { className: 'app' }, [
-      h('h1', null, 'Vue SFC Web Bundle'),
-      h('p', { className: 'subtitle' }, '.vue 单文件组件：template 构建期编译 + 组合式 API'),
+    return h('main', { class: 'app' }, [
+      h('h1', null, 'Vue 3 Web Bundle'),
+      h('p', { class: 'subtitle' }, '真实 vue@3.5.13 npm 包 + aluka SFC 编译器'),
       h(Counter),
-      h('button', { className: 'primary', onClick: ctx.loadStats }, '加载动态 chunk'),
-      ctx.stats.value === ''
-        ? h('p', { className: 'hint' }, '点击按钮按需加载 chunk-*.js')
-        : h(StatCard, { text: ctx.stats.value }),
+      h('button', { class: 'primary', onClick: ctx.loadStats }, '加载动态 chunk'),
+      ctx.stats === ''
+        ? h('p', { class: 'hint' }, '点击按钮按需加载 chunk-*.js')
+        : h(StatCard, { text: ctx.stats }),
     ]);
   },
 };
 
-// Node 验证入口：无 DOM 也能拿到渲染结果与响应式状态。
-let ctx = null;
-
-function appCtx() {
-  if (ctx === null) ctx = App.setup();
-  return ctx;
+export function createAppRoot() {
+  return createSSRApp(App);
 }
 
-export function renderApp() {
-  return renderToString(App.render(appCtx()));
+// Node 验证入口：无 DOM，用真实 vue/server-renderer 做 SSR 断言。
+export async function renderApp() {
+  return renderToString(createAppRoot());
 }
 
-export function loadStatsOnce() {
-  return appCtx().loadStats();
+export async function loadStatsOnce() {
+  return loadStats();
 }
 
 // 浏览器环境自动挂载（Node 导入产物时跳过 DOM）。
 if (typeof document !== 'undefined') {
-  createApp(App, appCtx()).mount('#app');
+  createAppRoot().mount('#app');
 }

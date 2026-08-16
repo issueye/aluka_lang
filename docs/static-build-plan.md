@@ -65,6 +65,13 @@
 | M4-3 增量与独立工具 | 支持一条命令生成多页 HTML，亦可 `aluka build --compile` 将 SSG 构建器打包为免环境独立单文件工具。**✅ 已完成** |
 | M4-4 文档 | SSG 指南与完整示例。**✅ 已完成**（`demo/ssg-site/README.md`） |
 
+### 扩展：Vue SFC（计划外增量，随 M3 后落地）
+
+| 项 | 内容 |
+|----|------|
+| .vue 单文件组件 | `internal/bundler/vue`：构建期编译，架构对齐 Vite / @vitejs/plugin-vue——**编译器只产出 import 运行时 helper 的代码**（`import { h as _h, toDisplayString as _toDisplayString, unref as _unref } from 'vue'`，`render(_ctx)` 调用 `_h(...)` 构造 vnode），`vue` 是用户项目的 node_modules 依赖经 graph 正常解析，**编译器不内嵌运行时、不与任何实现锁版本**；script 的 `export default` 经 `__sfc__.render = render` 挂接（Vite 同款）；`:绑定`/`@事件`/`{{插值}}`/嵌套/自闭合/void；`<style>`/`<script setup>` 构建期明确拒绝。**✅ 已完成** |
+| demo | `demo/web-bundle-vue-demo/`：官方 `vue@3.5.13` 及完整传递依赖作为离线 fixture 随仓库分发，`package-lock.json` 固定依赖闭包；Node 端到端验证真实 `vue/server-renderer` 首屏 SSR、响应式状态与动态 chunk。**✅ 已完成** |
+
 ## 3. 架构与落点
 
 ```

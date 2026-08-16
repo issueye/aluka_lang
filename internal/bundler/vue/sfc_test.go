@@ -28,7 +28,7 @@ func TestTransformSFCTemplateAndScript(t *testing.T) {
 </template>
 
 <script>
-import { ref } from '../vue.ts';
+import { ref } from 'vue';
 export default {
   setup() {
     const count = ref(0);
@@ -38,17 +38,18 @@ export default {
 </script>
 `)
 	for _, want := range []string{
-		`const __sfc__ = {`,                // export default 改写
-		`import { ref } from '../vue.ts';`, // script 原样保留
-		`__sfc__.render = render;`,         // render 挂接
+		`import { h as _h, toDisplayString as _toDisplayString, unref as _unref } from 'vue';`, // Vite 风格 helper import
+		`const __sfc__ = {`,          // export default 改写
+		`import { ref } from 'vue';`, // script 原样保留
+		`__sfc__.render = render;`,   // render 挂接（Vite 同款模式）
 		`export default __sfc__;`,
-		`export function render(ctx){return [`,      // render 导出
-		`{"type":"div","props":{"class":"counter"}`, // 静态属性
-		`"onClick":ctx.dec`,                         // @click 标识符引用
-		`"onClick":($event)=>(ctx.inc())`,           // @click 调用表达式
-		`(ctx.count)`,                               // 插值标识符重写
-		`"x2 = "`,                                   // 插值旁内联空格保留
-		`{"type":"img","props":{"src":"/logo.png"}`, // void 元素
+		`export function render(_ctx){return [`, // render 导出
+		`_h("div",{"class":"counter"}`,          // 静态属性（_h 构造 vnode）
+		`"onClick":_ctx.dec`,                    // @click 标识符引用
+		`"onClick":($event)=>(_ctx.inc())`,      // @click 调用表达式
+		`_toDisplayString(_unref(_ctx.count))`,  // 插值经展示 helper
+		`"x2 = "`,                               // 插值旁内联空格保留
+		`_h("img",{"src":"/logo.png"}`,          // void 元素
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("output missing %q:\n%s", want, js)
@@ -61,14 +62,14 @@ func TestTransformSFCNoScript(t *testing.T) {
 	if !strings.Contains(js, `const __sfc__ = { setup: (props) => props };`) {
 		t.Errorf("missing props passthrough setup:\n%s", js)
 	}
-	if !strings.Contains(js, `(ctx.text)`) {
+	if !strings.Contains(js, `_toDisplayString(_unref(_ctx.text))`) {
 		t.Errorf("missing interpolation:\n%s", js)
 	}
 }
 
 func TestTransformSFCBindAttr(t *testing.T) {
 	js := compile(t, `<template><a :href="url" :data-id="item.id">{{ label }}</a></template>`)
-	for _, want := range []string{`"href":(ctx.url)`, `"data-id":(ctx.item.id)`, `(ctx.label)`} {
+	for _, want := range []string{`"href":_unref(_ctx.url)`, `"data-id":_unref(_ctx.item.id)`, `_toDisplayString(_unref(_ctx.label))`} {
 		if !strings.Contains(js, want) {
 			t.Errorf("output missing %q:\n%s", want, js)
 		}
@@ -77,7 +78,7 @@ func TestTransformSFCBindAttr(t *testing.T) {
 
 func TestTransformSFCNestedAndSelfClose(t *testing.T) {
 	js := compile(t, `<template><ul><li>{{ a }}</li><li><br/></li></ul></template>`)
-	if !strings.Contains(js, `{"type":"ul"`) || !strings.Contains(js, `{"type":"li"`) || !strings.Contains(js, `{"type":"br","props":{},"children":[]}`) {
+	if !strings.Contains(js, `_h("ul"`) || !strings.Contains(js, `_h("li"`) || !strings.Contains(js, `_h("br",{},[])`) {
 		t.Errorf("nested/self-close output wrong:\n%s", js)
 	}
 }
@@ -107,12 +108,12 @@ func TestTransformSFCErrors(t *testing.T) {
 
 func TestRewriteIdents(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"count", "ctx.count"},
-		{"count + 1", "ctx.count + 1"},
-		{"item.id", "ctx.item.id"},
-		{"Math.max(a, b)", "Math.max(ctx.a, ctx.b)"},
-		{"typeof x", "typeof ctx.x"},
-		{"flag ? 'a' : 'b'", "ctx.flag ? 'a' : 'b'"},
+		{"count", "_ctx.count"},
+		{"count + 1", "_ctx.count + 1"},
+		{"item.id", "_ctx.item.id"},
+		{"Math.max(a, b)", "Math.max(_ctx.a, _ctx.b)"},
+		{"typeof x", "typeof _ctx.x"},
+		{"flag ? 'a' : 'b'", "_ctx.flag ? 'a' : 'b'"},
 	}
 	for _, c := range cases {
 		if got := rewriteIdents(c.in); got != c.want {

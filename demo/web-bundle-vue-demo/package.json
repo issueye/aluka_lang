@@ -1,0 +1,8 @@
+{
+  "name": "aluka-web-bundle-vue-demo",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "vue": "3.5.13"
+  }
+}

@@ -1,15 +1,18 @@
 // Package vue 实现 .vue 单文件组件（SFC）到 JS 模块的构建期转换
-// （web bundle v1 子集）。
+// （web bundle v1 子集），架构对齐 Vite / @vitejs/plugin-vue：
 //
-// 约定：
-//   - <template> 编译为导出函数 render(ctx)，产物为 vnode 对象字面量，
-//     不依赖任何运行时 import（shim 的 h/renderToString 直接消费该形状）；
+//   - 编译器只产出「import 运行时 helper 的代码」，不内嵌任何运行时：
+//     生成的 render 调用 `vue` 包导出的公开 API（h / toDisplayString /
+//     unref），`vue` 是用户项目的 node_modules 依赖，经 graph 正常解析；
+//     编译器演进只改变所调用的 helper，不与任何内嵌实现锁版本；
+//   - <template> 编译为 render(_ctx)，vnode 经 _h(...) 构造——形状由
+//     运行时的 h 唯一定义，编译产物不手写数据结构；
 //   - <script> 内容原样保留，其 `export default` 对象改写为 const __sfc__
-//     并自动挂接编译出的 render 后再导出；
+//     并以 `__sfc__.render = render` 挂接后导出（Vite 同款模式）；
 //   - <style> / <script setup> 暂不支持，构建期明确报错；
 //   - 模板子集：元素嵌套 / 自闭合 / void 元素、静态属性、`:prop` 绑定、
 //     `@event` 处理器（标识符引用或含调用的表达式）、`{{ expr }}` 插值；
-//   - 表达式中的裸标识符重写为 ctx.<id>（关键字与内置全局除外）。
+//   - 表达式中的裸标识符重写为 _ctx.<id>（关键字与内置全局除外）。
 package vue
 
 import (
@@ -17,6 +20,10 @@ import (
 	"strconv"
 	"strings"
 )
+
+// runtimeImports 是编译产物依赖的 vue 运行时 helper（Vite 风格下划线别名，
+// 避免与用户标识符冲突）。'vue' 说明符由 graph 按 node_modules 正常解析。
+const runtimeImports = "import { h as _h, toDisplayString as _toDisplayString, unref as _unref } from 'vue';\n"
 
 // TransformSFC 将 SFC 源码编译为等价 JS 模块源码。name 仅用于错误信息。
 func TransformSFC(src, name string) (string, error) {
@@ -38,6 +45,7 @@ func TransformSFC(src, name string) (string, error) {
 	}
 
 	var b strings.Builder
+	b.WriteString(runtimeImports)
 	if strings.TrimSpace(script) != "" {
 		const marker = "export default"
 		idx := strings.Index(script, marker)
@@ -116,7 +124,7 @@ func compileTemplate(tmpl string) (string, error) {
 		return "", err
 	}
 	var b strings.Builder
-	b.WriteString("export function render(ctx){return ")
+	b.WriteString("export function render(_ctx){return ")
 	writeChildren(&b, kids)
 	b.WriteString(";}")
 	return b.String(), nil
@@ -359,7 +367,7 @@ func writeChildren(b *strings.Builder, kids []any) {
 		case string:
 			b.WriteString(strconv.Quote(t))
 		case *interp:
-			b.WriteString("(" + rewriteIdents(t.expr) + ")")
+			b.WriteString("_toDisplayString(_unref(" + rewriteIdents(t.expr) + "))")
 		case *elemNode:
 			writeElement(b, t)
 		}
@@ -367,31 +375,28 @@ func writeChildren(b *strings.Builder, kids []any) {
 	b.WriteString("]")
 }
 
+// writeElement 生成 _h(tag, props, children) 调用——vnode 形状由
+// 运行时的 h 唯一定义，编译产物不手写数据结构（Vite 同款思路）。
 func writeElement(b *strings.Builder, el *elemNode) {
-	b.WriteString(`{"type":`)
+	b.WriteString("_h(")
 	b.WriteString(strconv.Quote(el.tag))
-	if len(el.attrs) > 0 {
-		b.WriteString(`,"props":{`)
-		for i, a := range el.attrs {
-			if i > 0 {
-				b.WriteString(",")
-			}
-			switch a.kind {
-			case attrStatic:
-				b.WriteString(strconv.Quote(a.name) + ":" + strconv.Quote(a.value))
-			case attrBind:
-				b.WriteString(strconv.Quote(a.name) + ":(" + rewriteIdents(a.value) + ")")
-			case attrEvent:
-				b.WriteString(strconv.Quote(eventProp(a.name)) + ":" + eventHandler(a.value))
-			}
+	b.WriteString(",{")
+	for i, a := range el.attrs {
+		if i > 0 {
+			b.WriteString(",")
 		}
-		b.WriteString("}")
-	} else {
-		b.WriteString(`,"props":{}`)
+		switch a.kind {
+		case attrStatic:
+			b.WriteString(strconv.Quote(a.name) + ":" + strconv.Quote(a.value))
+		case attrBind:
+			b.WriteString(strconv.Quote(a.name) + ":_unref(" + rewriteIdents(a.value) + ")")
+		case attrEvent:
+			b.WriteString(strconv.Quote(eventProp(a.name)) + ":" + eventHandler(a.value))
+		}
 	}
-	b.WriteString(`,"children":`)
+	b.WriteString("},")
 	writeChildren(b, el.children)
-	b.WriteString("}")
+	b.WriteString(")")
 }
 
 // eventProp：click → onClick。
@@ -423,7 +428,7 @@ func isSimpleRef(s string) bool {
 	return true
 }
 
-// rewriteIdents：裸标识符前缀 ctx.（'.' 后的属性、字符串字面量内容与
+// rewriteIdents：裸标识符前缀 _ctx.（'.' 后的属性、字符串字面量内容与
 // 关键字/内置全局除外）。
 func rewriteIdents(expr string) string {
 	var jsGlobals = map[string]bool{
@@ -466,7 +471,7 @@ func rewriteIdents(expr string) string {
 			if prevDot || jsGlobals[word] {
 				b.WriteString(word)
 			} else {
-				b.WriteString("ctx." + word)
+				b.WriteString("_ctx." + word)
 			}
 			i = j
 			continue

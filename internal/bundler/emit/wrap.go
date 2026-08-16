@@ -43,6 +43,7 @@ type DynamicImport struct {
 // bundleCtx 是一次 Bundle.Build 的跨模块上下文。
 type bundleCtx struct {
 	cjsMods map[string]bool // ID → 是否 CJS（default 导入互操作用）
+	defines map[string]string
 }
 
 // WrapModule 将模块 AST 变换为包裹函数体语句序列并打印。
@@ -55,7 +56,7 @@ func wrapModule(ctx *bundleCtx, m Module) (string, error) {
 		return "", fmt.Errorf("emit: 模块 %s 含顶层 await，web target 暂不支持（M2）", m.ID)
 	}
 	var body strings.Builder
-	p := &printer{sb: &body, resolved: m.Resolved, ctx: ctx, dynamic: m.DynamicImports}
+	p := &printer{sb: &body, resolved: m.Resolved, ctx: ctx, dynamic: m.DynamicImports, defines: ctx.defines}
 
 	for _, stmt := range m.Prog.Body {
 		switch t := stmt.(type) {
@@ -262,8 +263,9 @@ type Bundle struct {
 	EntryID string
 	Modules []Module
 	Assets  map[string][]byte
-	Format  string // esm（默认）、cjs、umd
-	Global  string // UMD global name
+	Format  string            // esm（默认）、cjs、umd
+	Global  string            // UMD global name
+	Defines map[string]string // 构建期常量：标识符或点分成员链 → JS 表达式
 }
 
 // Build 拼接最终产物（ESM/CJS/UMD）。
@@ -275,7 +277,7 @@ func (b Bundle) Build() (string, error) {
 	if format != "esm" && format != "cjs" && format != "umd" {
 		return "", fmt.Errorf("emit: unsupported format %q", format)
 	}
-	ctx := &bundleCtx{cjsMods: map[string]bool{}}
+	ctx := &bundleCtx{cjsMods: map[string]bool{}, defines: b.Defines}
 	hasCJS := false
 	for _, m := range b.Modules {
 		if m.IsCJS {
@@ -398,7 +400,7 @@ func (b Bundle) Build() (string, error) {
 
 // BuildChunk 生成可由主 bundle 动态加载的模块 chunk。
 func (b Bundle) BuildChunk() (string, error) {
-	ctx := &bundleCtx{cjsMods: map[string]bool{}}
+	ctx := &bundleCtx{cjsMods: map[string]bool{}, defines: b.Defines}
 	for _, m := range b.Modules {
 		if m.IsCJS {
 			ctx.cjsMods[m.ID] = true

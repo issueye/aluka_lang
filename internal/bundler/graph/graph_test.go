@@ -173,8 +173,9 @@ func TestBuildDynamicDependency(t *testing.T) {
 	}
 }
 
-// TestBuildVueSFC：.vue 单文件组件在图构建期编译为 JS 模块，
-// script 内的 import 正常进入依赖图。
+// TestBuildVueSFC：.vue 单文件组件在图构建期编译为 JS 模块；编译产物
+// import 的 'vue' 运行时 helper 经 node_modules 正常解析（Vite 式架构：
+// 编译器不内嵌运行时）。
 func TestBuildVueSFC(t *testing.T) {
 	dir := newTestEnv(t, map[string]string{
 		"main.ts": "import Counter from './Counter.vue';\nconsole.log(Counter);",
@@ -183,10 +184,11 @@ func TestBuildVueSFC(t *testing.T) {
 </template>
 
 <script>
-import { ref } from './vue.ts';
+import { ref } from 'vue';
 export default { setup() { return { count: ref(0) }; } };
 </script>`,
-		"vue.ts": `export function ref(v){ return { value: v }; }`,
+		"node_modules/vue/package.json": `{ "name": "vue", "version": "1.0.0", "main": "./index.js" }`,
+		"node_modules/vue/index.js":     `export function h(t,p,c){return {type:t,props:p||{},children:c||[]}} export function ref(v){return {value:v}} export function unref(v){return v} export function toDisplayString(v){return String(v)}`,
 	})
 	vm, err := interpreter.NewVM()
 	if err != nil {
@@ -199,9 +201,12 @@ export default { setup() { return { count: ref(0) }; } };
 	if _, ok := res.SourceUnits["Counter.vue"]; !ok {
 		t.Fatalf("Counter.vue not compiled into SourceUnits: %+v", keysOf(res.SourceUnits))
 	}
+	if _, ok := res.SourceUnits["node_modules/vue/index.js"]; !ok {
+		t.Fatalf("vue runtime not resolved from node_modules: %+v", keysOf(res.SourceUnits))
+	}
 	table, ok := res.Resolutions["Counter.vue"]
-	if !ok || table["./vue.ts"] != "vue.ts" {
-		t.Errorf("Counter.vue script imports not resolved: %+v", table)
+	if !ok || table["vue"] != "node_modules/vue/index.js" {
+		t.Errorf("Counter.vue 'vue' import not resolved: %+v", table)
 	}
 }
 

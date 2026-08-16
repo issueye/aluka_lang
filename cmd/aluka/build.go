@@ -838,14 +838,15 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 		})
 	}
 
+	defines := webProductionDefines()
 	outJS, err := emit.Bundle{
 		EntryID: graphResult.Entry,
 		Modules: modules,
 		Assets:  graphResult.Assets,
 		Format:  opts.format,
 		Global:  opts.globalName,
+		Defines: defines,
 	}.Build()
-
 	if err != nil {
 		return nil, err
 	}
@@ -877,7 +878,7 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 			}
 			chunkModules = append(chunkModules, emit.Module{ID: key, Prog: chunkUnit.Program, IsTLA: chunkUnit.HasTLA, IsCJS: chunkUnit.ModuleKind == module.ModuleCommonJS, Resolved: graphResult.Resolutions[key], DynamicImports: dynamicImportsFor(key, graphResult.DynamicDeps)})
 		}
-		chunkText, err := (emit.Bundle{EntryID: dep.Target, Modules: chunkModules}).BuildChunk()
+		chunkText, err := (emit.Bundle{EntryID: dep.Target, Modules: chunkModules, Defines: defines}).BuildChunk()
 		if err != nil {
 			return nil, err
 		}
@@ -1151,6 +1152,17 @@ func writeWebAssets(entry string, assets map[string][]byte, opts buildOptions) e
 		}
 	}
 	return nil
+}
+
+// webProductionDefines 是 web production 构建注入的最小 define 集。
+// Vue 的 esm-bundler 产物要求 bundler 提供这些常量。
+func webProductionDefines() map[string]string {
+	return map[string]string{
+		"process.env.NODE_ENV":                    `"production"`,
+		"__VUE_OPTIONS_API__":                     "true",
+		"__VUE_PROD_DEVTOOLS__":                   "false",
+		"__VUE_PROD_HYDRATION_MISMATCH_DETAILS__": "false",
+	}
 }
 
 func dynamicChunkName(target string) string {

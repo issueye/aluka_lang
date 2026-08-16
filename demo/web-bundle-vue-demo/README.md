@@ -1,17 +1,35 @@
 # Aluka Web Bundle Demo — Vue SFC
 
-自包含示例：用 **`.vue` 单文件组件** 演示 `aluka build --target=web`，
-无任何 npm 依赖。
+自包含示例：用 **`.vue` 单文件组件** 和官方 **Vue 3.5.13** 演示
+`aluka build --target=web`。Vue runtime 与 SSR 依赖作为离线 fixture 随仓库分发，
+构建和验证不需要访问 npm registry。
+
+## 架构（Vite 式）
+
+```
+.vue 源码 ──aluka SFC 编译器──▶ import { h, toDisplayString, unref } from 'vue'
+                                   + render(_ctx) 调用 _h(...)
+                                          │
+                              'vue' 经 node_modules 正常解析
+                                          │
+                   node_modules/vue/ + @vue/*（官方 3.5.13 离线 fixture）
+```
+
+- **编译器不内嵌运行时**：`internal/bundler/vue` 只产出「import 运行时
+  helper 的代码」；`vue` 与 `vue/server-renderer` 由普通 package resolver
+  从 demo 的 `node_modules` 解析，依赖版本固定在 `package.json`
+- **vnode 形状由运行时 `h()` 唯一定义**：编译产物调用 `_h(...)` 构造，
+  不手写数据结构；插值经 `_toDisplayString(_unref(...))` 展示转换
+- **组件挂接用 Vite 同款模式**：`const __sfc__ = ...` +
+  `__sfc__.render = render` + `export default __sfc__`
+- SFC 编译器后续演进只改变所调用的 helper，不与任何内嵌实现锁版本
 
 ## 演示内容
 
-- **`.vue` 单文件组件**：`components/Counter.vue` / `StatCard.vue` 使用
-  `<template>` + `<script>` 写法，构建期由 `internal/bundler/vue` 编译为
-  JS 模块（template → `render(ctx)`，无需运行时编译器）
-- **迷你 Vue shim**（`vue.ts`）：`ref` / `computed` / `watchEffect` 响应式
-  核心 + `h()` vdom + 浏览器挂载 / 字符串渲染；模板语境 ref 自动解包
-- **组件状态**：Counter 自持 `ref`/`computed` 状态（setup + render 选项组件）；
-  StatCard 为纯展示组件（无 setup 时模板直接消费 props）
+- **`.vue` 组件**：`components/Counter.vue`（自持 `ref`/`computed` 状态）、
+  `components/StatCard.vue`（纯展示，无 setup 时模板直接消费 props）
+- **真实 Vue 3.5.13**：`ref` / `computed` 响应式、`h` vnode、
+  `createSSRApp` 浏览器挂载及 `vue/server-renderer` 的 `renderToString`
 - **动态 import 拆包**：`lib/heavy-data.ts` 拆为独立 chunk，点击按钮按需加载
 - **CSS / HTML 入口**：`styles.css` 随构建拷贝，`<script src="./main.ts">`
   自动改写为产物路径
@@ -22,16 +40,17 @@
 |---|---|
 | 元素 | 嵌套 / 自闭合 `/>` / void 元素（br、img…） |
 | 静态属性 | `class="btn"` |
-| 绑定 | `:href="url"`（表达式，裸标识符重写为 `ctx.<id>`） |
+| 绑定 | `:href="url"`（表达式，裸标识符重写为 `_ctx.<id>`，经 `_unref` 解包） |
 | 事件 | `@click="dec"`（方法引用）或 `@click="inc()"`（调用表达式） |
-| 插值 | `{{ count }}`（ref 自动解包） |
+| 插值 | `{{ count }}`（经 `_toDisplayString(_unref(...))` 展示） |
 
 暂不支持（构建期明确报错）：`<style>` 块（样式放入口 CSS）、
 `<script setup>`、指令（`v-if`/`v-for`/`v-model`）。
 空白处理为 Vue condense 近似（换行分隔删除、内联空白折叠）。
 
 > 另见 `demo/vue3-ssr-demo`：完整版迷你 Vue（reactive/Proxy/模板编译/SSR），
-> 演示 aluka 运行时；本 demo 演示 aluka **web bundler** 的 SFC 支持。
+> 演示 aluka 运行时；本 demo 演示 aluka **web bundler** 的 SFC 支持
+> （编译产物 import `vue` 包 helper，Vite 同构方案）。
 
 ## 快速开始
 
@@ -74,13 +93,10 @@ go run ./cmd/aluka dev --port 3000 --outdir demo/web-bundle-vue-demo/dist demo/w
 
 ```bash
 node --input-type=module -e "import('url').then(async ({pathToFileURL}) => {
-  const m = await import(pathToFileURL('dist/main.js'));
-  console.log(m.renderApp());          // 首帧 HTML（Counter 计数 0）
-  const ctx = m.Counter.setup();       // SFC 组件选项对象
-  ctx.inc(); ctx.inc();
-  console.log(m.renderToString(m.Counter.render(ctx))); // 计数 2、x2 = 4
-  await m.loadStatsOnce();             // 触发动态 chunk
-  console.log(m.renderApp());          // 出现 StatCard
+  const m = await import(pathToFileURL('demo/web-bundle-vue-demo/dist/main.js'));
+  console.log(await m.renderApp());     // 首帧 HTML（Counter 计数 0）
+  console.log(await m.loadStatsOnce()); // 触发动态 chunk
+  console.log(await m.renderApp());     // 出现 StatCard
 })"
 ```
 
