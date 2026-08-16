@@ -217,6 +217,14 @@ func (c *ICache) SetCached(obj Value, key string, val Value) bool {
 		c.setMiss++
 		return false // 已删除，缓存失效（走完整路径恢复）
 	}
+	// writable:false 属性不可直写：回退完整路径（objectValue.Set 静默
+	// 拒绝）。attrs 惰性分配，普通对象此处仅一次 nil 判断。
+	if ov.attrs != nil {
+		if a, ok := ov.attrs[key]; ok && !a.Writable {
+			c.setMiss++
+			return false
+		}
+	}
 	// accessor 槽位不可直写：必须回退到 setProperty 的 FindAccessor 拦截
 	// 调 setter（IC 前置后 accessor 槽位会到达这里）。
 	if _, isAcc := ov.slots[e.idx].(*AccessorValue); isAcc {

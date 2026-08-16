@@ -82,6 +82,10 @@ func (c *Closure) Delete(key string) bool               { return c.obj.Delete(ke
 func (c *Closure) Proto() engine.Object                 { return engine.GetProto(c.obj) }
 func (c *Closure) SetProto(proto engine.Object)         { engine.SetProto(c.obj, proto) }
 
+// UnwrapObject 暴露承载属性存储的底层对象（engine.ObjectUnwrapper）。
+// 描述符操作（defineProperty 等）经它作用于真实存储，而非委托退化路径。
+func (c *Closure) UnwrapObject() engine.Object { return c.obj }
+
 // --- engine.Function ---
 
 // Call invokes the function with this=undefined (strict mode).
@@ -186,6 +190,9 @@ func (m *NativeMethod) Get(key string) (engine.Value, error) { return m.obj.Get(
 func (m *NativeMethod) Set(key string, v engine.Value) error { return m.obj.Set(key, v) }
 func (m *NativeMethod) Keys() []string                       { return m.obj.Keys() }
 func (m *NativeMethod) Delete(key string) bool               { return m.obj.Delete(key) }
+
+// UnwrapObject 暴露承载属性存储的底层对象（engine.ObjectUnwrapper）。
+func (m *NativeMethod) UnwrapObject() engine.Object { return m.obj }
 
 func (m *NativeMethod) Call(args []engine.Value) (engine.Value, error) {
 	return m.fn(engine.Undefined(), args)

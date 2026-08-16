@@ -3048,6 +3048,9 @@ func (c *vmClosure) Delete(key string) bool                 { return c.obj.Delet
 func (c *vmClosure) Proto() engine.Object                   { return engine.GetProto(c.obj) }
 func (c *vmClosure) SetProto(proto engine.Object)           { engine.SetProto(c.obj, proto) }
 
+// UnwrapObject 暴露承载属性存储的底层对象（engine.ObjectUnwrapper）。
+func (c *vmClosure) UnwrapObject() engine.Object { return c.obj }
+
 // Call implements engine.Function — calls the closure with this=undefined.
 func (c *vmClosure) Call(args []engine.Value) (engine.Value, error) {
 	return c.vm.callClosure(c, engine.Undefined(), args, false)

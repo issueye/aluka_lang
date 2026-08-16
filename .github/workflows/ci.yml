@@ -68,6 +68,14 @@ jobs:
           go build -o /tmp/aluka ./cmd/aluka
           ALUKA=/tmp/aluka bash tests/conformance/webbuild/run.sh
 
+      # vue-sfc 差分 gate：aluka vs node 双跑 @vue/compiler-sfc，产物指纹必须一致。
+      - name: Vue compiler-sfc conformance
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          go build -o /tmp/aluka ./cmd/aluka
+          ALUKA=/tmp/aluka bash tests/conformance/vue-sfc/run.sh
+
       - name: Express-demo conformance
         if: matrix.os == 'ubuntu-latest'
         shell: bash

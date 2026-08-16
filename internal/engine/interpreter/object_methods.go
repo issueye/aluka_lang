@@ -11,11 +11,10 @@ import (
 // "单文件 ≤ 500 行"规范。在 setupObjectCtor() 中通过 setupObjectCtorExt()
 // 注册到 Object 函数对象上。
 //
-// 说明：当前引擎未实现完整的"属性描述符"模型（无 configurable/enumerable/
-// writable/get/set 的真实语义），因此 defineProperty/getOwnPropertyDescriptor
-// 为语义简化版：所有属性均视为 {value, writable:true, enumerable:true,
-// configurable:true}，defineProperty 直接等价于 Set。这足以支撑绝大多数
-// 依赖 Object.create / Object.fromEntries / Object.hasOwn 的真实代码。
+// 属性描述符：defineProperty/defineProperties 经 engine.DefineOwnProperty
+// 实现规范子集（部分描述符合并、标志执行、accessor/data 互斥校验、非可配置
+// 重定义限制）；getOwnPropertyDescriptor(s) 反映生效状态。对象级 attrs 惰性
+// 字典只记录偏离默认（w/e/c 全 true）的属性，普通对象热路径零开销。
 
 // setupObjectCtorExt 注册 Object 构造器上的扩展静态方法。
 func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
@@ -35,14 +34,14 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 		if proto != nil {
 			engine.SetProto(newObj, proto)
 		}
-		// 第二参数 propertiesObject：对每个属性执行 defineProperty（简化为 Set）。
+		// 第二参数 propertiesObject：对每个属性执行 defineProperty 语义。
 		if len(args) > 1 && !args[1].IsUndefined() {
 			if props, ok := args[1].AsObject(); ok {
 				for _, k := range props.Keys() {
 					if desc, err := props.Get(k); err == nil {
 						if descObj, ok := desc.AsObject(); ok {
-							if v, err := descObj.Get("value"); err == nil {
-								_ = newObj.Set(k, v)
+							if err := engine.DefineOwnProperty(newObj, k, descriptorFrom(descObj)); err != nil {
+								return nil, err
 							}
 						}
 					}
@@ -53,7 +52,7 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 	}))
 
 	// defineProperty(obj, prop, descriptor) 定义/修改一个属性。
-	// 支持 value/writable 数据属性与 get/set 访问器属性（真访问器，经 SetAccessor）。
+	// 完整描述符语义（部分描述符合并/标志执行/校验）见 engine.DefineOwnProperty。
 	_ = obj.Set("defineProperty", interp.makeFunc("defineProperty", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 3 {
 			return nil, fmt.Errorf("%w: Object.defineProperty requires (obj, prop, descriptor)", engine.ErrTypeError)
@@ -68,30 +67,8 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 		if !ok {
 			return nil, fmt.Errorf("%w: Property descriptor must be an object", engine.ErrTypeError)
 		}
-		// 访问器属性：get/set 装为真访问器（每次访问调用 getter，this=接收者）。
-		hasGet := hasOwn(desc, "get")
-		hasSet := hasOwn(desc, "set")
-		if hasGet || hasSet {
-			var getter, setter engine.Value = engine.Undefined(), engine.Undefined()
-			if hasGet {
-				if gv, err := desc.Get("get"); err == nil && !gv.IsUndefined() {
-					getter = gv
-				}
-			}
-			if hasSet {
-				if sv, err := desc.Get("set"); err == nil && !sv.IsUndefined() {
-					setter = sv
-				}
-			}
-			engine.SetAccessor(o, key, getter, setter)
-			return args[0], nil
-		}
-		// 数据属性：value 直接写入（默认 undefined）。
-		if hasOwn(desc, "value") {
-			v, _ := desc.Get("value")
-			_ = o.Set(key, v)
-		} else {
-			_ = o.Set(key, engine.Undefined())
+		if err := engine.DefineOwnProperty(o, key, descriptorFrom(desc)); err != nil {
+			return nil, err
 		}
 		return args[0], nil
 	}))
@@ -115,34 +92,14 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 			if !ok {
 				continue
 			}
-			// 访问器属性。
-			hasGet := hasOwn(desc, "get")
-			hasSet := hasOwn(desc, "set")
-			if hasGet || hasSet {
-				var getter, setter engine.Value = engine.Undefined(), engine.Undefined()
-				if hasGet {
-					if gv, err := desc.Get("get"); err == nil && !gv.IsUndefined() {
-						getter = gv
-					}
-				}
-				if hasSet {
-					if sv, err := desc.Get("set"); err == nil && !sv.IsUndefined() {
-						setter = sv
-					}
-				}
-				engine.SetAccessor(o, k, getter, setter)
-				continue
-			}
-			// 数据属性。
-			if hasOwn(desc, "value") {
-				v, _ := desc.Get("value")
-				_ = o.Set(k, v)
+			if err := engine.DefineOwnProperty(o, k, descriptorFrom(desc)); err != nil {
+				return nil, err
 			}
 		}
 		return args[0], nil
 	}))
 
-	// getOwnPropertyDescriptor(obj, prop) 返回自有属性描述符。
+	// getOwnPropertyDescriptor(obj, prop) 返回自有属性描述符（反映生效标志）。
 	_ = obj.Set("getOwnPropertyDescriptor", interp.makeFunc("getOwnPropertyDescriptor", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return engine.Undefined(), nil
@@ -152,11 +109,11 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 			return engine.Undefined(), nil
 		}
 		key := propertyKeyOf(args[1])
-		v, err := o.Get(key)
-		if err != nil || !hasOwn(o, key) {
+		desc := interp.ownPropertyDescriptor(o, key)
+		if desc == nil {
 			return engine.Undefined(), nil
 		}
-		return interp.makePropertyDescriptor(v), nil
+		return desc, nil
 	}))
 
 	// getOwnPropertyDescriptors(obj) 返回全部自有属性描述符。
@@ -170,14 +127,15 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 		}
 		result := engine.NewObject()
 		engine.SetProto(result, interp.objectProto)
-		for _, k := range o.Keys() {
-			v, _ := o.Get(k)
-			_ = result.Set(k, interp.makePropertyDescriptor(v))
+		for _, k := range engine.AllOwnKeys(o) {
+			if desc := interp.ownPropertyDescriptor(o, k); desc != nil {
+				_ = result.Set(k, desc)
+			}
 		}
 		return result, nil
 	}))
 
-	// getOwnPropertyNames(obj) 返回全部自有属性名（含不可枚举，简化为所有自有键）。
+	// getOwnPropertyNames(obj) 返回全部自有属性名（含不可枚举）。
 	_ = obj.Set("getOwnPropertyNames", interp.makeFunc("getOwnPropertyNames", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return interp.newArray(nil), nil
@@ -186,7 +144,7 @@ func (interp *Interpreter) setupObjectCtorExt(obj engine.Object) {
 		if !ok {
 			return interp.newArray(nil), nil
 		}
-		return interp.newArray(toValues(o.Keys())), nil
+		return interp.newArray(toValues(engine.AllOwnKeys(o))), nil
 	}))
 
 	// getOwnPropertySymbols(obj) 返回自有 Symbol 属性（当前未建模，返回空数组）。
@@ -336,30 +294,70 @@ func hasOwn(o engine.Object, key string) bool {
 	return false
 }
 
-// makePropertyDescriptor 构造一个标准的属性描述符对象。
-//
-// 支持访问器属性：当 v 是 AccessorValue 时返回 { get, set, enumerable,
-// configurable }，否则返回 { value, writable, enumerable, configurable }。
+// descriptorFrom 从描述符对象提取 engine.Descriptor（Has* 标记字段出现性）。
+func descriptorFrom(desc engine.Object) engine.Descriptor {
+	var d engine.Descriptor
+	if hasOwn(desc, "value") {
+		d.HasValue = true
+		d.Value, _ = desc.Get("value")
+	}
+	if hasOwn(desc, "writable") {
+		d.HasWritable = true
+		w, _ := desc.Get("writable")
+		d.Writable, _ = w.Bool()
+	}
+	if hasOwn(desc, "enumerable") {
+		d.HasEnumerable = true
+		e, _ := desc.Get("enumerable")
+		d.Enumerable, _ = e.Bool()
+	}
+	if hasOwn(desc, "configurable") {
+		d.HasConfigurable = true
+		c, _ := desc.Get("configurable")
+		d.Configurable, _ = c.Bool()
+	}
+	if hasOwn(desc, "get") {
+		d.HasGet = true
+		d.Get, _ = desc.Get("get")
+	}
+	if hasOwn(desc, "set") {
+		d.HasSet = true
+		d.Set, _ = desc.Get("set")
+	}
+	return d
+}
+
+// ownPropertyDescriptor 构造反映生效状态的属性描述符对象
+// （value/writable 或 get/set + enumerable/configurable）；属性不存在返回 nil。
 // get-intrinsic 等 npm 包依赖 gOPD 区分访问器与数据属性：若访问器被伪装成
 // 数据属性（只有 value），它们会直接读取 prototype 上的属性值，从而以错误
 // 的 this 调用 getter（如 Map.prototype.size 报 "called on non-Map"）。
-func (interp *Interpreter) makePropertyDescriptor(v engine.Value) engine.Value {
+func (interp *Interpreter) ownPropertyDescriptor(o engine.Object, key string) engine.Value {
+	v, exists := engine.GetOwnSlot(o, key)
+	if !exists {
+		return nil
+	}
+	attrs := engine.AttrsOf(o, key)
 	desc := engine.NewObject()
 	engine.SetProto(desc, interp.objectProto)
 	if acc, ok := v.(*engine.AccessorValue); ok {
-		if acc.Getter != nil && !acc.Getter.IsUndefined() {
-			_ = desc.Set("get", acc.Getter)
-		}
-		if acc.Setter != nil && !acc.Setter.IsUndefined() {
-			_ = desc.Set("set", acc.Setter)
-		}
+		_ = desc.Set("get", orUndefinedValue(acc.Getter))
+		_ = desc.Set("set", orUndefinedValue(acc.Setter))
 	} else {
 		_ = desc.Set("value", v)
-		_ = desc.Set("writable", engine.Boolean(true))
+		_ = desc.Set("writable", engine.Boolean(attrs.Writable))
 	}
-	_ = desc.Set("enumerable", engine.Boolean(true))
-	_ = desc.Set("configurable", engine.Boolean(true))
+	_ = desc.Set("enumerable", engine.Boolean(attrs.Enumerable))
+	_ = desc.Set("configurable", engine.Boolean(attrs.Configurable))
 	return desc
+}
+
+// orUndefinedValue 把 nil 归一为 Undefined。
+func orUndefinedValue(v engine.Value) engine.Value {
+	if v == nil {
+		return engine.Undefined()
+	}
+	return v
 }
 
 // entryToKV 从一个 [key, value] 对（数组或对象）提取键与值。

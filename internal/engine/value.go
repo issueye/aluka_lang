@@ -501,6 +501,10 @@ type objectValue struct {
 	slots   []Value
 	deleted map[string]bool // 对象级已删除属性（避免污染共享 Shape）
 	proto   Object          // [[Prototype]]
+	// attrs 记录经 defineProperty 约束过、偏离默认标志的属性
+	// （writable/enumerable/configurable）。惰性分配：普通对象无此 map，
+	// 热路径（IC 直写/Keys）只多一次 nil 判断。
+	attrs map[string]PropAttrs
 	// small 是小对象（≤4 属性）的内嵌槽位后备：slots 指向它即可省去
 	// 一次独立 slice 分配（字面量/短生命周期对象分配热路径的主力开销）。
 	// 超过 4 属性时 append 自动迁移到独立堆数组，语义与纯 slice 一致。
@@ -684,6 +688,12 @@ func GetOwnSlot(val Value, key string) (Value, bool) {
 	if f, ok := val.(*functionValue); ok {
 		return f.objectValue.getSlot(key)
 	}
+	// 包装型对象（Closure/NativeMethod 等）：解包后读底层存储。
+	if uw, ok := val.(ObjectUnwrapper); ok {
+		if inner := uw.UnwrapObject(); inner != nil {
+			return GetOwnSlot(inner, key)
+		}
+	}
 	return Undefined(), false
 }
 
@@ -729,6 +739,11 @@ func (o *objectValue) Get(key string) (Value, error) {
 }
 
 func (o *objectValue) Set(key string, value Value) error {
+	// writable:false 拦截（sloppy 语义：静默忽略；严格模式 TypeError 待
+	// VM 严格性建模后接入）。IC 快路径（SetCached）有同款守卫。
+	if a, ok := o.attrs[key]; ok && !a.Writable {
+		return nil
+	}
 	o.setSlot(key, value)
 	return nil
 }
@@ -740,22 +755,28 @@ func (o *objectValue) Keys() []string {
 		if o.deleted != nil && o.deleted[name] {
 			continue
 		}
+		if a, ok := o.attrs[name]; ok && !a.Enumerable {
+			continue
+		}
 		out = append(out, name)
 	}
 	return out
 }
 
 // Delete removes an own property. Returns true if the property was removed or
-// did not exist; false only if the property is non-configurable (not modelled
-// here, so always true).
+// did not exist; false if the property is non-configurable.
 func (o *objectValue) Delete(key string) bool {
 	if _, ok := o.getSlot(key); !ok {
 		return true // property doesn't exist — delete returns true
+	}
+	if a, ok := o.attrs[key]; ok && !a.Configurable {
+		return false
 	}
 	if o.deleted == nil {
 		o.deleted = make(map[string]bool)
 	}
 	o.deleted[key] = true
+	delete(o.attrs, key)
 	return true
 }
 
@@ -1063,6 +1084,241 @@ func embeddedObjectValue(obj Object) *objectValue {
 		return v.objectValue
 	}
 	return nil
+}
+
+// PropAttrs 是属性标志（[[Writable]]/[[Enumerable]]/[[Configurable]]）。
+// objectValue.attrs 中仅存偏离默认（全 true）的条目；无条目即默认。
+type PropAttrs struct {
+	Writable     bool
+	Enumerable   bool
+	Configurable bool
+}
+
+var defaultPropAttrs = PropAttrs{Writable: true, Enumerable: true, Configurable: true}
+
+// attrOf 返回属性当前生效标志（无约束条目时为默认全 true）。
+func (o *objectValue) attrOf(key string) PropAttrs {
+	if a, ok := o.attrs[key]; ok {
+		return a
+	}
+	return defaultPropAttrs
+}
+
+// ObjectUnwrapper 由"包装型"对象实现（如解释器的 Closure/NativeMethod——
+// 持有一个底层 engine.Object 承载属性存储，自身仅做委托）。engine 侧的
+// 描述符操作（DefineOwnProperty/AttrsOf/AllOwnKeys/GetOwnSlot）经它取到
+// 真实存储，避免包装类型走退化路径丢失标志语义。
+type ObjectUnwrapper interface {
+	UnwrapObject() Object
+}
+
+// unwrapObjectValue 解析对象的真实属性存储：直接 objectValue、嵌入类型
+// （functionValue/ArrayValue/BufferValue）或经 ObjectUnwrapper 解包（一层）。
+func unwrapObjectValue(obj Object) *objectValue {
+	if ov, ok := obj.(*objectValue); ok {
+		return ov
+	}
+	if ov := embeddedObjectValue(obj); ov != nil {
+		return ov
+	}
+	if uw, ok := obj.(ObjectUnwrapper); ok {
+		if inner := uw.UnwrapObject(); inner != nil && inner != obj {
+			return unwrapObjectValue(inner)
+		}
+	}
+	return nil
+}
+
+// AttrsOf 返回对象自有属性的生效标志（无法解析存储时恒为默认）。
+func AttrsOf(obj Object, key string) PropAttrs {
+	if ov := unwrapObjectValue(obj); ov != nil {
+		return ov.attrOf(key)
+	}
+	return defaultPropAttrs
+}
+
+// IsAccessorValue 判断槽位值是否为访问器。
+func IsAccessorValue(v Value) bool {
+	_, ok := v.(*AccessorValue)
+	return ok
+}
+
+// AllOwnKeys 返回全部自有属性名（含不可枚举；不含已删除）。
+// 与 Object.Keys()（仅可枚举）互补，供 getOwnPropertyNames 等使用。
+func AllOwnKeys(obj Object) []string {
+	ov := unwrapObjectValue(obj)
+	if ov == nil {
+		return obj.Keys()
+	}
+	out := make([]string, 0, len(ov.shape.names))
+	for _, name := range ov.shape.names {
+		if ov.deleted != nil && ov.deleted[name] {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// Descriptor 是 defineProperty 的属性描述符。Has* 标记字段是否出现
+// （部分描述符语义：未出现的字段保留现值）。
+type Descriptor struct {
+	HasValue, HasWritable, HasEnumerable, HasConfigurable bool
+	HasGet, HasSet                                        bool
+	Value                                                 Value
+	Writable, Enumerable, Configurable                    bool
+	Get, Set                                              Value
+}
+
+// sameValue 是 SameValue 的窄实现（数值含 NaN 相等；其余按值/指针相等）。
+// numberValue 是包着 *numberBox 的值类型（接口存值形态），必须按数值比较，
+// 指针/结构体相等性在这里都不可靠。
+func sameValue(a, b Value) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	numOf := func(v Value) (float64, bool) {
+		switch n := v.(type) {
+		case numberValue:
+			f, _ := n.Float()
+			return f, true
+		case *numberValue:
+			f, _ := n.Float()
+			return f, true
+		}
+		return 0, false
+	}
+	af, aNum := numOf(a)
+	bf, bNum := numOf(b)
+	if aNum || bNum {
+		if !aNum || !bNum {
+			return false
+		}
+		if af == bf {
+			return true
+		}
+		return math.IsNaN(af) && math.IsNaN(bf)
+	}
+	if a.Type() != b.Type() {
+		return false
+	}
+	return a == b
+}
+
+// DefineOwnProperty 实现 [[DefineOwnProperty]] 的规范子集：
+// 部分描述符合并、accessor/data 互斥校验、非可配置重定义限制、
+// 新属性缺省标志为 false。返回 nil 表示成功。
+func DefineOwnProperty(obj Object, key string, d Descriptor) error {
+	ov := unwrapObjectValue(obj)
+	if ov == nil {
+		// 非 objectValue 存储：退化为纯数据写入（保持既有兼容）。
+		if d.HasValue {
+			return obj.Set(key, d.Value)
+		}
+		return nil
+	}
+
+	// 校验：accessor 与 data 字段互斥。
+	if (d.HasGet || d.HasSet) && (d.HasValue || d.HasWritable) {
+		return fmt.Errorf("%w: Invalid property descriptor. Cannot both specify accessors and a value or writable attribute", ErrTypeError)
+	}
+	if d.HasGet && !d.Get.IsUndefined() && !d.Get.IsFunction() {
+		return fmt.Errorf("%w: Getter must be a function", ErrTypeError)
+	}
+	if d.HasSet && !d.Set.IsUndefined() && !d.Set.IsFunction() {
+		return fmt.Errorf("%w: Setter must be a function", ErrTypeError)
+	}
+
+	curVal, exists := ov.getSlot(key)
+	curIsAcc := exists && IsAccessorValue(curVal)
+	cur := ov.attrOf(key)
+
+	// 非可配置属性的重定义限制。
+	if exists && !cur.Configurable {
+		if d.HasConfigurable && d.Configurable {
+			return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+		}
+		if d.HasEnumerable && d.Enumerable != cur.Enumerable {
+			return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+		}
+		if (d.HasGet || d.HasSet) && !curIsAcc {
+			return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+		}
+		if (d.HasValue || d.HasWritable) && curIsAcc {
+			return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+		}
+		if curIsAcc {
+			acc := curVal.(*AccessorValue)
+			if d.HasGet && !sameValue(orUndefined(d.Get), orUndefined(acc.Getter)) {
+				return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+			}
+			if d.HasSet && !sameValue(orUndefined(d.Set), orUndefined(acc.Setter)) {
+				return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+			}
+		} else {
+			if d.HasValue && !sameValue(d.Value, curVal) {
+				return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+			}
+			if d.HasWritable && d.Writable != cur.Writable {
+				return fmt.Errorf("%w: Cannot redefine property: %s is not configurable", ErrTypeError, key)
+			}
+		}
+	}
+
+	// 合成生效标志：新属性未指定的字段缺省 false。
+	eff := cur
+	if !exists {
+		eff = PropAttrs{}
+	}
+	if d.HasWritable {
+		eff.Writable = d.Writable
+	}
+	if d.HasEnumerable {
+		eff.Enumerable = d.Enumerable
+	}
+	if d.HasConfigurable {
+		eff.Configurable = d.Configurable
+	}
+
+	// 应用属性体。
+	if d.HasGet || d.HasSet {
+		g, s := Undefined(), Undefined()
+		if curIsAcc {
+			acc := curVal.(*AccessorValue)
+			g, s = acc.Getter, acc.Setter
+		}
+		if d.HasGet {
+			g = orUndefined(d.Get)
+		}
+		if d.HasSet {
+			s = orUndefined(d.Set)
+		}
+		ov.setSlot(key, NewAccessor(g, s))
+	} else if d.HasValue {
+		ov.setSlot(key, d.Value)
+	} else if !exists {
+		// 新属性且描述符无 value（纯标志约束）：值为 undefined。
+		ov.setSlot(key, Undefined())
+	}
+
+	// attrs 收敛：全默认则移除条目，保持热路径零开销。
+	if eff == defaultPropAttrs {
+		delete(ov.attrs, key)
+	} else {
+		if ov.attrs == nil {
+			ov.attrs = make(map[string]PropAttrs)
+		}
+		ov.attrs[key] = eff
+	}
+	return nil
+}
+
+// orUndefined 把 nil 归一为 Undefined。
+func orUndefined(v Value) Value {
+	if v == nil {
+		return Undefined()
+	}
+	return v
 }
 
 // UpdateAccessor installs or updates a single getter or setter on obj. If an
