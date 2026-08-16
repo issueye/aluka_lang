@@ -1,9 +1,6 @@
 package regex
 
-import (
-	"errors"
-	"unicode"
-)
+import "errors"
 
 // Backtracking regex engine (fallback).
 //
@@ -108,6 +105,45 @@ type btState struct {
 	// 否则组捕获（在组完成时才写入）会停留在旧值。
 	openGroupIdx   int
 	openGroupStart int
+	// steps 是本轮匹配的步数预算（灾难性回溯护栏）：超限后 aborted 置位，
+	// 所有匹配路径立即短路失败，exec 不再尝试后续起始位置（本轮整体
+	// 返回不匹配）。lookaround 子状态与父状态共享预算。
+	steps   int
+	limit   int
+	aborted bool
+}
+
+// btMaxSteps 是一次 exec（含所有候选起始位置）的总步数上限。正常模式
+// （含依赖里的全部形态）远低于此值；超限只发生在灾难性回溯（如
+// (a+)+b 对长串）。语义取向：不抛错，按不匹配处理（保守；正确答案
+// 本就不存在或极难命中）。
+const btMaxSteps = 1 << 22
+
+// spendStep 消耗一步预算；超限或已中止时返回 false（调用方应立即失败返回）。
+func (st *btState) spendStep() bool {
+	if st.aborted {
+		return false
+	}
+	st.steps++
+	limit := st.limit
+	if limit <= 0 {
+		limit = btMaxSteps
+	}
+	if st.steps > limit {
+		st.aborted = true
+		return false
+	}
+	return true
+}
+
+// syncBudget 把 lookaround 子状态消耗的预算同步回父状态。
+func (st *btState) syncBudget(sub *btState) {
+	if sub.steps > st.steps {
+		st.steps = sub.steps
+	}
+	if sub.aborted {
+		st.aborted = true
+	}
 }
 
 // btFrame 是序列内重复量词的回退帧。贪心重复在"少吃一次"时压帧；
@@ -117,7 +153,7 @@ type btFrame struct {
 	pc    int      // 重复节点后继节点在所属序列中的索引
 	pos   int
 	caps  []int
-	more  bool     // lazy：弹帧后先多吃一个子节点再继续
+	more  bool // lazy：弹帧后先多吃一个子节点再继续
 	child *btNode
 	// 帧压入时处于打开状态的捕获组（-1 = 无）。恢复时重算其捕获终点。
 	grpIdx   int
@@ -127,24 +163,38 @@ type btFrame struct {
 // exec finds the first match at or after a given start byte offset.
 // Returns the match indices [wholeStart, wholeEnd, g1s, g1e, ...] or nil.
 func (r *btRegexp) exec(s string, start int) []int {
+	m, _, _ := r.execWithLimit(s, start, btMaxSteps)
+	return m
+}
+
+// execWithLimit 是带可配置步数上限的内部执行器。生产 exec 用 btMaxSteps；
+// 测试用低上限明确验证护栏实际触发（而非仅凭"执行很快"推断）。
+func (r *btRegexp) execWithLimit(s string, start, limit int) (match []int, aborted bool, steps int) {
 	n := len(s)
-	_ = n
 	for p := start; p <= n; p++ {
 		caps := make([]int, (r.numGroups+1)*2)
 		for i := range caps {
 			caps[i] = -1
 		}
-		st := &btState{captures: caps, pos: p, openGroupIdx: -1}
+		remaining := limit - steps
+		if remaining <= 0 {
+			return nil, true, steps
+		}
+		st := &btState{captures: caps, pos: p, openGroupIdx: -1, limit: remaining}
 		ok := r.matchSeq(s, st, r.root) && matchEnd(r, s, st)
+		steps += st.steps
+		if st.aborted {
+			return nil, true, steps
+		}
 		if ok {
 			out := make([]int, len(caps))
 			copy(out, caps)
 			out[0] = p      // whole match start（根节点非捕获组时 caps[0] 仍为 -1）
 			out[1] = st.pos // whole match end
-			return out
+			return out, false, steps
 		}
 	}
-	return nil
+	return nil, false, steps
 }
 
 // matchEnd verifies the pattern consumed the whole root (the root is the
@@ -153,6 +203,9 @@ func matchEnd(r *btRegexp, s string, st *btState) bool { return true }
 
 // matchNode matches a node starting at st.pos, advancing st.pos on success.
 func (r *btRegexp) matchNode(s string, st *btState, n *btNode) bool {
+	if !st.spendStep() {
+		return false
+	}
 	switch n.kind {
 	case btLit:
 		if r.matchAtomAt(s, st.pos, n.lit) {
@@ -176,36 +229,40 @@ func (r *btRegexp) matchNode(s string, st *btState, n *btNode) bool {
 		return r.matchAnchor(s, st.pos, n.anchor)
 	case btBackref:
 		return r.matchBackref(s, st, n)
-		case btGroup:
-			switch n.grpKind {
-			case grpCapture, grpNoncap:
-				start := st.pos
-				// 记录打开中的捕获组（仅 grpCapture），供回退帧恢复时
-				// 重算捕获终点；嵌套组保存并恢复外层上下文。
-				savedGrpIdx, savedGrpStart := st.openGroupIdx, st.openGroupStart
-				if n.grpKind == grpCapture {
-					st.openGroupIdx, st.openGroupStart = n.groupIdx, start
-				}
-				if !r.matchSeq(s, st, n.sub) {
-					st.openGroupIdx, st.openGroupStart = savedGrpIdx, savedGrpStart
-					return false
-				}
+	case btGroup:
+		switch n.grpKind {
+		case grpCapture, grpNoncap:
+			start := st.pos
+			// 记录打开中的捕获组（仅 grpCapture），供回退帧恢复时
+			// 重算捕获终点；嵌套组保存并恢复外层上下文。
+			savedGrpIdx, savedGrpStart := st.openGroupIdx, st.openGroupStart
+			if n.grpKind == grpCapture {
+				st.openGroupIdx, st.openGroupStart = n.groupIdx, start
+			}
+			if !r.matchSeq(s, st, n.sub) {
 				st.openGroupIdx, st.openGroupStart = savedGrpIdx, savedGrpStart
-				if n.grpKind == grpCapture {
-					r.setCapture(st, n.groupIdx, start, st.pos)
-				}
-				return true
+				return false
+			}
+			st.openGroupIdx, st.openGroupStart = savedGrpIdx, savedGrpStart
+			if n.grpKind == grpCapture {
+				r.setCapture(st, n.groupIdx, start, st.pos)
+			}
+			return true
 		case grpLookahead:
 			// V8 语义：前瞻内的捕获组会写入整体匹配结果（如 /(?=(a))b/ 组1 = "a"）。
-			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos, openGroupIdx: -1}
+			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos, openGroupIdx: -1, steps: st.steps, limit: st.limit}
 			if r.matchSeq(s, sub, n.sub) {
 				copy(st.captures, sub.captures)
+				st.syncBudget(sub)
 				return true
 			}
+			st.syncBudget(sub)
 			return false
 		case grpNegLookahead:
-			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos, openGroupIdx: -1}
-			return !r.matchSeq(s, sub, n.sub)
+			sub := &btState{captures: cloneCaps(st.captures), pos: st.pos, openGroupIdx: -1, steps: st.steps, limit: st.limit}
+			matched := r.matchSeq(s, sub, n.sub)
+			st.syncBudget(sub)
+			return !matched
 		case grpLookbehind, grpNegLookbehind:
 			return r.matchLookbehind(s, st, n)
 		}
@@ -231,11 +288,20 @@ func (r *btRegexp) matchNode(s string, st *btState, n *btNode) bool {
 // 节点失败时按 LIFO 弹帧恢复更少的迭代次数重试；懒重复默认停住（压一个
 // "多吃一个"帧），后续失败时多吃一个再重试。
 func (r *btRegexp) matchSeq(s string, st *btState, nodes []btNode) bool {
+	if !st.spendStep() {
+		return false // 步数预算耗尽：立即短路失败
+	}
 	base := len(st.frames)
 	startPos := st.pos
 	startCaps := cloneCaps(st.captures)
 	pc := 0
 	for pc < len(nodes) {
+		if st.aborted {
+			st.pos = startPos
+			copy(st.captures, startCaps)
+			st.frames = st.frames[:base]
+			return false
+		}
 		n := &nodes[pc]
 		if n.kind == btRepeat {
 			if !r.repeatInSeq(s, st, n, nodes, pc) {
@@ -310,6 +376,9 @@ func (r *btRegexp) repeatInSeq(s string, st *btState, n *btNode, nodes []btNode,
 // 无更多回退点（序列失败）。
 func (r *btRegexp) backtrackSeq(s string, st *btState, nodes []btNode, pc *int, base int) bool {
 	for len(st.frames) > base {
+		if !st.spendStep() {
+			return false
+		}
 		f := st.frames[len(st.frames)-1]
 		st.frames = st.frames[:len(st.frames)-1]
 		st.pos = f.pos
@@ -324,10 +393,16 @@ func (r *btRegexp) backtrackSeq(s string, st *btState, nodes []btNode, pc *int, 
 			if !r.matchNode(s, st, f.child) {
 				continue
 			}
+			// 多吃之后重算打开中捕获组的终点（吃之前重算会把
+			// 上一轮的零宽/短终点留在捕获里——(.*?)$ 类模式
+			// 的组会卡在首次停止点）。
+			if f.grpIdx >= 0 {
+				r.setCapture(st, f.grpIdx, f.grpStart, st.pos)
+			}
 			st.frames = append(st.frames, btFrame{
 				nodes: f.nodes, pc: f.pc, pos: st.pos, caps: cloneCaps(st.captures),
 				more: true, child: f.child,
-				grpIdx: st.openGroupIdx, grpStart: st.openGroupStart,
+				grpIdx: f.grpIdx, grpStart: f.grpStart, // 继承组上下文（弹出时已退出组作用域）
 			})
 		}
 		if sameSeq(f.nodes, nodes) {
@@ -545,12 +620,17 @@ func (r *btRegexp) matchLookbehind(s string, st *btState, n *btNode) bool {
 	ok := false
 	// Try each possible start position up to st.pos.
 	for p := 0; p <= start; p++ {
-		sub := &btState{captures: cloneCaps(st.captures), pos: p, openGroupIdx: -1}
+		sub := &btState{captures: cloneCaps(st.captures), pos: p, openGroupIdx: -1, steps: st.steps, limit: st.limit}
 		if r.matchSeq(s, sub, n.sub) && sub.pos == start {
 			ok = true
 			// 与前瞻一致：后行断言内的捕获组写入整体结果。
 			copy(st.captures, sub.captures)
+			st.syncBudget(sub)
 			break
+		}
+		st.syncBudget(sub)
+		if st.aborted {
+			return false
 		}
 	}
 	if neg {
@@ -857,11 +937,8 @@ func (p *btParser) parseClass() (btNode, error) {
 				return node, nil
 			}
 			// 类立即闭合为空类（JS 语义）：[^] 匹配任意字符，[] 永不匹配。
-			// （此前无条件把类首 ] 当字面，导致 [^] 扫描不到闭合而报
-			// unterminated——js-tokens 的 StringLiteral 正则依赖此语义。）
-			if negated {
-				node.parts = append(node.parts, btClassPart{ranges: []btRange{{0, unicode.MaxRune}}})
-			}
+			// 表示法本身已足够：parts 为空时 classMatched=false，negated=true
+			// 整体取反为 true；不要再塞全范围 part，否则二次取反会变成永不匹配。
 			return node, nil
 		}
 		// Parse a character or escape, then optional range '-' high.
@@ -918,31 +995,32 @@ func (p *btParser) parseClassEscape() (classChar, error) {
 	switch e {
 	case 'd':
 		p.i++
-		return classChar{parts: []btClassPart{{ranges: []btRange{{'0', '9'}}}}}, nil
+		return classChar{kind: 1, parts: []btClassPart{{ranges: []btRange{{'0', '9'}}}}}, nil
 	case 'D':
 		p.i++
-		return classChar{parts: []btClassPart{{neg: true, ranges: []btRange{{'0', '9'}}}}}, nil
+		return classChar{kind: 1, parts: []btClassPart{{neg: true, ranges: []btRange{{'0', '9'}}}}}, nil
 	case 'w':
 		p.i++
-		return classChar{parts: []btClassPart{{ranges: wordRanges}}}, nil
+		return classChar{kind: 1, parts: []btClassPart{{ranges: wordRanges}}}, nil
 	case 'W':
 		p.i++
-		return classChar{parts: []btClassPart{{neg: true, ranges: wordRanges}}}, nil
+		return classChar{kind: 1, parts: []btClassPart{{neg: true, ranges: wordRanges}}}, nil
 	case 's':
 		p.i++
-		return classChar{parts: []btClassPart{{ranges: spaceRanges}}}, nil
+		return classChar{kind: 1, parts: []btClassPart{{ranges: spaceRanges}}}, nil
 	case 'S':
 		p.i++
-		return classChar{parts: []btClassPart{{neg: true, ranges: spaceRanges}}}, nil
+		return classChar{kind: 1, parts: []btClassPart{{neg: true, ranges: spaceRanges}}}, nil
 	case 'n', 't', 'r', 'f', 'v':
 		p.i++
-		return classChar{parts: []btClassPart{{ranges: []btRange{{ctrl(e), ctrl(e)}}}}}, nil
+		ch := ctrl(e)
+		return classChar{kind: 0, lo: ch, parts: []btClassPart{{ranges: []btRange{{ch, ch}}}}}, nil
 	case 'x':
 		v, ok := p.parseHex(2)
 		if !ok {
 			return classChar{}, errors.New("invalid regular expression: incomplete \\x escape")
 		}
-		return classChar{parts: []btClassPart{{ranges: []btRange{{v, v}}}}}, nil
+		return classChar{kind: 0, lo: v, parts: []btClassPart{{ranges: []btRange{{v, v}}}}}, nil
 	case 'u':
 		if p.i+1 < len(p.src) && p.src[p.i+1] == '{' {
 			j := p.i + 2
@@ -954,21 +1032,21 @@ func (p *btParser) parseClassEscape() (classChar, error) {
 			}
 			v := hexVal(p.src[p.i+2 : j])
 			p.i = j + 1
-			return classChar{parts: []btClassPart{{ranges: []btRange{{v, v}}}}}, nil
+			return classChar{kind: 0, lo: v, parts: []btClassPart{{ranges: []btRange{{v, v}}}}}, nil
 		}
 		v, ok := p.parseHex(4)
 		if !ok {
 			return classChar{}, errors.New("invalid regular expression: incomplete \\u escape")
 		}
-		return classChar{parts: []btClassPart{{ranges: []btRange{{v, v}}}}}, nil
+		return classChar{kind: 0, lo: v, parts: []btClassPart{{ranges: []btRange{{v, v}}}}}, nil
 	case '0':
 		p.i++
-		return classChar{parts: []btClassPart{{ranges: []btRange{{0, 0}}}}}, nil
+		return classChar{kind: 0, lo: 0, parts: []btClassPart{{ranges: []btRange{{0, 0}}}}}, nil
 	default:
 		// Literal metachar or ident char.
 		p.i++
 		ch := rune(e)
-		return classChar{parts: []btClassPart{{ranges: []btRange{{ch, ch}}}}}, nil
+		return classChar{kind: 0, lo: ch, parts: []btClassPart{{ranges: []btRange{{ch, ch}}}}}, nil
 	}
 }
 
@@ -1133,14 +1211,14 @@ var wordRanges = []btRange{{'a', 'z'}, {'A', 'Z'}, {'0', '9'}, {'_', '_'}}
 // spaceRanges 是 JS 的 \s 全集（WhiteSpace + LineTerminator），与
 // translate.go 的 jsWhiteSpaceClass 一致——Go 的 \s 只是 ASCII 子集。
 var spaceRanges = []btRange{
-	{'\t', '\r'},             // TAB LF VT FF CR（0x09-0x0D）
-	{' ', ' '},               // SP
-	{0x00A0, 0x00A0},         // NBSP
-	{0x1680, 0x1680},         // OGHAM SPACE MARK
-	{0x2000, 0x200A},         // EN QUAD .. HAIR SPACE
-	{0x2028, 0x2029},         // LS PS
-	{0x202F, 0x202F},         // NNBSP
-	{0x205F, 0x205F},         // MMSP
-	{0x3000, 0x3000},         // IDEOGRAPHIC SPACE
-	{0xFEFF, 0xFEFF},         // ZWNBSP
+	{'\t', '\r'},     // TAB LF VT FF CR（0x09-0x0D）
+	{' ', ' '},       // SP
+	{0x00A0, 0x00A0}, // NBSP
+	{0x1680, 0x1680}, // OGHAM SPACE MARK
+	{0x2000, 0x200A}, // EN QUAD .. HAIR SPACE
+	{0x2028, 0x2029}, // LS PS
+	{0x202F, 0x202F}, // NNBSP
+	{0x205F, 0x205F}, // MMSP
+	{0x3000, 0x3000}, // IDEOGRAPHIC SPACE
+	{0xFEFF, 0xFEFF}, // ZWNBSP
 }
