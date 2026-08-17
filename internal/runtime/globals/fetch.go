@@ -986,31 +986,3 @@ func httpHeaderToEngine(h http.Header) engine.Value {
 	}
 	return obj
 }
-
-// responseBodyStream 构造包装响应体的 ReadableStream。
-func responseBodyStream(ctx engine.Context, bodyStr string) engine.Value {
-	stream, _ := newReadableStream(ctx, []engine.Value{engine.NewObjectFrom(map[string]engine.Value{
-		"start": engine.NewFunction("start", func(a []engine.Value) (engine.Value, error) {
-			if len(a) > 0 {
-				if c, ok := a[0].AsObject(); ok {
-					if e, err := c.Get("enqueue"); err == nil && e.IsFunction() {
-						if f, ok := e.AsFunction(); ok {
-							if _, err := f.Call([]engine.Value{NewBufferInstance([]byte(bodyStr))}); err != nil {
-								interpreter.ReportUncaught(nil, err)
-							}
-						}
-					}
-					if cl, err := c.Get("close"); err == nil && cl.IsFunction() {
-						if f, ok := cl.AsFunction(); ok {
-							if _, err := f.Call(nil); err != nil {
-								interpreter.ReportUncaught(nil, err)
-							}
-						}
-					}
-				}
-			}
-			return engine.Undefined(), nil
-		}),
-	})})
-	return stream
-}

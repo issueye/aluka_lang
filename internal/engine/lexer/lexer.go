@@ -210,23 +210,12 @@ func (l *Lexer) advance() {
 	}
 }
 
-func (l *Lexer) peek() byte {
-	if l.pos < len(l.src) {
-		return l.src[l.pos]
-	}
-	return 0
-}
-
 func (l *Lexer) peekAt(offset int) byte {
 	idx := l.pos + offset
 	if idx >= 0 && idx < len(l.src) {
 		return l.src[idx]
 	}
 	return 0
-}
-
-func (l *Lexer) token(typ TokenType, val string) (Token, error) {
-	return Token{Type: typ, Value: val, Line: l.line, Col: l.col}, nil
 }
 
 func (l *Lexer) skipWhitespaceAndComments() {
@@ -777,10 +766,6 @@ func isIdentStart(ch byte) bool {
 	return ch == '_' || ch == '$' ||
 		(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
 		ch >= 0x80
-}
-
-func isIdentPart(ch byte) bool {
-	return isIdentStart(ch) || isDigit(ch)
 }
 
 func isIdentPartByte(ch byte) bool {

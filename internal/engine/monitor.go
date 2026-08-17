@@ -188,9 +188,6 @@ func TriggerOOMForTest() {
 	oomAt.Store(time.Now().UnixNano())
 }
 
-// OOMAt 返回 OOM 触发时刻（unix nano；未触发为 0）。
-func OOMAt() int64 { return oomAt.Load() }
-
 // --- 运行时指标辅助 -------------------------------------------------------
 
 // RuntimeSnapshot 是一次进程级运行时指标快照。

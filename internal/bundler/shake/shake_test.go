@@ -35,15 +35,6 @@ func buildFixture(t *testing.T, files map[string]string, entry string) *graph.Re
 	return gr
 }
 
-// pathSet 提取模块路径集合。
-func pathSet(gr *graph.Result) map[string]bool {
-	set := make(map[string]bool)
-	for _, m := range gr.Modules {
-		set[m.Path] = true
-	}
-	return set
-}
-
 func TestShakeRemovesUnusedModule(t *testing.T) {
 	gr := buildFixture(t, map[string]string{
 		"main.js":   "import { used } from './lib.js';\nimport './side.js';\nimport { dead } from './dead.js';\nimport { never } from './unused.js';\nconsole.log(used());\n",

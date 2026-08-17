@@ -381,18 +381,3 @@ func alukaWriteResponse(ctx engine.Context, res engine.Value, w http.ResponseWri
 	}
 	close(done)
 }
-
-// emitEventAny 在对象上触发事件（serve 错误用）。
-func emitEventAny(obj engine.Value, event string, args ...engine.Value) {
-	if o, ok := obj.AsObject(); ok {
-		if emitFn, err := o.Get("emit"); err == nil && emitFn.IsFunction() {
-			if f, ok := emitFn.AsFunction(); ok {
-				all := append([]engine.Value{engine.Str(event)}, args...)
-				if _, err := f.Call(all); err != nil {
-					// emitEventAny 无 ctx 参数（emit 内部已上报监听器错误）。
-					interpreter.ReportUncaught(nil, err)
-				}
-			}
-		}
-	}
-}

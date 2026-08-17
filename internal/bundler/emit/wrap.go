@@ -46,11 +46,6 @@ type bundleCtx struct {
 	defines map[string]string
 }
 
-// WrapModule 将模块 AST 变换为包裹函数体语句序列并打印。
-func WrapModule(m Module) (string, error) {
-	return wrapModule(&bundleCtx{}, m)
-}
-
 func wrapModule(ctx *bundleCtx, m Module) (string, error) {
 	if m.IsTLA {
 		return "", fmt.Errorf("emit: 模块 %s 含顶层 await，web target 暂不支持（M2）", m.ID)

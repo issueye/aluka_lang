@@ -4,7 +4,7 @@
 //   - 未使用声明删除：函数体内未被引用的 function/class/var 声明。
 //   - 常量折叠：字面量二元/一元/条件/逻辑运算折叠为字面量。
 //
-// 变换作用于 AST，随后经 compile.CompileProgram 重新编译。字节码本地
+// 变换作用于 AST，随后经 compile.CompileSourceUnit 重新编译。字节码本地
 // 变量按 slot 索引（无名字），故不做标识符压缩；函数名保留（Function.name
 // 语义与错误堆栈可见性）。
 package minify

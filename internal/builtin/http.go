@@ -449,17 +449,6 @@ func (s *httpServerState) handleUpgradeRequest(w http.ResponseWriter, r *http.Re
 // resFinishedKey 记录响应是否已结束（res.end 调用）的隐藏属性。
 const resFinishedKey = "\x00<aluka>resFinished"
 
-// resFinished 判断响应是否已通过 res.end 结束。
-func resFinished(res engine.Value) bool {
-	if o, ok := res.AsObject(); ok {
-		if v, err := o.Get(resFinishedKey); err == nil && v.Type() == engine.TypeBoolean {
-			b, _ := v.Bool()
-			return b
-		}
-	}
-	return false
-}
-
 // newIncomingMessage 构造 IncomingMessage 对象（请求/响应消息）。
 // 注意：不在构造时发射 'data'/'end'——监听器由 JS handler/回调在收到对象后
 // 注册，过早发射会丢失事件。发射延迟到 emitIncomingData（handler 执行之后）。

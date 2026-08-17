@@ -501,37 +501,3 @@ func addFSPromisesExtras(ctx engine.Context, m engine.Object) {
 		})
 	}))
 }
-
-// fsStatToObject 构造 Stat 对象（复用 fs.go 的字段集合）。
-func fsStatToObject(info os.FileInfo) engine.Value {
-	obj := engine.NewObject()
-	_ = obj.Set("size", engine.IntValue(int(info.Size())))
-	_ = obj.Set("mtime", engine.Number(float64(info.ModTime().UnixMilli())))
-	_ = obj.Set("mtimeMs", engine.Number(float64(info.ModTime().UnixMilli())))
-	_ = obj.Set("atimeMs", engine.Number(float64(info.ModTime().UnixMilli())))
-	_ = obj.Set("ctimeMs", engine.Number(float64(info.ModTime().UnixMilli())))
-	_ = obj.Set("birthtimeMs", engine.Number(float64(info.ModTime().UnixMilli())))
-	_ = obj.Set("mode", engine.IntValue(int(info.Mode())))
-	_ = obj.Set("isFile", engine.NewFunction("isFile", func(args []engine.Value) (engine.Value, error) {
-		return engine.Boolean(info.Mode().IsRegular()), nil
-	}))
-	_ = obj.Set("isDirectory", engine.NewFunction("isDirectory", func(args []engine.Value) (engine.Value, error) {
-		return engine.Boolean(info.IsDir()), nil
-	}))
-	_ = obj.Set("isSymbolicLink", engine.NewFunction("isSymbolicLink", func(args []engine.Value) (engine.Value, error) {
-		return engine.Boolean(info.Mode()&os.ModeSymlink != 0), nil
-	}))
-	return obj
-}
-
-// builtinErrorValue 构造 JS Error 对象（带 message）。回退为字符串。
-func builtinErrorValue(ctx engine.Context, msg string) engine.Value {
-	if ctor, err := ctx.Global().Get("Error"); err == nil && ctor.IsFunction() {
-		if f, ok := ctor.AsFunction(); ok {
-			if v, cerr := f.Call([]engine.Value{engine.Str(msg)}); cerr == nil {
-				return v
-			}
-		}
-	}
-	return engine.Str(msg)
-}

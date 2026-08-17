@@ -139,22 +139,6 @@ func (interp *Interpreter) makeFunc(name string, fn engine.Func) engine.Object {
 	return f.(engine.Object)
 }
 
-// makeCtor creates a constructor function with a .prototype object.
-func (interp *Interpreter) makeCtor(name string, proto engine.Object, fn engine.Func) engine.Object {
-	ctor := engine.NewObject()
-	f := engine.NewFunction(name, fn)
-	// Copy function properties
-	_ = ctor.Set("name", engine.Str(name))
-	_ = ctor.Set("length", engine.IntValue(1))
-	_ = ctor.Set("prototype", proto)
-	engine.SetProto(ctor, interp.functionProto)
-	// Also make proto.constructor point back
-	_ = proto.Set("constructor", ctor)
-	// Store the underlying function for calling
-	_ = ctor.Set("__call__", f)
-	return ctor
-}
-
 // --- Object.prototype ---
 
 func (interp *Interpreter) setupObjectProto() {

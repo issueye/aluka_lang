@@ -96,15 +96,6 @@ func (l *Loader) SetEmbedded(er EmbeddedResolver) {
 	l.embedded = er
 }
 
-// stripBOM 剥离开头的 UTF-8 BOM（EF BB BF）。若文件内容以 BOM 开头则移除，
-// 防止 BOM 被嵌入 CJS 包装函数体后导致 lexer 死循环。
-func stripBOM(src []byte) []byte {
-	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
-		return src[3:]
-	}
-	return src
-}
-
 // objectProtoValue 返回全局 Object.prototype（带缓存）。
 func (l *Loader) objectProtoValue() (engine.Object, error) {
 	if l.objectProto != nil {

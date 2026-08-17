@@ -292,15 +292,6 @@ var AllKinds = func() []Kind {
 	return kinds
 }()
 
-func (k Kind) isOneOf(all []Kind) bool {
-	for _, candidate := range all {
-		if candidate == k {
-			return true
-		}
-	}
-	return false
-}
-
 // Describe returns a compact one-line description of the case for reports.
 func (c *Case) Describe() string {
 	return strings.ReplaceAll(c.Body, "\n", " ")

@@ -54,13 +54,6 @@ type globPattern struct {
 	nocase  bool
 }
 
-func (p *globPattern) at(i int) *globSeg {
-	if i < 0 || i >= len(p.parts) {
-		return nil
-	}
-	return &p.parts[i]
-}
-
 func (p *globPattern) isFirst() bool { return p.indexes[0] }
 
 func (p *globPattern) isLast(isDir bool) bool {

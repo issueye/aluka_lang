@@ -90,16 +90,6 @@ func callCb(vm *VM, fn callableValue, thisArg engine.Value, args []engine.Value)
 	return fn.callWith(thisArg, args)
 }
 
-func callCb2(vm *VM, fn callableValue, thisArg, arg0, arg1 engine.Value) (engine.Value, error) {
-	if vm != nil {
-		if vc, ok := fn.(*vmClosure); ok && vc.tmpl != nil && vc.tmpl.NativeCallback != nil {
-			args := [2]engine.Value{arg0, arg1}
-			return vm.execNativeCallback(vc.tmpl, vc.tmpl.NativeCallback, args[:])
-		}
-	}
-	return fn.callWith(thisArg, []engine.Value{arg0, arg1})
-}
-
 func callCb3(vm *VM, fn callableValue, thisArg, arg0, arg1, arg2 engine.Value) (engine.Value, error) {
 	if vm != nil {
 		if vc, ok := fn.(*vmClosure); ok && vc.tmpl != nil && vc.tmpl.NativeCallback != nil {

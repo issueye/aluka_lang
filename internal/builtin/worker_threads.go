@@ -25,12 +25,11 @@ import (
 
 // workerState 是 Worker 的内部状态（跨 VM 消息通道）。
 type workerState struct {
-	toWorker      chan string // 主线程 → worker
-	toMain        chan string // worker → 主线程
-	closed        chan struct{}
-	mu            sync.Mutex
-	stopFn        func() // 终止 worker 的事件循环
-	releaseWorker func() // 释放 worker 端 parentPort 的活跃度
+	toWorker chan string // 主线程 → worker
+	toMain   chan string // worker → 主线程
+	closed   chan struct{}
+	mu       sync.Mutex
+	stopFn   func() // 终止 worker 的事件循环
 }
 
 func (s *workerState) setStop(fn func()) {
@@ -42,22 +41,6 @@ func (s *workerState) setStop(fn func()) {
 func (s *workerState) stop() {
 	s.mu.Lock()
 	fn := s.stopFn
-	s.mu.Unlock()
-	if fn != nil {
-		fn()
-	}
-}
-
-func (s *workerState) setWorkerRelease(fn func()) {
-	s.mu.Lock()
-	s.releaseWorker = fn
-	s.mu.Unlock()
-}
-
-func (s *workerState) releaseWorkerRef() {
-	s.mu.Lock()
-	fn := s.releaseWorker
-	s.releaseWorker = nil
 	s.mu.Unlock()
 	if fn != nil {
 		fn()

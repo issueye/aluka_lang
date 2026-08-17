@@ -43,9 +43,9 @@ type Report struct {
 	Period    time.Duration // 本次采样周期（终报为 0）
 
 	// 性能
-	Insns   uint64 // 周期内指令数（周期=0 时终报累计）
-	Calls   uint64
-	Allocs  uint64
+	Insns                 uint64 // 周期内指令数（周期=0 时终报累计）
+	Calls                 uint64
+	Allocs                uint64
 	ICGetHit, ICGetMiss   uint64
 	ICSetHit, ICSetMiss   uint64
 	ICCallHit, ICCallMiss uint64
@@ -83,12 +83,6 @@ func New(cfg Config) *Monitor {
 	}
 	return m
 }
-
-// Start 返回监控器（与 New 等价，语义化入口）。
-func (m *Monitor) Start() *Monitor { return m }
-
-// Elapsed 返回已运行时长。
-func (m *Monitor) Elapsed() time.Duration { return time.Since(m.start) }
 
 // Snapshot 采集一次指标快照。
 func (m *Monitor) Snapshot() *Report {
@@ -144,7 +138,6 @@ func (m *Monitor) Snapshot() *Report {
 	m.lastTime = now
 	return rep
 }
-
 
 // Run 阻塞式周期采样：按 Interval 输出快照，直至 stop 通道关闭。
 func (m *Monitor) Run(stop <-chan struct{}) {

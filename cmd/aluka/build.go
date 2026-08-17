@@ -133,14 +133,6 @@ func buildFlags(opts *buildOptions, optimize *bool) *cli.FlagSet {
 	return fs
 }
 
-// stripBOM 剥离开头的 UTF-8 BOM。
-func stripBOM(src []byte) []byte {
-	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
-		return src[3:]
-	}
-	return src
-}
-
 // collectWebAssets 递归收集前端静态资源目录（--gui 模式），
 // 返回 相对路径（/ 分隔）→ 原始字节。单文件上限 64MB，总量上限 512MB。
 func collectWebAssets(dir string) (map[string][]byte, error) {

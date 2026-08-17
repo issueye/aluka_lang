@@ -256,17 +256,6 @@ func compareBool(l, r engine.Value, op func(int) bool) bool {
 	return op(cmp)
 }
 
-// toStr converts a value to its JS string representation.
-func toStr(v engine.Value) string {
-	return v.String()
-}
-
-// toNumber converts a value to a number.
-func toNumber(v engine.Value) float64 {
-	f, _ := v.Float()
-	return f
-}
-
 // jsToNumber 实现 JS ToNumber 语义（ES 规范 §7.1.3）。
 // 修正：非数字字符串返回 NaN（而非 0），undefined → NaN，null → 0。
 func jsToNumber(v engine.Value) float64 {
@@ -325,21 +314,4 @@ func jsStringToNumber(s string) float64 {
 func toInt32(v engine.Value) int32 {
 	f, _ := v.Float()
 	return jsToInt32(f)
-}
-
-// formatNumber formats a float64 like JS Number.prototype.toString.
-func formatNumber(n float64) string {
-	if math.IsNaN(n) {
-		return "NaN"
-	}
-	if math.IsInf(n, 1) {
-		return "Infinity"
-	}
-	if math.IsInf(n, -1) {
-		return "-Infinity"
-	}
-	if n == float64(int64(n)) && n >= -9007199254740991 && n <= 9007199254740991 {
-		return strconv.FormatInt(int64(n), 10)
-	}
-	return strconv.FormatFloat(n, 'g', -1, 64)
 }

@@ -105,18 +105,3 @@ func (t *Tray) Emit(event string, data interface{}) {
 		h(data)
 	}
 }
-
-// Menu 原生菜单构造与管理。
-type Menu struct {
-	items []MenuItem
-}
-
-// BuildMenuFromTemplate 根据模板构造 Menu。
-func BuildMenuFromTemplate(items []MenuItem) *Menu {
-	return &Menu{items: items}
-}
-
-// Items 返回菜单项列表。
-func (m *Menu) Items() []MenuItem {
-	return m.items
-}

@@ -27,13 +27,6 @@ func Print(prog *ast.Program) string {
 	return p.sb.String()
 }
 
-// PrintExpression 将单个表达式打印为 JS 源码（用于产物片段/测试）。
-func PrintExpression(e ast.Expression) string {
-	p := &printer{sb: &strings.Builder{}}
-	p.expr(e, precLowest)
-	return p.sb.String()
-}
-
 type printer struct {
 	sb       *strings.Builder
 	resolved map[string]string // import specifier → 模块 ID（nil 时原样保留；web bundle 用）

@@ -1056,39 +1056,6 @@ func (p *Parser) skipDecorators() error {
 	return nil
 }
 
-// skipToSemicolon 跳过 token 直到语句结束（顶层 ';' 或 EOF）。
-// 用于擦除 TS 类型声明（export type X = ... 等），跳过时保持嵌套深度
-// （{} () [] 内的 ';' 不终止）。
-func (p *Parser) skipToSemicolon() error {
-	depth := 0
-	for p.pos < len(p.tokens) {
-		tok := p.tokens[p.pos]
-		switch tok.Type {
-		case lexer.TokenEOF:
-			return nil
-		case lexer.TokenString, lexer.TokenTemplate, lexer.TokenRegex:
-			p.pos++
-			continue
-		case lexer.TokenPunct:
-			switch tok.Value {
-			case "{", "(", "[":
-				depth++
-			case "}", ")", "]":
-				if depth > 0 {
-					depth--
-				}
-			case ";":
-				if depth == 0 {
-					p.pos++
-					return nil
-				}
-			}
-		}
-		p.pos++
-	}
-	return nil
-}
-
 // skipTypeDeclBody 跳过 TS 类型声明体（interface/enum/namespace）：
 // 名称 + 泛型/extends/implements 子句（至顶层 '{'），再平衡跳过块体。
 func (p *Parser) skipTypeDeclBody() error {
@@ -1121,4 +1088,3 @@ func (p *Parser) skipTypeDeclBody() error {
 	}
 	return nil
 }
-

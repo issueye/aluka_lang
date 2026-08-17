@@ -198,10 +198,6 @@ func registerBlockList(m engine.Object) {
 	_ = m.Set("BlockList", ctor)
 }
 
-func cidrEqual(a, b *net.IPNet) bool {
-	return a != nil && b != nil && a.String() == b.String()
-}
-
 func ipRangeContains(from, to, ip net.IP) bool {
 	// 仅比较 IPv4（简化）。
 	af, bf, cf := from.To4(), to.To4(), ip.To4()

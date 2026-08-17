@@ -134,28 +134,6 @@ func (p *ProxyValue) callTrap(name string, args []engine.Value) (engine.Value, e
 	return p.vm.invoke(trap, engine.Undefined(), args, false)
 }
 
-// hasTrapSymbol returns true if the handler defines a function for the
-// symbol-keyed trap (e.g. Symbol.hasInstance).
-func (p *ProxyValue) hasTrapSymbol(sym *engine.SymbolValue) bool {
-	if p.handler == nil {
-		return false
-	}
-	trap, err := p.handler.Get(sym.SymbolKey())
-	if err != nil {
-		return false
-	}
-	return isCallable(trap)
-}
-
-// callTrapSymbol invokes a symbol-keyed handler trap with the given args.
-func (p *ProxyValue) callTrapSymbol(sym *engine.SymbolValue, args []engine.Value) (engine.Value, error) {
-	trap, err := p.handler.Get(sym.SymbolKey())
-	if err != nil || !isCallable(trap) {
-		return engine.Undefined(), fmt.Errorf("%w: handler is not callable", engine.ErrTypeError)
-	}
-	return p.vm.invoke(trap, engine.Undefined(), args, false)
-}
-
 // --- VM-aware trap dispatch (called from VM methods) ---
 
 // proxyGet implements the [[Get]] internal method with the get trap.

@@ -1063,24 +1063,6 @@ func RunRegisteredTests(vm *interpreter.VM) []TestResult {
 	return results
 }
 
-// hasOnlyMark 递归检查 registry 是否存在 only 标记（测试或套件）。
-func hasOnlyMark(s *registeredSuite) bool {
-	if s.only {
-		return true
-	}
-	for _, t := range s.tests {
-		if t.only {
-			return true
-		}
-	}
-	for _, sub := range s.suites {
-		if hasOnlyMark(sub) {
-			return true
-		}
-	}
-	return false
-}
-
 // joinName 拼接嵌套名称（Node 语义："parent > child"）。
 func joinName(prefix, name string) string {
 	if prefix == "" {

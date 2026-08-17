@@ -421,32 +421,6 @@ func makeVarDecl(name string, expr ast.Expression, loc ast.Pos) *ast.VarDecl {
 	}
 }
 
-// makeDefaultImport creates: var name = __imp.default !== undefined ? __imp.default : __imp
-func makeDefaultImport(name, impVar string, loc ast.Pos) *ast.VarDecl {
-	imp := &ast.Identifier{Name: impVar, Loc: loc}
-	defaultProp := &ast.MemberExpr{
-		Object:   imp,
-		Property: &ast.Identifier{Name: "default", Loc: loc},
-		Loc:      loc,
-	}
-	undefinedLit := &ast.UndefinedLit{Loc: loc}
-	// __imp.default !== undefined
-	test := &ast.BinaryExpr{
-		Left:  defaultProp,
-		Op:    "!==",
-		Right: undefinedLit,
-		Loc:   loc,
-	}
-	// __imp.default !== undefined ? __imp.default : __imp
-	cond := &ast.ConditionalExpr{
-		Test:       test,
-		Consequent: defaultProp,
-		Alternate:  &ast.Identifier{Name: impVar, Loc: loc},
-		Loc:        loc,
-	}
-	return makeVarDecl(name, cond, loc)
-}
-
 // makeExportAssignment creates: module.exports.<exported> = <local>
 // If expr is non-nil, uses expr instead of local identifier.
 func makeExportAssignment(exported, local string, loc ast.Pos, expr ...ast.Expression) ast.Statement {
@@ -525,4 +499,3 @@ func makeStarReexport(source string, loc ast.Pos) ast.Statement {
 		},
 	}
 }
-

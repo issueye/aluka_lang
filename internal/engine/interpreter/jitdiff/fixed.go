@@ -962,8 +962,3 @@ func (c *Case) applySource() {
 		c.Source = harnessHead + "\n" + c.Body + "\n" + harnessTail
 	}
 }
-
-// JoinExpected normalizes an expected event list for comparison.
-func JoinExpected(events ...string) string {
-	return strings.Join(events, "\n")
-}

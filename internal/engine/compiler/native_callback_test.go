@@ -34,17 +34,6 @@ func findCallback(mod *bytecode.Module) *bytecode.NativeCallbackDesc {
 	return nil
 }
 
-// findNoCallback 统计编译产物中 NativeCallback 为 nil 的函数模板数。
-func countPlain(mod *bytecode.Module) int {
-	n := 0
-	for _, fn := range mod.Functions {
-		if fn.NativeCallback == nil {
-			n++
-		}
-	}
-	return n
-}
-
 func TestNativeCallbackSimple(t *testing.T) {
 	cases := []struct {
 		name string
@@ -74,18 +63,18 @@ func TestNativeCallbackRejected(t *testing.T) {
 		name string
 		code string
 	}{
-		{"closure", "arr.map(x => x * k)"},                       // 闭包引用
+		{"closure", "arr.map(x => x * k)"},                         // 闭包引用
 		{"block-body", "arr.map(x => { const y = x; return y; })"}, // 多语句体
-		{"named-fn", "arr.map(function (x) { return x; })"},      // 非箭头
-		{"call-expr", "arr.map(x => String(x))"},                 // 函数调用
-		{"computed", "arr.map(x => x[k])"},                       // 计算属性
-		{"ternary", "arr.map(x => x > 1 ? x : 0)"},               // 三元
-		{"async", "arr.map(async x => x)"},                       // async
-		{"rest", "arr.map((...a) => a[0])"},                      // rest 参数
-		{"default", "arr.map((x = 1) => x)"},                     // 默认值
-		{"destructure", "arr.map(({v}) => v)"},                   // 解构
-		{"logical", "arr.map(x => x && 1)"},                      // 逻辑运算
-		{"string-method", "arr.map(x => x.trim())"},              // 方法调用
+		{"named-fn", "arr.map(function (x) { return x; })"},        // 非箭头
+		{"call-expr", "arr.map(x => String(x))"},                   // 函数调用
+		{"computed", "arr.map(x => x[k])"},                         // 计算属性
+		{"ternary", "arr.map(x => x > 1 ? x : 0)"},                 // 三元
+		{"async", "arr.map(async x => x)"},                         // async
+		{"rest", "arr.map((...a) => a[0])"},                        // rest 参数
+		{"default", "arr.map((x = 1) => x)"},                       // 默认值
+		{"destructure", "arr.map(({v}) => v)"},                     // 解构
+		{"logical", "arr.map(x => x && 1)"},                        // 逻辑运算
+		{"string-method", "arr.map(x => x.trim())"},                // 方法调用
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

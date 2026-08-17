@@ -232,11 +232,6 @@ func Decode(code []byte, pc int) (Opcode, uint32, int) {
 	return op, operand, pc + InstrSize
 }
 
-// EncodeSigned encodes a signed offset operand as its bits in uint32.
-func EncodeSigned(code *[]byte, op Opcode, offset int) int {
-	return Encode(code, op, uint32(offset))
-}
-
 // SignedOffset interprets a jump operand as a signed 24-bit value.
 func SignedOperand(operand uint32) int {
 	v := int(operand)

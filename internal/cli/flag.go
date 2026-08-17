@@ -141,21 +141,6 @@ func (fs *FlagSet) Int(name, usage string, p *int) *Flag {
 	return fs.Var((*intValue)(p), name, usage)
 }
 
-// Int64 注册 int64 flag。
-func (fs *FlagSet) Int64(name, usage string, p *int64) *Flag {
-	return fs.Var((*int64Value)(p), name, usage)
-}
-
-// Uint32 注册 uint32 flag。
-func (fs *FlagSet) Uint32(name, usage string, p *uint32) *Flag {
-	return fs.Var((*uint32Value)(p), name, usage)
-}
-
-// Uint64 注册 uint64 flag。
-func (fs *FlagSet) Uint64(name, usage string, p *uint64) *Flag {
-	return fs.Var((*uint64Value)(p), name, usage)
-}
-
 // Var 注册自定义值 flag；值类型实现 Value 接口，实现 IsBool() 时按布尔类处理。
 func (fs *FlagSet) Var(v Value, name, usage string) *Flag {
 	f := &Flag{fs: fs, name: name, usage: usage, value: v}
@@ -306,48 +291,3 @@ func (i *intValue) Set(s string) error {
 
 func (i *intValue) String() string { return strconv.Itoa(int(*i)) }
 func (i *intValue) builtinValue()  {}
-
-// int64Value int64 值。
-type int64Value int64
-
-func (i *int64Value) Set(s string) error {
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return err
-	}
-	*i = int64Value(n)
-	return nil
-}
-
-func (i *int64Value) String() string { return strconv.FormatInt(int64(*i), 10) }
-func (i *int64Value) builtinValue()  {}
-
-// uint32Value uint32 值。
-type uint32Value uint32
-
-func (u *uint32Value) Set(s string) error {
-	n, err := strconv.ParseUint(s, 10, 32)
-	if err != nil {
-		return err
-	}
-	*u = uint32Value(n)
-	return nil
-}
-
-func (u *uint32Value) String() string { return strconv.FormatUint(uint64(*u), 10) }
-func (u *uint32Value) builtinValue()  {}
-
-// uint64Value uint64 值。
-type uint64Value uint64
-
-func (u *uint64Value) Set(s string) error {
-	n, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return err
-	}
-	*u = uint64Value(n)
-	return nil
-}
-
-func (u *uint64Value) String() string { return strconv.FormatUint(uint64(*u), 10) }
-func (u *uint64Value) builtinValue()  {}

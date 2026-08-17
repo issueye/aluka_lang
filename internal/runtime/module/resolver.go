@@ -166,11 +166,6 @@ func matchPackageImport(imports map[string]json.RawMessage, specifier string) (j
 	return bestRaw, bestStar, true
 }
 
-// resolveFileOrDir tries the path as a file, then as a directory.
-func (r *Resolver) resolveFileOrDir(path string) (string, error) {
-	return r.resolveFileOrDirWithConditions(path, r.requireConditions)
-}
-
 func (r *Resolver) resolveFileOrDirWithConditions(path string, conditions []string) (string, error) {
 	// Try as a file (exact path or with extensions)
 	if resolved, ok := r.tryFile(path); ok {
@@ -232,11 +227,6 @@ func isBrowserCondition(conditions []string) bool {
 	return false
 }
 
-// resolveDir resolves a directory by reading package.json, then trying index files.
-func (r *Resolver) resolveDir(dir string) (string, error) {
-	return r.resolveDirWithConditions(dir, r.requireConditions)
-}
-
 func (r *Resolver) resolveDirWithConditions(dir string, conditions []string) (string, error) {
 	// Read package.json for "main" / "browser" / "module" field
 	if main, ok := r.readPackageMainWithConditions(dir, conditions); ok {
@@ -261,11 +251,6 @@ func (r *Resolver) resolveDirWithConditions(dir string, conditions []string) (st
 	}
 
 	return "", fmt.Errorf("module: cannot resolve directory %q", dir)
-}
-
-// readPackageMain reads the "main" / "browser" / "module" field from package.json in dir.
-func (r *Resolver) readPackageMain(dir string) (string, bool) {
-	return r.readPackageMainWithConditions(dir, r.requireConditions)
 }
 
 func (r *Resolver) readPackageMainWithConditions(dir string, conditions []string) (string, bool) {

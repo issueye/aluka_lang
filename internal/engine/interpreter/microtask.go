@@ -44,13 +44,6 @@ func drainQueue(queue *[]func()) bool {
 	return true
 }
 
-// drainMicrotasks runs all pending microtasks until the queue is empty.
-// New microtasks may be enqueued during execution (e.g., chained Promise
-// reactions), and they will be processed in the same drain cycle.
-func (interp *Interpreter) drainMicrotasks() {
-	drainQueue(&interp.microtaskQueue)
-}
-
 // drainJobQueues runs a complete Node-style microtask checkpoint. nextTick
 // jobs always run before Promise/queueMicrotask jobs. If a microtask schedules
 // another nextTick, the outer loop services it before leaving the checkpoint.

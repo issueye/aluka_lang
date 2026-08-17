@@ -52,12 +52,6 @@ func (r *RegexpValue) Keys() []string                       { return r.obj.Keys(
 func (r *RegexpValue) Delete(key string) bool               { return r.obj.Delete(key) }
 func (r *RegexpValue) UnwrapObject() engine.Object          { return r.obj }
 
-// isRegexpValue 判断一个值是否为 RegExp 实例。
-func isRegexpValue(v engine.Value) bool {
-	_, ok := v.(*RegexpValue)
-	return ok
-}
-
 // makeRegexp 编译 source/flags 并创建 RegExp 实例。编译失败返回 SyntaxError。
 func (interp *Interpreter) makeRegexp(source, flags string) (engine.Value, error) {
 	c, err := regex.Compile(source, flags)

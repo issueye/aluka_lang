@@ -8,12 +8,6 @@ import (
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
 )
 
-func compileLeafSrc(t *testing.T, src string) *Program {
-	t.Helper()
-	_ = src
-	return nil
-}
-
 // TestOptimizeConstantFoldingBitSemantics verifies the folded arithmetic
 // preserves IEEE-754 bit semantics: NaN, -0, ±Inf and division by zero.
 func TestOptimizeConstantFoldingBitSemantics(t *testing.T) {

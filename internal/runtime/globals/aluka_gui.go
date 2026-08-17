@@ -626,16 +626,3 @@ func wrapTrayInstance(ctx engine.Context, tray *gui.Tray) engine.Value {
 
 	return obj
 }
-
-// CreateGUIModule 为 aluka:gui 模块创建导出对象。
-func CreateGUIModule(ctx engine.Context) (engine.Value, error) {
-	alukaVal, err := ctx.Global().Get("Aluka")
-	if err == nil && alukaVal.IsObject() {
-		if ao, ok := alukaVal.AsObject(); ok {
-			if guiVal, err := ao.Get("gui"); err == nil {
-				return guiVal, nil
-			}
-		}
-	}
-	return engine.NewObject(), nil
-}

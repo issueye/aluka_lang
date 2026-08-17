@@ -549,20 +549,3 @@ func stmtHasSideEffects(s ast.Statement) bool {
 		return true
 	}
 }
-
-func findSourcePath(gr *graph.Result, key string) string {
-	for path, unit := range gr.SourceUnits {
-		if unit != nil && unit.Path == key {
-			return path
-		}
-	}
-	return ""
-}
-
-// stripBOM 保留给 shake 后重编译的兼容路径使用。
-func stripBOM(src []byte) []byte {
-	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
-		return src[3:]
-	}
-	return src
-}
