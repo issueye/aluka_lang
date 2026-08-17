@@ -96,6 +96,8 @@ if ! (cd "$REPO_ROOT" && $ALUKA build --target=web --minify --outfile "$DIR/reac
   FAIL=$((FAIL + 1))
 else
   check "React bundle has ESM export" "yes" "$(grep -q 'export ' "$DIR/react-entry.js" && echo yes || echo no)"
+  check "React bundle has no __req runtime" "yes" "$(grep -Rql '__req(' "$DIR/assets" "$DIR/react-entry.js" 2>/dev/null && echo no || echo yes)"
+  check "React hashed assets exist" "yes" "$(find "$DIR/assets" -name '*.js' -print -quit 2>/dev/null | grep -q . && echo yes || echo no)"
   check "React bundle executes" "react bundle ok" "$(cd "$DIR/app" && "$NODE" "$DIR/check.mjs" "$DIR/react-entry.js" 2>&1)"
 fi
 
@@ -119,7 +121,7 @@ if ! (cd "$REPO_ROOT" && $ALUKA build --target=web --minify --outfile "$DIR/dyna
   sed 's/^/       /' "$DIR/dynamic-build.log" | head -12
   FAIL=$((FAIL + 1))
 else
-  check "dynamic chunk exists" "yes" "$(find "$DIR" -maxdepth 1 -name 'chunk-*.js' -print -quit | grep -q . && echo yes || echo no)"
+  check "dynamic hashed module exists" "yes" "$(grep -Rql 'lazy-ok' "$DIR/assets" 2>/dev/null && echo yes || echo no)"
   check "dynamic bundle executes" "lazy-ok" "$("$NODE" --input-type=module -e "import('url').then(async ({pathToFileURL})=>{const m=await import(pathToFileURL(process.argv[1])); console.log(await m.load())})" "$DIR/dynamic-main.js" 2>&1)"
 fi
 

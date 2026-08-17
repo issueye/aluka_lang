@@ -1,0 +1,41 @@
+:root {
+  --bg: #14110c;
+  --panel: #1c1812;
+  --paper: #f3ead6;
+  --muted: #b7aa90;
+  --brass: #c99a4a;
+  --phosphor: #9fe8b0;
+  --line: rgba(201, 154, 74, 0.38);
+  --display: "Iowan Old Style", "Palatino Linotype", Palatino, "Times New Roman", serif;
+  --mono: "Cascadia Mono", "Sarasa Mono SC", "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--display);
+  color: var(--paper);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, rgba(201, 154, 74, 0.16), transparent 55%),
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.015) 0 1px,
+      transparent 1px 3px
+    ),
+    var(--bg);
+}
+
+#app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 12vh 1.25rem 4rem;
+}

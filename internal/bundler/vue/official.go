@@ -150,29 +150,10 @@ const officialDriver = `(function () {
       }
       template = t.code;
     }
-    var styles = [];
-    if (d.styles) {
-      for (var j = 0; j < d.styles.length; j++) {
-        var style = d.styles[j];
-        var styleFile = style.__alukaFilename || globalThis.__sfcName;
-        var compiled = ns.compileStyle({
-          source: style.content,
-          filename: styleFile,
-          id: "data-v-" + id,
-          scoped: !!style.scoped
-        });
-        if (compiled.errors && compiled.errors.length) {
-          fail(compiled.errors[0], style.loc, "", style.__alukaFilename ? null : style.loc, style.__alukaFilename || "");
-          return;
-        }
-        styles.push(compiled.code || "");
-      }
-    }
     globalThis.__sfcResult = {
       script: script,
       scriptLang: scriptLang,
       template: template,
-      styles: styles,
       hasScoped: hasScoped
     };
   } catch (e) {
@@ -340,15 +321,13 @@ func (c *OfficialCompiler) Compile(req CompileRequest) (*CompileResult, error) {
 	}
 
 	var styles []GeneratedModule
-	if sv, err := obj.Get("styles"); err == nil && sv != nil && !sv.IsUndefined() && !sv.IsNull() {
-		if arr, ok := sv.(*engine.ArrayValue); ok {
-			for i, el := range arr.Elems() {
-				modName := styleModuleName(base, i)
-				styles = append(styles, GeneratedModule{Name: modName, Source: el.String()})
-				facade += "import " + strconv.Quote("./"+filepath.ToSlash(modName)) + ";\n"
-			}
-		}
+	_, _, styleBlocks, _ := classifyBlocks(blocks)
+	styleMods, styleImports, err := attachStyleModules(name, styleBlocks, externals, sfcScopeID(name))
+	if err != nil {
+		return nil, err
 	}
+	styles = styleMods
+	facade += styleImports
 	if hasScoped {
 		facade += `__sfc__.__scopeId = "data-v-` + sfcScopeID(name) + `";` + "\n"
 	}

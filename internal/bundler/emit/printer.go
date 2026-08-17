@@ -11,6 +11,7 @@ package emit
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -19,7 +20,24 @@ import (
 
 // Print 将 Program 打印为 JS 源码（minify 形态）。
 func Print(prog *ast.Program) string {
-	p := &printer{sb: &strings.Builder{}}
+	return PrintOpts(prog, PrintOptions{})
+}
+
+// PrintOptions 控制 web ESM 图打印：define 替换与 import 路径重写。
+type PrintOptions struct {
+	Defines        map[string]string
+	RewriteImport  func(spec string) (next string, keep bool)
+	RewriteDynamic func(spec string) string
+}
+
+// PrintOpts 按选项打印 Program。
+func PrintOpts(prog *ast.Program, opts PrintOptions) string {
+	p := &printer{
+		sb:             &strings.Builder{},
+		defines:        opts.Defines,
+		rewriteImport:  opts.RewriteImport,
+		rewriteDynamic: opts.RewriteDynamic,
+	}
 	for _, stmt := range prog.Body {
 		p.stmt(stmt)
 		p.sb.WriteByte(';')
@@ -33,6 +51,11 @@ type printer struct {
 	ctx      *bundleCtx        // web bundle 跨模块上下文（可为 nil）
 	dynamic  map[string]DynamicImport
 	defines  map[string]string // 构建期 define：点分成员链 → 替换文本（web bundle 用）
+	// rewriteImport 把静态 import/export-from 的 specifier 改写成产物路径。
+	// keep=false 时省略该 import（CSS 已抽到独立样式表）。
+	rewriteImport func(spec string) (next string, keep bool)
+	// rewriteDynamic 把动态 import() 的字面量 specifier 改写成产物路径。
+	rewriteDynamic func(spec string) string
 }
 
 func (p *printer) w(s string) { p.sb.WriteString(s) }
@@ -274,6 +297,14 @@ func (p *printer) exprInner(e ast.Expression) {
 	case *ast.CallExpr:
 		if id, ok := t.Callee.(*ast.Identifier); ok && id.Name == "__import" && len(t.Arguments) > 0 {
 			if lit, ok := t.Arguments[0].(*ast.StringLit); ok {
+				if p.rewriteDynamic != nil {
+					if next := p.rewriteDynamic(lit.Value); next != "" {
+						p.w("import(")
+						p.string(next)
+						p.w(")")
+						return
+					}
+				}
 				if d, found := p.dynamic[lit.Value]; found {
 					p.w("__alukaImport(")
 					p.string(d.Chunk)
@@ -595,6 +626,16 @@ func (p *printer) stmt(s ast.Statement) {
 		p.w(t.Label)
 		p.w(":")
 		p.stmtBody(t.Body)
+
+	case *ast.ImportDecl:
+		p.importDecl(t)
+
+	case *ast.ExportDecl:
+		p.exportDecl(t)
+
+	case *ast.ExportDefaultDecl:
+		p.w("export default ")
+		p.expr(t.Expression, precAssign)
 
 	default:
 		panic(fmt.Sprintf("emit: unsupported statement %T", s))
@@ -984,6 +1025,135 @@ func formatNumber(f float64) string {
 		return strconv.FormatInt(int64(f), 10)
 	}
 	return strconv.FormatFloat(f, 'g', -1, 64)
+}
+
+func (p *printer) importDecl(d *ast.ImportDecl) {
+	src := d.Source
+	rewrote := false
+	if p.rewriteImport != nil {
+		next, keep := p.rewriteImport(src)
+		if !keep {
+			return
+		}
+		rewrote = next != src
+		src = next
+	}
+	var defaultName, nsName string
+	var named []string
+	for _, spec := range d.Specifiers {
+		switch spec.Imported {
+		case "":
+			defaultName = spec.Local
+		case "*":
+			nsName = spec.Local
+		default:
+			if spec.Imported == spec.Local {
+				named = append(named, spec.Imported)
+			} else {
+				named = append(named, spec.Imported+" as "+spec.Local)
+			}
+		}
+	}
+	p.w("import")
+	needFrom := defaultName != "" || nsName != "" || len(named) > 0
+	if defaultName != "" {
+		p.w(" ")
+		p.w(defaultName)
+	}
+	if nsName != "" {
+		if defaultName != "" {
+			p.w(",")
+		}
+		p.w(" * as ")
+		p.w(nsName)
+	}
+	if len(named) > 0 {
+		if defaultName != "" || nsName != "" {
+			p.w(",")
+		} else {
+			p.w(" ")
+		}
+		p.w("{")
+		p.w(strings.Join(named, ","))
+		p.w("}")
+	}
+	if needFrom {
+		p.w(" from ")
+	} else {
+		p.w(" ")
+	}
+	p.string(src)
+	if !rewrote {
+		p.importAttrs(d.Attributes)
+	}
+}
+
+func (p *printer) exportDecl(d *ast.ExportDecl) {
+	src := d.Source
+	if src != "" && p.rewriteImport != nil {
+		next, keep := p.rewriteImport(src)
+		if !keep {
+			if d.Declaration != nil {
+				p.stmt(d.Declaration)
+			}
+			return
+		}
+		src = next
+	}
+	p.w("export ")
+	if d.Declaration != nil {
+		p.stmt(d.Declaration)
+		return
+	}
+	if d.IsStar {
+		p.w("*")
+		if d.StarName != "" {
+			p.w(" as ")
+			p.w(d.StarName)
+		}
+		if src != "" {
+			p.w(" from ")
+			p.string(src)
+		}
+		return
+	}
+	p.w("{")
+	for i, spec := range d.Specifiers {
+		if i > 0 {
+			p.w(",")
+		}
+		p.w(spec.Local)
+		if spec.Exported != spec.Local {
+			p.w(" as ")
+			p.w(spec.Exported)
+		}
+	}
+	p.w("}")
+	if src != "" {
+		p.w(" from ")
+		p.string(src)
+	}
+}
+
+func (p *printer) importAttrs(attrs map[string]string) {
+	if len(attrs) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	p.w(" with{")
+	for i, k := range keys {
+		if i > 0 {
+			p.w(",")
+		}
+		p.w(k)
+		p.w(":")
+		p.string(attrs[k])
+	}
+	p.w("}")
 }
 
 func (p *printer) string(s string) {

@@ -1,0 +1,16 @@
+{
+  "name": "vue3-run-build-demo",
+  "private": true,
+  "type": "module",
+  "description": "同一份 Vue 3 SFC：aluka run SSR + aluka build web/--compile（配置走 aluka.config.js）",
+  "scripts": {
+    "verify": "aluka run verify.ts",
+    "serve": "aluka run server.ts",
+    "build": "aluka build --target=web index.html",
+    "watch": "aluka build --target=web --watch index.html",
+    "compile": "aluka build --compile --outfile dist/verify.exe verify-compile.ts"
+  },
+  "dependencies": {
+    "vue": "3.5.13"
+  }
+}

@@ -16,15 +16,16 @@ import (
 	"github.com/aluka-lang/aluka/internal/bundler/graph"
 	"github.com/aluka-lang/aluka/internal/engine/jit"
 	"github.com/aluka-lang/aluka/internal/monitor"
+	"github.com/aluka-lang/aluka/internal/project"
 )
 
 func TestValidateWebBuiltins(t *testing.T) {
-	if err := validateWebBuiltins(nil); err != nil {
-		t.Fatalf("validateWebBuiltins(nil) = %v, want nil", err)
+	if err := project.ValidateWebBuiltins(nil); err != nil {
+		t.Fatalf("ValidateWebBuiltins(nil) = %v, want nil", err)
 	}
-	err := validateWebBuiltins([]graph.BuiltinDep{{Spec: "node:fs", Source: "src/main.ts"}})
+	err := project.ValidateWebBuiltins([]graph.BuiltinDep{{Spec: "node:fs", Source: "src/main.ts"}})
 	if err == nil {
-		t.Fatal("validateWebBuiltins() = nil, want error")
+		t.Fatal("ValidateWebBuiltins() = nil, want error")
 	}
 	for _, want := range []string{"web target", `"node:fs"`, "src/main.ts", "Web API", "--polyfill"} {
 		if !strings.Contains(err.Error(), want) {
@@ -444,6 +445,37 @@ func runNodeESMCheck(t *testing.T, dir, bundle, checkJS, want string) {
 	}
 }
 
+func globHashedAsset(t *testing.T, dir, pattern string) string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, filepath.FromSlash(pattern)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) == 0 {
+		t.Fatalf("no files match %s in %s", pattern, dir)
+	}
+	return matches[0]
+}
+
+func readDirConcatJS(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if strings.EqualFold(filepath.Ext(path), ".js") {
+			data, readErr := os.ReadFile(path)
+			if readErr == nil {
+				b.Write(data)
+				b.WriteByte('\n')
+			}
+		}
+		return nil
+	})
+	return b.String()
+}
+
 // TestCompiledPayloadArgvPassthrough 验证打包产物参数穿透：产物模式下 argv
 // 解析与普通模式完全一致（框架在主二进制，payload 字节码不参与参数解析）。
 // 需要 go 工具链构建 aluka 二进制（每测试进程一次），可用 -short 跳过。
@@ -603,30 +635,41 @@ export const count = info.count;
 	if err != nil {
 		t.Fatalf("read output index.html failed: %v", err)
 	}
-	if !strings.Contains(string(htmlOut), `src="app.js"`) {
-		t.Errorf("rewritten HTML does not reference app.js:\n%s", htmlOut)
+	htmlText := string(htmlOut)
+	if !strings.Contains(htmlText, `src="assets/app-`) {
+		t.Errorf("rewritten HTML does not reference hashed app JS:\n%s", htmlText)
 	}
-	if !strings.Contains(string(htmlOut), `href="style.css"`) {
-		t.Errorf("rewritten HTML does not reference style.css:\n%s", htmlOut)
+	if !strings.Contains(htmlText, `href="assets/style-`) {
+		t.Errorf("rewritten HTML does not reference hashed style.css:\n%s", htmlText)
+	}
+	if !strings.Contains(htmlText, "crossorigin") {
+		t.Errorf("HTML missing crossorigin:\n%s", htmlText)
+	}
+	if !strings.Contains(htmlText, `rel="modulepreload"`) {
+		t.Errorf("HTML missing modulepreload:\n%s", htmlText)
 	}
 
-	// 2. 验证 JS 产物与 JSON 内联与 sourcemap 注释
-	jsOut, err := os.ReadFile(filepath.Join(distDir, "app.js"))
+	jsPath := globHashedAsset(t, distDir, "assets/app-*.js")
+	jsOut, err := os.ReadFile(jsPath)
 	if err != nil {
-		t.Fatalf("read output app.js failed: %v", err)
+		t.Fatalf("read hashed app JS failed: %v", err)
 	}
 	jsStr := string(jsOut)
-	if !strings.Contains(jsStr, "Aluka Static Build") {
-		t.Errorf("app.js missing inlined JSON data: %s", jsStr)
+	if strings.Contains(jsStr, "__def(") || strings.Contains(jsStr, "__req(") {
+		t.Errorf("app JS still uses wrap runtime: %s", jsStr)
 	}
-	if !strings.Contains(jsStr, "//# sourceMappingURL=app.js.map") {
+	allJS := readDirConcatJS(t, distDir)
+	if !strings.Contains(allJS, "Aluka Static Build") {
+		t.Errorf("hashed graph missing inlined JSON data")
+	}
+	if !strings.Contains(jsStr, "//# sourceMappingURL=") {
 		t.Errorf("app.js missing sourceMappingURL comment: %s", jsStr)
 	}
 
-	// 3. 验证 Sourcemap 文件
-	mapOut, err := os.ReadFile(filepath.Join(distDir, "app.js.map"))
+	mapPath := jsPath + ".map"
+	mapOut, err := os.ReadFile(mapPath)
 	if err != nil {
-		t.Fatalf("read output app.js.map failed: %v", err)
+		t.Fatalf("read output sourcemap failed: %v", err)
 	}
 	var sm map[string]interface{}
 	if err := json.Unmarshal(mapOut, &sm); err != nil {
@@ -637,17 +680,17 @@ export const count = info.count;
 	}
 
 	// 4. 验证 CSS 文件输出（独立 style.css 与 伴随 app.css）
-	styleOut, err := os.ReadFile(filepath.Join(distDir, "style.css"))
+	styleOut, err := os.ReadFile(globHashedAsset(t, distDir, "assets/style-*.css"))
 	if err != nil {
-		t.Fatalf("read output style.css failed: %v", err)
+		t.Fatalf("read hashed style.css failed: %v", err)
 	}
 	if len(styleOut) == 0 {
 		t.Errorf("style.css is empty")
 	}
 
-	themeOut, err := os.ReadFile(filepath.Join(distDir, "app.css"))
+	themeOut, err := os.ReadFile(globHashedAsset(t, distDir, "assets/app-*.css"))
 	if err != nil {
-		t.Fatalf("read output app.css failed: %v", err)
+		t.Fatalf("read hashed app.css failed: %v", err)
 	}
 	if !strings.Contains(string(themeOut), "color:#007acc") {
 		t.Errorf("app.css does not contain minified theme styles: %s", themeOut)
@@ -676,11 +719,17 @@ func TestWebBuildMultipleEntries(t *testing.T) {
 		t.Fatalf("build multiple web entries failed: %v\n%s", err, out)
 	}
 
+	if _, err := os.Stat(globHashedAsset(t, distDir, "assets/page1-*.js")); err != nil {
+		t.Errorf("missing hashed page1.js: %v", err)
+	}
+	if _, err := os.Stat(globHashedAsset(t, distDir, "assets/page2-*.js")); err != nil {
+		t.Errorf("missing hashed page2.js: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(distDir, "page1.js")); err != nil {
-		t.Errorf("missing page1.js: %v", err)
+		t.Errorf("missing page1.js barrel: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(distDir, "page2.js")); err != nil {
-		t.Errorf("missing page2.js: %v", err)
+		t.Errorf("missing page2.js barrel: %v", err)
 	}
 }
 
@@ -770,9 +819,12 @@ func TestWebBuildRealVueDemo(t *testing.T) {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build real Vue demo failed: %v\n%s", err, out)
 	}
-	chunks, err := filepath.Glob(filepath.Join(outDir, "chunk-*.js"))
-	if err != nil || len(chunks) == 0 {
-		t.Fatalf("Vue demo dynamic chunk missing: matches=%v err=%v", chunks, err)
+	allJS := readDirConcatJS(t, outDir)
+	if !strings.Contains(allJS, "chunk 加载成功") {
+		t.Fatalf("Vue demo dynamic module missing in hashed graph")
+	}
+	if strings.Contains(allJS, "__req(") {
+		t.Fatal("Vue ESM graph retained __req runtime")
 	}
 	bundle, err := os.ReadFile(outFile)
 	if err != nil {
@@ -880,7 +932,7 @@ func TestWebBuildOutfileWithChunks(t *testing.T) {
 }
 
 func TestWebProductionDefines(t *testing.T) {
-	defines := webProductionDefines()
+	defines := project.ProductionDefines()
 	for key, want := range map[string]string{
 		"process.env.NODE_ENV":                    `"production"`,
 		"__VUE_OPTIONS_API__":                     "true",
@@ -917,15 +969,14 @@ func TestWebBuildVueOfficialBackend(t *testing.T) {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("official backend build failed: %v\n%s", err, out)
 	}
-	bundle, err := os.ReadFile(outFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 官方代码生成标记：helper 别名导入 + 独立模板模块的 render 挂接。
-	for _, marker := range []string{"createElementVNode:_createElementVNode", "__sfc_render__", "_openBlock"} {
-		if !strings.Contains(string(bundle), marker) {
+	allJS := readDirConcatJS(t, outDir)
+	for _, marker := range []string{"_createElementVNode", "__sfc_render__", "_openBlock"} {
+		if !strings.Contains(allJS, marker) {
 			t.Errorf("official bundle missing marker %q", marker)
 		}
+	}
+	if strings.Contains(allJS, "__req(") {
+		t.Fatal("official ESM graph retained __req runtime")
 	}
 
 	runNodeESMCheck(t, outDir, outFile, `import {pathToFileURL} from "node:url";
@@ -974,9 +1025,10 @@ export function toDisplayString(v){return String(v)}`)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("vue style build failed: %v\n%s", err, out)
 	}
-	css, err := os.ReadFile(filepath.Join(outDir, "main.css"))
+	cssPath := globHashedAsset(t, outDir, "assets/main-*.css")
+	css, err := os.ReadFile(cssPath)
 	if err != nil {
-		t.Fatalf("expected main.css next to JS: %v", err)
+		t.Fatalf("expected hashed main.css: %v", err)
 	}
 	cssText := string(css)
 	if !strings.Contains(cssText, "data-v-") {
@@ -989,8 +1041,12 @@ export function toDisplayString(v){return String(v)}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(htmlOut), `href="main.css"`) {
-		t.Fatalf("HTML missing injected Vue CSS link:\n%s", htmlOut)
+	htmlText := string(htmlOut)
+	if !strings.Contains(htmlText, `href="assets/main-`) {
+		t.Fatalf("HTML missing injected Vue CSS link:\n%s", htmlText)
+	}
+	if !strings.Contains(htmlText, "crossorigin") || !strings.Contains(htmlText, `rel="modulepreload"`) {
+		t.Fatalf("HTML missing Vite-style module attrs:\n%s", htmlText)
 	}
 }
 
@@ -1097,7 +1153,7 @@ export default { data(): { render: string } { return { render }; } };
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(bundle), "scope-ok") {
+	if !strings.Contains(string(bundle), "scope-ok") && !strings.Contains(readDirConcatJS(t, filepath.Dir(outFile)), "scope-ok") {
 		t.Fatalf("official TS scope bundle missing script content:\n%s", bundle)
 	}
 }
@@ -1138,5 +1194,71 @@ func TestGUIWebEntryBuild(t *testing.T) {
 	}
 	if info.Size() == 0 {
 		t.Fatalf("artifact is empty")
+	}
+}
+
+// TestWebBuildDynamicProjectConfig 验证配置发现走脚本而非 Go 写死文件名：
+// 项目钩子 aluka.config.js 提供 outDir/base/alias/define；CLI --outdir 仍优先。
+func TestWebBuildDynamicProjectConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"package.json": `{"name":"cfg-demo","private":true}`,
+		"src/util.ts":  `export const tag = "from-alias";`,
+		"src/main.ts":  `import { tag } from "@/util"; export const marker = tag + ":" + __FLAG__;`,
+		"index.html":   `<!DOCTYPE html><html><body><script type="module" src="./src/main.ts"></script></body></html>`,
+		"aluka.config.js": `
+module.exports = {
+  base: "/cdn/",
+  outDir: "web-out",
+  assetsDir: "media",
+  alias: { "@": "./src" },
+  define: { __FLAG__: JSON.stringify("cfg") },
+};
+`,
+		"jest.config.js": `throw new Error("jest.config.js must not run during web build");`,
+	}
+	for name, src := range files {
+		full := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.WriteFile(full, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cmd := exec.Command(bin, "build", "--target=web", "index.html")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build with aluka.config.js failed: %v\n%s", err, out)
+	}
+	htmlOut, err := os.ReadFile(filepath.Join(dir, "web-out", "index.html"))
+	if err != nil {
+		t.Fatalf("config outDir not used: %v", err)
+	}
+	htmlText := string(htmlOut)
+	if !strings.Contains(htmlText, `src="/cdn/media/main-`) {
+		t.Errorf("HTML missing publicBase+assetsDir rewrite:\n%s", htmlText)
+	}
+	allJS := readDirConcatJS(t, filepath.Join(dir, "web-out"))
+	if !strings.Contains(allJS, "from-alias") {
+		t.Errorf("alias @ not applied, JS:\n%s", allJS)
+	}
+	if strings.Contains(allJS, "__def(") || strings.Contains(allJS, "__req(") {
+		t.Errorf("ESM graph still uses wrap runtime")
+	}
+
+	cliDir := filepath.Join(dir, "cli-dist")
+	cmd = exec.Command(bin, "build", "--target=web", "--outdir", cliDir, "index.html")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build with CLI --outdir failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(cliDir, "index.html")); err != nil {
+		t.Fatalf("CLI --outdir should win over aluka.config.js outDir: %v", err)
 	}
 }

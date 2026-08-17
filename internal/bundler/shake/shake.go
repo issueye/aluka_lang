@@ -419,16 +419,19 @@ func pruneModule(info *moduleInfo, usedExports map[string]map[string]bool, infos
 					newBody = append(newBody, stmt)
 					continue
 				}
-				kept := false
+				keptSpecs := make([]ast.ExportSpecifier, 0, len(n.Specifiers))
 				for _, spec := range n.Specifiers {
 					if used["*"] || used[spec.Exported] {
-						kept = true
-						break
+						keptSpecs = append(keptSpecs, spec)
 					}
 				}
-				if !kept {
+				if len(keptSpecs) == 0 {
 					changed = true
 					continue
+				}
+				if len(keptSpecs) != len(n.Specifiers) {
+					changed = true
+					n.Specifiers = keptSpecs
 				}
 				newBody = append(newBody, stmt)
 				continue

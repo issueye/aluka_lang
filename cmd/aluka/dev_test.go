@@ -27,6 +27,53 @@ func newDevFixture(t *testing.T) (*devServer, string) {
 	return newDevServer(o), dir
 }
 
+// firstBuiltJS 返回 dist 下任意一个已写出的 .js 路径（HTML 入口默认原生 ESM，
+// 主脚本在 assets/*-<hash>.js，不一定有 main.js barrel）。
+func firstBuiltJS(t *testing.T, outdir string) string {
+	t.Helper()
+	var found string
+	_ = filepath.WalkDir(outdir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || found != "" {
+			return err
+		}
+		if strings.EqualFold(filepath.Ext(path), ".js") {
+			found = path
+		}
+		return nil
+	})
+	if found == "" {
+		t.Fatalf("no .js assets under %s", outdir)
+	}
+	return found
+}
+
+func distURLPath(outdir, absFile string) string {
+	rel, err := filepath.Rel(outdir, absFile)
+	if err != nil {
+		return "/" + filepath.Base(absFile)
+	}
+	return "/" + filepath.ToSlash(rel)
+}
+
+// anyJSContains 扫描产物目录中是否有 JS 含 needle。
+func anyJSContains(outdir, needle string) bool {
+	found := false
+	_ = filepath.WalkDir(outdir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || found {
+			return err
+		}
+		if !strings.EqualFold(filepath.Ext(path), ".js") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr == nil && strings.Contains(string(data), needle) {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
 // TestDevServerHealthOK：初始构建成功后 health 为 ok。
 func TestDevServerHealthOK(t *testing.T) {
 	s, _ := newDevFixture(t)
@@ -76,10 +123,11 @@ func TestDevServerHealthError(t *testing.T) {
 		t.Errorf("health = %+v, want error state", body)
 	}
 	// 旧产物仍可服务。
+	jsPath := firstBuiltJS(t, s.opts.outdir)
 	jsRec := httptest.NewRecorder()
-	s.mux.ServeHTTP(jsRec, httptest.NewRequest("GET", "/main.js", nil))
+	s.mux.ServeHTTP(jsRec, httptest.NewRequest("GET", distURLPath(s.opts.outdir, jsPath), nil))
 	if jsRec.Code != 200 {
-		t.Errorf("stale main.js status = %d, want 200", jsRec.Code)
+		t.Errorf("stale js status = %d, want 200", jsRec.Code)
 	}
 }
 
@@ -89,10 +137,11 @@ func TestDevServerStaticAndSPAFallback(t *testing.T) {
 	if err := s.rebuild(); err != nil {
 		t.Fatal(err)
 	}
+	jsPath := firstBuiltJS(t, s.opts.outdir)
 	rec := httptest.NewRecorder()
-	s.mux.ServeHTTP(rec, httptest.NewRequest("GET", "/main.js", nil))
+	s.mux.ServeHTTP(rec, httptest.NewRequest("GET", distURLPath(s.opts.outdir, jsPath), nil))
 	if rec.Code != 200 {
-		t.Fatalf("main.js status = %d", rec.Code)
+		t.Fatalf("js asset status = %d", rec.Code)
 	}
 	spa := httptest.NewRecorder()
 	s.mux.ServeHTTP(spa, httptest.NewRequest("GET", "/some/route", nil))
@@ -140,11 +189,7 @@ func TestDevServerRebuildPicksUpChanges(t *testing.T) {
 	if err := s.rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(s.opts.outdir, "main.js"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "99") {
-		t.Errorf("rebuilt main.js missing updated dep value:\n%s", data)
+	if !anyJSContains(s.opts.outdir, "99") {
+		t.Errorf("rebuilt assets missing updated dep value 99")
 	}
 }

@@ -19,7 +19,6 @@ package vue
 
 import (
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -88,32 +87,15 @@ func transformSFC(req CompileRequest) (*CompileResult, error) {
 	}
 
 	script := blockContent(scriptBlock, externals.Script)
-	base := filepath.Base(filepath.FromSlash(name))
 	var b strings.Builder
 	result := &CompileResult{ExtraFiles: externals.Files}
 
-	styleIdx := 0
-	extStyle := 0
-	for _, st := range styles {
-		css := st.Content
-		if st.attr("src") != "" {
-			if extStyle >= len(externals.Styles) {
-				return nil, fmt.Errorf("%s: missing src content for <style>", name)
-			}
-			css = externals.Styles[extStyle].Content
-			extStyle++
-		}
-		if st.has("scoped") {
-			if err := rejectAdvancedScoped(name, css); err != nil {
-				return nil, err
-			}
-			css = scopeCSS(css, id)
-		}
-		modName := styleModuleName(base, styleIdx)
-		result.Styles = append(result.Styles, GeneratedModule{Name: modName, Source: css})
-		b.WriteString("import " + strconv.Quote("./"+filepath.ToSlash(modName)) + ";\n")
-		styleIdx++
+	styleMods, styleImports, err := attachStyleModules(name, styles, externals, id)
+	if err != nil {
+		return nil, err
 	}
+	result.Styles = styleMods
+	b.WriteString(styleImports)
 
 	b.WriteString(runtimeImports)
 	if strings.TrimSpace(script) != "" {

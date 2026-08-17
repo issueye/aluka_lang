@@ -2,6 +2,8 @@ package vue
 
 import (
 	"fmt"
+	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -10,10 +12,43 @@ func rejectAdvancedScoped(name, css string) error {
 	lower := strings.ToLower(css)
 	for _, n := range needles {
 		if strings.Contains(lower, strings.ToLower(n)) {
-			return fmt.Errorf("%s: scoped CSS %s is not supported in the subset backend; use --vue-compiler=official", name, n)
+			return fmt.Errorf("%s: scoped CSS %s is not supported yet", name, n)
 		}
 	}
 	return nil
+}
+
+// attachStyleModules 把 <style> 编成虚拟 CSS 模块。scoped 用纯 Go 选择器后缀
+// （Vite 默认属性选择器），不走 compiler-sfc compileStyle：Aluka VM 里
+// postcss-selector-parser 的 toString 会把选择器打成对象文本。
+func attachStyleModules(name string, styles []sfcBlock, externals *sfcExternals, id string) ([]GeneratedModule, string, error) {
+	if externals == nil {
+		externals = &sfcExternals{}
+	}
+	base := filepath.Base(filepath.FromSlash(name))
+	var mods []GeneratedModule
+	var b strings.Builder
+	extStyle := 0
+	for i, st := range styles {
+		css := st.Content
+		if st.attr("src") != "" {
+			if extStyle >= len(externals.Styles) {
+				return nil, "", fmt.Errorf("%s: missing src content for <style>", name)
+			}
+			css = externals.Styles[extStyle].Content
+			extStyle++
+		}
+		if st.has("scoped") {
+			if err := rejectAdvancedScoped(name, css); err != nil {
+				return nil, "", err
+			}
+			css = scopeCSS(css, id)
+		}
+		modName := styleModuleName(base, i)
+		mods = append(mods, GeneratedModule{Name: modName, Source: css})
+		b.WriteString("import " + strconv.Quote("./"+filepath.ToSlash(modName)) + ";\n")
+	}
+	return mods, b.String(), nil
 }
 
 // scopeCSS 给选择器加 [data-v-id] 后缀（Vue 默认属性选择器）。不处理

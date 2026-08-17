@@ -14,6 +14,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/bundler/astutil"
 	"github.com/aluka-lang/aluka/internal/bundler/compile"
+	"github.com/aluka-lang/aluka/internal/bundler/plugin"
 	"github.com/aluka-lang/aluka/internal/bundler/vue"
 	"github.com/aluka-lang/aluka/internal/engine/ast"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
@@ -65,11 +66,13 @@ type Result struct {
 	UnresolvedDynamic []string
 	// WatchFiles 是本次图中真实存在的源文件（含 Vue src 外部块），供 --watch。
 	WatchFiles []string
+	plugins    plugin.Host
 }
 
 // buildConfig 收集 Build 的可选配置。
 type buildConfig struct {
 	vueCompiler vue.Compiler
+	plugins     plugin.Host
 }
 
 // Option 是 Build 的可选配置项。
@@ -78,6 +81,11 @@ type Option func(*buildConfig)
 // WithVueCompiler 指定 .vue 编译后端（nil 时用默认 subset）。
 func WithVueCompiler(c vue.Compiler) Option {
 	return func(cfg *buildConfig) { cfg.vueCompiler = c }
+}
+
+// WithPlugins 把 Vite 风格 resolveId/load/transform 接到 walk。
+func WithPlugins(h plugin.Host) Option {
+	return func(cfg *buildConfig) { cfg.plugins = h }
 }
 
 // generatedSource 是单次 Build 内的 SFC 虚拟模块，不落盘也不跨构建共享。
@@ -112,12 +120,43 @@ func Build(vm *interpreter.VM, resolver *module.Resolver, entry string, opts ...
 		Assets:      make(map[string][]byte),
 		WatchFiles:  make([]string, 0),
 	}
+	r.plugins = cfg.plugins
 	visited := make(map[string]bool)
 	generated := make(map[string]generatedSource)
 	if err := r.walk(vm, resolver, entryAbs, virtualKey(entryDir, entryAbs), entryDir, visited, generated, cfg.vueCompiler); err != nil {
 		return nil, err
 	}
 	return r, nil
+}
+
+func (r *Result) host() plugin.Host {
+	if r.plugins == nil {
+		return plugin.Nop{}
+	}
+	return r.plugins
+}
+
+func isVirtualModuleID(id string) bool {
+	return strings.HasPrefix(id, "\x00")
+}
+
+func pluginModuleKey(id string) string {
+	s := strings.TrimPrefix(id, "\x00")
+	var b strings.Builder
+	b.WriteString("plugin/")
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.' {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	out := b.String()
+	if !strings.Contains(filepath.Base(out), ".") {
+		out += ".js"
+	}
+	return out
 }
 
 // virtualKey 将绝对路径转为相对入口目录的虚拟路径（/ 分隔）。
@@ -160,17 +199,27 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 	visited[fsPath] = true
 	r.noteWatch(fsPath)
 
+	if loaded, ok, err := r.host().Load(fsPath); err != nil {
+		return err
+	} else if ok {
+		ext := filepath.Ext(fsPath)
+		if strings.EqualFold(ext, ".vue") {
+			return r.walkVue(vm, resolver, fsPath, key, entryDir, visited, generated, vueBackend, loaded)
+		}
+		return r.walkSource(vm, resolver, fsPath, key, entryDir, visited, generated, vueBackend, loaded, false)
+	}
+
 	ext := filepath.Ext(fsPath)
 	if source, ok := generated[fsPath]; ok {
 		if strings.EqualFold(ext, ".css") {
-			r.Assets[key] = []byte(source.code)
+			transformed, err := r.host().Transform(fsPath, source.code)
+			if err != nil {
+				return err
+			}
+			r.Assets[key] = []byte(transformed)
 			return nil
 		}
-		unit, err := module.ParseSourceUnit([]byte(source.code), key, module.ModuleESM)
-		if err != nil {
-			return err
-		}
-		return r.finishWalk(vm, resolver, fsPath, key, entryDir, visited, generated, vueBackend, unit)
+		return r.walkSource(vm, resolver, fsPath, key, entryDir, visited, generated, vueBackend, source.code, true)
 	}
 
 	// JSON 与 CSS 文件是资源而非 JS 模块：读取原始字节嵌入（M2/M3）。
@@ -179,60 +228,93 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 		if err != nil {
 			return fmt.Errorf("graph: cannot read %q: %w", fsPath, err)
 		}
-		r.Assets[key] = data
+		transformed, err := r.host().Transform(fsPath, string(data))
+		if err != nil {
+			return err
+		}
+		r.Assets[key] = []byte(transformed)
 		return nil
 	}
 
-	// .vue 单文件组件：构建期编译为 facade，并把 official 后端产生的
-	// script/template/style 注册为本次 Build 私有的虚拟模块。
-	var unit *module.SourceUnit
-	var err error
 	if strings.EqualFold(ext, ".vue") {
 		data, readErr := os.ReadFile(fsPath)
 		if readErr != nil {
 			return fmt.Errorf("graph: cannot read %q: %w", fsPath, readErr)
 		}
-		compiled, compileErr := vueBackend.Compile(vue.CompileRequest{
-			Source:   string(data),
-			Name:     key,
-			Filename: fsPath,
-			ReadFile: os.ReadFile,
-			Resolve: func(spec, from string) (string, error) {
-				return resolver.ResolveImport(spec, from)
-			},
-		})
-		if compileErr != nil {
-			return fmt.Errorf("graph: %w", compileErr)
-		}
-		for _, extra := range compiled.ExtraFiles {
-			r.noteWatch(extra)
-		}
-		registerGenerated := func(generatedModule vue.GeneratedModule) error {
-			generatedPath := filepath.Join(filepath.Dir(fsPath), filepath.FromSlash(generatedModule.Name))
-			if _, exists := generated[generatedPath]; exists {
-				return fmt.Errorf("graph: duplicate generated Vue module %q", generatedModule.Name)
-			}
-			generated[generatedPath] = generatedSource{code: generatedModule.Source}
-			return nil
-		}
-		for _, generatedModule := range compiled.Modules {
-			if err := registerGenerated(generatedModule); err != nil {
-				return err
-			}
-		}
-		for _, styleMod := range compiled.Styles {
-			if err := registerGenerated(styleMod); err != nil {
-				return err
-			}
-		}
-		unit, err = module.ParseSourceUnit([]byte(compiled.Facade), key, module.ModuleESM)
+		return r.walkVue(vm, resolver, fsPath, key, entryDir, visited, generated, vueBackend, string(data))
+	}
+
+	data, err := os.ReadFile(fsPath)
+	if err != nil {
+		return fmt.Errorf("graph: cannot read %q: %w", fsPath, err)
+	}
+	return r.walkSource(vm, resolver, fsPath, key, entryDir, visited, generated, vueBackend, string(data), false)
+}
+
+func (r *Result) walkSource(vm *interpreter.VM, resolver *module.Resolver, fsPath, key, entryDir string, visited map[string]bool, generated map[string]generatedSource, vueBackend vue.Compiler, code string, generatedESM bool) error {
+	ext := filepath.Ext(fsPath)
+	if ext == "" {
+		ext = filepath.Ext(key)
+	}
+	transformed, err := r.host().Transform(fsPath, code)
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(ext, ".json") || strings.EqualFold(ext, ".css") {
+		r.Assets[key] = []byte(transformed)
+		return nil
+	}
+	var unit *module.SourceUnit
+	if generatedESM {
+		unit, err = module.ParseSourceUnit([]byte(transformed), key, module.ModuleESM)
 	} else {
-		unit, err = compile.ParseFileUnit(fsPath, key)
+		hint := fsPath
+		if isVirtualModuleID(fsPath) {
+			hint = key
+		}
+		unit, err = module.ParseFileSource([]byte(transformed), key, hint)
 	}
 	if err != nil {
 		return err
 	}
 	return r.finishWalk(vm, resolver, fsPath, key, entryDir, visited, generated, vueBackend, unit)
+}
+
+func (r *Result) walkVue(vm *interpreter.VM, resolver *module.Resolver, fsPath, key, entryDir string, visited map[string]bool, generated map[string]generatedSource, vueBackend vue.Compiler, source string) error {
+	compiled, compileErr := vueBackend.Compile(vue.CompileRequest{
+		Source:   source,
+		Name:     key,
+		Filename: fsPath,
+		ReadFile: os.ReadFile,
+		Resolve: func(spec, from string) (string, error) {
+			return resolver.ResolveImport(spec, from)
+		},
+	})
+	if compileErr != nil {
+		return fmt.Errorf("graph: %w", compileErr)
+	}
+	for _, extra := range compiled.ExtraFiles {
+		r.noteWatch(extra)
+	}
+	registerGenerated := func(generatedModule vue.GeneratedModule) error {
+		generatedPath := filepath.Join(filepath.Dir(fsPath), filepath.FromSlash(generatedModule.Name))
+		if _, exists := generated[generatedPath]; exists {
+			return fmt.Errorf("graph: duplicate generated Vue module %q", generatedModule.Name)
+		}
+		generated[generatedPath] = generatedSource{code: generatedModule.Source}
+		return nil
+	}
+	for _, generatedModule := range compiled.Modules {
+		if err := registerGenerated(generatedModule); err != nil {
+			return err
+		}
+	}
+	for _, styleMod := range compiled.Styles {
+		if err := registerGenerated(styleMod); err != nil {
+			return err
+		}
+	}
+	return r.walkSource(vm, resolver, fsPath, key, entryDir, visited, generated, vueBackend, compiled.Facade, true)
 }
 
 func (r *Result) finishWalk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key, entryDir string, visited map[string]bool, generated map[string]generatedSource, vueBackend vue.Compiler, unit *module.SourceUnit) error {
@@ -280,7 +362,15 @@ func (r *Result) finishWalk(vm *interpreter.VM, resolver *module.Resolver, fsPat
 		}
 		var resolved string
 		generatedCandidate := filepath.Clean(filepath.Join(filepath.Dir(fsPath), filepath.FromSlash(dep.Spec)))
-		if _, ok := generated[generatedCandidate]; ok {
+		if pid, ok, perr := r.host().ResolveId(dep.Spec, fsPath); perr != nil {
+			return perr
+		} else if ok {
+			if pid == "" {
+				continue // resolveId(false) → external
+			}
+			resolved = pid
+			err = nil
+		} else if _, ok := generated[generatedCandidate]; ok {
 			resolved = generatedCandidate
 			err = nil
 		} else if dep.ImportCtx {
@@ -296,17 +386,22 @@ func (r *Result) finishWalk(vm *interpreter.VM, resolver *module.Resolver, fsPat
 			}
 			return fmt.Errorf("graph: cannot resolve %q from %q: %w", dep.Spec, key, err)
 		}
-		rAbs, err := filepath.Abs(resolved)
-		if err != nil {
-			return err
+		var rAbs, depKey string
+		if isVirtualModuleID(resolved) {
+			rAbs = resolved
+			depKey = pluginModuleKey(resolved)
+		} else {
+			rAbs, err = filepath.Abs(resolved)
+			if err != nil {
+				return err
+			}
+			depKey = virtualKey(entryDir, rAbs)
 		}
-		depKey := virtualKey(entryDir, rAbs)
 		table[dep.Spec] = depKey
 		if dep.Dynamic {
 			r.DynamicDeps = append(r.DynamicDeps, DynamicDep{Source: key, Spec: dep.Spec, Target: depKey})
 		}
 		if err := r.walk(vm, resolver, rAbs, depKey, entryDir, visited, generated, vueBackend); err != nil {
-
 			return err
 		}
 	}

@@ -22,7 +22,7 @@
 - `Object.defineProperty`、`Reflect`、数组 exotic properties、Proxy invariants、`preventExtensions/seal/freeze` 和 JIT 属性写入均已接入同一描述符语义并有回归覆盖。
 - SameValue 已区分 `+0/-0`，并正确处理 NaN；符号 own keys 在 names/symbols/Reflect.ownKeys API 间保持分类。
 - fallback 正则已使用 UTF-16 可见索引；非 `u` 模式按 code unit、`u` 模式按 code point 匹配。孤立 surrogate 在当前 Go UTF-8 字符串物化路径中可能显示为 U+FFFD，但索引和匹配边界保持正确。
-- official 后端支持普通 script、script setup、TypeScript、named exports，以及 `<script src>` / `<template src>` / `<style>`（纯 CSS，含 scoped）。custom block、预处理器与 CSS modules 仍明确报错，不会静默丢弃。
+- official 后端支持普通 script、script setup、TypeScript、named exports，以及 `<script src>` / `<template src>` / `<style>`（纯 CSS，含 scoped：Go 选择器后缀，与 Vite `data-v-*` 一致）。custom block、预处理器、CSS modules、`:deep`/`:slotted`/`:global`/`v-bind()` 仍明确报错，不会静默丢弃。
 
 
 ## M4（official bundler 后端）实现要点

@@ -260,7 +260,8 @@ type Bundle struct {
 	Assets  map[string][]byte
 	Format  string            // esm（默认）、cjs、umd
 	Global  string            // UMD global name
-	Defines map[string]string // 构建期常量：标识符或点分成员链 → JS 表达式
+	Defines   map[string]string // 构建期常量：标识符或点分成员链 → JS 表达式
+	AssetsDir string            // hashed 文件子目录，空则 assets
 }
 
 // Build 拼接最终产物（ESM/CJS/UMD）。
@@ -459,6 +460,14 @@ func collectExports(prog *ast.Program) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// CollectExports 提取模块导出名（named + default）。
+func CollectExports(prog *ast.Program) ([]string, error) {
+	if prog == nil {
+		return nil, nil
+	}
+	return collectExports(prog)
 }
 
 func quoteJS(sb *strings.Builder, s string) {

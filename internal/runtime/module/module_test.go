@@ -314,6 +314,39 @@ func TestResolverRelativePath(t *testing.T) {
 	}
 }
 
+func TestResolverBuildAliasExactAndPrefix(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(filepath.Join(src, "lib"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "util.js"), []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "lib", "mod.js"), []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(dir, "main.js")
+	r := NewResolver()
+	r.AddAlias("@", src)
+	r.AddAlias("@lib", filepath.Join(src, "lib"))
+
+	got, err := r.Resolve("@/util.js", parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Join(src, "util.js") {
+		t.Errorf("@/util.js: got %q, want %q", got, filepath.Join(src, "util.js"))
+	}
+	got, err = r.Resolve("@lib/mod.js", parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Join(src, "lib", "mod.js") {
+		t.Errorf("@lib/mod.js: got %q, want %q", got, filepath.Join(src, "lib", "mod.js"))
+	}
+}
+
 func TestResolverExtensionResolution(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "mod.js"), []byte(""), 0644)
@@ -714,5 +747,94 @@ func TestResolverBrowserCondition(t *testing.T) {
 		if !strings.HasSuffix(filepath.ToSlash(resNode), "main.node.js") {
 			t.Errorf("node resolve got %s, want main.node.js", resNode)
 		}
+	}
+}
+
+func TestWebResolvePrefersModuleOverMain(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "node_modules", "lib")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+		"name": "lib",
+		"main": "./main.cjs.js",
+		"module": "./main.esm.js"
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "main.cjs.js"), []byte(`module.exports = 1`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "main.esm.js"), []byte(`export default 1`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(dir, "app.js")
+
+	web := NewResolver()
+	web.SetWebConditions()
+	got, err := web.ResolveImport("lib", parent)
+	if err != nil {
+		t.Fatalf("web ResolveImport: %v", err)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(got), "main.esm.js") {
+		t.Errorf("web resolved %s, want main.esm.js (Vite module field)", got)
+	}
+
+	node := NewResolver()
+	got, err = node.ResolveImport("lib", parent)
+	if err != nil {
+		t.Fatalf("node ResolveImport: %v", err)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(got), "main.cjs.js") {
+		t.Errorf("node resolved %s, want main.cjs.js", got)
+	}
+}
+
+func TestTsconfigAliasToPackageUsesExports(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "vendor", "vue")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tsconfig.json"), []byte(`{
+		"compilerOptions": {
+			"baseUrl": ".",
+			"paths": { "vue": ["vendor/vue"] }
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+		"name": "vue",
+		"main": "./index.js",
+		"module": "./runtime.js",
+		"exports": {
+			".": {
+				"import": {
+					"node": "./index.js",
+					"default": "./runtime.js"
+				},
+				"require": "./index.js"
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte(`module.exports = "cjs"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "runtime.js"), []byte(`export default "runtime"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewResolver()
+	web.SetWebConditions()
+	got, err := web.ResolveImport("vue", filepath.Join(dir, "src", "app.ts"))
+	if err != nil {
+		t.Fatalf("alias exports: %v", err)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(got), "runtime.js") {
+		t.Errorf("web alias resolved %s, want vendor/vue/runtime.js (exports default)", got)
 	}
 }

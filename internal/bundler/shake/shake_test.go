@@ -192,3 +192,38 @@ func TestShakeMarksShakenSourceUnit(t *testing.T) {
 		t.Error("unused export declaration survived pruning")
 	}
 }
+
+func TestShakeFiltersUnusedNamedReExportSpecifiers(t *testing.T) {
+	// Vue runtime-core 一类：`export { used, unused } from './dep'` 只要
+	// 有一个名字被用就会整句保留；原生 ESM 链接要求未使用的名字也从
+	// 目标模块导出，否则出现 TrackOpTypes 这类 "does not provide export"。
+	gr := buildFixture(t, map[string]string{
+		"main.js":        "import { used } from './core.js';\nconsole.log(used);\n",
+		"core.js":        "export { used, unused } from './reactivity.js';\n",
+		"reactivity.js":  "export const used = 1;\nexport const unused = 2;\n",
+	}, "main.js")
+	res, err := Shake(gr, gr.Entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Kept["core.js"] || !res.Kept["reactivity.js"] {
+		t.Fatalf("kept = %v", res.Kept)
+	}
+	core := gr.SourceUnits["core.js"]
+	if core == nil || core.Program == nil {
+		t.Fatal("core.js AST missing")
+	}
+	var exported []string
+	for _, stmt := range core.Program.Body {
+		ed, ok := stmt.(*ast.ExportDecl)
+		if !ok || ed.Source == "" {
+			continue
+		}
+		for _, spec := range ed.Specifiers {
+			exported = append(exported, spec.Exported)
+		}
+	}
+	if len(exported) != 1 || exported[0] != "used" {
+		t.Fatalf("re-export specifiers = %v, want [used]", exported)
+	}
+}

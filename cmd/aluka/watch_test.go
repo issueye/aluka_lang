@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/aluka-lang/aluka/internal/project"
 )
 
 // TestWatchSnapshotExcludesOutdir：输出目录（构建产物）不进入 watch 快照，
@@ -56,14 +58,14 @@ func TestWatchSnapshotExcludesOutdir(t *testing.T) {
 // 应被清理，避免依赖删除后陈旧产物残留。
 func TestWriteWebAssetsTrackedRemovesStale(t *testing.T) {
 	dir := t.TempDir()
-	opts := buildOptions{outdir: dir}
+	opts := project.Options{OutDir: dir}
 	written := map[string]bool{}
 
 	first := map[string][]byte{
 		"main.js":     []byte("v1"),
 		"chunk-aa.js": []byte("lazy-v1"),
 	}
-	if err := writeWebAssetsTracked("src/main.ts", first, opts, written); err != nil {
+	if err := project.WriteAssets("src/main.ts", first, opts, written); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"main.js", "chunk-aa.js"} {
@@ -73,7 +75,7 @@ func TestWriteWebAssetsTrackedRemovesStale(t *testing.T) {
 	}
 
 	second := map[string][]byte{"main.js": []byte("v2")}
-	if err := writeWebAssetsTracked("src/main.ts", second, opts, written); err != nil {
+	if err := project.WriteAssets("src/main.ts", second, opts, written); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "chunk-aa.js")); !os.IsNotExist(err) {

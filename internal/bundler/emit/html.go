@@ -102,6 +102,78 @@ func RewriteHTML(html string, replacements map[string]string) string {
 	return result
 }
 
+var attrCrossOriginRe = regexp.MustCompile(`(?i)\bcrossorigin\b`)
+
+// EnhanceHTML 给本地 module script / stylesheet 补 crossorigin，并插入 modulepreload。
+func EnhanceHTML(html string, preload []string) string {
+	html = scriptTagRe.ReplaceAllStringFunc(html, func(tag string) string {
+		m := scriptTagRe.FindStringSubmatch(tag)
+		if len(m) < 3 || isRemoteURL(m[2]) {
+			return tag
+		}
+		if attrCrossOriginRe.MatchString(tag) {
+			return tag
+		}
+		return insertHTMLAttr(tag, "crossorigin")
+	})
+	html = linkTagRe.ReplaceAllStringFunc(html, func(tag string) string {
+		m := linkTagRe.FindStringSubmatch(tag)
+		if len(m) < 3 || isRemoteURL(m[2]) {
+			return tag
+		}
+		attrs := m[1] + " " + m[3]
+		if !strings.Contains(strings.ToLower(attrs), "stylesheet") {
+			return tag
+		}
+		if attrCrossOriginRe.MatchString(tag) {
+			return tag
+		}
+		return insertHTMLAttr(tag, "crossorigin")
+	})
+	return InjectModulePreload(html, preload)
+}
+
+func insertHTMLAttr(tag, attr string) string {
+	i := strings.Index(tag, ">")
+	if i < 0 {
+		return tag
+	}
+	if i > 0 && tag[i-1] == '/' {
+		return tag[:i-1] + " " + attr + tag[i-1:]
+	}
+	return tag[:i] + " " + attr + tag[i:]
+}
+
+// InjectModulePreload 在 </head> 前插入 modulepreload（无 head 则插在首个 script 前）。
+func InjectModulePreload(html string, hrefs []string) string {
+	var b strings.Builder
+	seen := map[string]bool{}
+	lower := strings.ToLower(html)
+	for _, href := range hrefs {
+		if href == "" || seen[href] {
+			continue
+		}
+		seen[href] = true
+		if strings.Contains(html, `href="`+href+`"`) && strings.Contains(lower, "modulepreload") {
+			continue
+		}
+		b.WriteString(`<link rel="modulepreload" crossorigin href="`)
+		b.WriteString(href)
+		b.WriteString(`">`)
+	}
+	extra := b.String()
+	if extra == "" {
+		return html
+	}
+	if i := strings.LastIndex(lower, "</head>"); i >= 0 {
+		return html[:i] + extra + html[i:]
+	}
+	if i := strings.Index(lower, "<script"); i >= 0 {
+		return html[:i] + extra + html[i:]
+	}
+	return extra + html
+}
+
 func isRemoteURL(url string) bool {
 	lower := strings.ToLower(url)
 	return strings.HasPrefix(lower, "http://") ||

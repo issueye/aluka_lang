@@ -28,6 +28,8 @@ Thumbs.db
 # 项目缓存
 .aluka-cache/
 node_modules/
+demo/vue3-run-build-demo/.generated/
+demo/vue3-run-build-demo/dist/
 
 # web bundle Vue demo：真实 vue@3.5.13 离线 fixture 需随仓库分发
 !demo/web-bundle-vue-demo/node_modules/

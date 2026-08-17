@@ -249,6 +249,7 @@ aluka_lang/
 │   ├── express-demo/          # 真实 express 运行验证 demo
 │   ├── react-ssr-demo/        # React 18 源码级 JSX SSR + Tailwind CSS JIT 现代化 demo
 │   ├── vue3-ssr-demo/         # Vue 3 响应式/SFC SSR 现代化 demo
+│   ├── vue3-run-build-demo/   # 官方 vue@3.5.13：aluka run SSR + build web/--compile
 │   └── web-bundle-vue-demo/   # Vue 3.5.13 web bundle + official compiler-sfc 离线 fixture
 ├── bench/                     # 性能基准
 ├── docs/                      # 需求分析 / 开发计划 / AIP 协议规范 / JIT 优化报告

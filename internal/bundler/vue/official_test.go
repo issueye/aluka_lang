@@ -217,8 +217,11 @@ func TestOfficialCompilerStyleAndSrc(t *testing.T) {
 	if !strings.Contains(result.Facade, `__sfc__.__scopeId = "data-v-`+id+`"`) {
 		t.Fatalf("facade missing __scopeId:\n%s", result.Facade)
 	}
-	if !strings.Contains(result.Styles[0].Source, "data-v-"+id) {
-		t.Fatalf("scoped style missing data-v: %s", result.Styles[0].Source)
+	if strings.Contains(result.Styles[0].Source, "{ source:") {
+		t.Fatalf("scoped style dumped postcss AST: %s", result.Styles[0].Source)
+	}
+	if !strings.Contains(result.Styles[0].Source, ".box[data-v-"+id+"]") {
+		t.Fatalf("scoped css = %q, want .box[data-v-%s]", result.Styles[0].Source, id)
 	}
 	if !strings.Contains(result.Styles[1].Source, ".ext") {
 		t.Fatalf("src style missing .ext: %s", result.Styles[1].Source)

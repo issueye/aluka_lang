@@ -21,15 +21,19 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/cli"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/project"
+	alukart "github.com/aluka-lang/aluka/internal/project/aluka"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
 type devOptions struct {
-	host   string
-	port   int
-	outdir string
-	minify bool
-	entry  string
+	host      string
+	port      int
+	outdir    string
+	minify    bool
+	entry     string
+	cliOutdir bool
+	cliMinify bool
 }
 
 func cmdDev(args []string) error {
@@ -51,10 +55,32 @@ func cmdDev(args []string) error {
 	if err != nil {
 		return err
 	}
+	o.cliOutdir = cliFlagPresent(args, "outdir")
+	o.cliMinify = cliFlagPresent(args, "minify")
+	if !o.cliOutdir {
+		o.outdir = ""
+	}
 	if len(pos) != 1 {
 		return fmt.Errorf("aluka dev: expected one entry file")
 	}
 	o.entry = pos[0]
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		return err
+	}
+	buildOpts := buildOptions{
+		target: "web", outdir: o.outdir, minify: o.minify, treeShake: true,
+		cliOutdir: o.cliOutdir, cliMinify: o.cliMinify,
+	}
+	wopts := toWebOptions(buildOpts)
+	if err := project.ApplyConfig(alukart.New(vm), o.entry, &wopts); err != nil {
+		return err
+	}
+	o.outdir = wopts.OutDir
+	o.minify = wopts.Minify
+	if o.outdir == "" {
+		o.outdir = "dist"
+	}
 	if err := os.MkdirAll(o.outdir, 0o755); err != nil {
 		return err
 	}
@@ -173,18 +199,28 @@ func (s *devServer) rebuild() error {
 		s.setErr(err)
 		return err
 	}
-	assets, extra, err := bundleWebEntry(vm, module.NewResolver(), s.opts.entry, buildOptions{
+	rt := alukart.New(vm)
+	wopts := toWebOptions(buildOptions{
 		target: "web", outdir: s.opts.outdir, minify: s.opts.minify, treeShake: true,
+		cliOutdir: s.opts.cliOutdir, cliMinify: s.opts.cliMinify,
 	})
+	if err := project.ApplyConfig(rt, s.opts.entry, &wopts); err != nil {
+		s.setErr(err)
+		return err
+	}
+	if wopts.OutDir == "" {
+		wopts.OutDir = s.opts.outdir
+	}
+	bundled, err := project.BuildWeb(rt, module.NewResolver(), s.opts.entry, wopts)
 	if err != nil {
 		s.setErr(err)
 		return err
 	}
 	s.mu.Lock()
-	s.watchExtra = extra
+	s.watchExtra = bundled.Watch
 	s.mu.Unlock()
-	opts := buildOptions{outdir: s.opts.outdir}
-	if err := writeWebAssetsTracked(s.opts.entry, assets, opts, s.written); err != nil {
+	writeOpts := project.Options{OutDir: s.opts.outdir, Plugins: wopts.Plugins}
+	if err := project.WriteAssets(s.opts.entry, bundled.Assets, writeOpts, s.written); err != nil {
 		s.setErr(err)
 		return err
 	}

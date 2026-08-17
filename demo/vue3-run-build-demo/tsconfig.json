@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"],
+      "vue": ["../web-bundle-vue-demo/node_modules/vue"],
+      "vue/*": ["../web-bundle-vue-demo/node_modules/vue/*"]
+    }
+  }
+}

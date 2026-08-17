@@ -31,6 +31,12 @@ type Resolver struct {
 
 	// tsconfigCache 缓存已解析的 tsconfig.json（路径别名支持，1C.12/1C.13）。
 	tsconfigCache *tsconfigCache
+	aliases       []aliasRule
+}
+
+type aliasRule struct {
+	from string
+	to   string
 }
 
 // NewResolver creates a Resolver with Node.js defaults.
@@ -43,6 +49,40 @@ func NewResolver() *Resolver {
 		importConditions:  append([]string(nil), nodeImportConditions...),
 		tsconfigCache:     newTsconfigCache(),
 	}
+}
+
+// AddAlias 注册构建期路径别名（vite resolve.alias / aluka.config）。
+// from 为 specifier 前缀或精确名，to 为替换路径（绝对或相对）。
+func (r *Resolver) AddAlias(from, to string) {
+	from = strings.TrimSpace(from)
+	to = strings.TrimSpace(to)
+	if from == "" || to == "" {
+		return
+	}
+	r.aliases = append(r.aliases, aliasRule{from: from, to: to})
+}
+
+func (r *Resolver) resolveAlias(specifier string) (string, bool) {
+	for _, a := range r.aliases {
+		if specifier == a.from {
+			return a.to, true
+		}
+		var rest string
+		switch {
+		case strings.HasSuffix(a.from, "/") && strings.HasPrefix(specifier, a.from):
+			rest = specifier[len(a.from):]
+		case !strings.HasSuffix(a.from, "/") && strings.HasPrefix(specifier, a.from+"/"):
+			rest = specifier[len(a.from)+1:]
+		default:
+			continue
+		}
+		base := strings.TrimRight(a.to, `/\`)
+		if rest == "" {
+			return base, true
+		}
+		return filepath.Join(base, filepath.FromSlash(rest)), true
+	}
+	return "", false
 }
 
 // Resolve resolves a module specifier to an absolute file path.
@@ -80,7 +120,23 @@ func (r *Resolver) resolve(specifier, parentPath string, conditions []string) (s
 		return r.resolveFileOrDirWithConditions(full, conditions)
 	}
 
-	// Bare specifier: 先尝试 tsconfig paths 别名（1C.13），再回退 node_modules。
+	// Bare specifier: 先尝试构建期 alias（vite/aluka 配置），再 tsconfig paths，再 node_modules。
+	if aliased, ok := r.resolveAlias(specifier); ok {
+		if filepath.IsAbs(aliased) {
+			if resolved, err := r.resolveFileOrDirWithConditions(aliased, conditions); err == nil {
+				return resolved, nil
+			}
+		} else if strings.HasPrefix(aliased, "./") || strings.HasPrefix(aliased, "../") {
+			base := filepath.Dir(parentPath)
+			full := filepath.Join(base, filepath.FromSlash(aliased))
+			if resolved, err := r.resolveFileOrDirWithConditions(full, conditions); err == nil {
+				return resolved, nil
+			}
+		} else if resolved, err := r.resolveFileOrDirWithConditions(aliased, conditions); err == nil {
+			return resolved, nil
+		}
+	}
+
 	if candidates := r.resolvePaths(specifier, filepath.Dir(parentPath)); len(candidates) > 0 {
 		for _, cand := range candidates {
 			if resolved, err := r.resolveFileOrDirWithConditions(cand, conditions); err == nil {
@@ -228,6 +284,12 @@ func isBrowserCondition(conditions []string) bool {
 }
 
 func (r *Resolver) resolveDirWithConditions(dir string, conditions []string) (string, error) {
+	if resolved, hasExports, err := r.resolvePackageExports(dir, "", conditions); hasExports {
+		if err != nil {
+			return "", err
+		}
+		return resolved, nil
+	}
 	// Read package.json for "main" / "browser" / "module" field
 	if main, ok := r.readPackageMainWithConditions(dir, conditions); ok {
 		candidate := filepath.Join(dir, filepath.FromSlash(main))
@@ -290,6 +352,11 @@ func (r *Resolver) readPackageMainWithConditions(dir string, conditions []string
 		if pkg.Main != "" {
 			return pkg.Main, true
 		}
+	}
+
+	// 浏览器目标：没有 browser 字段时优先 module（Vite/webpack），再 main。
+	if isBrowserCondition(conditions) && pkg.Module != "" {
+		return pkg.Module, true
 	}
 
 	// Prefer "main"; fall back to "module" (ESM entry point)

@@ -1,6 +1,7 @@
 package emit
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -59,5 +60,29 @@ func TestRewriteHTML(t *testing.T) {
 
 	if rewritten != want {
 		t.Errorf("RewriteHTML got:\n%s\nwant:\n%s", rewritten, want)
+	}
+}
+
+func TestEnhanceHTMLCrossOriginAndPreload(t *testing.T) {
+	html := `<!DOCTYPE html>
+<html>
+<head>
+    <link rel="stylesheet" href="assets/style-a1b2c3d4.css">
+</head>
+<body>
+    <script type="module" src="assets/main-e5f6g7h8.js"></script>
+</body>
+</html>`
+	got := EnhanceHTML(html, []string{"assets/main-e5f6g7h8.js", "assets/util-11111111.js"})
+	if !strings.Contains(got, `crossorigin href="assets/style-a1b2c3d4.css"`) && !strings.Contains(got, `href="assets/style-a1b2c3d4.css" crossorigin`) {
+		if !strings.Contains(got, `rel="stylesheet"`) || !strings.Contains(got, "crossorigin") {
+			t.Fatalf("stylesheet missing crossorigin:\n%s", got)
+		}
+	}
+	if !strings.Contains(got, `type="module" src="assets/main-e5f6g7h8.js"`) || !strings.Contains(got, "crossorigin") {
+		t.Fatalf("script missing crossorigin:\n%s", got)
+	}
+	if !strings.Contains(got, `<link rel="modulepreload" crossorigin href="assets/util-11111111.js">`) {
+		t.Fatalf("missing modulepreload:\n%s", got)
 	}
 }

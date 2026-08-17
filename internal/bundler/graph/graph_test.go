@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aluka-lang/aluka/internal/bundler/plugin"
 	"github.com/aluka-lang/aluka/internal/bundler/vue"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
@@ -369,5 +370,117 @@ func TestBuildBuiltinSkipped(t *testing.T) {
 	}
 	if len(res.Modules) != 1 {
 		t.Errorf("modules = %d, want 1 (builtin not embedded)", len(res.Modules))
+	}
+}
+
+type virtualHost struct {
+	plugin.Nop
+}
+
+func (virtualHost) ResolveId(id, _ string) (string, bool, error) {
+	if id == "virtual:ok" {
+		return "\x00virtual:ok", true, nil
+	}
+	return "", false, nil
+}
+
+func (virtualHost) Load(id string) (string, bool, error) {
+	if id == "\x00virtual:ok" {
+		return "export const v = 1;\n", true, nil
+	}
+	return "", false, nil
+}
+
+func (virtualHost) Transform(id, code string) (string, error) {
+	if strings.HasSuffix(id, "main.ts") {
+		return code + "\nexport const tagged = 1;\n", nil
+	}
+	return code, nil
+}
+
+func TestBuildPluginVirtualModule(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"main.ts": `import { v } from "virtual:ok"; export { v };`,
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.ts"), WithPlugins(virtualHost{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.SourceUnits["plugin/virtual-ok.js"]; !ok {
+		t.Fatalf("virtual module missing; units = %v", keysOf(res.SourceUnits))
+	}
+	if got := res.Resolutions["main.ts"]["virtual:ok"]; got != "plugin/virtual-ok.js" {
+		t.Fatalf("resolution = %q", got)
+	}
+	if !strings.Contains(string(res.SourceUnits["main.ts"].Source), "tagged") {
+		t.Fatalf("transform not applied: %s", res.SourceUnits["main.ts"].Source)
+	}
+}
+
+type externalHost struct {
+	plugin.Nop
+}
+
+func (externalHost) ResolveId(id, _ string) (string, bool, error) {
+	if id == "ext:skip" {
+		return "", true, nil
+	}
+	return "", false, nil
+}
+
+func TestBuildPluginResolveIdFalseExternal(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"main.ts": `import "ext:skip"; export const n = 1;`,
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.ts"), WithPlugins(externalHost{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.Resolutions["main.ts"]["ext:skip"]; ok {
+		t.Fatalf("external import should not be in Resolutions: %#v", res.Resolutions["main.ts"])
+	}
+	if len(res.SourceUnits) != 1 {
+		t.Fatalf("units = %v, want only main.ts", keysOf(res.SourceUnits))
+	}
+}
+
+type cssTransformHost struct {
+	plugin.Nop
+}
+
+func (cssTransformHost) Transform(id, code string) (string, error) {
+	if strings.HasSuffix(strings.ToLower(id), ".css") {
+		return code + "/*p*/", nil
+	}
+	return code, nil
+}
+
+func TestBuildPluginTransformCSS(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"main.ts": `import "./a.css"; export const n = 1;`,
+		"a.css":   `body{color:red}`,
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.ts"), WithPlugins(cssTransformHost{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, ok := res.Assets["a.css"]
+	if !ok {
+		t.Fatalf("css asset missing: %#v", res.Assets)
+	}
+	if !strings.Contains(string(css), "/*p*/") {
+		t.Fatalf("css transform missing: %s", css)
 	}
 }
