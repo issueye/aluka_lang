@@ -73,6 +73,7 @@ func cmdDev(args []string) error {
 		cliOutdir: o.cliOutdir, cliMinify: o.cliMinify,
 	}
 	wopts := toWebOptions(buildOpts)
+	wopts.Dev = true
 	if err := project.ApplyConfig(alukart.New(vm), o.entry, &wopts); err != nil {
 		return err
 	}
@@ -204,12 +205,15 @@ func (s *devServer) rebuild() error {
 		target: "web", outdir: s.opts.outdir, minify: s.opts.minify, treeShake: true,
 		cliOutdir: s.opts.cliOutdir, cliMinify: s.opts.cliMinify,
 	})
+	wopts.Dev = true
 	if err := project.ApplyConfig(rt, s.opts.entry, &wopts); err != nil {
 		s.setErr(err)
 		return err
 	}
+	// 开发服务目录在启动时固定；配置热改 outDir 不迁移静态根，避免校验目录与写盘分叉。
+	wopts.OutDir = s.opts.outdir
 	if wopts.OutDir == "" {
-		wopts.OutDir = s.opts.outdir
+		wopts.OutDir = "dist"
 	}
 	bundled, err := project.BuildWeb(rt, module.NewResolver(), s.opts.entry, wopts)
 	if err != nil {

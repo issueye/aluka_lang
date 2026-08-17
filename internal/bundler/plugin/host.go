@@ -9,10 +9,12 @@ import (
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // Host 是构建管线调用的钩子集合。无插件时用 Nop。
 type Host interface {
+	SetEnv(command, mode string)
 	ConfigJSON(in string) (string, error)
 	ConfigResolved(info string) error
 	BuildStart() error
@@ -28,6 +30,7 @@ type Host interface {
 // Nop 空实现。
 type Nop struct{}
 
+func (Nop) SetEnv(string, string)                              {}
 func (Nop) ConfigJSON(in string) (string, error)               { return in, nil }
 func (Nop) ConfigResolved(string) error                        { return nil }
 func (Nop) BuildStart() error                                  { return nil }
@@ -42,6 +45,20 @@ func (Nop) CloseBundle() error                                 { return nil }
 // JSHost 调度配置里的 plugins 数组。
 type JSHost struct {
 	plugins []engine.Value
+	command string
+	mode    string
+}
+
+// SetEnv 设置 config 钩子第二参（Vite 风格 command/mode）。
+func (h *JSHost) SetEnv(command, mode string) {
+	if command == "" {
+		command = "build"
+	}
+	if mode == "" {
+		mode = "production"
+	}
+	h.command = command
+	h.mode = mode
 }
 
 // NewJSHost 从 JS 数组（或空）构造 Host。
@@ -98,9 +115,16 @@ func (h *JSHost) ConfigJSON(in string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	command, mode := h.command, h.mode
+	if command == "" {
+		command = "build"
+	}
+	if mode == "" {
+		mode = "production"
+	}
 	env := engine.NewObject()
-	_ = env.Set("command", engine.Str("build"))
-	_ = env.Set("mode", engine.Str("production"))
+	_ = env.Set("command", engine.Str(command))
+	_ = env.Set("mode", engine.Str(mode))
 	for _, p := range h.plugins {
 		out, err := h.call(p, "config", cfg, env)
 		if err != nil {
@@ -259,11 +283,11 @@ func (h *JSHost) call(plugin engine.Value, hook string, args ...engine.Value) (e
 	if err != nil || fnVal == nil || fnVal.IsUndefined() || fnVal.IsNull() {
 		return engine.Undefined(), nil
 	}
-	fn, ok := fnVal.AsFunction()
-	if !ok {
+	if _, ok := fnVal.AsFunction(); !ok {
 		return engine.Undefined(), nil
 	}
-	out, err := fn.Call(args)
+	// 绑定 this=插件对象，便于方法内读 this.name / 自有 helper（仍无 emitFile/resolve）。
+	out, err := interpreter.CallWithThis(fnVal, plugin, args)
 	if err != nil {
 		return nil, hookErr(plugin, hook, err)
 	}

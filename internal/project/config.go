@@ -17,7 +17,8 @@ func ApplyConfig(rt ScriptRuntime, entry string, opts *Options) error {
 	}
 	cwd, _ := os.Getwd()
 	root := webconfig.FindRoot(entry, cwd)
-	sess, err := webconfig.LoadSession(rt, root)
+	command, mode := opts.BuildEnv()
+	sess, err := webconfig.LoadSession(rt, root, command, mode)
 	if err != nil {
 		return err
 	}
@@ -25,6 +26,7 @@ func ApplyConfig(rt ScriptRuntime, entry string, opts *Options) error {
 	if host == nil {
 		host = opts.Host()
 	}
+	host.SetEnv(command, mode)
 	if sess.Result != nil {
 		raw, err := json.Marshal(sess.Result)
 		if err != nil {

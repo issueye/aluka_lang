@@ -220,6 +220,15 @@ func asCallable(v engine.Value) (callableValue, error) {
 	return nil, fmt.Errorf("%w: %s is not a function", engine.ErrTypeError, v.Type())
 }
 
+// CallWithThis 以显式 this 调用函数值（供插件 Host 等外部包绑定方法 this）。
+func CallWithThis(fn, thisArg engine.Value, args []engine.Value) (engine.Value, error) {
+	callable, err := asCallable(fn)
+	if err != nil {
+		return engine.Undefined(), err
+	}
+	return callable.callWith(thisArg, args)
+}
+
 // argsThis 返回数组方法的 thisArg（第二参数，未提供为 undefined）。
 // N22-A2：Array.prototype 方法（map/filter/find 等）的 thisArg 对
 // 非箭头函数生效（回调的 this 绑定）。

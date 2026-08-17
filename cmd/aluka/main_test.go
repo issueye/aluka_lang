@@ -943,6 +943,10 @@ func TestWebProductionDefines(t *testing.T) {
 			t.Errorf("define %s = %q, want %q", key, got, want)
 		}
 	}
+	dev := project.DevelopmentDefines()
+	if dev["process.env.NODE_ENV"] != `"development"` {
+		t.Errorf("DevelopmentDefines NODE_ENV = %q", dev["process.env.NODE_ENV"])
+	}
 }
 
 // TestWebBuildVueOfficialBackend：--vue-compiler=official 用官方 compiler-sfc

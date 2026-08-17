@@ -22,14 +22,15 @@ func BuildWeb(rt ScriptRuntime, resolver *module.Resolver, entry string, opts Op
 		resolver = module.NewResolver()
 	}
 	host := opts.Host()
-	if err = host.BuildStart(); err != nil {
-		return Bundle{}, err
-	}
+	// BuildStart 中途失败时仍跑 closeBundle，释放已启动插件的资源。
 	defer func() {
 		if cerr := host.CloseBundle(); cerr != nil && err == nil {
 			err = cerr
 		}
 	}()
+	if err = host.BuildStart(); err != nil {
+		return Bundle{}, err
+	}
 
 	bundled, err = bundleEntry(rt, resolver, entry, opts)
 	if err != nil {
@@ -41,8 +42,8 @@ func BuildWeb(rt ScriptRuntime, resolver *module.Resolver, entry string, opts Op
 	}
 	outDir := OutputDir(opts)
 	for name, content := range extra {
-		if name == "" {
-			continue
+		if strings.TrimSpace(name) == "" {
+			return Bundle{}, fmt.Errorf("generateBundle: asset name is empty")
 		}
 		if _, err = assetTarget(outDir, name); err != nil {
 			return Bundle{}, fmt.Errorf("generateBundle: %w", err)
@@ -116,11 +117,9 @@ func bundleEntry(rt ScriptRuntime, resolver *module.Resolver, entry string, opts
 			if opts.Minify {
 				content = emit.MinifyCSS(content)
 			}
-			baseSheet := filepath.Base(sheet.Original)
-			baseName := strings.TrimSuffix(baseSheet, filepath.Ext(baseSheet))
-			outName := baseName + ".css"
-			if useNativeESM(opts) {
-				outName = emit.HashedAssetPathIn(opts.AssetsDir, baseName, emit.ContentHash(content), ".css")
+			outName := stylesheetOutName(sheet.Original, content, opts)
+			if prev, ok := assets[outName]; ok && string(prev) != content {
+				return empty, fmt.Errorf("stylesheet output collision %q (from %q)", outName, sheet.Original)
 			}
 			assets[outName] = []byte(content)
 			replacements[sheet.Original] = withPublicBase(opts.PublicBase, outName)
@@ -352,10 +351,12 @@ func emitNativeJS(graphResult *graph.Result, kept map[string]bool, jsFileName, b
 		assets[native.EntryFile] = append(append([]byte{}, assets[native.EntryFile]...), []byte("\n//# sourceMappingURL="+filepath.Base(mapFileName)+"\n")...)
 	}
 
+	cssOut := ""
 	if cssName, cssBundle, err := bundleCSS(graphResult, baseName, true, opts.Minify, opts.AssetsDir); err != nil {
 		return empty, err
 	} else if cssName != "" {
 		assets[cssName] = []byte(cssBundle)
+		cssOut = cssName
 	}
 
 	var exportNames []string
@@ -368,7 +369,12 @@ func emitNativeJS(graphResult *graph.Result, kept map[string]bool, jsFileName, b
 			break
 		}
 	}
-	assets[jsFileName] = []byte(emit.BuildESMBarrel(jsFileName, native.EntryFile, exportNames))
+	barrel := emit.BuildESMBarrel(jsFileName, native.EntryFile, exportNames)
+	// 裸 JS 入口加载稳定 barrel 时必须副作用导入 CSS（HTML 入口另有 link 注入）。
+	if cssOut != "" {
+		barrel = emit.CSSSideEffectImport(jsFileName, cssOut) + barrel
+	}
+	assets[jsFileName] = []byte(barrel)
 
 	preload := append([]string{}, native.Preload...)
 	preload = append(preload, native.Async...)
@@ -507,15 +513,46 @@ func ProductionDefines() map[string]string {
 	}
 }
 
+// DevelopmentDefines 是 web development / aluka dev 注入的最小 define 集。
+func DevelopmentDefines() map[string]string {
+	return map[string]string{
+		"process.env.NODE_ENV":                    `"development"`,
+		"__VUE_OPTIONS_API__":                     "true",
+		"__VUE_PROD_DEVTOOLS__":                   "true",
+		"__VUE_PROD_HYDRATION_MISMATCH_DETAILS__": "true",
+	}
+}
+
+// DefaultDefines 按 mode 返回内置 define；未知 mode 按 production。
+func DefaultDefines(mode string) map[string]string {
+	if mode == "development" {
+		return DevelopmentDefines()
+	}
+	return ProductionDefines()
+}
+
 func mergeDefines(opts Options) map[string]string {
+	_, mode := opts.BuildEnv()
 	out := make(map[string]string, len(opts.Defines)+4)
+	for k, v := range DefaultDefines(mode) {
+		out[k] = v
+	}
+	// 用户 / 配置 define 覆盖内置（与 Vite/esbuild 一致）。
 	for k, v := range opts.Defines {
 		out[k] = v
 	}
-	for k, v := range ProductionDefines() {
-		out[k] = v
-	}
 	return out
+}
+
+func stylesheetOutName(original, content string, opts Options) string {
+	baseSheet := filepath.Base(original)
+	baseName := strings.TrimSuffix(baseSheet, filepath.Ext(baseSheet))
+	// 路径参与 hash，避免同 basename 的多 stylesheet 互相覆盖。
+	hash := emit.ContentHash(filepath.ToSlash(original), content)
+	if useNativeESM(opts) {
+		return emit.HashedAssetPathIn(opts.AssetsDir, baseName, hash, ".css")
+	}
+	return baseName + "-" + hash + ".css"
 }
 
 func dynamicChunkName(target string) string {

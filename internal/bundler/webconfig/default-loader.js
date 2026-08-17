@@ -229,8 +229,12 @@ function flattenPlugins(list) {
   return out;
 }
 
-function loadRawConfig(root) {
-  const ctx = { root: root, command: "build", mode: "production" };
+function loadRawConfig(root, command, mode) {
+  const ctx = {
+    root: root,
+    command: command || "build",
+    mode: mode || "production",
+  };
   const files = listConfigFiles(root);
   const hooks = files.filter((n) => PROJECT_HOOK.test(n)).sort();
   if (hooks.length) {
@@ -258,20 +262,20 @@ function loadRawConfig(root) {
   return null;
 }
 
-function loadWebConfig(root) {
-  const found = loadRawConfig(root);
+function loadWebConfig(root, command, mode) {
+  const found = loadRawConfig(root, command, mode);
   if (!found) {
     return {};
   }
   return normalize(found.raw, found.source, root);
 }
 
-function loadWebConfigJSON(root) {
-  return JSON.stringify(loadWebConfig(root));
+function loadWebConfigJSON(root, command, mode) {
+  return JSON.stringify(loadWebConfig(root, command, mode));
 }
 
-function loadWebSession(root) {
-  const found = loadRawConfig(root);
+function loadWebSession(root, command, mode) {
+  const found = loadRawConfig(root, command, mode);
   if (!found) {
     return { json: "{}", plugins: [] };
   }

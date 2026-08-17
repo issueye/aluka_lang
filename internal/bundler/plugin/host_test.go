@@ -136,3 +136,30 @@ func TestJSHostConfigInPlaceMutate(t *testing.T) {
 		t.Fatalf("in-place mutate failed: %s", out)
 	}
 }
+
+func TestJSHostConfigEnvFromSetEnv(t *testing.T) {
+	seen := engine.NewObject()
+	cfg := engine.NewFunction("config", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 1 {
+			env, _ := args[1].AsObject()
+			cmd, _ := env.Get("command")
+			mode, _ := env.Get("mode")
+			_ = seen.Set("command", cmd)
+			_ = seen.Set("mode", mode)
+		}
+		return engine.Undefined(), nil
+	})
+	p := engine.NewObject()
+	_ = p.Set("name", engine.Str("env"))
+	_ = p.Set("config", cfg)
+	host := NewJSHost(engine.NewArray([]engine.Value{p})).(*JSHost)
+	host.SetEnv("serve", "development")
+	if _, err := host.ConfigJSON(`{}`); err != nil {
+		t.Fatal(err)
+	}
+	cmd, _ := seen.Get("command")
+	mode, _ := seen.Get("mode")
+	if cmd.String() != "serve" || mode.String() != "development" {
+		t.Fatalf("env = %s/%s", cmd.String(), mode.String())
+	}
+}

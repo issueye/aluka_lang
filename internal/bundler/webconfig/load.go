@@ -59,7 +59,15 @@ func Load(rt Runtime, root string) (*Result, error) {
 }
 
 // LoadSession 与 Load 相同，但保留 plugins 数组供 Host 调度。
-func LoadSession(rt Runtime, root string) (*Session, error) {
+// env 可选：[0]=command（默认 build）、[1]=mode（默认 production）。
+func LoadSession(rt Runtime, root string, env ...string) (*Session, error) {
+	command, mode := "build", "production"
+	if len(env) > 0 && strings.TrimSpace(env[0]) != "" {
+		command = strings.TrimSpace(env[0])
+	}
+	if len(env) > 1 && strings.TrimSpace(env[1]) != "" {
+		mode = strings.TrimSpace(env[1])
+	}
 	if rt == nil {
 		return nil, fmt.Errorf("webconfig: nil runtime")
 	}
@@ -97,11 +105,16 @@ func LoadSession(rt Runtime, root string) (*Session, error) {
 		if !ok {
 			return nil, fmt.Errorf("webconfig: loadWebSession is not a function")
 		}
-		out, err := fn.Call([]engine.Value{engine.Str(absRoot)})
+		out, err := fn.Call([]engine.Value{engine.Str(absRoot), engine.Str(command), engine.Str(mode)})
 		if err != nil {
 			return nil, fmt.Errorf("webconfig: %w", err)
 		}
-		return sessionFromValue(out)
+		sess, err := sessionFromValue(out)
+		if err != nil {
+			return nil, err
+		}
+		sess.Plugins.SetEnv(command, mode)
+		return sess, nil
 	}
 
 	fnVal, err := obj.Get("loadWebConfigJSON")
@@ -112,7 +125,7 @@ func LoadSession(rt Runtime, root string) (*Session, error) {
 	if !ok {
 		return nil, fmt.Errorf("webconfig: loadWebConfigJSON is not a function")
 	}
-	out, err := fn.Call([]engine.Value{engine.Str(absRoot)})
+	out, err := fn.Call([]engine.Value{engine.Str(absRoot), engine.Str(command), engine.Str(mode)})
 	if err != nil {
 		return nil, fmt.Errorf("webconfig: %w", err)
 	}

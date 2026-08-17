@@ -158,6 +158,19 @@ func BuildESMBarrel(fromFile, entryFile string, exportNames []string) string {
 	return b.String()
 }
 
+// CSSSideEffectImport 生成相对路径的 CSS 副作用 import（供稳定 barrel 引用样式）。
+func CSSSideEffectImport(fromFile, cssFile string) string {
+	if cssFile == "" {
+		return ""
+	}
+	rel := relativeModuleSpecifier(fromFile, cssFile)
+	var b strings.Builder
+	b.WriteString("import ")
+	quoteJS(&b, rel)
+	b.WriteString(";\n")
+	return b.String()
+}
+
 func (g *nativeGraph) assignFile(id string) {
 	if _, ok := g.files[id]; ok {
 		return
