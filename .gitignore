@@ -48,3 +48,6 @@ tests/compat/node22/results/
 
 # aluka 编译缓存（node:test fixture 内的运行时产物不入库）
 .aluka/
+
+# .freebuff
+.freebuff/*
