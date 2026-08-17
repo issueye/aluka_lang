@@ -23,7 +23,7 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 
 ## 项目状态
 
-> 评估日期：2026-08-14 ｜ 测试总数：1300+ 个 Go 测试函数（全量通过，0 失败）
+> 评估日期：2026-08-16 ｜ 测试总数：1300+ 个 Go 测试函数（全量通过，0 失败）
 
 | Phase | 名称 | 状态 | 完成度 |
 |-------|------|------|--------|
@@ -39,15 +39,16 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 | 8A | 原生 IPC 协议与动态插件系统 | ✅ 完成（AIP 二进制协议、aluka:plugin:* 透明代理、同步/异步/100+ 并发多路复用） | ~100% |
 | Pi | 真实世界兼容（Pi Agent Harness 靶标） | ✅ 阶段 A/B/C 完成 | ~95% |
 | 6 | 测试器 | ✅ node:test 兼容完成（describe/it/mock/coverage/快照/TAP 报告，差分 15/15） | ~85% |
-| 7 | 打包器 | ✅ `--compile` 单文件可执行完成（tree-shaking/analyze/--max-payload，conformance 19/19） | ~75% |
+| 7 | 打包器 | ✅ `--compile` 单文件可执行 + `--target=web` 浏览器 bundle（React/Vue SFC、CSS/HTML、chunk、watch/dev、ESM/CJS/UMD） | ~90% |
 | 8B | JIT 优化与监控 | 🔨 JIT R1-R5 完成、**默认 auto**（Windows 实机 ~12x Node / mixed ~2.2x） | ~75% |
 | N22 | Node 22 兼容 | ✅ M1-M5 差分全绿（运行时语义/ES2024/API 补全/dgram·cluster·http2·inspector/工具链） | ~95% |
 
 ### 核心能力一览
 
-- **JS/TS/JSX 引擎（自研）**：AST 解释器 + 字节码 VM 双引擎、隐藏类 + 内联缓存、自研标记-清除 GC、磁盘字节码缓存、V8 风格错误堆栈、**源码级 JSX/TSX 即时转译**（原生运行 React 18 SSR / Vue 3）、**TC39 Stage 3 / TypeScript 装饰器（Decorators）**（原生支持 Nest.js / TypeORM / MobX）
+- **JS/TS/JSX 引擎（自研）**：AST 解释器 + 字节码 VM 双引擎、隐藏类 + 内联缓存、自研标记-清除 GC、磁盘字节码缓存、V8 风格错误堆栈、**源码级 JSX/TSX 即时转译**（原生运行 React 18 SSR / Vue 3）、**ECMAScript 属性描述符与 exotic object 语义**（Array holes/length、Proxy invariants、Reflect、seal/freeze）、**TC39 Stage 3 / TypeScript 装饰器（Decorators）**（原生支持 Nest.js / TypeORM / MobX）
 - **ES 特性**：ES5 全部核心、ES2015（let/const/class/箭头函数/解构/Promise/Symbol/Map/Set/Proxy/Reflect/生成器/模块/tagged template）、ES2017-2024（async/await、**top-level await**、for await...of、可选链 `?.`、BigInt、动态 `import()`、**import attributes**、`Promise.withResolvers`、`Array.fromAsync`、`Object.groupBy` 等）
-- **模块系统与 package.json 规范**：ESM（import/export 全语法）+ CJS（require/module.exports）+ Node.js 现代解析算法 + **`package.json` 深度兼容**（`"exports"` 条件导出映射、`"imports"` 包内私有路径、`"main"`、`"module"`、`"type": "module"`）+ 循环依赖 + 字节码磁盘缓存
+- **模块系统与 package.json 规范**：ESM（import/export 全语法）+ CJS（require/module.exports）+ Node.js 现代解析算法 + **`package.json` 深度兼容**（`"exports"` 条件导出映射、`"imports"` 包内私有路径、`"main"`、`"module"`、`"type": "module"`）+ browser/Node 实例级 resolver 条件隔离 + 循环依赖 + 字节码磁盘缓存
+- **RegExp 引擎**：JS RegExp → Go RE2 翻译快路径 + 自研回溯 fallback（前后行断言、反向引用、字符类子集）；legacy/`u` 模式按 ECMAScript UTF-16 索引返回 capture、`lastIndex` 和 replace/split 偏移；回溯预算超限显式报错，并以 compiler-sfc 真实语料、双引擎对拍和 Node 22 oracle 回归。
 - **Node.js 内置模块（45+）**：fs、path、os、url、querystring、events、util、assert、stream、buffer、crypto、string_decoder、http、https、net、tls、dns、zlib（含 **zstd**）、child_process、worker_threads、perf_hooks、timers/promises、readline、repl、module、**v8（含 writeHeapSnapshot/getHeapSnapshot Chrome 堆快照）**、**inspector（CDP 协议会话）**、tty、**sqlite（DatabaseSync）**、**test（node:test）**、dgram、cluster、http2 等
 - **Web API & 国际化**：fetch/Request/Response/Headers/FormData、WebSocket、ReadableStream/WritableStream/TransformStream、**CompressionStream / DecompressionStream**（gzip/deflate/deflate-raw）、Blob/File、**Web Cryptography API (`crypto.subtle` / SubtleCrypto)**、URL/URLPattern、MessageChannel、AbortController、**ECMAScript `Intl` 国际化全家桶**（`DateTimeFormat`、`NumberFormat`、`RelativeTimeFormat`、`ListFormat`、`PluralRules`、`Collator` 自然排序、`Segmenter`）、**structuredClone**
 - **Aluka 原生 IPC 协议（AIP）与动态插件系统**：
@@ -58,7 +59,7 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 - **外部服务驱动**：`Aluka.SQL`（SQLite 零配置 + Postgres 经 `DATABASE_URL`，支持 tagged template 参数绑定）、`Aluka.Redis`（get/set/hget/hset...）、`Aluka.S3`（自研 AWS SigV4，get/put/delete/list/exists）
 - **包管理器**：`aluka install/add/remove/update`、npm registry 客户端、自研 semver 解析、依赖树解析 + hoisting、并发下载解压、`aluka.lock` lockfile、workspace 多包管理、.npmrc（registry + 鉴权 token）
 - **JIT 编译器（默认开启，--jit=off 回滚）**：Quick 类型化 IR（跨平台）+ amd64 Native 机器码两层（W^X/崩溃隔离/safepoint/OSR）；生成式差分（jitdiff 三 tier 零失配）+ 5 个 Go fuzz target
-- **打包器**：`aluka build --compile`（静态单文件打包器：依赖图 AST 分析、Tree-shaking、代码压缩、跨平台字节码嵌入）
+- **打包器**：`aluka build --compile` 生成静态单文件可执行产物；`aluka build --target=web` 生成浏览器 bundle，支持 JS/TS/JSX/TSX、CSS/HTML 入口、多 entry、sourcemap、动态 `import()` chunk、tree-shaking/minify、ESM/CJS/UMD、`--watch` 与 `aluka dev`。Vue SFC 提供默认纯 Go subset 后端和 `--vue-compiler=official` 官方 compiler-sfc 后端。
 
 ## 约束
 
@@ -104,6 +105,22 @@ aluka remove is-number # 移除依赖
 aluka build --compile --outfile app ./src/index.ts
 ./app                  # 无 aluka/Go 环境直接运行（32MB，启动 ~50ms）
 
+# 浏览器 bundle（JS/TS/JSX/TSX、CSS/HTML、动态 chunk）
+aluka build --target=web --outdir dist ./src/index.ts
+
+# Vue SFC：默认纯 Go subset；复杂 SFC 显式选择官方 compiler-sfc
+aluka build --target=web --vue-compiler=official --outdir dist ./src/index.html
+
+# 开发服务（全量 watch 重建、SPA fallback、health + reload SSE）
+aluka dev --host 127.0.0.1 --port 3000 --outdir dist ./src/index.html
+```
+
+Vue SFC 默认使用纯 Go `subset` 后端。`--vue-compiler=official` 会在构建期执行
+项目 `node_modules` 中的 compiler-sfc 及其传递依赖，权限与 `aluka run` 相同，
+只应对可信依赖启用；失败时不会静默回退。当前 `<script src>`、`<template src>`、
+`<style>` 和 custom block 会明确报错，等待 graph/watch 资产输入管线接入。
+
+```bash
 # 优化并输出打包热点报告
 aluka build --compile --optimize --analyze ./src/index.ts
 aluka build --compile --analyze=json --analyze-out dist/analyze.json \
@@ -158,6 +175,11 @@ $ aluka -e "Aluka.SQL\`CREATE TABLE t (x INTEGER)\`.run().then(() => Aluka.SQL\`
 | `aluka build --compile --analyze[=text|json] <entry>` | 分析 payload、模块/资源热点、优化阶段收益和代码优化建议 |
 | `aluka build --compile --analyze-only <entry>` | 只生成分析结果，不写原生可执行文件 |
 | `aluka build --compile --max-payload=<size> <entry>` | 设置 payload 体积预算；超限退出码为 `2` |
+| `aluka build --target=web [--outdir dist] <entry...>` | 浏览器 bundle：JS/TS/JSX/TSX、CSS/HTML、多入口、sourcemap、动态 chunk、tree-shaking/minify |
+| `aluka build --target=web --format=esm\|cjs\|umd <entry>` | 选择 web 产物格式；UMD 可配 `--global-name` |
+| `aluka build --target=web --vue-compiler=subset\|official <entry>` | Vue SFC 后端；默认 subset，official 在构建 VM 内执行项目 compiler-sfc 依赖 |
+| `aluka build --target=web --watch <entry>` | 监听源文件并全量重建，失败后继续等待下一次变更 |
+| `aluka dev [--host 127.0.0.1] [--port 3000] <entry>` | 构建并提供静态服务、SPA fallback、health 与 reload SSE |
 | `aluka --vm` / `--ast` | 选择字节码 VM（默认）或 AST 解释器 |
 | `aluka --no-cache` | 禁用字节码磁盘缓存 |
 | `aluka --no-bytecode-opt` | 禁用编译管线默认的字节码优化（常量折叠/不可达删除等） |
@@ -204,8 +226,8 @@ aluka_lang/
 │   │   ├── ast/               # AST 节点定义
 │   │   ├── compiler/          # AST → 字节码
 │   │   ├── bytecode/          # 指令集 / 序列化
-│   │   ├── interpreter/       # AST 解释器 + 字节码 VM（Date/URI/structuredClone/V8 堆栈/JIT 桥接）
-│   │   ├── regex/             # 正则翻译层 + 自研回溯引擎（反向引用/前瞻/后行，/v unicodeSets）
+│   │   ├── interpreter/       # AST 解释器 + 字节码 VM（属性描述符/Array/Proxy/Reflect、Date/URI/structuredClone/JIT 桥接）
+│   │   ├── regex/             # RE2 翻译 + 回溯 fallback（UTF-16 索引、预算护栏、Node oracle）
 │   │   ├── engine.go          # Engine/Context/Value 接口
 │   │   ├── shape.go           # 隐藏类 + 内联缓存
 │   │   └── gc.go              # 标记-清除 GC
@@ -216,14 +238,16 @@ aluka_lang/
 │   │   │   └── intl.go        # ECMAScript Intl 国际化全家桶
 │   │   └── module/            # ESM/CJS 模块系统 + package.json 规范 + aluka:plugin 动态透明 RPC 代理
 │   ├── builtin/               # Node.js 内置模块（fs/http/net/crypto/sqlite/v8/inspector/test/...）
+│   ├── bundler/               # 可执行/web 打包器（graph/shake/minify/emit/Vue SFC）
 │   └── pkgmanager/            # npm 兼容包管理器（semver/registry/resolver/...）
 │       ├── config/            # .npmrc 解析（registry + 鉴权）
 │       └── workspace/         # workspace 发现（glob 展开 + 本地包链接）
-├── tests/conformance/         # 一致性测试（node / test262 / npm / install / express / build / node22）
+├── tests/conformance/         # 一致性测试（node/test262/npm/install/express/build/webbuild/vue-sfc/node22）
 ├── demo/
 │   ├── express-demo/          # 真实 express 运行验证 demo
 │   ├── react-ssr-demo/        # React 18 源码级 JSX SSR + Tailwind CSS JIT 现代化 demo
-│   └── vue3-ssr-demo/         # Vue 3 响应式/SFC SSR 现代化 demo
+│   ├── vue3-ssr-demo/         # Vue 3 响应式/SFC SSR 现代化 demo
+│   └── web-bundle-vue-demo/   # Vue 3.5.13 web bundle + official compiler-sfc 离线 fixture
 ├── bench/                     # 性能基准
 ├── docs/                      # 需求分析 / 开发计划 / AIP 协议规范 / JIT 优化报告
 ├── .github/workflows/ci.yml   # CI（三端 lint + test + build）
@@ -257,22 +281,28 @@ make install
 bash tests/conformance/node/run.sh
 
 # test262 子集（8/8 通过）
-cd tests/conformance/test262 && ALUKA=../../../aluka go run .
+cd tests/conformance/test262 && ALUKA=../../../bin/aluka go run .
 
 # 真实 npm 包加载测试（semver/ms/debug/is-odd/chalk@4，5/5 通过）
-ALUKA=./aluka bash tests/conformance/npm/run.sh
+ALUKA=./bin/aluka bash tests/conformance/npm/run.sh
 
 # 包管理器 conformance（离线 monorepo workspace install，全通过）
-ALUKA=./aluka bash tests/conformance/install/run.sh
+ALUKA=./bin/aluka bash tests/conformance/install/run.sh
 
 # express-demo 真实环境验证（HTTP 全链路：中间件/路由/body 解析/500 并发，6/6）
-ALUKA=./aluka bash tests/conformance/express/run.sh
+ALUKA=./bin/aluka bash tests/conformance/express/run.sh
 
-# build --compile conformance（单入口/多文件/循环依赖/动态 import/JSON 资源/argv/import.meta/TLA，19/19）
-ALUKA=./aluka bash tests/conformance/build/run.sh
+# build --compile conformance（可执行产物 + shake/minify/analyze，23/23）
+ALUKA=./bin/aluka bash tests/conformance/build/run.sh
+
+# 浏览器 bundle conformance（React/TSX/chunk/ESM/CJS/UMD/cache，11/11）
+ALUKA=./bin/aluka bash tests/conformance/webbuild/run.sh
+
+# Aluka 与 Node 双跑 @vue/compiler-sfc 探针（1/1）
+ALUKA=./bin/aluka bash tests/conformance/vue-sfc/run.sh
 
 # Node 22 差分 conformance（同一用例 aluka vs node22 双跑对比，18 个场景全绿）
-ALUKA=./aluka bash tests/conformance/node22/run.sh
+ALUKA=./bin/aluka bash tests/conformance/node22/run.sh
 ```
 
 ## 设计原则
