@@ -34,7 +34,7 @@ func vueDemoEntry(t testing.TB) string {
 
 func compileText(t testing.TB, c Compiler, src, name string) (*CompileResult, string) {
 	t.Helper()
-	result, err := c.Compile(src, name)
+	result, err := compileNamed(c, src, name)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -177,17 +177,54 @@ func TestOfficialCompilerRejectsUnwiredBlocks(t *testing.T) {
 	for _, tc := range []struct {
 		name, src, want string
 	}{
-		{"script-src", `<template><div/></template><script src="./component.ts"></script>`, "external <script src>"},
-		{"template-src", `<template src="./component.html"></template><script>export default {}</script>`, "external <template src>"},
-		{"style", `<template><div/></template><style>.x{color:red}</style>`, "<style>"},
 		{"custom", `<template><div/></template><docs>hello</docs>`, "custom SFC blocks"},
+		{"style-scss", `<template><div/></template><style lang="scss">.x{}</style>`, "lang="},
+		{"style-module", `<template><div/></template><style module>.x{}</style>`, "<style module>"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := c.Compile(tc.src, tc.name+".vue")
+			_, err := compileNamed(c, tc.src, tc.name+".vue")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Compile error = %v, want containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestOfficialCompilerStyleAndSrc(t *testing.T) {
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewOfficialCompiler(vm, vueDemoEntry(t))
+	dir := t.TempDir()
+	cssPath := filepath.Join(dir, "ext.css")
+	if err := os.WriteFile(cssPath, []byte(".ext{color:green}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vuePath := filepath.Join(dir, "Box.vue")
+	src := `<template><div class="box">hi</div></template>
+<style scoped>.box{color:red}</style>
+<style src="./ext.css"></style>
+<script>export default { name: "Box" }</script>`
+	result, err := c.Compile(CompileRequest{Source: src, Name: "Box.vue", Filename: vuePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Styles) != 2 {
+		t.Fatalf("styles = %d, want 2", len(result.Styles))
+	}
+	id := sfcScopeID("Box.vue")
+	if !strings.Contains(result.Facade, `__sfc__.__scopeId = "data-v-`+id+`"`) {
+		t.Fatalf("facade missing __scopeId:\n%s", result.Facade)
+	}
+	if !strings.Contains(result.Styles[0].Source, "data-v-"+id) {
+		t.Fatalf("scoped style missing data-v: %s", result.Styles[0].Source)
+	}
+	if !strings.Contains(result.Styles[1].Source, ".ext") {
+		t.Fatalf("src style missing .ext: %s", result.Styles[1].Source)
+	}
+	if len(result.ExtraFiles) != 1 {
+		t.Fatalf("ExtraFiles = %v", result.ExtraFiles)
 	}
 }
 
@@ -197,7 +234,7 @@ func TestOfficialCompilerStructuredDiagnostic(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := NewOfficialCompiler(vm, vueDemoEntry(t))
-	_, err = c.Compile(`<template>
+	_, err = compileNamed(c, `<template>
   <div>{{ total + }}</div>
 </template>`, "Broken.vue")
 	var diagnostic *Diagnostic
@@ -208,7 +245,7 @@ func TestOfficialCompilerStructuredDiagnostic(t *testing.T) {
 		t.Fatalf("diagnostic = %+v, want Broken.vue line 2 with column", diagnostic)
 	}
 
-	_, err = c.Compile(`<template><div/>
+	_, err = compileNamed(c, `<template><div/>
 </template>
 <script setup lang="ts">
 const value: = 1
@@ -218,7 +255,7 @@ const value: = 1
 	}
 
 	// 相邻的合法表达式必须成功，防止测试被过宽的错误匹配误判为通过。
-	if _, err := c.Compile(`<template>
+	if _, err := compileNamed(c, `<template>
   <div>{{ total + 1 }}</div>
 </template>`, "Valid.vue"); err != nil {
 		t.Fatalf("valid neighboring expression rejected: %v", err)
@@ -231,7 +268,7 @@ func BenchmarkSubsetTransform(b *testing.B) {
 	sfc := `<template><div>{{ count }}</div></template><script>export default { setup(){ return {count:1} } };</script>`
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		if _, err := c.Compile(sfc, "Bench.vue"); err != nil {
+		if _, err := compileNamed(c, sfc, "Bench.vue"); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -245,13 +282,13 @@ func BenchmarkOfficialTransformWarm(b *testing.B) {
 		b.Fatal(err)
 	}
 	c := NewOfficialCompiler(vm, vueDemoEntry(b))
-	if _, err := c.Compile(benchmarkSFC, "Warmup.vue"); err != nil {
+	if _, err := compileNamed(c, benchmarkSFC, "Warmup.vue"); err != nil {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := c.Compile(benchmarkSFC, "Bench.vue"); err != nil {
+		if _, err := compileNamed(c, benchmarkSFC, "Bench.vue"); err != nil {
 			b.Fatal(err)
 		}
 	}

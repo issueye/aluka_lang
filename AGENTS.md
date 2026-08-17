@@ -17,7 +17,7 @@ Aluka 是一个**用纯 Go 实现的、API 行为兼容 [Bun](https://bun.sh/) �
 1. **纯 Go，禁用 CGO**。所有构建带 `CGO_ENABLED=0`，引擎代码用 `//go:build !cgo`。
    - 唯一例外：JIT 的 race 检测测试（`go test -race` 需要 cgo），仅限本地/CI 测试，不影响产物。
 2. **核心组件自研**。禁止引入第三方 JS 引擎（V8/QuickJS/Goja 等）。
-3. **JSX/TSX 已支持，Vue SFC 有明确边界**。源码级 JSX/TSX 由自研 parser/compiler lowering；`.vue` 默认使用纯 Go subset，复杂语法可显式选择 official 后端。不得宣称支持 `<script src>`、`<template src>`、`<style>` 或 custom block，当前必须构建期报错。
+3. **JSX/TSX 已支持，Vue SFC 有明确边界**。源码级 JSX/TSX 由自研 parser/compiler lowering；`.vue` 默认使用纯 Go subset，复杂语法可显式选择 official 后端。已接入 `<script src>` / `<template src>` / `<style>`（含 scoped，纯 CSS）；custom block、`lang` 预处理器、`<style module>` 仍必须构建期报错。
 4. **单二进制，静态编译，零运行时依赖**。新增外部依赖需谨慎评估，且必须纯 Go（无 CGO）。
 5. **API 行为兼容 Bun/Node.js**。新增内置模块或 Web API 时，以 Node.js / Bun 的真实行为为权威基准（见 `tests/conformance/` 差分测试）。
 
@@ -183,7 +183,7 @@ docs/adr/                  架构决策记录（ADR）
 - **模块系统**：ESM + CJS + Node 解析算法 + 循环依赖，`internal/runtime/module/`。`.ts` 相对导入、import attributes、路径别名（`paths`/`baseUrl`）、top-level await 均已支持。exports 条件属于 `Resolver` 实例：运行时/compiler loader 使用 Node 条件，web graph 使用 browser 条件；禁止恢复进程级全局条件，否则同进程 official compiler 与浏览器依赖解析会互相污染。
 - **TS 转译**：类型注解剥离在 parser/compiler 层完成（非独立编译器），`internal/engine/parser/` 与 `internal/engine/compiler/`。
 - **打包器**：`aluka build --compile` = 基座二进制 + payload（预编译字节码 + manifest）+ footer；`aluka build --target=web` = graph → shake/minify → JS/CSS/HTML emit，可输出 ESM/CJS/UMD、动态 chunk、sourcemap，并由 `--watch`/`aluka dev` 复用。web 路径不写 `.aluka-cache`。设计见 `docs/build-compile-plan.md` 与 `docs/static-build-plan.md`。
-- **Vue SFC 双后端**：`internal/bundler/vue/`。默认 `subset` 是纯 Go 子集；`--vue-compiler=official` 在构建 VM 内执行项目 `node_modules` 的 compiler-sfc，权限与 `aluka run` 相同，只能用于可信依赖。official 生成 facade/script/template 独立虚拟模块并保留 named exports；失败禁止静默回退。`<script src>`/`<template src>`、`<style>`、custom block 当前必须明确拒绝。升级 vendored Vue/compiler-sfc fixture 时同步更新 lockfile、regex corpus、Node oracle、性能与体积基线，见 `docs/vue-compiler-sfc-merge-notes.md`。
+- **Vue SFC 双后端**：`internal/bundler/vue/`。默认 `subset` 是纯 Go 子集；`--vue-compiler=official` 在构建 VM 内执行项目 `node_modules` 的 compiler-sfc，权限与 `aluka run` 相同，只能用于可信依赖。official 生成 facade/script/template 独立虚拟模块并保留 named exports；失败禁止静默回退。`<script src>`/`<template src>`/`<style>`（含 scoped，纯 CSS）经 graph 虚拟 CSS 模块与 watch ExtraFiles 接入；custom block、`lang≠css`、`<style module>` 仍明确拒绝。升级 vendored Vue/compiler-sfc fixture 时同步更新 lockfile、regex corpus、Node oracle、性能与体积基线，见 `docs/vue-compiler-sfc-merge-notes.md`。
 
 ---
 

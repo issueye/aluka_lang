@@ -1,6 +1,6 @@
 # Aluka GUI 架构设计方案（参考 Wails v3）
 
-> **文档状态**：设计完成 / Phase GUI-1、GUI-2 已落地（Windows）
+> **文档状态**：设计完成 / Phase GUI-1、GUI-2 已落地（Windows）；macOS WKWebView 第一刀已落地（无 Vibrancy）；Linux 明确未支持
 > **目标定位**：基于纯 Go 与自研 JS 引擎，构建比肩 Wails v3 / Tauri 2、开发体验超越 Electron 的**现代化轻量级全栈跨平台桌面应用开发框架**。
 
 > **实现进度备注（2026-08）**：
@@ -26,7 +26,8 @@
 >   保留 VERSIONINFO 等非图标资源、新数据追加至文件尾并改写节表/数据目录/
 >   SizeOfImage），Explorer 中的 exe 图标即为应用图标；端到端验证：37MB 单文件 exe
 >   加载内嵌页面 + 前端桥接回路全通 + shell 提取图标哈希与基座不同；
-> - ⏳ 待办：macOS/Linux 平台层、Vibrancy（macOS）。
+> - ⏳ 待办：Linux WebKitGTK 平台层、macOS Vibrancy。
+> - ✅ macOS WKWebView（syscall + libobjc，无 CGO）：NSWindow / WKWebView；`aluka://` 顶层 HTML 经 ResolveAssetURL + inline（**不是** WKURLSchemeHandler，fetch/动态 import 仍不可用）；JS 桥经 hash 轮询；NSStatusItem 托盘（无 Click 回调，带 Click 的菜单返回错误）；Linux 明确报错而非静默 stub。
 
 ---
 
@@ -102,14 +103,15 @@ graph TB
 ### 3.1 跨平台原生 WebView 抽象层（`internal/gui/webview`）
 纯 Go 实现，严格禁用 CGO，使用动态链接 / Syscall / COM 技术无缝对接各平台：
 - **Windows**：通过 Win32 API 与 COM 接口调用 Microsoft Edge **WebView2**（支持 Windows 10/11，自带常驻运行时）；
-- **macOS**：通过 `syscall` 与 Objective-C Runtime 动态绑定 **Cocoa / WKWebView**（原生支持 Metal 硬件加速与毛玻璃效果）；
-- **Linux**：通过动态库调用 **WebKitGTK (libwebkit2gtk-4.0/4.1)**。
+- **macOS**：通过 `syscall` 与 Objective-C Runtime 动态绑定 **Cocoa / WKWebView**（Metal 硬件加速；Vibrancy 留待后续）；
+- **Linux**：尚未绑定 **WebKitGTK**，平台层返回明确错误。
 
 #### 窗口特性支持矩阵：
 - ✅ **多窗口管理（Multi-Window）**：支持创建多个无限制的子窗口、模态窗口（Modal Window）、浮窗（Tool Window）；
-- ✅ **现代视觉特效**：无边框窗口（Frameless）、亚克力模糊（Acrylic）、Windows 11 云母（Mica）、macOS 活力毛玻璃（Vibrancy）；
-- ✅ **窗口几何与状态控制**：最小化、最大化、全屏（Fullscreen）、居中、置顶（AlwaysOnTop）、尺寸约束（Min/MaxSize）；
+- ✅ **现代视觉特效（Windows）**：无边框窗口（Frameless）、亚克力模糊（Acrylic）、Windows 11 云母（Mica）；macOS Vibrancy **未进入本刀**；
+- ✅ **窗口几何与状态控制**：最小化、最大化、全屏（Fullscreen）、居中、置顶（AlwaysOnTop）、尺寸约束（Min/MaxSize）——Windows 与 macOS 第一刀；
 - ✅ **窗口拖拽区域（Frameless Dragging）**：通过在 HTML 元素添加 `data-aluka-drag` 或 CSS `-webkit-app-region: drag` 实现无边框原生拖拽。
+- ⏳ **Linux**：WebKitGTK 仍明确未支持（`createNativeWindow` / `App.Run` / 托盘 / 对话框返回平台错误）。
 
 ---
 
@@ -118,10 +120,8 @@ graph TB
 
 **Aluka GUI 方案**：
 - 注册平台级自定义 URI 方案（Custom URI Scheme）：`aluka://app/`；
-- WebView 请求 `aluka://app/index.html` 或 `aluka://app/assets/app.js` 时：
-  - 由 Go 核心层直接在内存中拦截（`WebResourceRequested` / `WKURLSchemeHandler`）；
-  - 直接从打包嵌入的二进制数据或本地文件流式读取并返回正确的 MIME Type（`text/html`, `application/javascript`, `image/png`）；
-  - **无需启动任何 TCP 端口，100% 免疫端口探测与跨站劫持，加载速度达到纯内存总线级别！**
+- **Windows**：WebView 请求 `aluka://app/index.html` 或 `aluka://app/assets/app.js` 时由 `WebResourceRequested` 拦截，从内存/嵌入资产返回正确 MIME（零 TCP 端口）。
+- **macOS 第一刀**（无 CGO，无法注册 `WKURLSchemeHandler` IMP）：`Navigate(aluka://…)` 在 Go 侧 `ResolveAssetURL` 后 `loadHTMLString`，并把 HTML 内的本地 `<script>` / `<link>` / `<img>` 以及 CSS `url()` 改写成 data URI / 内联。`fetch('aluka://…')`、动态 `import()`、SPA 二次导航仍不可用。
 
 ---
 

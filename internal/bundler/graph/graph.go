@@ -63,6 +63,8 @@ type Result struct {
 	DynamicDeps []DynamicDep
 	// UnresolvedDynamic 无法静态解析的动态 import 所在模块。
 	UnresolvedDynamic []string
+	// WatchFiles 是本次图中真实存在的源文件（含 Vue src 外部块），供 --watch。
+	WatchFiles []string
 }
 
 // buildConfig 收集 Build 的可选配置。
@@ -108,6 +110,7 @@ func Build(vm *interpreter.VM, resolver *module.Resolver, entry string, opts ...
 		Resolutions: make(map[string]map[string]string),
 		SourceUnits: make(SourceUnitByPath),
 		Assets:      make(map[string][]byte),
+		WatchFiles:  make([]string, 0),
 	}
 	visited := make(map[string]bool)
 	generated := make(map[string]generatedSource)
@@ -128,6 +131,26 @@ func virtualKey(entryDir, absPath string) string {
 	return filepath.ToSlash(rel)
 }
 
+func (r *Result) noteWatch(path string) {
+	if path == "" {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return
+	}
+	for _, existing := range r.WatchFiles {
+		if existing == abs {
+			return
+		}
+	}
+	r.WatchFiles = append(r.WatchFiles, abs)
+}
+
 // walk 编译一个模块并递归收集其依赖。fsPath 用于文件系统操作，key 是
 // 模块标识（虚拟路径），entryDir 是入口目录（虚拟 key 的基准）。
 func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key, entryDir string, visited map[string]bool, generated map[string]generatedSource, vueBackend vue.Compiler) error {
@@ -135,9 +158,23 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 		return nil
 	}
 	visited[fsPath] = true
+	r.noteWatch(fsPath)
+
+	ext := filepath.Ext(fsPath)
+	if source, ok := generated[fsPath]; ok {
+		if strings.EqualFold(ext, ".css") {
+			r.Assets[key] = []byte(source.code)
+			return nil
+		}
+		unit, err := module.ParseSourceUnit([]byte(source.code), key, module.ModuleESM)
+		if err != nil {
+			return err
+		}
+		return r.finishWalk(vm, resolver, fsPath, key, entryDir, visited, generated, vueBackend, unit)
+	}
 
 	// JSON 与 CSS 文件是资源而非 JS 模块：读取原始字节嵌入（M2/M3）。
-	if strings.EqualFold(filepath.Ext(fsPath), ".json") || strings.EqualFold(filepath.Ext(fsPath), ".css") {
+	if strings.EqualFold(ext, ".json") || strings.EqualFold(ext, ".css") {
 		data, err := os.ReadFile(fsPath)
 		if err != nil {
 			return fmt.Errorf("graph: cannot read %q: %w", fsPath, err)
@@ -147,34 +184,58 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 	}
 
 	// .vue 单文件组件：构建期编译为 facade，并把 official 后端产生的
-	// script/template 注册为本次 Build 私有的虚拟模块。
+	// script/template/style 注册为本次 Build 私有的虚拟模块。
 	var unit *module.SourceUnit
 	var err error
-	if strings.EqualFold(filepath.Ext(fsPath), ".vue") {
+	if strings.EqualFold(ext, ".vue") {
 		data, readErr := os.ReadFile(fsPath)
 		if readErr != nil {
 			return fmt.Errorf("graph: cannot read %q: %w", fsPath, readErr)
 		}
-		compiled, compileErr := vueBackend.Compile(string(data), key)
+		compiled, compileErr := vueBackend.Compile(vue.CompileRequest{
+			Source:   string(data),
+			Name:     key,
+			Filename: fsPath,
+			ReadFile: os.ReadFile,
+			Resolve: func(spec, from string) (string, error) {
+				return resolver.ResolveImport(spec, from)
+			},
+		})
 		if compileErr != nil {
 			return fmt.Errorf("graph: %w", compileErr)
 		}
-		for _, generatedModule := range compiled.Modules {
+		for _, extra := range compiled.ExtraFiles {
+			r.noteWatch(extra)
+		}
+		registerGenerated := func(generatedModule vue.GeneratedModule) error {
 			generatedPath := filepath.Join(filepath.Dir(fsPath), filepath.FromSlash(generatedModule.Name))
 			if _, exists := generated[generatedPath]; exists {
 				return fmt.Errorf("graph: duplicate generated Vue module %q", generatedModule.Name)
 			}
 			generated[generatedPath] = generatedSource{code: generatedModule.Source}
+			return nil
+		}
+		for _, generatedModule := range compiled.Modules {
+			if err := registerGenerated(generatedModule); err != nil {
+				return err
+			}
+		}
+		for _, styleMod := range compiled.Styles {
+			if err := registerGenerated(styleMod); err != nil {
+				return err
+			}
 		}
 		unit, err = module.ParseSourceUnit([]byte(compiled.Facade), key, module.ModuleESM)
-	} else if source, ok := generated[fsPath]; ok {
-		unit, err = module.ParseSourceUnit([]byte(source.code), key, module.ModuleESM)
 	} else {
 		unit, err = compile.ParseFileUnit(fsPath, key)
 	}
 	if err != nil {
 		return err
 	}
+	return r.finishWalk(vm, resolver, fsPath, key, entryDir, visited, generated, vueBackend, unit)
+}
+
+func (r *Result) finishWalk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key, entryDir string, visited map[string]bool, generated map[string]generatedSource, vueBackend vue.Compiler, unit *module.SourceUnit) error {
 	if unit.SourceKind == module.SourceJSON {
 		r.Assets[key] = unit.Source
 		return nil
@@ -211,6 +272,7 @@ func (r *Result) walk(vm *interpreter.VM, resolver *module.Resolver, fsPath, key
 	}
 
 	// 记录本模块的解析映射并递归。
+	var err error
 	table := make(map[string]string, len(deps))
 	for _, dep := range deps {
 		if isBuiltinSpecifier(dep.Spec) {

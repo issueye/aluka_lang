@@ -421,6 +421,29 @@ func exeSuffix() string {
 	return ""
 }
 
+func runNodeESMCheck(t *testing.T, dir, bundle, checkJS, want string) {
+	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node unavailable")
+	}
+	checkPath := filepath.Join(dir, "_check.mjs")
+	if err := os.WriteFile(checkPath, []byte(checkJS), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"type":"module"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := exec.Command("node", checkPath, bundle)
+	run.Dir = dir
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("node check failed: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != want {
+		t.Fatalf("unexpected node output %q, want %q", strings.TrimSpace(string(out)), want)
+	}
+}
+
 // TestCompiledPayloadArgvPassthrough 验证打包产物参数穿透：产物模式下 argv
 // 解析与普通模式完全一致（框架在主二进制，payload 字节码不参与参数解析）。
 // 需要 go 工具链构建 aluka 二进制（每测试进程一次），可用 -short 跳过。
@@ -759,27 +782,15 @@ func TestWebBuildRealVueDemo(t *testing.T) {
 		t.Fatal("Vue bundle retained process.env.NODE_ENV")
 	}
 
-	if _, err := exec.LookPath("node"); err != nil {
-		t.Skip("node unavailable; Vue bundle execution skipped")
-	}
-	if err := os.WriteFile(filepath.Join(outDir, "package.json"), []byte(`{"type":"module"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	check := `import {pathToFileURL} from "node:url";
-const m = await import(pathToFileURL(process.argv[1]).href);
+	runNodeESMCheck(t, outDir, outFile, `import {pathToFileURL} from "node:url";
+const m = await import(pathToFileURL(process.argv[2]).href);
 const first = await m.renderApp();
 if (!first.includes("Vue 3 Web Bundle") || !first.includes("x2 = 0")) throw new Error("bad first SSR");
 const stat = await m.loadStatsOnce();
 if (!stat.includes("chunk 加载成功") || !stat.includes("来源：root")) throw new Error("bad chunk result");
 const second = await m.renderApp();
 if (!second.includes("动态 chunk") || !second.includes("来源：root")) throw new Error("bad second SSR");
-console.log("vue ssr ok");`
-	run := exec.Command("node", "--input-type=module", "-e", check, outFile)
-	if out, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("execute real Vue bundle failed: %v\n%s", err, out)
-	} else if strings.TrimSpace(string(out)) != "vue ssr ok" {
-		t.Fatalf("unexpected Vue execution output: %s", out)
-	}
+console.log("vue ssr ok");`, "vue ssr ok")
 }
 
 // TestWebBuildCJSAndUMDOutput：CJS/UMD 产物的入口导出形态正确
@@ -917,26 +928,69 @@ func TestWebBuildVueOfficialBackend(t *testing.T) {
 		}
 	}
 
-	if _, err := exec.LookPath("node"); err != nil {
-		t.Skip("node unavailable; official bundle execution skipped")
-	}
-	if err := os.WriteFile(filepath.Join(outDir, "package.json"), []byte(`{"type":"module"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	check := `import {pathToFileURL} from "node:url";
-const m = await import(pathToFileURL(process.argv[1]).href);
+	runNodeESMCheck(t, outDir, outFile, `import {pathToFileURL} from "node:url";
+const m = await import(pathToFileURL(process.argv[2]).href);
 const first = await m.renderApp();
 if (!first.includes("Vue 3 Web Bundle") || !first.includes("x2 = 0")) throw new Error("bad first SSR");
 const stat = await m.loadStatsOnce();
 if (!stat.includes("来源：root")) throw new Error("bad chunk result");
 const second = await m.renderApp();
 if (!second.includes("动态 chunk")) throw new Error("bad second SSR");
-console.log("official vue ssr ok");`
-	run := exec.Command("node", "--input-type=module", "-e", check, outFile)
-	if out, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("execute official Vue bundle failed: %v\n%s", err, out)
-	} else if strings.TrimSpace(string(out)) != "official vue ssr ok" {
-		t.Fatalf("unexpected official execution output: %s", out)
+console.log("official vue ssr ok");`, "official vue ssr ok")
+}
+
+func TestWebBuildVueStyleSrcScoped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires building the aluka binary")
+	}
+	bin := alukaTestBinary(t)
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("theme.css", ".ext{display:block}")
+	write("App.vue", `<template><div class="app">hello</div></template>
+<style scoped>.app{color:red}</style>
+<style src="./theme.css"></style>
+<script>import { h } from 'vue'; export default { render(){ return h('div',{class:'app'},'hello') } }</script>`)
+	write("main.ts", "import App from './App.vue';\nexport default App;\n")
+	write("index.html", `<!doctype html><html><head></head><body><script type="module" src="./main.ts"></script></body></html>`)
+	write("node_modules/vue/package.json", `{"name":"vue","version":"1.0.0","main":"./index.js"}`)
+	write("node_modules/vue/index.js", `export function h(t,p,c){return {type:t,props:p||{},children:c||[]}}
+export function ref(v){return {value:v}}
+export function unref(v){return v}
+export function toDisplayString(v){return String(v)}`)
+
+	outDir := t.TempDir()
+	cmd := exec.Command(bin, "build", "--target=web", "--outdir", outDir, "index.html")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("vue style build failed: %v\n%s", err, out)
+	}
+	css, err := os.ReadFile(filepath.Join(outDir, "main.css"))
+	if err != nil {
+		t.Fatalf("expected main.css next to JS: %v", err)
+	}
+	cssText := string(css)
+	if !strings.Contains(cssText, "data-v-") {
+		t.Fatalf("scoped css missing data-v: %s", cssText)
+	}
+	if !strings.Contains(cssText, ".ext") {
+		t.Fatalf("src css missing .ext: %s", cssText)
+	}
+	htmlOut, err := os.ReadFile(filepath.Join(outDir, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(htmlOut), `href="main.css"`) {
+		t.Fatalf("HTML missing injected Vue CSS link:\n%s", htmlOut)
 	}
 }
 

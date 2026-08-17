@@ -9,7 +9,9 @@
 //     运行时的 h 唯一定义，编译产物不手写数据结构；
 //   - <script> 内容原样保留，其 `export default` 对象改写为 const __sfc__
 //     并以 `__sfc__.render = render` 挂接后导出（Vite 同款模式）；
-//   - <style> / <script setup> 暂不支持，构建期明确报错；
+//   - <style> 产出虚拟 CSS 模块（facade 副作用 import）；scoped 三处生效
+//     （模板 data-v-id、选择器后缀、__scopeId）；<script setup> 仍报错；
+//     custom block / lang≠css / module / :deep 等构建期明确报错；
 //   - 模板子集：元素嵌套 / 自闭合 / void 元素、静态属性、`:prop` 绑定、
 //     `@event` 处理器（标识符引用或含调用的表达式）、`{{ expr }}` 插值；
 //   - 表达式中的裸标识符重写为 _ctx.<id>（关键字与内置全局除外）。
@@ -17,6 +19,7 @@ package vue
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -25,32 +28,99 @@ import (
 // 避免与用户标识符冲突）。'vue' 说明符由 graph 按 node_modules 正常解析。
 const runtimeImports = "import { h as _h, toDisplayString as _toDisplayString, unref as _unref } from 'vue';\n"
 
-// TransformSFC 将 SFC 源码编译为等价 JS 模块源码。name 仅用于错误信息。
+// TransformSFC 将 SFC 源码编译为等价 JS facade。name 仅用于错误信息。
+// 含 <style> 时 facade 含副作用 CSS import；虚拟 CSS 见 Compile。
 func TransformSFC(src, name string) (string, error) {
-	if strings.Contains(src, "<script setup") {
-		return "", fmt.Errorf("%s: <script setup> is not supported yet", name)
-	}
-	if _, has := extractBlock(src, "style"); has {
-		return "", fmt.Errorf("%s: <style> is not supported yet; move styles into the entry CSS", name)
-	}
-	tmpl, ok := extractBlock(src, "template")
-	if !ok {
-		return "", fmt.Errorf("%s: missing <template> block", name)
-	}
-	script, _ := extractBlock(src, "script")
-
-	render, err := compileTemplate(tmpl)
+	res, err := transformSFC(CompileRequest{Source: src, Name: name})
 	if err != nil {
-		return "", fmt.Errorf("%s: template: %w", name, err)
+		return "", err
+	}
+	return res.Facade, nil
+}
+
+func transformSFC(req CompileRequest) (*CompileResult, error) {
+	name := req.displayName()
+	blocks, err := parseSFCBlocks(req.Source)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	scriptBlock, tmplBlock, styles, custom := classifyBlocks(blocks)
+	if len(custom) > 0 {
+		return nil, fmt.Errorf("%s: custom SFC blocks are not supported", name)
+	}
+	if scriptBlock != nil && scriptBlock.isSetup() {
+		return nil, fmt.Errorf("%s: <script setup> is not supported yet", name)
+	}
+	for _, st := range styles {
+		if err := rejectUnsupportedStyle(name, st); err != nil {
+			return nil, err
+		}
+	}
+	externals, err := loadExternals(req, blocks)
+	if err != nil {
+		return nil, err
 	}
 
+	tmpl := blockContent(tmplBlock, externals.Template)
+	if strings.TrimSpace(tmpl) == "" && tmplBlock == nil && externals.Template == nil {
+		return nil, fmt.Errorf("%s: missing <template> block", name)
+	}
+	if tmplBlock == nil && externals.Template == nil {
+		return nil, fmt.Errorf("%s: missing <template> block", name)
+	}
+
+	id := sfcScopeID(name)
+	hasScoped := false
+	for _, st := range styles {
+		if st.has("scoped") {
+			hasScoped = true
+			break
+		}
+	}
+	scopeID := ""
+	if hasScoped {
+		scopeID = id
+	}
+
+	render, err := compileTemplate(tmpl, scopeID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: template: %w", name, err)
+	}
+
+	script := blockContent(scriptBlock, externals.Script)
+	base := filepath.Base(filepath.FromSlash(name))
 	var b strings.Builder
+	result := &CompileResult{ExtraFiles: externals.Files}
+
+	styleIdx := 0
+	extStyle := 0
+	for _, st := range styles {
+		css := st.Content
+		if st.attr("src") != "" {
+			if extStyle >= len(externals.Styles) {
+				return nil, fmt.Errorf("%s: missing src content for <style>", name)
+			}
+			css = externals.Styles[extStyle].Content
+			extStyle++
+		}
+		if st.has("scoped") {
+			if err := rejectAdvancedScoped(name, css); err != nil {
+				return nil, err
+			}
+			css = scopeCSS(css, id)
+		}
+		modName := styleModuleName(base, styleIdx)
+		result.Styles = append(result.Styles, GeneratedModule{Name: modName, Source: css})
+		b.WriteString("import " + strconv.Quote("./"+filepath.ToSlash(modName)) + ";\n")
+		styleIdx++
+	}
+
 	b.WriteString(runtimeImports)
 	if strings.TrimSpace(script) != "" {
 		const marker = "export default"
 		idx := strings.Index(script, marker)
 		if idx < 0 {
-			return "", fmt.Errorf("%s: <script> must `export default` the component options", name)
+			return nil, fmt.Errorf("%s: <script> must `export default` the component options", name)
 		}
 		b.WriteString(script[:idx])
 		b.WriteString("const __sfc__ =")
@@ -61,27 +131,13 @@ func TransformSFC(src, name string) (string, error) {
 		b.WriteString("const __sfc__ = { setup: (props) => props };\n")
 	}
 	b.WriteString(render)
-	b.WriteString("\n__sfc__.render = render;\nexport default __sfc__;\n")
-	return b.String(), nil
-}
-
-// extractBlock 提取首个 <tag ...>...</tag> 块的内部内容。
-func extractBlock(src, tag string) (string, bool) {
-	open := "<" + tag
-	i := strings.Index(src, open)
-	if i < 0 {
-		return "", false
+	b.WriteString("\n__sfc__.render = render;\n")
+	if hasScoped {
+		b.WriteString(`__sfc__.__scopeId = "data-v-` + id + `";` + "\n")
 	}
-	j := strings.IndexByte(src[i:], '>')
-	if j < 0 {
-		return "", false
-	}
-	start := i + j + 1
-	end := strings.Index(src[start:], "</"+tag+">")
-	if end < 0 {
-		return "", false
-	}
-	return src[start : start+end], true
+	b.WriteString("export default __sfc__;\n")
+	result.Facade = b.String()
+	return result, nil
 }
 
 // ---------- 模板编译 ----------
@@ -117,7 +173,7 @@ var voidElements = map[string]bool{
 	"br": true, "hr": true, "img": true, "input": true, "meta": true, "link": true,
 }
 
-func compileTemplate(tmpl string) (string, error) {
+func compileTemplate(tmpl string, scopeID string) (string, error) {
 	p := &sfcParser{src: []rune(tmpl)}
 	kids, err := p.parseNodes("")
 	if err != nil {
@@ -125,7 +181,7 @@ func compileTemplate(tmpl string) (string, error) {
 	}
 	var b strings.Builder
 	b.WriteString("export function render(_ctx){return ")
-	writeChildren(&b, kids)
+	writeChildren(&b, kids, scopeID)
 	b.WriteString(";}")
 	return b.String(), nil
 }
@@ -353,7 +409,7 @@ func (p *sfcParser) readAttrValue() string {
 
 // ---------- 代码生成 ----------
 
-func writeChildren(b *strings.Builder, kids []any) {
+func writeChildren(b *strings.Builder, kids []any, scopeID string) {
 	if len(kids) == 0 {
 		b.WriteString("[]")
 		return
@@ -369,7 +425,7 @@ func writeChildren(b *strings.Builder, kids []any) {
 		case *interp:
 			b.WriteString("_toDisplayString(_unref(" + rewriteIdents(t.expr) + "))")
 		case *elemNode:
-			writeElement(b, t)
+			writeElement(b, t, scopeID)
 		}
 	}
 	b.WriteString("]")
@@ -377,14 +433,16 @@ func writeChildren(b *strings.Builder, kids []any) {
 
 // writeElement 生成 _h(tag, props, children) 调用——vnode 形状由
 // 运行时的 h 唯一定义，编译产物不手写数据结构（Vite 同款思路）。
-func writeElement(b *strings.Builder, el *elemNode) {
+func writeElement(b *strings.Builder, el *elemNode, scopeID string) {
 	b.WriteString("_h(")
 	b.WriteString(strconv.Quote(el.tag))
 	b.WriteString(",{")
-	for i, a := range el.attrs {
-		if i > 0 {
+	wrote := false
+	for _, a := range el.attrs {
+		if wrote {
 			b.WriteString(",")
 		}
+		wrote = true
 		switch a.kind {
 		case attrStatic:
 			b.WriteString(strconv.Quote(a.name) + ":" + strconv.Quote(a.value))
@@ -394,8 +452,14 @@ func writeElement(b *strings.Builder, el *elemNode) {
 			b.WriteString(strconv.Quote(eventProp(a.name)) + ":" + eventHandler(a.value))
 		}
 	}
+	if scopeID != "" {
+		if wrote {
+			b.WriteString(",")
+		}
+		b.WriteString(strconv.Quote("data-v-"+scopeID) + `:""`)
+	}
 	b.WriteString("},")
-	writeChildren(b, el.children)
+	writeChildren(b, el.children, scopeID)
 	b.WriteString(")")
 }
 

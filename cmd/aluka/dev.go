@@ -73,12 +73,13 @@ func cmdDev(args []string) error {
 
 // devServer 聚合 dev 模式状态：静态服务 + watch 重建 + SSE 广播。
 type devServer struct {
-	opts    devOptions
-	mux     *http.ServeMux
-	mu      sync.RWMutex
-	lastErr string
-	clients map[chan string]struct{}
-	written map[string]bool
+	opts       devOptions
+	mux        *http.ServeMux
+	mu         sync.RWMutex
+	lastErr    string
+	clients    map[chan string]struct{}
+	written    map[string]bool
+	watchExtra []string
 }
 
 func newDevServer(o devOptions) *devServer {
@@ -172,13 +173,16 @@ func (s *devServer) rebuild() error {
 		s.setErr(err)
 		return err
 	}
-	assets, err := bundleWebEntry(vm, module.NewResolver(), s.opts.entry, buildOptions{
+	assets, extra, err := bundleWebEntry(vm, module.NewResolver(), s.opts.entry, buildOptions{
 		target: "web", outdir: s.opts.outdir, minify: s.opts.minify, treeShake: true,
 	})
 	if err != nil {
 		s.setErr(err)
 		return err
 	}
+	s.mu.Lock()
+	s.watchExtra = extra
+	s.mu.Unlock()
 	opts := buildOptions{outdir: s.opts.outdir}
 	if err := writeWebAssetsTracked(s.opts.entry, assets, opts, s.written); err != nil {
 		s.setErr(err)
@@ -202,10 +206,16 @@ func (s *devServer) setErr(err error) {
 // watchLoop 轮询源文件快照，变更后全量重建；失败保持旧产物继续服务。
 func (s *devServer) watchLoop() {
 	skipDir := s.opts.outdir
-	snapshot := watchSnapshot(s.opts.entry, skipDir)
+	s.mu.RLock()
+	extra := append([]string(nil), s.watchExtra...)
+	s.mu.RUnlock()
+	snapshot := watchSnapshot(s.opts.entry, skipDir, extra...)
 	for {
 		time.Sleep(300 * time.Millisecond)
-		next := watchSnapshot(s.opts.entry, skipDir)
+		s.mu.RLock()
+		extra = append([]string(nil), s.watchExtra...)
+		s.mu.RUnlock()
+		next := watchSnapshot(s.opts.entry, skipDir, extra...)
 		if reflect.DeepEqual(snapshot, next) {
 			continue
 		}

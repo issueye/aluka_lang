@@ -59,7 +59,8 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 - **外部服务驱动**：`Aluka.SQL`（SQLite 零配置 + Postgres 经 `DATABASE_URL`，支持 tagged template 参数绑定）、`Aluka.Redis`（get/set/hget/hset...）、`Aluka.S3`（自研 AWS SigV4，get/put/delete/list/exists）
 - **包管理器**：`aluka install/add/remove/update`、npm registry 客户端、自研 semver 解析、依赖树解析 + hoisting、并发下载解压、`aluka.lock` lockfile、workspace 多包管理、.npmrc（registry + 鉴权 token）
 - **JIT 编译器（默认开启，--jit=off 回滚）**：Quick 类型化 IR（跨平台）+ amd64 Native 机器码两层（W^X/崩溃隔离/safepoint/OSR）；生成式差分（jitdiff 三 tier 零失配）+ 5 个 Go fuzz target
-- **打包器**：`aluka build --compile` 生成静态单文件可执行产物；`aluka build --target=web` 生成浏览器 bundle，支持 JS/TS/JSX/TSX、CSS/HTML 入口、多 entry、sourcemap、动态 `import()` chunk、tree-shaking/minify、ESM/CJS/UMD、`--watch` 与 `aluka dev`。Vue SFC 提供默认纯 Go subset 后端和 `--vue-compiler=official` 官方 compiler-sfc 后端。
+- **打包器**：`aluka build --compile` 生成静态单文件可执行产物；`aluka build --target=web` 生成浏览器 bundle，支持 JS/TS/JSX/TSX、CSS/HTML 入口、多 entry、sourcemap、动态 `import()` chunk、tree-shaking/minify、ESM/CJS/UMD、`--watch` 与 `aluka dev`。Vue SFC 提供默认纯 Go subset 后端和 `--vue-compiler=official` 官方 compiler-sfc 后端（`<style>` / `src` / scoped 已接入 graph CSS 管线）。
+- **桌面 GUI**：Windows WebView2 已落地；macOS WKWebView 第一刀（syscall + libobjc，无 CGO、无 Vibrancy；`aluka://` 仅顶层 HTML inline）；Linux 及其它非 Darwin 平台明确报错而非静默 stub
 
 ## 约束
 
@@ -117,8 +118,9 @@ aluka dev --host 127.0.0.1 --port 3000 --outdir dist ./src/index.html
 
 Vue SFC 默认使用纯 Go `subset` 后端。`--vue-compiler=official` 会在构建期执行
 项目 `node_modules` 中的 compiler-sfc 及其传递依赖，权限与 `aluka run` 相同，
-只应对可信依赖启用；失败时不会静默回退。当前 `<script src>`、`<template src>`、
-`<style>` 和 custom block 会明确报错，等待 graph/watch 资产输入管线接入。
+只应对可信依赖启用；失败时不会静默回退。已支持 `<script src>`、`<template src>`、
+`<style>`（纯 CSS，含 scoped）。custom block、scss/less 等预处理器和 CSS modules
+仍会明确报错。
 
 ```bash
 # 优化并输出打包热点报告

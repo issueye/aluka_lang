@@ -29,7 +29,7 @@ func newTestEnv(t *testing.T, files map[string]string) string {
 
 type isolatedSFCCompiler struct{}
 
-func (isolatedSFCCompiler) Compile(src, name string) (*vue.CompileResult, error) {
+func (isolatedSFCCompiler) Compile(req vue.CompileRequest) (*vue.CompileResult, error) {
 	return &vue.CompileResult{
 		Facade: `import C from "./Component.vue.__aluka_script.ts"; export * from "./Component.vue.__aluka_script.ts"; import { render } from "./Component.vue.__aluka_template.js"; C.render = render; export default C;`,
 		Modules: []vue.GeneratedModule{
@@ -263,6 +263,88 @@ export default { setup() { return { count: ref(0) }; } };
 	if !ok || table["vue"] != "node_modules/vue/index.js" {
 		t.Errorf("Counter.vue 'vue' import not resolved: %+v", table)
 	}
+}
+
+func TestBuildVueSFCStylesAndSrc(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"main.ts":                       "import App from './App.vue';\nconsole.log(App);",
+		"theme.css":                     ".ext{display:block}",
+		"App.vue":                       "<template><div class=\"app\">x</div></template>\n<style scoped>.app{color:red}</style>\n<style src=\"./theme.css\"></style>\n<script>import { ref } from 'vue'; export default { setup(){ return { n: ref(1) } } }</script>",
+		"node_modules/vue/package.json": `{ "name": "vue", "version": "1.0.0", "main": "./index.js" }`,
+		"node_modules/vue/index.js":     `export function h(t,p,c){return {type:t,props:p||{},children:c||[]}} export function ref(v){return {value:v}} export function unref(v){return v} export function toDisplayString(v){return String(v)}`,
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	styleKey := "App.vue.__aluka_style.0.css"
+	if _, ok := res.Assets[styleKey]; !ok {
+		t.Fatalf("scoped css asset missing; assets=%v", keysOfBytes(res.Assets))
+	}
+	id := vue.ScopeID("App.vue")
+	if !strings.Contains(string(res.Assets[styleKey]), "data-v-"+id) {
+		t.Fatalf("scoped css = %s", res.Assets[styleKey])
+	}
+	if _, ok := res.Assets["App.vue.__aluka_style.1.css"]; !ok {
+		if _, ok := res.Assets["theme.css"]; !ok {
+			// src style is a generated virtual module next to the SFC
+			t.Fatalf("src css asset missing; assets=%v", keysOfBytes(res.Assets))
+		}
+	}
+	foundTheme := false
+	for path := range res.Assets {
+		if strings.Contains(string(res.Assets[path]), ".ext{display:block}") || strings.Contains(string(res.Assets[path]), ".ext{display:block") {
+			foundTheme = true
+		}
+	}
+	if !foundTheme {
+		t.Fatalf("theme.css content not in assets: %v", keysOfBytes(res.Assets))
+	}
+	vueFile := filepath.Join(dir, "App.vue")
+	themeFile := filepath.Join(dir, "theme.css")
+	if !containsPath(res.WatchFiles, vueFile) || !containsPath(res.WatchFiles, themeFile) {
+		t.Fatalf("WatchFiles missing vue/theme: %v", res.WatchFiles)
+	}
+}
+
+func TestBuildVueMissingStyleSrc(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"main.ts":                       "import App from './App.vue';\nconsole.log(App);",
+		"App.vue":                       "<template><div/></template>\n<style src=\"./missing.css\"></style>\n<script>export default {}</script>",
+		"node_modules/vue/package.json": `{ "name": "vue", "version": "1.0.0", "main": "./index.js" }`,
+		"node_modules/vue/index.js":     `export function h(t,p,c){return {type:t,props:p||{},children:c||[]}} export function unref(v){return v} export function toDisplayString(v){return String(v)}`,
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Build(vm, module.NewResolver(), filepath.Join(dir, "main.ts"))
+	if err == nil || !strings.Contains(err.Error(), "src") {
+		t.Fatalf("missing style src error = %v", err)
+	}
+}
+
+func keysOfBytes(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func containsPath(files []string, want string) bool {
+	want, _ = filepath.Abs(want)
+	for _, f := range files {
+		got, _ := filepath.Abs(f)
+		if got == want {
+			return true
+		}
+	}
+	return false
 }
 
 func keysOf(m map[string]*module.SourceUnit) []string {

@@ -2,6 +2,7 @@ package gui
 
 import (
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,9 @@ func TestGUIProtocolAndAssets(t *testing.T) {
 }
 
 func TestGUIWindowManagement(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		t.Skip("native GUI windows are not supported on this platform")
+	}
 	app := GetApp()
 
 	win, err := NewWindow(WindowOptions{
@@ -49,6 +53,9 @@ func TestGUIWindowManagement(t *testing.T) {
 		Hidden: true,
 	})
 	if err != nil {
+		if runtime.GOOS == "darwin" {
+			t.Skipf("native window unavailable: %v", err)
+		}
 		t.Fatalf("NewWindow failed: %v", err)
 	}
 

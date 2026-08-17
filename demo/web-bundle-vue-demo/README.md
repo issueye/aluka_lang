@@ -41,7 +41,7 @@ Aluka 提供两个后端，均输出从 `vue` 导入运行时 helper 的 ESM 模
 | 后端 | 启用方式 | 支持范围 | 特点 |
 |---|---|---|---|
 | `subset` | 默认，或 `--vue-compiler=subset` | 本文“模板语法子集（v1）” | 纯 Go，约微秒级/SFC；不执行依赖代码，超出子集明确报错 |
-| `official` | `--vue-compiler=official` | 官方 script/template 编译（含 `<script setup>`、TypeScript、named exports、指令、官方模板优化）；`<script src>`/`<template src>`、`<style>`/custom block 在输入/资产管线接入前明确拒绝 | 在 Aluka 自研 VM 内执行 vendored compiler-sfc；无需 Node/外部工具链 |
+| `official` | `--vue-compiler=official` | 官方 script/template 编译（含 `<script setup>`、TypeScript、named exports、指令、官方模板优化）；`<script src>`/`<template src>`/`<style>`（纯 CSS，含 scoped）已接入 graph CSS 管线；custom block / 预处理器 / CSS modules 明确拒绝 | 在 Aluka 自研 VM 内执行 vendored compiler-sfc；无需 Node/外部工具链 |
 
 ```bash
 # 官方 compiler-sfc 后端
@@ -70,8 +70,8 @@ subset 约 7–9µs/SFC（`go test ./internal/bundler/vue -run '^$' -bench
 | 事件 | `@click="dec"`（方法引用）或 `@click="inc()"`（调用表达式） |
 | 插值 | `{{ count }}`（经 `_toDisplayString(_unref(...))` 展示） |
 
-暂不支持（构建期明确报错）：`<style>` 块（样式放入口 CSS）、
-`<script setup>`、指令（`v-if`/`v-for`/`v-model`）。
+暂不支持（构建期明确报错）：`<script setup>`（subset）、指令（`v-if`/`v-for`/`v-model`，subset）、
+custom block、`<style lang>` 预处理器、`<style module>`。`<style>` 纯 CSS（含 scoped）已支持。
 空白处理为 Vue condense 近似（换行分隔删除、内联空白折叠）。
 
 > 另见 `demo/vue3-ssr-demo`：完整版迷你 Vue（reactive/Proxy/模板编译/SSR），

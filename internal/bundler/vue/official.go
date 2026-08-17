@@ -1,6 +1,7 @@
 package vue
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 )
 
 // officialDriver 在 VM 内驱动 vue/compiler-sfc。输入经 globalThis 传入，结果经
-// __sfcResult 回传。script/template 分别返回，facade 由 Go 侧组装为独立模块。
+// __sfcResult 回传。script/template/style 分别返回，facade 由 Go 侧组装。
 const officialDriver = `(function () {
   function locationOf(value, fallback) {
     var loc = value && value.loc ? value.loc : fallback;
@@ -23,7 +24,7 @@ const officialDriver = `(function () {
       column: Number(loc && loc.column) || 0
     };
   }
-  function fail(value, fallback, prefix, relativeTo) {
+  function fail(value, fallback, prefix, relativeTo, filename) {
     var loc = locationOf(value, fallback);
     if (relativeTo && loc.line) {
       var base = locationOf(null, relativeTo);
@@ -35,37 +36,74 @@ const officialDriver = `(function () {
       diagnostic: {
         message: (prefix || "") + message,
         line: loc.line,
-        column: loc.column
+        column: loc.column,
+        filename: filename || ""
       }
     };
   }
   try {
     var ns = globalThis.__sfcNS;
+    var externals = {};
+    try { externals = JSON.parse(globalThis.__sfcExternalsJSON || "{}"); } catch (e) { externals = {}; }
     var r = ns.parse(globalThis.__sfcSrc, { filename: globalThis.__sfcName });
     if (r.errors && r.errors.length) {
       fail(r.errors[0], null, "");
       return;
     }
     var d = r.descriptor;
-    if (d.script && d.script.src) {
-      fail("official backend does not support external <script src>", d.script.loc, "");
-      return;
-    }
-    if (d.scriptSetup && d.scriptSetup.src) {
-      fail("official backend does not support external <script setup src>", d.scriptSetup.loc, "");
-      return;
-    }
-    if (d.template && d.template.src) {
-      fail("official backend does not support external <template src>", d.template.loc, "");
-      return;
-    }
-    if (d.styles && d.styles.length) {
-      fail("official backend: <style> blocks are not wired into the graph asset pipeline; use an entry CSS file", d.styles[0].loc, "");
-      return;
-    }
     if (d.customBlocks && d.customBlocks.length) {
       fail("official backend: custom SFC blocks are not supported", d.customBlocks[0].loc, "");
       return;
+    }
+    if (d.script && d.script.src) {
+      if (!externals.script) {
+        fail("cannot load external <script src>", d.script.loc, "");
+        return;
+      }
+      d.script.content = externals.script.content;
+      d.script.src = undefined;
+    }
+    if (d.scriptSetup && d.scriptSetup.src) {
+      if (!externals.scriptSetup) {
+        fail("cannot load external <script setup src>", d.scriptSetup.loc, "");
+        return;
+      }
+      d.scriptSetup.content = externals.scriptSetup.content;
+      d.scriptSetup.src = undefined;
+    }
+    if (d.template && d.template.src) {
+      if (!externals.template) {
+        fail("cannot load external <template src>", d.template.loc, "", null, externals.template && externals.template.filename);
+        return;
+      }
+      d.template.content = externals.template.content;
+      d.template.src = undefined;
+    }
+    var styleExternals = externals.styles || [];
+    var styleExtIdx = 0;
+    if (d.styles && d.styles.length) {
+      for (var si = 0; si < d.styles.length; si++) {
+        var st = d.styles[si];
+        if (st.module) {
+          fail("official backend: <style module> is not supported yet", st.loc, "");
+          return;
+        }
+        var lang = (st.lang || "css") + "";
+        if (lang && lang !== "css") {
+          fail("official backend: <style lang=\"" + lang + "\"> is not supported yet; only css", st.loc, "");
+          return;
+        }
+        if (st.src) {
+          var se = styleExternals[styleExtIdx++];
+          if (!se) {
+            fail("cannot load external <style src>", st.loc, "");
+            return;
+          }
+          st.content = se.content;
+          st.__alukaFilename = se.filename;
+          st.src = undefined;
+        }
+      }
     }
     var id = globalThis.__sfcId;
     var script = "const __sfc__ = {};\nexport default __sfc__;";
@@ -83,28 +121,59 @@ const officialDriver = `(function () {
         var lang = (d.scriptSetup && d.scriptSetup.lang) || (d.script && d.script.lang) || "js";
         if (lang === "ts" || lang === "tsx") scriptLang = lang;
       } catch (e) {
-        fail(e, null, "", d.scriptSetup ? d.scriptSetup.loc : d.script.loc);
+        var scriptFile = (d.scriptSetup && externals.scriptSetup && externals.scriptSetup.filename) ||
+          (externals.script && externals.script.filename) || "";
+        fail(e, null, "", d.scriptSetup ? d.scriptSetup.loc : d.script.loc, scriptFile);
         return;
+      }
+    }
+    var hasScoped = false;
+    if (d.styles) {
+      for (var i = 0; i < d.styles.length; i++) {
+        if (d.styles[i].scoped) hasScoped = true;
       }
     }
     var template = "";
     if (d.template) {
+      var templateFile = (externals.template && externals.template.filename) || globalThis.__sfcName;
       var t = ns.compileTemplate({
         source: d.template.content,
-        filename: globalThis.__sfcName,
+        filename: templateFile,
         id: id,
+        scoped: hasScoped,
         compilerOptions: { bindingMetadata: bindings }
       });
       if (t.errors && t.errors.length) {
-        fail(t.errors[0], d.template.loc, "", d.template.loc);
+        var tRel = externals.template ? null : d.template.loc;
+        fail(t.errors[0], d.template.loc, "", tRel, externals.template && externals.template.filename);
         return;
       }
       template = t.code;
     }
+    var styles = [];
+    if (d.styles) {
+      for (var j = 0; j < d.styles.length; j++) {
+        var style = d.styles[j];
+        var styleFile = style.__alukaFilename || globalThis.__sfcName;
+        var compiled = ns.compileStyle({
+          source: style.content,
+          filename: styleFile,
+          id: "data-v-" + id,
+          scoped: !!style.scoped
+        });
+        if (compiled.errors && compiled.errors.length) {
+          fail(compiled.errors[0], style.loc, "", style.__alukaFilename ? null : style.loc, style.__alukaFilename || "");
+          return;
+        }
+        styles.push(compiled.code || "");
+      }
+    }
     globalThis.__sfcResult = {
       script: script,
       scriptLang: scriptLang,
-      template: template
+      template: template,
+      styles: styles,
+      hasScoped: hasScoped
     };
   } catch (e) {
     fail(e, null, "official compiler failed: ");
@@ -146,21 +215,61 @@ func NewOfficialCompiler(vm *interpreter.VM, entryPath string) *OfficialCompiler
 	return &OfficialCompiler{vm: vm, entryPath: entryPath}
 }
 
+type officialExternalsJSON struct {
+	Script      *officialExternalJSON  `json:"script,omitempty"`
+	ScriptSetup *officialExternalJSON  `json:"scriptSetup,omitempty"`
+	Template    *officialExternalJSON  `json:"template,omitempty"`
+	Styles      []officialExternalJSON `json:"styles,omitempty"`
+}
+
+type officialExternalJSON struct {
+	Content  string `json:"content"`
+	Filename string `json:"filename"`
+}
+
 // Compile 经官方 compiler-sfc 编译 SFC。script/template/facade 分属独立模块，
 // TypeScript script 交给 graph 的 TS 前端处理，不做不安全的默认导出文本改写。
-func (c *OfficialCompiler) Compile(src, name string) (*CompileResult, error) {
+func (c *OfficialCompiler) Compile(req CompileRequest) (*CompileResult, error) {
 	if err := c.init(); err != nil {
 		return nil, err
 	}
+	name := req.displayName()
+	blocks, err := parseSFCBlocks(req.Source)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	externals, err := loadExternals(req, blocks)
+	if err != nil {
+		return nil, err
+	}
+	extJSON := officialExternalsJSON{}
+	if externals.Script != nil {
+		extJSON.Script = &officialExternalJSON{Content: externals.Script.Content, Filename: externals.Script.Filename}
+	}
+	if externals.ScriptSetup != nil {
+		extJSON.ScriptSetup = &officialExternalJSON{Content: externals.ScriptSetup.Content, Filename: externals.ScriptSetup.Filename}
+	}
+	if externals.Template != nil {
+		extJSON.Template = &officialExternalJSON{Content: externals.Template.Content, Filename: externals.Template.Filename}
+	}
+	for _, st := range externals.Styles {
+		extJSON.Styles = append(extJSON.Styles, officialExternalJSON{Content: st.Content, Filename: st.Filename})
+	}
+	payload, err := json.Marshal(extJSON)
+	if err != nil {
+		return nil, fmt.Errorf("vue: encode externals for %s: %w", name, err)
+	}
+
 	g := c.vm.Global()
 	defer func() {
-		for _, key := range []string{"__sfcSrc", "__sfcName", "__sfcId", "__sfcResult"} {
+		for _, key := range []string{"__sfcSrc", "__sfcName", "__sfcId", "__sfcResult", "__sfcExternalsJSON"} {
 			_ = g.Delete(key)
 		}
 	}()
-	_ = g.Set("__sfcSrc", engine.Str(src))
+	_ = g.Set("__sfcSrc", engine.Str(req.Source))
 	_ = g.Set("__sfcName", engine.Str(name))
 	_ = g.Set("__sfcId", engine.Str(sfcScopeID(name)))
+	_ = g.Set("__sfcExternalsJSON", engine.Str(string(payload)))
 	if _, err := c.vm.Eval(officialDriver, "aluka-official-sfc-driver.js"); err != nil {
 		return nil, fmt.Errorf("vue: official compiler failed for %s: %w", name, err)
 	}
@@ -180,10 +289,15 @@ func (c *OfficialCompiler) Compile(src, name string) (*CompileResult, error) {
 		message, _ := diagnostic.Get("message")
 		lineValue, _ := diagnostic.Get("line")
 		columnValue, _ := diagnostic.Get("column")
+		fileValue, _ := diagnostic.Get("filename")
 		line, _ := lineValue.Int()
 		column, _ := columnValue.Int()
+		diagName := name
+		if fileValue != nil && !fileValue.IsUndefined() && fileValue.String() != "" {
+			diagName = fileValue.String()
+		}
 		return nil, &Diagnostic{
-			Filename: name,
+			Filename: diagName,
 			Line:     line,
 			Column:   column,
 			Message:  message.String(),
@@ -193,6 +307,15 @@ func (c *OfficialCompiler) Compile(src, name string) (*CompileResult, error) {
 	script, _ := obj.Get("script")
 	scriptLang, _ := obj.Get("scriptLang")
 	template, _ := obj.Get("template")
+	hasScopedVal, _ := obj.Get("hasScoped")
+	hasScoped := false
+	if hasScopedVal != nil {
+		if b, ok := hasScopedVal.Bool(); ok {
+			hasScoped = b
+		} else if hasScopedVal.String() == "true" {
+			hasScoped = true
+		}
+	}
 	base := filepath.Base(filepath.FromSlash(name))
 	scriptExt := ".js"
 	switch scriptLang.String() {
@@ -215,8 +338,22 @@ func (c *OfficialCompiler) Compile(src, name string) (*CompileResult, error) {
 			"__sfc__.render = __sfc_render__;\n"
 		modules = append(modules, GeneratedModule{Name: templateName, Source: template.String()})
 	}
+
+	var styles []GeneratedModule
+	if sv, err := obj.Get("styles"); err == nil && sv != nil && !sv.IsUndefined() && !sv.IsNull() {
+		if arr, ok := sv.(*engine.ArrayValue); ok {
+			for i, el := range arr.Elems() {
+				modName := styleModuleName(base, i)
+				styles = append(styles, GeneratedModule{Name: modName, Source: el.String()})
+				facade += "import " + strconv.Quote("./"+filepath.ToSlash(modName)) + ";\n"
+			}
+		}
+	}
+	if hasScoped {
+		facade += `__sfc__.__scopeId = "data-v-` + sfcScopeID(name) + `";` + "\n"
+	}
 	facade += "export default __sfc__;\n"
-	return &CompileResult{Facade: facade, Modules: modules}, nil
+	return &CompileResult{Facade: facade, Modules: modules, Styles: styles, ExtraFiles: externals.Files}, nil
 }
 
 // init 加载 vue/compiler-sfc 命名空间到 globalThis.__sfcNS（一次）。
@@ -267,6 +404,11 @@ func (c *OfficialCompiler) installBuildGlobals() {
 		}
 		_ = g.Set("console", console)
 	}
+}
+
+// ScopeID 返回 scoped CSS / 模板匹配用的稳定 id（与编译产物 data-v-* 一致）。
+func ScopeID(name string) string {
+	return sfcScopeID(name)
 }
 
 // sfcScopeID 生成 scoped CSS / 模板匹配用的稳定 id。

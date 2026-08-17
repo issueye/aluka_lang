@@ -1,6 +1,8 @@
 package vue
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -90,7 +92,10 @@ func TestTransformSFCErrors(t *testing.T) {
 		want string
 	}{
 		{"missing template", `<script>export default {};</script>`, "missing <template>"},
-		{"style block", "<template><p/></template>\n<style>.a{}</style>", "<style> is not supported"},
+		{"custom block", "<template><p/></template>\n<docs>x</docs>", "custom SFC blocks"},
+		{"style scss", `<template><p/></template><style lang="scss">.a{}</style>`, "lang="},
+		{"style module", `<template><p/></template><style module>.a{}</style>`, "<style module>"},
+		{"style deep", `<template><p/></template><style scoped>:deep(.a){color:red}</style>`, ":deep"},
 		{"script setup", `<template><p/></template><script setup>const a=1;</script>`, "<script setup> is not supported"},
 		{"no default export", "<template><p/></template>\n<script>const a = 1;</script>", "must `export default`"},
 		{"mismatched close", `<template><div></span></div></template>`, "mismatched closing"},
@@ -103,6 +108,51 @@ func TestTransformSFCErrors(t *testing.T) {
 				t.Errorf("TransformSFC error = %v, want containing %q", err, c.want)
 			}
 		})
+	}
+}
+
+func TestTransformSFCStyleAndScoped(t *testing.T) {
+	res, err := transformSFC(CompileRequest{Source: `<template><p class="x">{{ t }}</p></template>
+<style scoped>.x{color:red}</style>
+<script>export default { setup(){ return { t: 1 } } }</script>`, Name: "Styled.vue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sfcScopeID("Styled.vue")
+	if len(res.Styles) != 1 {
+		t.Fatalf("styles = %d, want 1", len(res.Styles))
+	}
+	if !strings.Contains(res.Facade, `import "./Styled.vue.__aluka_style.0.css"`) {
+		t.Fatalf("facade missing style import:\n%s", res.Facade)
+	}
+	if !strings.Contains(res.Facade, `__sfc__.__scopeId = "data-v-`+id+`"`) {
+		t.Fatalf("facade missing __scopeId:\n%s", res.Facade)
+	}
+	if !strings.Contains(res.Facade, `"data-v-`+id+`":""`) {
+		t.Fatalf("template missing scoped attr:\n%s", res.Facade)
+	}
+	if !strings.Contains(res.Styles[0].Source, ".x[data-v-"+id+"]") {
+		t.Fatalf("scoped css = %q", res.Styles[0].Source)
+	}
+}
+
+func TestTransformSFCStyleSrc(t *testing.T) {
+	dir := t.TempDir()
+	cssPath := filepath.Join(dir, "theme.css")
+	if err := os.WriteFile(cssPath, []byte(".y{color:blue}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vuePath := filepath.Join(dir, "Comp.vue")
+	src := `<template><div/></template><style src="./theme.css"></style><script>export default {}</script>`
+	res, err := transformSFC(CompileRequest{Source: src, Name: "Comp.vue", Filename: vuePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Styles) != 1 || !strings.Contains(res.Styles[0].Source, ".y{color:blue}") {
+		t.Fatalf("styles = %+v", res.Styles)
+	}
+	if len(res.ExtraFiles) != 1 {
+		t.Fatalf("ExtraFiles = %v", res.ExtraFiles)
 	}
 }
 

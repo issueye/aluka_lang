@@ -433,7 +433,7 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 				fatalErr("aluka build: " + err.Error())
 			}
 			webResolver := module.NewResolver()
-			webAssets, err = bundleWebEntry(webVM, webResolver, webEntryPath, opts)
+			webAssets, _, err = bundleWebEntry(webVM, webResolver, webEntryPath, opts)
 			if err != nil {
 				fatalErr("aluka build: bundle --web-entry: " + err.Error())
 			}
@@ -719,30 +719,37 @@ func validateWebBuiltins(builtins []graph.BuiltinDep) error {
 
 // bundleWebEntry 实现对单个 web 入口（.html / .css / .js / .ts / .tsx）的编译打包，
 // 返回相对产物路径 → 文件内容字节。
-func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string, opts buildOptions) (map[string][]byte, error) {
+func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string, opts buildOptions) (map[string][]byte, []string, error) {
 	resolver.SetWebConditions()
 	ext := strings.ToLower(filepath.Ext(entry))
 	assets := make(map[string][]byte)
+	var watch []string
 
 	// 1. HTML 入口处理（M2-2）
 	if ext == ".html" {
 		htmlData, err := os.ReadFile(entry)
 		if err != nil {
-			return nil, fmt.Errorf("read HTML entry %q: %w", entry, err)
+			return nil, nil, fmt.Errorf("read HTML entry %q: %w", entry, err)
 		}
 		htmlStr := string(htmlData)
 		parsed := emit.ParseHTMLEntry(htmlStr)
 		replacements := make(map[string]string)
 		entryDir := filepath.Dir(entry)
+		watch = append(watch, mustAbs(entry))
 
+		var extraCSS []string
 		for _, script := range parsed.Scripts {
 			scriptPath := filepath.Join(entryDir, filepath.FromSlash(script.Original))
-			subAssets, err := bundleWebEntry(vm, resolver, scriptPath, opts)
+			subAssets, subWatch, err := bundleWebEntry(vm, resolver, scriptPath, opts)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
+			watch = append(watch, subWatch...)
 			for k, v := range subAssets {
 				assets[k] = v
+				if strings.HasSuffix(strings.ToLower(k), ".css") {
+					extraCSS = append(extraCSS, k)
+				}
 			}
 			baseScript := filepath.Base(script.Original)
 			baseName := strings.TrimSuffix(baseScript, filepath.Ext(baseScript)) + ".js"
@@ -753,8 +760,9 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 			sheetPath := filepath.Join(entryDir, filepath.FromSlash(sheet.Original))
 			cssData, err := os.ReadFile(sheetPath)
 			if err != nil {
-				return nil, fmt.Errorf("read stylesheet %q: %w", sheetPath, err)
+				return nil, nil, fmt.Errorf("read stylesheet %q: %w", sheetPath, err)
 			}
+			watch = append(watch, mustAbs(sheetPath))
 			content := string(cssData)
 			if opts.minify {
 				content = emit.MinifyCSS(content)
@@ -766,15 +774,16 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 		}
 
 		rewritten := emit.RewriteHTML(htmlStr, replacements)
+		rewritten = injectHTMLStylesheets(rewritten, extraCSS)
 		assets[filepath.Base(entry)] = []byte(rewritten)
-		return assets, nil
+		return assets, uniqueStrings(watch), nil
 	}
 
 	// 2. 独立 CSS 入口（M2-1）
 	if ext == ".css" {
 		cssData, err := os.ReadFile(entry)
 		if err != nil {
-			return nil, fmt.Errorf("read CSS entry %q: %w", entry, err)
+			return nil, nil, fmt.Errorf("read CSS entry %q: %w", entry, err)
 		}
 		content := string(cssData)
 		if opts.minify {
@@ -782,7 +791,7 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 		}
 		base := filepath.Base(entry)
 		assets[base] = []byte(content)
-		return assets, nil
+		return assets, []string{mustAbs(entry)}, nil
 	}
 
 	// 3. JS / TS / TSX 入口打包（M1/M2）
@@ -792,13 +801,13 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 	}
 	graphResult, err := graph.Build(vm, resolver, entry, graphOpts...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := validateWebBuiltins(graphResult.Builtins); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(graphResult.UnresolvedDynamic) > 0 {
-		return nil, fmt.Errorf("web target requires a string literal for dynamic import() (source %s)", graphResult.UnresolvedDynamic[0])
+		return nil, nil, fmt.Errorf("web target requires a string literal for dynamic import() (source %s)", graphResult.UnresolvedDynamic[0])
 	}
 
 	kept := make(map[string]bool, len(graphResult.SourceUnits))
@@ -808,7 +817,7 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 	if opts.treeShake {
 		shaken, err := shake.ShakeOpts(graphResult, graphResult.Entry, shake.Options{KeepEntryExports: true})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		kept = shaken.Kept
 	}
@@ -856,7 +865,7 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 		Defines: defines,
 	}.Build()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	baseName := filepath.Base(entry)
@@ -888,7 +897,7 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 		}
 		chunkText, err := (emit.Bundle{EntryID: dep.Target, Modules: chunkModules, Defines: defines}).BuildChunk()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		assets[dynamicChunkName(dep.Target)] = []byte(chunkText)
 	}
@@ -898,7 +907,7 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 		mapFileName := jsFileName + ".map"
 		smJSON, err := emit.GenerateSimpleSourceMap(jsFileName, moduleSources)
 		if err != nil {
-			return nil, fmt.Errorf("generate sourcemap: %w", err)
+			return nil, nil, fmt.Errorf("generate sourcemap: %w", err)
 		}
 		assets[mapFileName] = []byte(smJSON)
 		outJS += "\n//# sourceMappingURL=" + mapFileName + "\n"
@@ -914,7 +923,7 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 	if len(cssFiles) > 0 {
 		cssBundle, err := emit.BundleCSS(cssFiles, opts.minify)
 		if err != nil {
-			return nil, fmt.Errorf("bundle CSS: %w", err)
+			return nil, nil, fmt.Errorf("bundle CSS: %w", err)
 		}
 		if len(cssBundle) > 0 {
 			assets[baseName+".css"] = []byte(cssBundle)
@@ -922,11 +931,11 @@ func bundleWebEntry(vm *interpreter.VM, resolver *module.Resolver, entry string,
 	}
 
 	assets[jsFileName] = []byte(outJS)
-	return assets, nil
+	return assets, graphResult.WatchFiles, nil
 }
 
 func webBuildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts buildOptions) {
-	assets, err := bundleWebEntry(vm, resolver, entry, opts)
+	assets, _, err := bundleWebEntry(vm, resolver, entry, opts)
 	if err != nil {
 		fatalErr("aluka build: " + err.Error())
 	}
@@ -1004,21 +1013,23 @@ func staticModuleClosure(gr *graph.Result, entry string, kept map[string]bool) m
 func watchWebBuild(entry string, opts buildOptions) {
 	outDir := webOutputDir(opts)
 	written := map[string]bool{}
+	var lastExtra []string
 	for {
 		vm, err := interpreter.NewVM()
 		if err == nil {
-			if assets, buildErr := bundleWebEntry(vm, module.NewResolver(), entry, opts); buildErr != nil {
+			if assets, extra, buildErr := bundleWebEntry(vm, module.NewResolver(), entry, opts); buildErr != nil {
 				fmt.Fprintln(os.Stderr, "watch:", buildErr)
 			} else if writeErr := writeWebAssetsTracked(entry, assets, opts, written); writeErr != nil {
 				fmt.Fprintln(os.Stderr, "watch:", writeErr)
 			} else {
 				fmt.Println("watch: rebuilt")
+				lastExtra = extra
 			}
 		}
-		snapshot := watchSnapshot(entry, outDir)
+		snapshot := watchSnapshot(entry, outDir, lastExtra...)
 		for {
 			time.Sleep(300 * time.Millisecond)
-			next := watchSnapshot(entry, outDir)
+			next := watchSnapshot(entry, outDir, lastExtra...)
 			if !reflect.DeepEqual(snapshot, next) {
 				break
 			}
@@ -1039,7 +1050,7 @@ func webOutputDir(opts buildOptions) string {
 
 // watchSnapshot 收集入口目录下源文件的 (mtime:size) 快照；skipDir 下的文件
 // （构建产物目录）不纳入，避免重建写盘再次触发变更检测。
-func watchSnapshot(entry, skipDir string) map[string]string {
+func watchSnapshot(entry, skipDir string, extraFiles ...string) map[string]string {
 	out := make(map[string]string)
 	root := filepath.Dir(entry)
 	var skipAbs string
@@ -1056,7 +1067,7 @@ func watchSnapshot(entry, skipDir string) map[string]string {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))
-		if ext == ".js" || ext == ".jsx" || ext == ".ts" || ext == ".tsx" || ext == ".css" || ext == ".html" || filepath.Base(path) == "package.json" {
+		if ext == ".js" || ext == ".jsx" || ext == ".ts" || ext == ".tsx" || ext == ".css" || ext == ".html" || ext == ".vue" || filepath.Base(path) == "package.json" {
 			if skipAbs != "" {
 				if abs, absErr := filepath.Abs(filepath.Dir(path)); absErr == nil && abs == skipAbs {
 					return nil
@@ -1068,6 +1079,68 @@ func watchSnapshot(entry, skipDir string) map[string]string {
 		}
 		return nil
 	})
+	for _, extra := range extraFiles {
+		if extra == "" {
+			continue
+		}
+		if _, ok := out[extra]; ok {
+			continue
+		}
+		info, err := os.Stat(extra)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		out[extra] = fmt.Sprintf("%d:%d", info.ModTime().UnixNano(), info.Size())
+	}
+	return out
+}
+
+func mustAbs(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
+}
+
+// injectHTMLStylesheets 把 JS 图抽取的伴随 CSS（含 Vue SFC 虚拟样式）挂进
+// HTML <head>，避免只有 import 边、没有 <link> 时浏览器拿不到样式。
+func injectHTMLStylesheets(html string, hrefs []string) string {
+	var b strings.Builder
+	lower := strings.ToLower(html)
+	seen := map[string]bool{}
+	for _, h := range hrefs {
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		if strings.Contains(html, h) {
+			continue
+		}
+		b.WriteString(`<link rel="stylesheet" href="`)
+		b.WriteString(h)
+		b.WriteString(`">`)
+	}
+	extra := b.String()
+	if extra == "" {
+		return html
+	}
+	if i := strings.LastIndex(lower, "</head>"); i >= 0 {
+		return html[:i] + extra + html[i:]
+	}
+	return extra + html
+}
+
+func uniqueStrings(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
 	return out
 }
 

@@ -62,17 +62,16 @@ git diff --check
 - `<script setup>`；
 - TypeScript；
 - 普通脚本 named exports；
-- 官方 template 编译、指令、模板 hoist 与事件缓存。
+- 官方 template 编译、指令、模板 hoist 与事件缓存；
+- `<script src>` / `<template src>` / `<style>`（纯 CSS，含 scoped；外部文件进入 graph 与 watch）。
 
-以下结构在 graph 输入或资产管线接入前明确报错：
+以下结构明确报错：
 
-- `<script src>`；
-- `<template src>`；
-- `<style>`；
-- custom block。
+- custom block；
+- `<style lang>` 预处理器（scss/less/sass/stylus）；
+- `<style module>`。
 
 这些是显式能力边界，不允许静默忽略内容，也不允许自动回退到 subset 后端。
-支持外部 block 时必须同步接入依赖图、watch 输入、错误位置映射和资产输出。
 
 ## 正则与字符串边界
 
