@@ -126,8 +126,8 @@ internal/
     module/                ESM/CJS 模块系统 + 字节码缓存 + .ts 导入 / TLA
   builtin/                 Node.js 内置模块（fs/http/net/crypto/sqlite/test/...，文件名即模块名）
   pkgmanager/              npm 兼容包管理器（semver/registry/resolver/installer/lockfile/workspace/config）
-  bundler/                 build --compile + --target=web（graph/shake/minify/emit/Vue SFC；独立 module）
-  project/                 web 工作台（BuildWeb / WriteAssets / 插件编排；独立 module）
+  bundler/                 build --compile + --target=web（graph/shake/minify/emit/webemit/Vue SFC；独立 module）
+  project/                 web 工作台（配置 / 插件 / HTML 入口 / 写盘；JS emit 在 bundler/webemit）
   monitor/                 --monitor 性能/内存指标（独立 module，依赖 engine）
 tests/
   conformance/             一致性测试脚本（node/test262/npm/install/express/build/webbuild/vue-sfc/node22）

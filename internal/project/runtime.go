@@ -1,5 +1,5 @@
-// Package project 是 web 构建工作台：从 cmd 迁入的打包逻辑，经 ScriptRuntime
-// 与具体 JS 引擎解耦，并调度 Vite 风格插件钩子。
+// Package project 是 web 构建工作台：项目配置、插件会话、HTML 入口与写盘。
+// JS 模块图的 shake/emit 在 bundler/webemit；本包经 ScriptRuntime 加载配置脚本。
 package project
 
 import "github.com/aluka-lang/aluka/internal/engine"
