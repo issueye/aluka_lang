@@ -6,9 +6,54 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aluka-lang/aluka/internal/builtin"
+	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	alukart "github.com/aluka-lang/aluka/internal/project/aluka"
+	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
+
+type loaderRT struct {
+	loader *module.Loader
+}
+
+func (r *loaderRT) Require(id, parent string) (engine.Value, error) {
+	return r.loader.RequireModule(id, parent)
+}
+
+func testRuntime(t *testing.T) *loaderRT {
+	t.Helper()
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loader := module.NewLoader(vm)
+	loader.SetNoCache(true)
+	builtin.RegisterAll(loader)
+	defineConfig := engine.NewFunction("defineConfig", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), nil
+		}
+		return args[0], nil
+	})
+	vite := engine.NewObject()
+	_ = vite.Set("defineConfig", defineConfig)
+	_ = vite.Set("loadEnv", engine.NewFunction("loadEnv", func([]engine.Value) (engine.Value, error) {
+		return engine.NewObject(), nil
+	}))
+	loader.RegisterVirtualModule("vite", vite)
+	vuePlugin := engine.NewFunction("pluginVue", func(args []engine.Value) (engine.Value, error) {
+		api := engine.Undefined()
+		if len(args) > 0 {
+			api = args[0]
+		}
+		p := engine.NewObject()
+		_ = p.Set("name", engine.Str("vue"))
+		_ = p.Set("api", api)
+		return p, nil
+	})
+	loader.RegisterVirtualModule("@vitejs/plugin-vue", vuePlugin)
+	return &loaderRT{loader: loader}
+}
 
 func writeRoot(t *testing.T, files map[string]string) string {
 	t.Helper()
@@ -27,11 +72,7 @@ func writeRoot(t *testing.T, files map[string]string) string {
 
 func loadRoot(t *testing.T, dir string) *Result {
 	t.Helper()
-	vm, err := interpreter.NewVM()
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := Load(alukart.New(vm), dir)
+	res, err := Load(testRuntime(t), dir)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -149,11 +190,7 @@ func TestLoadBrokenHookErrors(t *testing.T) {
 	dir := writeRoot(t, map[string]string{
 		"aluka.config.js": `throw new Error("boom-hook");`,
 	})
-	vm, err := interpreter.NewVM()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = Load(alukart.New(vm), dir)
+	_, err := Load(testRuntime(t), dir)
 	if err == nil || !strings.Contains(err.Error(), "boom-hook") {
 		t.Fatalf("broken hook error = %v", err)
 	}
@@ -243,11 +280,7 @@ module.exports = {
 };
 `,
 	})
-	vm, err := interpreter.NewVM()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess, err := LoadSession(alukart.New(vm), dir)
+	sess, err := LoadSession(testRuntime(t), dir)
 	if err != nil {
 		t.Fatal(err)
 	}

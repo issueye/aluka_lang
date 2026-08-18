@@ -1,20 +1,16 @@
-module github.com/aluka-lang/aluka
+module github.com/aluka-lang/aluka/internal/project
 
 go 1.25.10
 
 require (
 	github.com/aluka-lang/aluka/internal/builtin v0.0.0
 	github.com/aluka-lang/aluka/internal/bundler v0.0.0
-	github.com/aluka-lang/aluka/internal/cli v0.0.0
 	github.com/aluka-lang/aluka/internal/engine v0.0.0
-	github.com/aluka-lang/aluka/internal/gui v0.0.0
-	github.com/aluka-lang/aluka/internal/monitor v0.0.0
-	github.com/aluka-lang/aluka/internal/pkgmanager v0.0.0
-	github.com/aluka-lang/aluka/internal/project v0.0.0
 	github.com/aluka-lang/aluka/internal/runtime v0.0.0
 )
 
 require (
+	github.com/aluka-lang/aluka/internal/gui v0.0.0 // indirect
 	github.com/aluka-lang/aluka/internal/ipc v0.0.0 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -45,14 +41,10 @@ require (
 )
 
 replace (
-	github.com/aluka-lang/aluka/internal/builtin => ./internal/builtin
-	github.com/aluka-lang/aluka/internal/bundler => ./internal/bundler
-	github.com/aluka-lang/aluka/internal/cli => ./internal/cli
-	github.com/aluka-lang/aluka/internal/engine => ./internal/engine
-	github.com/aluka-lang/aluka/internal/gui => ./internal/gui
-	github.com/aluka-lang/aluka/internal/ipc => ./internal/ipc
-	github.com/aluka-lang/aluka/internal/monitor => ./internal/monitor
-	github.com/aluka-lang/aluka/internal/pkgmanager => ./internal/pkgmanager
-	github.com/aluka-lang/aluka/internal/project => ./internal/project
-	github.com/aluka-lang/aluka/internal/runtime => ./internal/runtime
+	github.com/aluka-lang/aluka/internal/builtin => ../builtin
+	github.com/aluka-lang/aluka/internal/bundler => ../bundler
+	github.com/aluka-lang/aluka/internal/engine => ../engine
+	github.com/aluka-lang/aluka/internal/gui => ../gui
+	github.com/aluka-lang/aluka/internal/ipc => ../ipc
+	github.com/aluka-lang/aluka/internal/runtime => ../runtime
 )

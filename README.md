@@ -255,7 +255,8 @@ aluka_lang/
 ├── docs/                      # 需求分析 / 开发计划 / AIP 协议规范 / JIT 优化报告
 ├── .github/workflows/ci.yml   # CI（三端 lint + test + build）
 ├── Makefile
-└── go.mod
+├── go.work                    # 单仓多 module workspace（与 replace 配套）
+└── go.mod                     # 根模块：cmd/aluka + tests/demo/bench 胶水
 ```
 
 ## 开发

@@ -5,7 +5,8 @@
 Aluka 是一个**用纯 Go 实现的、API 行为兼容 [Bun](https://bun.sh/) 的 JavaScript/TypeScript 运行时**。核心组件（JS 引擎、模块系统、事件循环、TS 转译器、RegExp 引擎、GC、包管理器、打包器）全部自研。
 
 - 模块路径：`github.com/aluka-lang/aluka`
-- Go 版本：`1.25.x`（见 `go.mod`，CI 使用 `1.25`）
+- Go 版本：`1.25.x`（见根 `go.mod` 与各子模块 `go.mod`，CI 使用 `1.25`）
+- 单仓多 module：各 `internal/<pkg>/go.mod` 路径与今日 import 相同；根模块与子模块用 `replace` 指向相对目录。提交 `go.work`。仓库根 `./...` **不会**进入嵌套 module，全量测试用 `make test`（`go test $(go list -f '{{.Dir}}/...' -m)`）。跨模块新 import 必须写入对应 `go.mod` 的 `require` + `replace`。改 engine 可只测 engine 模块（`cd internal/engine && GOWORK=off go test ./...`）。详见 [docs/adr/go-modules.md](./docs/adr/go-modules.md)。
 - CLI 入口：`./cmd/aluka`
 
 ---
@@ -32,7 +33,7 @@ make build
 CGO_ENABLED=0 go build -o bin/aluka ./cmd/aluka
 
 # 全量单元测试
-make test            # CGO_ENABLED=0 go test ./...
+make test            # 全 workspace 模块；根目录 ./... 不会进入嵌套 go.mod
 
 # 覆盖率
 make cover
@@ -98,7 +99,7 @@ ALUKA=./bin/aluka bash tests/conformance/npm/run.sh        # 真实 npm 包加�
 ```
 cmd/aluka/                 CLI 入口：main.go / build.go / compiled.go / install.go / repl.go
 internal/
-  engine/                  自研 JS 引擎
+  engine/                  自研 JS 引擎（独立 module：internal/engine/go.mod）
     lexer/                 词法分析
     parser/                递归下降 + Pratt 解析器
     ast/                   AST 节点定义
@@ -125,8 +126,9 @@ internal/
     module/                ESM/CJS 模块系统 + 字节码缓存 + .ts 导入 / TLA
   builtin/                 Node.js 内置模块（fs/http/net/crypto/sqlite/test/...，文件名即模块名）
   pkgmanager/              npm 兼容包管理器（semver/registry/resolver/installer/lockfile/workspace/config）
-  bundler/                 build --compile + --target=web（graph/shake/minify/emit/Vue SFC）
-  monitor/                 --monitor 性能/内存指标
+  bundler/                 build --compile + --target=web（graph/shake/minify/emit/Vue SFC；独立 module）
+  project/                 web 工作台（BuildWeb / WriteAssets / 插件编排；独立 module）
+  monitor/                 --monitor 性能/内存指标（独立 module，依赖 engine）
 tests/
   conformance/             一致性测试脚本（node/test262/npm/install/express/build/webbuild/vue-sfc/node22）
   compat/node22/           Node 22 差分 conformance（aluka vs node22 双跑对比）
@@ -204,14 +206,14 @@ docs/adr/                  架构决策记录（ADR）
 
 - **分支**：默认在 `main`；如需改动请先开分支（除非用户明确要求直接提交到 main）。**仅在用户要求时才 commit / push**。
 - **CI 门禁**（`.github/workflows/ci.yml`）：
-  - 三端（ubuntu/macos/windows）`go test ./... -cover` + CLI smoke
+  - 三端（ubuntu/macos/windows）全 workspace 模块 `go test` + CLI smoke
   - lint（golangci-lint，`--timeout 5m`）
   - 跨平台构建（5 目标）+ 跨平台 `--compile` 产物结构校验
   - **JIT Linux amd64 专项门禁**：W^X 深度校验、崩溃隔离、fallback、`-race`、`GOGC=20/100` 压力、PR soak、nightly 10 万差分
 - 提交前本地自查：
   ```bash
   CGO_ENABLED=0 go build ./...
-  CGO_ENABLED=0 go test ./...
+  CGO_ENABLED=0 go test $(go list -f '{{.Dir}}/...' -m)
   make lint   # 若已安装 golangci-lint
   ```
 - **提交信息**：沿用既有约定（`feat:` / `fix:` / `test:` / `docs:` / `bench:` / `ci:` / `refactor:` 等前缀，正文可中文）。

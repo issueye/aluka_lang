@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/aluka-lang/aluka/internal/builtin"
 	"github.com/aluka-lang/aluka/internal/bundler/emit"
 	"github.com/aluka-lang/aluka/internal/bundler/graph"
 	"github.com/aluka-lang/aluka/internal/bundler/minify"
@@ -165,7 +166,9 @@ func bundleJS(rt ScriptRuntime, resolver *module.Resolver, entry string, opts Op
 	vm := runtimeVM(rt)
 	var graphOpts []graph.Option
 	if opts.VueCompiler == "official" {
-		graphOpts = append(graphOpts, graph.WithVueCompiler(vue.NewOfficialCompiler(vm, entry)))
+		oc := vue.NewOfficialCompiler(vm, entry)
+		oc.Register = builtin.RegisterAll
+		graphOpts = append(graphOpts, graph.WithVueCompiler(oc))
 	}
 	graphOpts = append(graphOpts, graph.WithPlugins(opts.Host()))
 	graphResult, err := graph.Build(vm, resolver, entry, graphOpts...)

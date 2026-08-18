@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/aluka-lang/aluka/internal/builtin"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
@@ -188,6 +187,9 @@ type OfficialCompiler struct {
 	loader    *module.Loader
 	inited    bool
 	initErr   error
+	// Register 在创建 Loader 后注入 Node 内置模块。由调用方提供
+	// （project 用 builtin.RegisterAll）；本包不依赖 builtin。
+	Register func(*module.Loader)
 }
 
 // NewOfficialCompiler 创建官方后端（惰性初始化：首个 Compile 时加载
@@ -350,7 +352,9 @@ func (c *OfficialCompiler) init() error {
 	}
 	c.loader = module.NewLoader(c.vm)
 	c.loader.SetNoCache(true)
-	builtin.RegisterAll(c.loader)
+	if c.Register != nil {
+		c.Register(c.loader)
+	}
 	ns, err := c.loader.RequireModule("vue/compiler-sfc", parent)
 	if err != nil {
 		c.initErr = fmt.Errorf("vue: load vue/compiler-sfc (official backend): %w", err)

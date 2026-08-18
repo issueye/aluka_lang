@@ -1,0 +1,15 @@
+go 1.25.10
+
+use (
+	.
+	./internal/builtin
+	./internal/bundler
+	./internal/cli
+	./internal/engine
+	./internal/gui
+	./internal/ipc
+	./internal/monitor
+	./internal/pkgmanager
+	./internal/project
+	./internal/runtime
+)

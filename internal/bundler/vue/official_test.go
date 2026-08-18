@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aluka-lang/aluka/internal/builtin"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
@@ -17,6 +18,17 @@ import { ref } from 'vue'
 const count = ref(0)
 function inc() { count.value++ }
 </script>`
+
+func newOfficial(t testing.TB) *OfficialCompiler {
+	t.Helper()
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewOfficialCompiler(vm, vueDemoEntry(t))
+	c.Register = builtin.RegisterAll
+	return c
+}
 
 func vueDemoEntry(t testing.TB) string {
 	t.Helper()
@@ -50,11 +62,7 @@ func compileText(t testing.TB, c Compiler, src, name string) (*CompileResult, st
 // TestOfficialCompilerScriptSetup 验证官方后端完整处理 script setup，并产出
 // 独立 facade/script/template 模块。
 func TestOfficialCompilerScriptSetup(t *testing.T) {
-	vm, err := interpreter.NewVM()
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := NewOfficialCompiler(vm, vueDemoEntry(t))
+	c := newOfficial(t)
 	result, out := compileText(t, c, benchmarkSFC, "ScriptSetup.vue")
 	for _, marker := range []string{"__isScriptSetup", "createElementBlock", "__sfc__.render = __sfc_render__"} {
 		if !strings.Contains(out, marker) {
@@ -69,11 +77,7 @@ func TestOfficialCompilerScriptSetup(t *testing.T) {
 // TestOfficialCompilerIsolatesScopesAndPreservesTS 回归 script/template 同名绑定
 // 冲突，并验证 lang=ts 通过生成模块扩展名进入 TS 前端，不再调用 rewriteDefault。
 func TestOfficialCompilerIsolatesScopesAndPreservesTS(t *testing.T) {
-	vm, err := interpreter.NewVM()
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := NewOfficialCompiler(vm, vueDemoEntry(t))
+	c := newOfficial(t)
 	src := `<template><div>{{ render }}</div></template>
 <script lang="ts">
 import { ref as render } from "vue";
@@ -101,11 +105,7 @@ export default { setup(): { render: typeof render } { return { render }; } };
 // TestOfficialCompilerPreservesScriptNamedExports 回归官方后端 facade 丢失
 // 普通 script 命名导出，并覆盖 script-only/template-only 的默认导出与 render 挂载。
 func TestOfficialCompilerPreservesScriptNamedExports(t *testing.T) {
-	vm, err := interpreter.NewVM()
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := NewOfficialCompiler(vm, vueDemoEntry(t))
+	c := newOfficial(t)
 	for _, tc := range []struct {
 		name          string
 		src           string
@@ -169,11 +169,7 @@ export default { name: "Answer" };
 
 // TestOfficialCompilerRejectsUnwiredBlocks 确保未接入 graph 的内容明确失败。
 func TestOfficialCompilerRejectsUnwiredBlocks(t *testing.T) {
-	vm, err := interpreter.NewVM()
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := NewOfficialCompiler(vm, vueDemoEntry(t))
+	c := newOfficial(t)
 	for _, tc := range []struct {
 		name, src, want string
 	}{
@@ -191,11 +187,7 @@ func TestOfficialCompilerRejectsUnwiredBlocks(t *testing.T) {
 }
 
 func TestOfficialCompilerStyleAndSrc(t *testing.T) {
-	vm, err := interpreter.NewVM()
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := NewOfficialCompiler(vm, vueDemoEntry(t))
+	c := newOfficial(t)
 	dir := t.TempDir()
 	cssPath := filepath.Join(dir, "ext.css")
 	if err := os.WriteFile(cssPath, []byte(".ext{color:green}"), 0o644); err != nil {
@@ -232,12 +224,8 @@ func TestOfficialCompilerStyleAndSrc(t *testing.T) {
 }
 
 func TestOfficialCompilerStructuredDiagnostic(t *testing.T) {
-	vm, err := interpreter.NewVM()
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := NewOfficialCompiler(vm, vueDemoEntry(t))
-	_, err = compileNamed(c, `<template>
+	c := newOfficial(t)
+	_, err := compileNamed(c, `<template>
   <div>{{ total + }}</div>
 </template>`, "Broken.vue")
 	var diagnostic *Diagnostic
@@ -280,11 +268,7 @@ func BenchmarkSubsetTransform(b *testing.B) {
 // BenchmarkOfficialTransformWarm 测同一 VM/Loader 已加载 compiler-sfc 后的
 // 热 Compile（排除一次性依赖链加载成本）。
 func BenchmarkOfficialTransformWarm(b *testing.B) {
-	vm, err := interpreter.NewVM()
-	if err != nil {
-		b.Fatal(err)
-	}
-	c := NewOfficialCompiler(vm, vueDemoEntry(b))
+	c := newOfficial(b)
 	if _, err := compileNamed(c, benchmarkSFC, "Warmup.vue"); err != nil {
 		b.Fatal(err)
 	}

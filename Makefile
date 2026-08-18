@@ -8,6 +8,8 @@ MODULE  := github.com/aluka-lang/aluka
 PKG     := ./cmd/aluka
 LDFLAGS := -X main.version=$(VERSION)
 CGO     := CGO_ENABLED=0
+# 根目录 ./... 不会进入带 go.mod 的子目录；按 workspace 模块逐个测。
+WORKPKGS := $(shell go list -f '{{.Dir}}/...' -m)
 
 # 跨平台目标
 TARGETS := \
@@ -17,7 +19,7 @@ TARGETS := \
 	bin/aluka-darwin-arm64   \
 	bin/aluka-windows-amd64.exe
 
-.PHONY: all build test cover lint clean install release icon help
+.PHONY: all build test test-engine test-pkgmanager cover lint clean install release icon help
 
 all: build
 
@@ -44,18 +46,25 @@ bin/aluka-darwin-arm64:
 bin/aluka-windows-amd64.exe:
 	GOOS=windows GOARCH=amd64 $(CGO) go build -ldflags "$(LDFLAGS)" -o $@ $(PKG)
 
-# 单元测试
+# 单元测试（覆盖 go.work 内全部 module）
 test:
-	$(CGO) go test ./...
+	$(CGO) go test $(WORKPKGS)
+
+# 叶子模块在 GOWORK=off 下自测（校验 replace，不依赖 workspace）
+test-engine:
+	cd internal/engine && GOWORK=off $(CGO) go test ./...
+
+test-pkgmanager:
+	cd internal/pkgmanager && GOWORK=off $(CGO) go test ./...
 
 # 覆盖率
 cover:
-	$(CGO) go test ./... -cover -coverprofile=coverage.out
+	$(CGO) go test $(WORKPKGS) -cover -coverprofile=coverage.out
 	$(CGO) go tool cover -func=coverage.out | tail -1
 
 # Lint（需要 golangci-lint）
 lint:
-	golangci-lint run ./...
+	golangci-lint run --timeout 5m $(WORKPKGS)
 
 # 安装到 GOBIN
 install:
@@ -71,7 +80,8 @@ help:
 	@echo "Targets:"
 	@echo "  build     构建本机二进制到 bin/aluka"
 	@echo "  release   跨平台构建 5 个目标到 bin/"
-	@echo "  test      运行所有单元测试"
+	@echo "  test      运行所有单元测试（go.work）"
+	@echo "  test-engine / test-pkgmanager  GOWORK=off 叶子模块自测"
 	@echo "  cover     运行测试并生成覆盖率报告"
 	@echo "  lint      运行 golangci-lint"
 	@echo "  install   安装到 GOBIN"

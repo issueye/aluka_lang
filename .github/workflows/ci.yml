@@ -29,14 +29,24 @@ jobs:
           cache: true
 
       - name: Build (CGO disabled)
+        shell: bash
         env:
           CGO_ENABLED: "0"
-        run: go build -ldflags "-X main.version=ci-dev" ./...
+        run: go build -ldflags "-X main.version=ci-dev" $(go list -f '{{.Dir}}/...' -m)
 
       - name: Test
+        shell: bash
         env:
           CGO_ENABLED: "0"
-        run: go test ./... -cover -coverprofile=coverage.out
+        run: go test $(go list -f '{{.Dir}}/...' -m) -cover -coverprofile=coverage.out
+
+      - name: GOWORK=off leaf module smoke
+        env:
+          CGO_ENABLED: "0"
+          GOWORK: "off"
+        run: |
+          go test ./... -count=1
+        working-directory: internal/pkgmanager
 
       - name: Coverage summary
         if: matrix.os == 'ubuntu-latest'
@@ -256,7 +266,19 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
-          args: --timeout 5m
+          args: >-
+            --timeout 5m
+            ./...
+            ./internal/engine/...
+            ./internal/ipc/...
+            ./internal/gui/...
+            ./internal/cli/...
+            ./internal/monitor/...
+            ./internal/pkgmanager/...
+            ./internal/runtime/...
+            ./internal/builtin/...
+            ./internal/bundler/...
+            ./internal/project/...
 
   # 跨平台构建发布产物
   build:
