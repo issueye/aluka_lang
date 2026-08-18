@@ -547,13 +547,23 @@ func (interp *Interpreter) setupArrayProto() {
 	p := interp.arrayProto
 	_ = p.Set("push", interp.nativeMethod("push", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		if arr, ok := this.(*engine.ArrayValue); ok {
-			if len(args) > 0 {
-				if err := requireMutableArray(arr); err != nil {
-					return nil, err
-				}
+			n := len(args)
+			if n == 0 {
+				return engine.IntValue(len(arr.Elems())), nil
 			}
-			for _, a := range args {
-				_ = arr.Set(strconv.Itoa(len(arr.Elems())), a)
+			// 快路径只问「末尾能否扩 n 个下标」。禁止每次数组全量
+			// IsFullyWritable：那是 O(length)，1M 次 push 会退化成 O(n²)。
+			if !arr.CanAppend(n) {
+				return nil, fmt.Errorf("%w: Cannot modify frozen or sealed array", engine.ErrTypeError)
+			}
+			if arr.HasTrailingIndexAttrs(n) {
+				for _, a := range args {
+					_ = arr.Set(strconv.Itoa(len(arr.Elems())), a)
+				}
+			} else if n == 1 {
+				arr.Append(args[0])
+			} else {
+				arr.AppendValues(args)
 			}
 			return engine.IntValue(len(arr.Elems())), nil
 		}

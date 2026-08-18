@@ -27,6 +27,32 @@ func TestVMFrozenArrayMutatorsThrow(t *testing.T) {
 	}
 }
 
+func TestVMArrayPush(t *testing.T) {
+	cases := []struct{ code, want string }{
+		{`var a=[]; a.push(1,2,3); a.join(",")`, "1,2,3"},
+		{`var a=[1]; a.push(2); JSON.stringify([a.join(","), a.push()])`, `["1,2",2]`},
+		{`var a=[]; for (var i=0;i<5;i++) a.push(i); a.join(",")`, "0,1,2,3,4"},
+		// preventExtensions：不能扩 length（与 freeze/seal 一样 TypeError）
+		{`var a=[1,2]; Object.preventExtensions(a); var threw=false; try{a.push(3)}catch(e){threw=true} JSON.stringify([threw,a.join(",")])`, `[true,"1,2"]`},
+		// defineProperty 抬高 length 后，push 仍在末尾追加
+		{`var a=[1]; Object.defineProperty(a,"1",{value:9,writable:false,enumerable:true,configurable:true}); a.push(8); a.join(",")`, "1,9,8"},
+	}
+	for _, c := range cases {
+		if got := vmEvalStr(t, c.code); got != c.want {
+			t.Errorf("Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
+// TestVMArrayPushMany 防止 push 再次对每个元素做 IsFullyWritable 全表扫描
+//（O(n²)）。2 万次追加在快路径下应瞬间完成；旧实现会在秒级。
+func TestVMArrayPushMany(t *testing.T) {
+	got := vmEvalStr(t, `var a=[]; for (var i=0;i<20000;i++) a.push(i); a.length+","+a[0]+","+a[19999]`)
+	if got != "20000,0,19999" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 // === ES5 基础方法 ========================================================
 
 func TestVMArraySplice(t *testing.T) {

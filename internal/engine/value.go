@@ -1052,6 +1052,27 @@ func (a *ArrayValue) CanAppend(count int) bool {
 	return !a.nonExtensible && a.attrOf("length").Writable
 }
 
+// HasTrailingIndexAttrs reports whether any of the next count indices already
+// have own property attributes (Object.defineProperty). push 快路径仅在无
+// 自定义描述符时才能 Append；否则必须走 Set 以遵守 writable/accessor。
+func (a *ArrayValue) HasTrailingIndexAttrs(count int) bool {
+	if count <= 0 || a.attrs == nil || len(a.attrs) <= 1 {
+		return false
+	}
+	start := len(a.elems)
+	end := start + count
+	for key := range a.attrs {
+		if key == "length" {
+			continue
+		}
+		idx, ok := arrayIndex(key)
+		if ok && idx >= start && idx < end {
+			return true
+		}
+	}
+	return false
+}
+
 // CanWriteRange reports whether a bulk JIT write matches individual assignments.
 func (a *ArrayValue) CanWriteRange(start, count int) bool {
 	if start < 0 || count < 0 || uint64(start)+uint64(count) > uint64(1)<<32-1 {
@@ -1094,6 +1115,31 @@ func (a *ArrayValue) IsFullyWritable() bool {
 func (a *ArrayValue) Append(v Value) {
 	a.elems = append(a.elems, v)
 	a.present = append(a.present, true)
+	a.objectValue.setSlot("length", IntValue(len(a.elems)))
+}
+
+// AppendValues appends vs in order and synchronizes length once.
+func (a *ArrayValue) AppendValues(vs []Value) {
+	if len(vs) == 0 {
+		return
+	}
+	if len(vs) == 1 {
+		a.Append(vs[0])
+		return
+	}
+	oldLen := len(a.elems)
+	n := len(vs)
+	if cap(a.elems)-oldLen < n {
+		grown := make([]Value, oldLen, oldLen+n)
+		copy(grown, a.elems)
+		a.elems = grown
+	}
+	a.elems = a.elems[:oldLen+n]
+	copy(a.elems[oldLen:], vs)
+	a.present = append(a.present, make([]bool, n)...)
+	for i := 0; i < n; i++ {
+		a.present[oldLen+i] = true
+	}
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
