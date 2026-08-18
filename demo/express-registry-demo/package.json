@@ -1,0 +1,13 @@
+{
+  "name": "express-registry-demo",
+  "private": true,
+  "type": "module",
+  "description": "Aluka + Express 5：内存版服务注册中心 + 配置中心",
+  "scripts": {
+    "start": "aluka run src/index.ts",
+    "client": "aluka run scripts/client.ts"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}

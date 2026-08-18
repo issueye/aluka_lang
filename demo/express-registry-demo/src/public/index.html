@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CENTRA · 注册 / 配置平面</title>
+  <style>
+    :root {
+      --bg: #12100e;
+      --panel: #1b1814;
+      --panel-2: #221e18;
+      --line: #3d372e;
+      --text: #efe6d8;
+      --muted: #9b907f;
+      --go: #c6f355;
+      --stop: #ff5c39;
+      --amber: #e8a54b;
+      --ink: #0c0b09;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+    body {
+      font: 14px/1.45 "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      background-image:
+        radial-gradient(1200px 500px at 10% -10%, #2a2418 0%, transparent 55%),
+        linear-gradient(180deg, transparent 0%, #12100e 40%),
+        repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(255,255,255,.03) 40px);
+    }
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 28px 32px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; flex-direction: column; gap: 4px; }
+    .brand b {
+      font-size: 28px;
+      letter-spacing: .22em;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .brand span { color: var(--muted); font-size: 12px; letter-spacing: .08em; }
+    .health {
+      display: flex; gap: 18px; align-items: center;
+      font-variant-numeric: tabular-nums;
+      color: var(--muted);
+    }
+    .health strong { color: var(--go); font-size: 20px; font-weight: 650; }
+    .pill {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      padding: 8px 12px;
+      min-width: 88px;
+    }
+    .pill em { display: block; font-style: normal; font-size: 11px; color: var(--muted); letter-spacing: .12em; text-transform: uppercase; }
+    main {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 18px;
+      padding: 18px 32px 40px;
+    }
+    @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      padding: 16px;
+      min-height: 420px;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 13px;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--amber);
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; font-weight: 600; }
+    .led { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; background: var(--stop); box-shadow: 0 0 8px var(--stop); }
+    .led.on { background: var(--go); box-shadow: 0 0 8px var(--go); }
+    .meta { color: var(--muted); font-size: 12px; }
+    .mono { font-family: "Cascadia Code", Consolas, ui-monospace, monospace; }
+    form { display: grid; gap: 8px; margin-top: 14px; }
+    label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+    input, textarea, select, button {
+      font: inherit; color: var(--text);
+      background: var(--ink); border: 1px solid var(--line); padding: 8px 10px;
+    }
+    textarea { min-height: 180px; resize: vertical; font-family: "Cascadia Code", Consolas, ui-monospace, monospace; }
+    .row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    @media (max-width: 720px) { .row { grid-template-columns: 1fr 1fr; } }
+    button {
+      cursor: pointer; background: var(--go); color: var(--ink);
+      border: 0; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    }
+    button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+    button:hover { filter: brightness(1.08); }
+    .cfg-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; max-height: 180px; overflow: auto; }
+    .cfg {
+      display: flex; justify-content: space-between; gap: 8px; align-items: center;
+      padding: 8px 10px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer;
+    }
+    .cfg.active { border-color: var(--amber); }
+    .toast {
+      position: fixed; right: 20px; bottom: 20px; background: var(--go); color: var(--ink);
+      padding: 10px 14px; font-weight: 700; display: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <b>CENTRA</b>
+      <span>Aluka Express · 服务注册中心 / 配置中心</span>
+    </div>
+    <div class="health" id="health">
+      <div class="pill"><em>Services</em><strong id="h-svc">—</strong></div>
+      <div class="pill"><em>Healthy</em><strong id="h-ok">—</strong></div>
+      <div class="pill"><em>Configs</em><strong id="h-cfg">—</strong></div>
+      <div class="pill"><em>Uptime</em><strong id="h-up">—</strong></div>
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>Registry <span class="meta">心跳超时后标 DOWN，再过一个 TTL 剔除</span></h2>
+      <table>
+        <thead>
+          <tr><th>状态</th><th>服务</th><th>实例</th><th>地址</th><th></th></tr>
+        </thead>
+        <tbody id="instances"></tbody>
+      </table>
+      <form id="reg-form">
+        <div class="row">
+          <label>serviceName <input name="serviceName" value="demo-worker" required /></label>
+          <label>host <input name="host" value="127.0.0.1" required /></label>
+          <label>port <input name="port" type="number" value="9001" required /></label>
+          <label>zone <input name="zone" value="local" /></label>
+        </div>
+        <button type="submit">注册实例</button>
+      </form>
+    </section>
+    <section>
+      <h2>Config <span class="meta">发布后 version++，长轮询立即唤醒</span></h2>
+      <div class="cfg-list" id="configs"></div>
+      <form id="cfg-form">
+        <div class="row">
+          <label>namespace <input name="namespace" value="public" required /></label>
+          <label>group <input name="group" value="DEFAULT" required /></label>
+          <label>dataId <input name="dataId" value="application.json" required /></label>
+          <label>updatedBy <input name="updatedBy" value="console" /></label>
+        </div>
+        <label>content <textarea name="content" class="mono" spellcheck="false">{}</textarea></label>
+        <div class="row">
+          <button type="submit">发布配置</button>
+          <button class="ghost" type="button" id="reload-cfg">刷新</button>
+        </div>
+      </form>
+    </section>
+  </main>
+  <div class="toast" id="toast"></div>
+  <script>
+    const toast = (msg) => {
+      const el = document.getElementById("toast");
+      el.textContent = msg;
+      el.style.display = "block";
+      setTimeout(() => { el.style.display = "none"; }, 1600);
+    };
+
+    async function json(url, opts) {
+      const res = await fetch(url, opts);
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
+      return data;
+    }
+
+    async function refreshHealth() {
+      const data = await json("/api/v1/health");
+      document.getElementById("h-svc").textContent = data.services;
+      document.getElementById("h-ok").textContent = data.healthy + "/" + data.instances;
+      document.getElementById("h-cfg").textContent = data.configs;
+      document.getElementById("h-up").textContent = data.uptimeSec + "s";
+    }
+
+    async function refreshInstances() {
+      const data = await json("/api/v1/instances");
+      const body = document.getElementById("instances");
+      body.innerHTML = data.instances.map((i) => `
+        <tr>
+          <td><span class="led ${i.healthy ? "on" : ""}"></span>${i.healthy ? "UP" : "DOWN"}</td>
+          <td>${i.serviceName}<div class="meta">w=${i.weight} ttl=${i.ttlMs}ms</div></td>
+          <td class="mono">${i.instanceId}</td>
+          <td class="mono">${i.host}:${i.port}<div class="meta">${Object.entries(i.metadata || {}).map(([k,v]) => k + "=" + v).join(" · ")}</div></td>
+          <td>
+            <button class="ghost" data-beat="${i.instanceId}">心跳</button>
+            <button class="ghost" data-del="${i.instanceId}">下线</button>
+          </td>
+        </tr>
+      `).join("");
+      body.querySelectorAll("[data-beat]").forEach((btn) => {
+        btn.onclick = async () => {
+          await json("/api/v1/instances/" + btn.dataset.beat + "/heartbeat", { method: "PUT" });
+          toast("heartbeat ok");
+          await loadAll();
+        };
+      });
+      body.querySelectorAll("[data-del]").forEach((btn) => {
+        btn.onclick = async () => {
+          await json("/api/v1/instances/" + btn.dataset.del, { method: "DELETE" });
+          toast("deregistered");
+          await loadAll();
+        };
+      });
+    }
+
+    let activeKey = "";
+    async function refreshConfigs() {
+      const data = await json("/api/v1/configs");
+      const list = document.getElementById("configs");
+      list.innerHTML = data.configs.map((c) => {
+        const key = c.namespace + "/" + c.group + "/" + c.dataId;
+        return `<div class="cfg ${key === activeKey ? "active" : ""}" data-key="${key}">
+          <div><b>${c.dataId}</b><div class="meta">${c.namespace} · ${c.group} · v${c.version}</div></div>
+          <span class="mono meta">${c.md5.slice(0, 8)}</span>
+        </div>`;
+      }).join("");
+      list.querySelectorAll(".cfg").forEach((el) => {
+        el.onclick = async () => {
+          activeKey = el.dataset.key;
+          const [namespace, group, dataId] = activeKey.split("/");
+          const detail = await json("/api/v1/configs/" + encodeURIComponent(namespace) + "/" + encodeURIComponent(group) + "/" + encodeURIComponent(dataId));
+          const form = document.getElementById("cfg-form");
+          form.namespace.value = detail.config.namespace;
+          form.group.value = detail.config.group;
+          form.dataId.value = detail.config.dataId;
+          form.content.value = detail.config.content;
+          await refreshConfigs();
+        };
+      });
+    }
+
+    async function loadAll() {
+      await Promise.all([refreshHealth(), refreshInstances(), refreshConfigs()]);
+    }
+
+    document.getElementById("reg-form").onsubmit = async (ev) => {
+      ev.preventDefault();
+      const fd = new FormData(ev.target);
+      await json("/api/v1/instances", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serviceName: fd.get("serviceName"),
+          host: fd.get("host"),
+          port: Number(fd.get("port")),
+          metadata: { zone: String(fd.get("zone") || "local") },
+        }),
+      });
+      toast("registered");
+      await loadAll();
+    };
+
+    document.getElementById("cfg-form").onsubmit = async (ev) => {
+      ev.preventDefault();
+      const fd = new FormData(ev.target);
+      const ns = fd.get("namespace");
+      const group = fd.get("group");
+      const dataId = fd.get("dataId");
+      await json("/api/v1/configs/" + encodeURIComponent(ns) + "/" + encodeURIComponent(group) + "/" + encodeURIComponent(dataId), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: fd.get("content"), updatedBy: fd.get("updatedBy") }),
+      });
+      activeKey = ns + "/" + group + "/" + dataId;
+      toast("published v+1");
+      await loadAll();
+    };
+
+    document.getElementById("reload-cfg").onclick = () => loadAll();
+    loadAll();
+    setInterval(loadAll, 4000);
+  </script>
+</body>
+</html>
