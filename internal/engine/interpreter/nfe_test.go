@@ -21,3 +21,29 @@ func TestNFESelfReference(t *testing.T) {
 		}
 	}
 }
+
+// TestNFENameShadowing：函数体 var/let/const/形参必须遮蔽 NFE 名字。
+// Express 5 Layer.prototype.match = function match(path) { let match; ... }
+// 依赖此语义；未遮蔽时 match 恒为函数，任意路径都返回 true。
+func TestNFENameShadowing(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{`const f = function match() { let match; return typeof match; }; f()`, "undefined"},
+		{`const f = function match() { var match; return typeof match; }; f()`, "undefined"},
+		{`const f = function match() { const match = 1; return match; }; f()`, "1"},
+		{`const f = function foo(foo) { return foo; }; f(42)`, "42"},
+		{`const f = function named() { let named = "x"; return named; }; f()`, "x"},
+		// Express 5 路由层精简模型：matcher 未命中时 layer.match 必须是 false。
+		{`(function(){ const layer = { matchers: [function(p){ return p === "/health" ? {path:p} : false; }], slash: false }; layer.match = function match(path) { let match; if (path != null) { if (this.slash) return true; let i = 0; while (!match && i < this.matchers.length) { match = this.matchers[i](path); i++; } } if (!match) return false; return true; }; return [layer.match("/"), layer.match("/health"), layer.match("/services")].join(","); })()`, "false,true,false"},
+	}
+	for _, c := range cases {
+		t.Run(c.code, func(t *testing.T) {
+			got := vmEvalStr(t, c.code)
+			if got != c.want {
+				t.Errorf("Eval(%q) = %q, want %q", c.code, got, c.want)
+			}
+		})
+	}
+}

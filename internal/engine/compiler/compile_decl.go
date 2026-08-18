@@ -174,14 +174,14 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 	if rest != nil {
 		fc.scopes[0].decls[rest.Name] = 1 + len(params)
 	}
+	var nfeSlot int
 	if bindSelf && astBodyReferencesName(body, name) {
 		// 具名函数表达式（NFE）：仅当函数体内实际引用名字时分配自引用槽
 		// （运行时帧建立时写入闭包自身）。未引用的带名函数表达式
 		// （如 `add1 = function add1(x) {...}`）不分配，避免 JIT 误拒绝。
-		nfeSlot := tmpl.NumLocals
+		nfeSlot = tmpl.NumLocals
 		tmpl.NFESlot = nfeSlot
 		tmpl.NumLocals++
-		fc.scopes[0].decls[name] = nfeSlot
 	}
 	if !isArrow {
 		argsSlot := tmpl.NumLocals
@@ -194,6 +194,15 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 		tmpl.NewTargetSlot = ntSlot
 		tmpl.NumLocals++
 		fc.scopes[0].decls["__newTarget__"] = ntSlot
+	}
+	if nfeSlot > 0 {
+		// ES：NFE 名字在独立环境中包裹变量环境，函数体 var/let/const/形参
+		// 同名必须能遮蔽它。Express 5 的
+		// `Layer.prototype.match = function match(path) { let match; ... }`
+		// 依赖此语义；若名字不被遮蔽，match 恒为函数自身，任意路径都“命中”。
+		nfeScope := &scope{decls: map[string]int{name: nfeSlot}, isFunc: false}
+		funcScope := fc.scopes[0]
+		fc.scopes = []*scope{nfeScope, funcScope}
 	}
 	c.funcStack = append(c.funcStack, fc)
 

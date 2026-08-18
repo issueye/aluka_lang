@@ -107,7 +107,7 @@ type funcCtx struct {
 	// 跳过每帧 arguments 对象创建，O-5 调用快速路径）。
 	usedArguments bool
 
-	scopes []*scope // scope chain; scopes[0] is the function scope
+	scopes []*scope // 作用域链；具名函数表达式可能在 [0] 放 NFE 名字环境，函数变量环境见 functionScope()
 
 	// upvalueIndex maps a name to its index in tmpl.Upvalues.
 	upvalueIndex map[string]int
@@ -318,7 +318,17 @@ func (c *Compiler) popBlock() {
 	fc.scopes = fc.scopes[:len(fc.scopes)-1]
 }
 
-func (fc *funcCtx) functionScope() *scope { return fc.scopes[0] }
+// functionScope 返回函数的变量环境（var / 函数声明提升的目标）。
+// 具名函数表达式会在 scopes 最外层插入一层 isFunc=false 的 NFE 名字环境，
+// 真正的函数作用域是第一个 isFunc 作用域。
+func (fc *funcCtx) functionScope() *scope {
+	for _, s := range fc.scopes {
+		if s.isFunc {
+			return s
+		}
+	}
+	return fc.scopes[0]
+}
 
 // newSlot allocates a fresh local slot in the current function.
 func (c *Compiler) newSlot() int {

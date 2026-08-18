@@ -61,7 +61,11 @@ import (
 //	必须失效。
 //
 // v25 → v26：JSX / TSX 源码级 AST 节点与 Lowering 转换管道支持。
-const FormatVersion = 26
+//
+// v26 → v27：具名函数表达式名字改为独立外层环境，函数体 var/let/const/形参
+//
+//	同名可遮蔽 NFE（Express 5 `function match() { let match }` 路由匹配依赖此语义）。
+const FormatVersion = 27
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
