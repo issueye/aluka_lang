@@ -202,9 +202,11 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 	//（对齐 Node/Babel CJS 产物；body 中语句先于 import 文本位置引用导入
 	// 绑定时也能取到已求值的模块）。
 	var importRequires []ast.Statement
-	var exportAssignments []ast.Statement
+	var exportGetters []ast.Statement
+	var lateExports []ast.Statement
 	lazyBindings := make(map[string]ast.Expression)
 	impCounter := 0
+	defaultTmp := 0
 
 	for _, stmt := range prog.Body {
 		switch n := stmt.(type) {
@@ -232,41 +234,44 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 
 		case *ast.ExportDecl:
 			if n.Declaration != nil {
-				// export <decl> → keep the declaration, add export assignment
+				// export <decl> → keep the declaration, live getter on exports
 				newBody = append(newBody, n.Declaration)
-				// Collect export assignments for the declared names
 				for _, name := range ast.DeclNames(n.Declaration) {
-					exportAssignments = append(exportAssignments, makeExportAssignment(name, name, n.Loc))
+					exportGetters = append(exportGetters, makeExportGetter(name, name, n.Loc))
 				}
 			} else if n.IsStar && n.Source != "" {
 				if n.StarName != "" {
-					// export * as ns from 'mod' → module.exports.ns = require('mod')
+					// export * as ns from 'mod' → 先加载，再 live getter
 					impVar := fmt.Sprintf("__imp_%d", impCounter)
 					impCounter++
-					newBody = append(newBody, makeRequireCall(impVar, n.Source, n.Loc))
-					exportAssignments = append(exportAssignments, makeExportAssignment(n.StarName, impVar, n.Loc))
+					importRequires = append(importRequires, makeRequireCall(impVar, n.Source, n.Loc))
+					exportGetters = append(exportGetters, makeExportGetter(n.StarName, impVar, n.Loc))
 				} else {
-					// export * from 'mod' → Object.assign(module.exports, require('mod'))
-					newBody = append(newBody, makeStarReexport(n.Source, n.Loc))
+					// export * from 'mod'：require 提升；拷贝放到模块末尾，
+					// 避免循环依赖时对尚未赋值的命名导出做快照。
+					impVar := fmt.Sprintf("__imp_%d", impCounter)
+					impCounter++
+					importRequires = append(importRequires, makeRequireCall(impVar, n.Source, n.Loc))
+					lateExports = append(lateExports, makeStarCopy(impVar, n.Loc))
 				}
 			} else if n.Source != "" {
-				// export {a, b} from 'mod' → re-export from another module
+				// export {a, b} from 'mod' → live getter 读依赖的命名导出
 				impVar := fmt.Sprintf("__imp_%d", impCounter)
 				impCounter++
-				newBody = append(newBody, makeRequireCall(impVar, n.Source, n.Loc))
+				importRequires = append(importRequires, makeRequireCall(impVar, n.Source, n.Loc))
 				for _, spec := range n.Specifiers {
-					exportAssignments = append(exportAssignments, makeExportAssignmentFrom(spec.Exported, impVar, spec.Local, n.Loc))
+					exportGetters = append(exportGetters, makeExportGetterFrom(spec.Exported, impVar, spec.Local, n.Loc))
 				}
 			} else {
-				// export {a, b as c} → module.exports.a = a; module.exports.c = b
+				// export {a, b as c} → live getter
 				for _, spec := range n.Specifiers {
-					exportAssignments = append(exportAssignments, makeExportAssignment(spec.Exported, spec.Local, n.Loc))
+					exportGetters = append(exportGetters, makeExportGetter(spec.Exported, spec.Local, n.Loc))
 				}
 			}
 
 		case *ast.ExportDefaultDecl:
 			if fn, ok := n.Expression.(*ast.FunctionExpr); ok && fn.Name != nil {
-				// export default function foo() {} → function foo() {} (hoisted in scope) + module.exports.default = foo;
+				// export default function foo() {} → 函数声明提升 + default 活绑定
 				fnDecl := &ast.FunctionDecl{
 					Name:          fn.Name,
 					Params:        fn.Params,
@@ -279,9 +284,8 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 					Loc:           fn.Loc,
 				}
 				newBody = append(newBody, fnDecl)
-				exportAssignments = append(exportAssignments, makeExportAssignment("default", fn.Name.Name, n.Loc))
+				exportGetters = append(exportGetters, makeExportGetter("default", fn.Name.Name, n.Loc))
 			} else if cls, ok := n.Expression.(*ast.ClassExpr); ok && cls.Name != nil {
-				// export default class Foo {} → class Foo {} + module.exports.default = Foo;
 				clsDecl := &ast.ClassDecl{
 					Name:       cls.Name,
 					SuperClass: cls.SuperClass,
@@ -289,10 +293,13 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 					Loc:        cls.Loc,
 				}
 				newBody = append(newBody, clsDecl)
-				exportAssignments = append(exportAssignments, makeExportAssignment("default", cls.Name.Name, n.Loc))
+				exportGetters = append(exportGetters, makeExportGetter("default", cls.Name.Name, n.Loc))
 			} else {
-				// export default expr → module.exports.default = expr
-				exportAssignments = append(exportAssignments, makeExportAssignment("default", "", n.Loc, n.Expression))
+				// export default expr：先占位绑定，求值后再赋值（避免重复求值）。
+				tmp := fmt.Sprintf("__default_%d", defaultTmp)
+				defaultTmp++
+				exportGetters = append(exportGetters, makeExportGetter("default", tmp, n.Loc))
+				lateExports = append(lateExports, makeVarDecl(tmp, n.Expression, n.Loc))
 			}
 
 		default:
@@ -301,12 +308,14 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 		}
 	}
 
-	// 提升的 import require 前置，再接模块体，最后是导出赋值。
-	if len(importRequires) > 0 {
-		newBody = append(importRequires, newBody...)
-	}
-	// Append all export assignments at the end
-	newBody = append(newBody, exportAssignments...)
+	// 命名导出 getter 必须先于 import require 安装：循环依赖的对方模块
+	// 在我们的 import 求值期间就能读到 hoisted function 等活绑定。
+	var body []ast.Statement
+	body = append(body, exportGetters...)
+	body = append(body, importRequires...)
+	body = append(body, newBody...)
+	body = append(body, lateExports...)
+	newBody = body
 	if len(lazyBindings) > 0 {
 		rewriteImportedIdentifiers(newBody, lazyBindings)
 	}
@@ -421,81 +430,113 @@ func makeVarDecl(name string, expr ast.Expression, loc ast.Pos) *ast.VarDecl {
 	}
 }
 
-// makeExportAssignment creates: module.exports.<exported> = <local>
-// If expr is non-nil, uses expr instead of local identifier.
-func makeExportAssignment(exported, local string, loc ast.Pos, expr ...ast.Expression) ast.Statement {
-	var rhs ast.Expression
-	if len(expr) > 0 && expr[0] != nil {
-		rhs = expr[0]
-	} else {
-		rhs = &ast.Identifier{Name: local, Loc: loc}
-	}
-	return &ast.ExprStmt{
-		Expr: &ast.AssignExpr{
-			Left: &ast.MemberExpr{
-				Object: &ast.MemberExpr{
-					Object:   &ast.Identifier{Name: "module", Loc: loc},
-					Property: &ast.Identifier{Name: "exports", Loc: loc},
-					Loc:      loc,
-				},
-				Property: &ast.Identifier{Name: exported, Loc: loc},
-				Loc:      loc,
-			},
-			Op:    "=",
-			Right: rhs,
-			Loc:   loc,
-		},
-		Loc: loc,
-	}
+// makeExportGetter creates:
+//
+//	globalThis.Object.defineProperty(module.exports, "<exported>", {
+//	  enumerable: true, configurable: true,
+//	  get: function() { return <local>; }
+//	})
+//
+// 活绑定：循环 require 在模块体尚未跑完时也能读到已提升的 function / 随后初始化的 const。
+func makeExportGetter(exported, local string, loc ast.Pos) ast.Statement {
+	return makeExportGetterExpr(exported, &ast.Identifier{Name: local, Loc: loc}, loc)
 }
 
-// makeExportAssignmentFrom creates: module.exports.<exported> = __imp_N.<local>
-func makeExportAssignmentFrom(exported, impVar, local string, loc ast.Pos) ast.Statement {
-	return &ast.ExprStmt{
-		Expr: &ast.AssignExpr{
-			Left: &ast.MemberExpr{
-				Object: &ast.MemberExpr{
-					Object:   &ast.Identifier{Name: "module", Loc: loc},
-					Property: &ast.Identifier{Name: "exports", Loc: loc},
-					Loc:      loc,
-				},
-				Property: &ast.Identifier{Name: exported, Loc: loc},
-				Loc:      loc,
-			},
-			Op: "=",
-			Right: &ast.MemberExpr{
-				Object:   &ast.Identifier{Name: impVar, Loc: loc},
-				Property: &ast.Identifier{Name: local, Loc: loc},
-				Loc:      loc,
+// makeExportGetterFrom creates a live getter: return __imp_N.<local>
+// （依赖尚未赋值时返回 undefined，避免循环加载期抛 TypeError）。
+func makeExportGetterFrom(exported, impVar, local string, loc ast.Pos) ast.Statement {
+	imp := &ast.Identifier{Name: impVar, Loc: loc}
+	member := &ast.MemberExpr{
+		Object:   imp,
+		Property: &ast.Identifier{Name: local, Loc: loc},
+		Loc:      loc,
+	}
+	rhs := &ast.ConditionalExpr{
+		Test: &ast.BinaryExpr{
+			Left:  imp,
+			Op:    "!=",
+			Right: &ast.NullLit{Loc: loc},
+			Loc:   loc,
+		},
+		Consequent: member,
+		Alternate:  &ast.UndefinedLit{Loc: loc},
+		Loc:        loc,
+	}
+	return makeExportGetterExpr(exported, rhs, loc)
+}
+
+func makeExportGetterExpr(exported string, rhs ast.Expression, loc ast.Pos) ast.Statement {
+	getter := &ast.FunctionExpr{
+		Params:   []*ast.Identifier{},
+		Defaults: []ast.Expression{},
+		Body: &ast.BlockStmt{
+			Body: []ast.Statement{
+				&ast.ReturnStmt{Arg: rhs, Loc: loc},
 			},
 			Loc: loc,
 		},
 		Loc: loc,
 	}
-}
-
-// makeStarReexport creates: Object.assign(module.exports, __importReq('mod'))
-func makeStarReexport(source string, loc ast.Pos) ast.Statement {
+	desc := &ast.ObjectLit{
+		Properties: []ast.Property{
+			{Key: &ast.Identifier{Name: "enumerable", Loc: loc}, Value: &ast.BoolLit{Value: true, Loc: loc}, Loc: loc},
+			{Key: &ast.Identifier{Name: "configurable", Loc: loc}, Value: &ast.BoolLit{Value: true, Loc: loc}, Loc: loc},
+			{Key: &ast.Identifier{Name: "get", Loc: loc}, Value: getter, Loc: loc},
+		},
+		Loc: loc,
+	}
 	return &ast.ExprStmt{
 		Expr: &ast.CallExpr{
-			Callee: &ast.MemberExpr{
-				Object:   &ast.Identifier{Name: "Object", Loc: loc},
-				Property: &ast.Identifier{Name: "assign", Loc: loc},
-				Loc:      loc,
-			},
+			Callee: globalObjectMember("defineProperty", loc),
 			Arguments: []ast.Expression{
 				&ast.MemberExpr{
 					Object:   &ast.Identifier{Name: "module", Loc: loc},
 					Property: &ast.Identifier{Name: "exports", Loc: loc},
 					Loc:      loc,
 				},
-				&ast.CallExpr{
-					Callee:    &ast.Identifier{Name: "__importReq", Loc: loc},
-					Arguments: []ast.Expression{&ast.StringLit{Value: source, Loc: loc}},
-					Loc:       loc,
-				},
+				&ast.StringLit{Value: exported, Loc: loc},
+				desc,
 			},
 			Loc: loc,
 		},
+		Loc: loc,
+	}
+}
+
+// globalObjectMember 生成 globalThis.Object.<prop>。注入的
+// Object.defineProperty / Object.assign 不能写成裸标识符 Object：模块若
+// `import { Object } from ...`（TypeBox types/object.mjs 的工厂名），
+// rewriteImportedIdentifiers 会把我们生成的 Object.defineProperty 改成
+// __imp.Object.defineProperty，而 export getter 又在 require 之前执行，
+// 于是变成 undefined.Object → "reading 'Object'"。
+func globalObjectMember(prop string, loc ast.Pos) *ast.MemberExpr {
+	return &ast.MemberExpr{
+		Object: &ast.MemberExpr{
+			Object:   &ast.Identifier{Name: "globalThis", Loc: loc},
+			Property: &ast.Identifier{Name: "Object", Loc: loc},
+			Loc:      loc,
+		},
+		Property: &ast.Identifier{Name: prop, Loc: loc},
+		Loc:      loc,
+	}
+}
+
+// makeStarCopy creates: globalThis.Object.assign(module.exports, __imp_N)
+// require 已提升；在模块末尾拷贝，循环依赖的对方此时通常已写完命名导出。
+func makeStarCopy(impVar string, loc ast.Pos) ast.Statement {
+	return &ast.ExprStmt{
+		Expr: &ast.CallExpr{
+			Callee: globalObjectMember("assign", loc),
+			Arguments: []ast.Expression{
+				&ast.MemberExpr{
+					Object:   &ast.Identifier{Name: "module", Loc: loc},
+					Property: &ast.Identifier{Name: "exports", Loc: loc},
+					Loc:      loc,
+				},
+				&ast.Identifier{Name: impVar, Loc: loc},
+			},
+			Loc: loc,
+		},
+		Loc: loc,
 	}
 }

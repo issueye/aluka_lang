@@ -17,7 +17,8 @@ func (c *Compiler) compileVarDecl(d *ast.VarDecl) error {
 					if d.Kind == "var" {
 						c.declareVar(name)
 					} else {
-						c.declareLocal(name)
+						slot := c.declareLocal(name)
+						c.emitLetConstUninitialized(slot)
 					}
 				}
 				continue
@@ -75,11 +76,24 @@ func (c *Compiler) compileVarDecl(d *ast.VarDecl) error {
 				}
 			}
 			c.emit(bytecode.OpStoreLocal, uint32(slot))
+		} else if d.Kind != "var" {
+			c.emitLetConstUninitialized(slot)
 		}
 	}
 	return nil
 }
 
+// emitLetConstUninitialized 在循环体内为无初始化器的 let/const 每轮写成
+// undefined。循环编译复用槽位，若不复位，`let l; l || (l = x)` 会把第一轮
+// 赋值带到后续轮次（babel `@babel/template` 的 `let header;` 即如此）。
+// 循环外保持旧行为（槽位函数入口即为 undefined），避免误清已赋值的同槽绑定。
+func (c *Compiler) emitLetConstUninitialized(slot int) {
+	if len(c.loopStack) == 0 {
+		return
+	}
+	c.emit(bytecode.OpPushUndefined, 0)
+	c.emit(bytecode.OpStoreLocal, uint32(slot))
+}
 
 // compileBindPattern emits code to destructure the value in srcSlot into the
 // bindings declared by the pattern. `kind` is "var" or "let"/"const" and
@@ -94,7 +108,6 @@ func (c *Compiler) compileFunctionDecl(d *ast.FunctionDecl) error {
 	}
 	return nil
 }
-
 
 func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patterns []ast.Pattern, defaults []ast.Expression, rest *ast.Identifier, body ast.Node, isAsync, isGenerator, isArrow bool, bindSelf bool) error {
 	restoreControlFlow := c.isolateControlFlow()

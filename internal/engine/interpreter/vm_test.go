@@ -628,6 +628,17 @@ func TestVMJSON(t *testing.T) {
 	}
 }
 
+func TestVMJSONToJSONHook(t *testing.T) {
+	got := vmEvalStr(t, `JSON.stringify({toJSON: function() { return "ok"; }})`)
+	if got != `"ok"` {
+		t.Errorf("JSON.stringify toJSON = %q, want \"ok\"", got)
+	}
+	got = vmEvalStr(t, `JSON.stringify(new Date(0))`)
+	if got != `"1970-01-01T00:00:00.000Z"` {
+		t.Errorf("JSON.stringify(Date) = %q, want ISO string", got)
+	}
+}
+
 // === Error handling ======================================================
 
 func TestVMErrorConstructor(t *testing.T) {

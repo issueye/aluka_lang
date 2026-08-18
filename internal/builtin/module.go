@@ -44,12 +44,14 @@ var builtinModulesSet = func() map[string]bool {
 func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, error) {
 	m := engine.NewObject()
 
-	// createRequire(filename) → require 函数。
+	// createRequire(filename | fileURL) → require 函数。
+	// Node 允许传入本机路径或 file:// URL（含 URL 对象的 href）。
 	_ = m.Set("createRequire", engine.NewFunction("createRequire", func(args []engine.Value) (engine.Value, error) {
 		parentPath := ""
 		if len(args) > 0 {
-			parentPath = args[0].String()
+			parentPath = createRequireFilename(args[0])
 		}
+		parentPath = modmodule.NormalizeModulePath(parentPath)
 		if parentPath != "" {
 			if abs, err := filepath.Abs(parentPath); err == nil {
 				parentPath = abs
@@ -194,4 +196,18 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 	_ = m.Set("SourceMap", sourceMapCtor)
 
 	return m, nil
+}
+
+// createRequireFilename 从 createRequire 参数提取路径/URL 字符串。
+// 支持 string 与带 href 的 URL 对象（Node 语义）。
+func createRequireFilename(v engine.Value) string {
+	if o, ok := v.AsObject(); ok {
+		if href, err := o.Get("href"); err == nil && href != nil && !href.IsUndefined() && !href.IsNull() {
+			s := href.String()
+			if s != "" {
+				return s
+			}
+		}
+	}
+	return v.String()
 }

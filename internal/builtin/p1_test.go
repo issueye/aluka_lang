@@ -3,8 +3,13 @@ package builtin
 // Phase 3 P1 Node 模块测试：perf_hooks / timers/promises / v8 / module。
 
 import (
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	modmodule "github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
 // TestPerfHooks 验证 performance.now()。
@@ -98,6 +103,139 @@ globalThis.__nodeModulePathsArray = Array.isArray(mod.Module._nodeModulePaths('/
 	}
 	if got := env.globalGet("__nodeModulePathsArray"); got != "true" {
 		t.Errorf("Module._nodeModulePaths result = %q, want true", got)
+	}
+}
+
+// TestModuleCreateRequireFileURL 验证 createRequire(file URL)
+// 不会把 file: 当成相对路径拼到 cwd（jiti 回归）。
+func TestModuleCreateRequireFileURL(t *testing.T) {
+	dir := t.TempDir()
+	modPath := filepath.Join(dir, "dep.cjs")
+	if err := os.WriteFile(modPath, []byte(`module.exports = { ok: true };`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(dir, "parent.mjs")
+	parentURL := modmodule.PathToFileURLString(parent)
+	// 直接传入 file URL 字符串（与 import.meta.url / jiti 一致）。
+	script := `
+var { createRequire } = require('node:module');
+var req = createRequire(` + strconv.Quote(parentURL) + `);
+var dep = req('./dep.cjs');
+globalThis.__ok = !!(dep && dep.ok === true);
+globalThis.__resolved = req.resolve('./dep.cjs');
+`
+	env := newHTTPEnv(t)
+	if err := env.runWithLoop(t, script); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__ok"); got != "true" {
+		t.Errorf("createRequire(file URL) = %q, want true", got)
+	}
+	resolved := env.globalGet("__resolved")
+	if filepath.Clean(resolved) != filepath.Clean(modPath) {
+		t.Errorf("resolve = %q, want %q", resolved, modPath)
+	}
+}
+
+// TestBuiltinPathCJSInterop：jiti/Babel 对 node:path 的 default/named 导入。
+func TestBuiltinPathCJSInterop(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var path = require('node:path');
+function _interopRequireDefault(obj) {
+  return obj && obj.__esModule ? obj : { default: obj };
+}
+var p = _interopRequireDefault(path);
+var join = path.join;
+globalThis.__r = [
+  typeof path.join,
+  typeof p.default.join,
+  typeof path.default.join,
+  String('join' in path),
+  path.join('a', 'b').replace(/\\\\/g, '/').endsWith('a/b') || path.join('a', 'b').indexOf('a') >= 0
+].join(':');
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got := env.globalGet("__r")
+	if !strings.HasPrefix(got, "function:function:function:true:") {
+		t.Errorf("node:path interop = %q, want function:function:function:true:...", got)
+	}
+}
+
+func TestESMImportNodePathDefaultAndNamed(t *testing.T) {
+	env := newHTTPEnv(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"type":"module"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	main := filepath.Join(dir, "main.mjs")
+	if err := os.WriteFile(main, []byte(`
+import path from "node:path";
+import { join, dirname } from "node:path";
+globalThis.__r = typeof path.join + ':' + typeof join + ':' + typeof dirname;
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.loader.Run(main); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "function:function:function" {
+		t.Errorf("esm import node:path = %q, want function:function:function", got)
+	}
+}
+
+// TestJitiInteropDefaultProxy：jiti interopDefault 用 Proxy 伪造 __esModule，
+// get trap 里 `prop in target` 必须能看到内置模块的 named export。
+func TestJitiInteropDefaultProxy(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var path = require('node:path');
+function interopDefault(mod) {
+  var def = mod.default;
+  var defIsNil = def === null || def === undefined;
+  return new Proxy(mod, {
+    get: function(target, prop) {
+      if (prop === '__esModule') return true;
+      if (prop === 'default') return defIsNil ? mod : def;
+      if (prop in target) return target[prop];
+      return undefined;
+    }
+  });
+}
+var p = interopDefault(path);
+globalThis.__r = [typeof p.join, typeof p.default, typeof p.default.join, String(p.__esModule)].join(':');
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "function:object:function:true" {
+		t.Errorf("jiti Proxy interop = %q, want function:object:function:true", got)
+	}
+}
+
+// TestRequireFileURLFromCreateRequire：jiti nativeImport 在 Windows 上传 file://。
+func TestRequireFileURLFromCreateRequire(t *testing.T) {
+	dir := t.TempDir()
+	modPath := filepath.Join(dir, "named.cjs")
+	if err := os.WriteFile(modPath, []byte(`exports.foo = function() { return 3; };`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(dir, "parent.mjs")
+	modURL := modmodule.PathToFileURLString(modPath)
+	script := `
+var { createRequire } = require('node:module');
+var req = createRequire(` + strconv.Quote(modmodule.PathToFileURLString(parent)) + `);
+var dep = req(` + strconv.Quote(modURL) + `);
+globalThis.__r = typeof dep.foo + ':' + dep.foo();
+`
+	env := newHTTPEnv(t)
+	if err := env.runWithLoop(t, script); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "function:3" {
+		t.Errorf("require(file URL) named = %q, want function:3", got)
 	}
 }
 

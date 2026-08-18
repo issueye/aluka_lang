@@ -108,6 +108,9 @@ func (r *Resolver) ResolveWithConditions(specifier, parentPath string, condition
 }
 
 func (r *Resolver) resolve(specifier, parentPath string, conditions []string) (string, error) {
+	specifier = NormalizeModulePath(specifier)
+	parentPath = NormalizeModulePath(parentPath)
+
 	// Absolute path (e.g. /foo/bar.js or C:\foo\bar.js)
 	if filepath.IsAbs(specifier) {
 		return r.resolveFileOrDirWithConditions(specifier, conditions)

@@ -31,7 +31,12 @@ const bcCacheDirName = ".aluka/cache"
 //
 //	编译器 super 静态语境解析到父类构造器。同源文件的产物语义已变化，
 //	旧缓存必须失效。
-const pipelineVersion = 2
+//
+// v2 → v3：导出 getter / export * 改为 globalThis.Object.defineProperty
+//
+//	与 globalThis.Object.assign，避免模块 `import { Object }` 时把注入的
+//	Object.defineProperty 改写成未初始化的 __imp.Object（TypeBox）。
+const pipelineVersion = 3
 
 // bytecodeCache 提供字节码 Module 的磁盘读写。
 type bytecodeCache struct {

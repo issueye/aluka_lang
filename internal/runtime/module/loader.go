@@ -189,6 +189,12 @@ func (l *Loader) RequireModule(specifier, parentPath string) (engine.Value, erro
 // （不含 "import"）——否则 require 一个带 {"import":..., "require":...}
 // 条件的包会错误加载 ESM 入口。
 func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engine.Value, error) {
+	// file:// 必须先转成本机路径：否则会被当成裸 specifier，且 Windows
+	// 盘符（E:\...）在后续 Abs/Join 中与 URL 混用。jiti 的 nativeImport
+	// 在 Windows 上会传入 pathToFileURL(abs)。
+	specifier = NormalizeModulePath(specifier)
+	parentPath = NormalizeModulePath(parentPath)
+
 	// Bun SQLite 兼容别名：复用纯 Go 的 node:sqlite 实现。
 	if specifier == "bun:sqlite" {
 		return l.loadBuiltin("node:sqlite")
@@ -611,7 +617,7 @@ func (l *Loader) makeImportMetaFunc(modulePath string) engine.Value {
 	if l.embedded != nil {
 		_ = meta.Set("url", engine.Str("bun://~BUN/"+strings.TrimLeft(filepath.ToSlash(modulePath), "/")))
 	} else {
-		_ = meta.Set("url", engine.Str(pathToFileURLString(modulePath)))
+		_ = meta.Set("url", engine.Str(PathToFileURLString(modulePath)))
 	}
 	dirPath := filepath.Dir(modulePath)
 	_ = meta.Set("dirname", engine.Str(dirPath))
@@ -645,20 +651,11 @@ func (l *Loader) makeImportMetaFunc(modulePath string) engine.Value {
 		if err != nil {
 			return engine.Undefined(), err
 		}
-		return engine.Str(pathToFileURLString(absPath)), nil
+		return engine.Str(PathToFileURLString(absPath)), nil
 	}))
 	return engine.NewFunction("__importMeta", func(args []engine.Value) (engine.Value, error) {
 		return meta, nil
 	})
-}
-
-// pathToFileURLString 将绝对路径转为 file:// URL（Windows 驱动器盘符带斜杠）。
-func pathToFileURLString(abs string) string {
-	slash := filepath.ToSlash(abs)
-	if len(slash) >= 2 && slash[1] == ':' {
-		slash = "/" + slash
-	}
-	return "file://" + slash
 }
 
 // requireWithAttributes 按 import attributes 加载模块：
@@ -799,11 +796,29 @@ func (l *Loader) loadBuiltin(specifier string) (engine.Value, error) {
 	}
 	// 规范化导出对象原型（engine.NewObject 产生的对象原型为 nil）。
 	l.ensureExportsProto(exports)
+	// CJS/ESM 互操作：Babel `_interopRequireDefault(require("node:path")).default`
+	// 与 jiti interopDefault Proxy 都依赖 `.default`。Node 的 require(builtin)
+	// 本身没有 default，但 ESM `import path from "node:path"` 的命名空间有；
+	// 在导出对象上挂自引用，两种加载路径都能用 `.join` / `.default.join`。
+	attachSelfDefault(exports)
 
 	l.mu.Lock()
 	l.builtins[name] = exports
 	l.mu.Unlock()
 	return exports, nil
+}
+
+// attachSelfDefault 若对象尚无 default，则设为自引用（CJS 模块 / 内置模块
+// 作为 ESM 默认导入时的 Node 互操作形态）。已有 default 的不覆盖。
+func attachSelfDefault(v engine.Value) {
+	o, ok := v.AsObject()
+	if !ok || o == nil {
+		return
+	}
+	if cur, err := o.Get("default"); err == nil && cur != nil && !cur.IsUndefined() {
+		return
+	}
+	_ = o.Set("default", v)
 }
 
 // GetBuiltin 加载内置模块（process.getBuiltinModule 使用，Node ≥ 22.3）。

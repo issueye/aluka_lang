@@ -628,6 +628,78 @@ func TestRequireESM(t *testing.T) {
 	}
 }
 
+// TestRequireESMLiveNamedExport：循环依赖下 named export 必须是活绑定
+// （jiti / Babel 的 `mod.migrateConfig` 在对方尚未跑完模块体时也能读到 hoisted function）。
+func TestRequireESMLiveNamedExport(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"a.mjs": `export function fromA() { return 'A'; }
+			export * from './b.mjs';`,
+		"b.mjs": `import { fromA } from './a.mjs';
+			export function fromB() { return fromA() + 'B'; }`,
+		"entry.cjs": `var m = require('./a.mjs');
+			globalThis.__r = m.fromA() + m.fromB() + ':' + (typeof m.fromA) + ':' + (typeof m.fromB);`,
+	})
+	env.run(t, "entry.cjs")
+	if got := env.globalGet("__r"); got != "AAB:function:function" {
+		t.Errorf("circular live named export = %q, want AAB:function:function", got)
+	}
+}
+
+// TestESMImportNamedObjectDoesNotBreakExportGetters：TypeBox 的
+// `import { Object } from './object.mjs'` 会遮蔽全局 Object。注入的
+// 命名导出 getter 必须用 globalThis.Object.defineProperty，否则模块
+// 求值一开始就 TypeError: Cannot read properties of undefined (reading 'Object')。
+func TestESMImportNamedObjectDoesNotBreakExportGetters(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"factory.mjs": `export function _Object_(x) { return { v: x }; }
+			export { _Object_ as Object };
+			export function IsObject(v) { return v && typeof v.v !== 'undefined'; }`,
+		"engine.mjs": `import { Object, IsObject } from './factory.mjs';
+			export function State() { return 1; }
+			export function make() { return Object(42); }
+			export function check(v) { return IsObject(v); }`,
+		"entry.mjs": `import { State, make, check } from './engine.mjs';
+			const o = make();
+			globalThis.__r = State() + ':' + o.v + ':' + check(o);`,
+	})
+	env.run(t, "entry.mjs")
+	if got := env.globalGet("__r"); got != "1:42:true" {
+		t.Errorf("import { Object } + export getters = %q, want 1:42:true", got)
+	}
+}
+
+// TestBabelStyleRequireNamedExport：jiti/Babel CJS 产物形态
+// `const x = require("./mod.ts"); x.named(...)`。
+func TestBabelStyleRequireNamedExport(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"mod.ts": `export function migrateConfig() { return 42; }
+			export const flag = true;`,
+		"entry.cjs": `"use strict";
+			Object.defineProperty(exports, "__esModule", { value: true });
+			const mod_1 = require("./mod.ts");
+			globalThis.__r = (typeof mod_1.migrateConfig) + ':' + mod_1.migrateConfig() + ':' + String(mod_1.flag);`,
+	})
+	env.run(t, "entry.cjs")
+	if got := env.globalGet("__r"); got != "function:42:true" {
+		t.Errorf("babel-style require named = %q, want function:42:true", got)
+	}
+}
+
+// TestCJSDefinePropertyNamedExports：CJS `exports.foo =` / defineProperty 必须能被 require 读到。
+func TestCJSDefinePropertyNamedExports(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"dep.cjs": `"use strict";
+			Object.defineProperty(exports, "__esModule", { value: true });
+			exports.migrateConfig = function() { return 7; };`,
+		"entry.cjs": `var d = require('./dep.cjs');
+			globalThis.__r = typeof d.migrateConfig + ':' + d.migrateConfig() + ':' + String(d.__esModule);`,
+	})
+	env.run(t, "entry.cjs")
+	if got := env.globalGet("__r"); got != "function:7:true" {
+		t.Errorf("cjs defineProperty exports = %q, want function:7:true", got)
+	}
+}
+
 func TestESMNamedDefaultFunctionAndClassLocalBinding(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
 		"main.mjs": `

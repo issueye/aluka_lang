@@ -30,6 +30,11 @@ func TestVMLoopBodyPerIterationBindingRegression(t *testing.T) {
 		// for (let k of ...) 头变量：已正确（for-of per-iteration）。
 		{`const out = []; for (let k of [1,2,3]) { out.push(() => k); } out.map(f => f()).join(',')`, "1,2,3"},
 
+		// 循环体内 `let l;` 无初始化器必须每轮复位为 undefined，否则
+		// `l || (l = x)` 会把第一轮赋值带到后续轮次（babel template.ast）。
+		{`const out = []; for (const x of ["a","b"]) { let l; l || (l = x); out.push(l); } out.join(',')`, "a,b"},
+		{`const m = new Map([["node:path",{name:"_nodePath"}],["./migration.ts",{name:"_migration"}]]); const headers = []; for (const [t, r] of m) { let l; null != l || (l = r.name); headers.push(l); } headers.join(',')`, "_nodePath,_migration"},
+
 		// === do-while 形态 ===
 		{`const out = []; let w = 0; do { const q = w; out.push(() => q); w++; } while (w < 3); out.map(f => f()).join(',')`, "0,1,2"},
 

@@ -363,8 +363,15 @@ func (interp *Interpreter) setupObjectCtor() {
 				continue
 			}
 			for _, k := range src.Keys() {
-				v, _ := src.Get(k)
-				_ = target.Set(k, v)
+				// 必须走 getProperty：ESM 命名导出可能是 getter 活绑定，
+				// Object.Get 会把 AccessorValue 当数据值拷走。
+				var val engine.Value
+				if vm := interp.currentVM; vm != nil {
+					val, _ = vm.getProperty(args[i], k)
+				} else {
+					val, _ = src.Get(k)
+				}
+				_ = target.Set(k, val)
 			}
 		}
 		return target, nil
@@ -2001,7 +2008,7 @@ func (interp *Interpreter) setupJSON() {
 		if len(args) == 0 {
 			return engine.Undefined(), nil
 		}
-		s, err := jsonValueToJSON(args[0])
+		s, err := interp.jsonValueToJSON(args[0])
 		if err != nil {
 			return engine.Undefined(), err
 		}
@@ -2020,13 +2027,52 @@ func (interp *Interpreter) setupJSON() {
 	_ = interp.globalObj.Set("JSON", j)
 }
 
-func jsonValueToJSON(v engine.Value) (string, error) {
-	data, err := valueToJSON(v, make(map[engine.Object]bool))
+func (interp *Interpreter) jsonValueToJSON(v engine.Value) (string, error) {
+	data, err := interp.valueToJSON(v, make(map[engine.Object]bool))
 	if err != nil {
 		return "", err
 	}
 	b, err := jsonNoEscape(data)
 	return string(b), err
+}
+
+// applyToJSON 实现 JSON.stringify 的 toJSON 钩子（ES：枚举属性前调用）。
+// jiti 的 import.meta.url 替换依赖 JSON.stringify(pathToFileURL(filename))；
+// URL.toJSON 必须返回 href 字符串，否则 Babel template.ast 会吃到对象字面量
+// 里的 Windows 盘符路径。
+func (interp *Interpreter) applyToJSON(v engine.Value) (engine.Value, error) {
+	if v == nil || v.IsUndefined() || v.IsNull() {
+		return v, nil
+	}
+	switch v.Type() {
+	case engine.TypeObject, engine.TypeFunction:
+	default:
+		return v, nil
+	}
+	var toJSON engine.Value
+	if vm := interp.currentVM; vm != nil {
+		toJSON, _ = vm.getProperty(v, "toJSON")
+	} else if o, ok := v.AsObject(); ok {
+		toJSON, _ = o.Get("toJSON")
+	}
+	if toJSON == nil || !toJSON.IsFunction() {
+		return v, nil
+	}
+	var (
+		result engine.Value
+		err    error
+	)
+	if vm := interp.currentVM; vm != nil {
+		result, err = vm.InvokeFn(toJSON, v, []engine.Value{engine.Str("")})
+	} else if f, ok := toJSON.AsFunction(); ok {
+		result, err = f.Call([]engine.Value{engine.Str("")})
+	} else {
+		return v, nil
+	}
+	if err != nil {
+		return engine.Undefined(), err
+	}
+	return result, nil
 }
 
 // jsonNoEscape 序列化且不做 HTML 转义（Go json.Marshal 默认把 < > & 转成
@@ -2072,7 +2118,12 @@ func (o *orderedJSON) MarshalJSON() ([]byte, error) {
 // seen 记录当前递归路径上的对象，用于检测循环引用（命中返回 TypeError，
 // 避免无限递归导致 Go 栈溢出崩溃）。对象在完成自身序列化后从 seen 移除，
 // 因此共享但非循环的引用不会被误判。
-func valueToJSON(v engine.Value, seen map[engine.Object]bool) (interface{}, error) {
+func (interp *Interpreter) valueToJSON(v engine.Value, seen map[engine.Object]bool) (interface{}, error) {
+	converted, err := interp.applyToJSON(v)
+	if err != nil {
+		return nil, err
+	}
+	v = converted
 	if v == nil || v.IsUndefined() {
 		return nil, nil
 	}
@@ -2101,7 +2152,7 @@ func valueToJSON(v engine.Value, seen map[engine.Object]bool) (interface{}, erro
 					result[i] = nil
 					continue
 				}
-				r, err := valueToJSON(e, seen)
+				r, err := interp.valueToJSON(e, seen)
 				if err != nil {
 					return nil, err
 				}
@@ -2121,7 +2172,7 @@ func valueToJSON(v engine.Value, seen map[engine.Object]bool) (interface{}, erro
 				if val.IsFunction() || val.IsUndefined() {
 					continue
 				}
-				r, err := valueToJSON(val, seen)
+				r, err := interp.valueToJSON(val, seen)
 				if err != nil {
 					return nil, err
 				}

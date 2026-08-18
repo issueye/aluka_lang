@@ -65,7 +65,12 @@ import (
 // v26 → v27：具名函数表达式名字改为独立外层环境，函数体 var/let/const/形参
 //
 //	同名可遮蔽 NFE（Express 5 `function match() { let match }` 路由匹配依赖此语义）。
-const FormatVersion = 27
+//
+// v27 → v28：循环体内无初始化器的 let/const 每轮复位为 undefined（修复
+//
+//	`let l; l || (l = x)` 把第一轮赋值带到后续轮次；babel template.ast
+//	因此只生成第一份 require）。旧缓存含错误循环槽位，必须失效。
+const FormatVersion = 28
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")
