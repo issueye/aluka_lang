@@ -1536,7 +1536,7 @@ type jsError struct {
 }
 
 func (e *jsError) Error() string {
-	return e.value.String()
+	return engine.FormatException(e.value)
 }
 
 // === Lexer token passthrough (for parser.Parse) ==========================

@@ -132,6 +132,11 @@ func TestCompileMatch(t *testing.T) {
 		{"unicode property", `\p{L}+`, "u", "héllo", true, "héllo"},
 		{"alphabetic property", `[\p{Alphabetic}\p{N}]+`, "u", "é7", true, "é7"},
 		{"alphabetic property excludes punctuation", `[\p{Alphabetic}\p{N}]`, "u", "_", false, ""},
+		{"script equals greek", `\p{Script=Greek}+`, "u", "αβ", true, "αβ"},
+		{"script equals greek rejects latin", `\p{Script=Greek}`, "u", "a", false, ""},
+		{"script sc alias", `\p{sc=Hebrew}+`, "u", "שלום", true, "שלום"},
+		{"script in class", `[\p{Script=Hiragana}\p{Script=Han}]+`, "u", "あ漢", true, "あ漢"},
+		{"negated script", `\P{Script=Greek}+`, "u", "abc", true, "abc"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -200,6 +205,13 @@ func TestBacktrackLookahead(t *testing.T) {
 		// V8 实测：a(?=(b))c 在 "abc" 上不匹配（前瞻零宽，c 需在 a 之后紧邻）。
 		{"lookahead capture", "a(?=(b))b", "", "abb", true},
 		{"lookbehind capture", "(?<=(a))b", "", "ab", true},
+		{"lookbehind unicode letter", `(?<!-)[\p{L}\p{N}]`, "u", "a", true},
+		{"idn no trailing hyphen", `^[\p{L}\p{N}-]+(?<!-)$`, "u", "ab", true},
+		{"idn trailing hyphen", `^[\p{L}\p{N}-]+(?<!-)$`, "u", "ab-", false},
+		{"idn class slash", `[a\/b]`, "u", "/", true},
+		{"unicode codepoint range", `[\u{00E0}-\u{00E9}]+`, "u", "àé", true},
+		{"id continue letter", `(?=x)\p{ID_Continue}`, "u", "x", true},
+		{"id continue underscore", `\p{ID_Continue}`, "u", "_", true},
 		// 贪心重复回退：(?:(?!\{).)* 必须先吃满再逐次让出给末尾的 \}。
 		{"brace lookahead repeat", "\\{(?:(?!\\{).)*\\}", "", "pre {a} post", true},
 		{"brace no close", "\\{(?:(?!\\{).)*\\}", "", "{abc", false},

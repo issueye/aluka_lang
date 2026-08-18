@@ -2794,7 +2794,7 @@ type jsThrow struct {
 	val engine.Value
 }
 
-func (e *jsThrow) Error() string { return e.val.String() }
+func (e *jsThrow) Error() string { return engine.FormatException(e.val) }
 
 // ThrowJSValue 构造一个携带 JS 值的抛出错误（供内置模块实现 Node 语义，
 // 如 EventEmitter 的 emit('error') 无监听器时抛出原始值）。经 VM 调用链

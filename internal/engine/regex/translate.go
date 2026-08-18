@@ -131,25 +131,8 @@ func translateEscape(pattern string, i int, f Flags) (string, int, error) {
 			// Go 的 regexp 不支持，这里展开为 Go 可识别的通用类别并集
 			// （覆盖绝大多数标识符字符，path-to-regexp 等依赖它）。
 			prop := pattern[i+3 : end]
-			if esc == 'p' {
-				if prop == "ID_Start" {
-					return `\p{L}\p{Nl}`, end + 1, nil
-				}
-				if prop == "ID_Continue" {
-					return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
-				}
-				// Go RE2 不支持的属性（Default_Ignorable_Code_Point / RGI_Emoji）：
-				// 展开为码点类或近似类；类外需包裹 [] 表示单字符匹配。
-				if s, ok := unicodePropToGo(prop); ok {
-					return "[" + s + "]", end + 1, nil
-				}
-				// Script_Extensions=X：Go 只支持 Script=X。近似映射到
-				// 同名声母（Script_Extensions 是 Script 的超集，常用
-				// 汉字/假名/谚文场景差异可忽略）。
-				if strings.HasPrefix(prop, "Script_Extensions=") {
-					name := prop[len("Script_Extensions="):]
-					return `\p{` + name + `}`, end + 1, nil
-				}
+			if rewritten, ok := rewriteJSUnicodeProperty(esc, prop, false); ok {
+				return rewritten, end + 1, nil
 			}
 			return pattern[i : end+1], end + 1, nil
 		}
@@ -415,21 +398,8 @@ func translateClassEscape(pattern string, i int, f Flags) (string, int, error) {
 			}
 			// 与 translateEscape 一致：展开 Go 不支持的 ECMAScript 标识符属性。
 			prop := pattern[i+3 : end]
-			if esc == 'p' {
-				if prop == "ID_Start" {
-					return `\p{L}\p{Nl}`, end + 1, nil
-				}
-				if prop == "ID_Continue" {
-					return `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`, end + 1, nil
-				}
-				// 类内直接输出展开串（无需包裹 []）。
-				if s, ok := unicodePropToGo(prop); ok {
-					return s, end + 1, nil
-				}
-				if strings.HasPrefix(prop, "Script_Extensions=") {
-					name := prop[len("Script_Extensions="):]
-					return `\p{` + name + `}`, end + 1, nil
-				}
+			if rewritten, ok := rewriteJSUnicodeProperty(esc, prop, true); ok {
+				return rewritten, end + 1, nil
 			}
 			return pattern[i : end+1], end + 1, nil
 		}
@@ -479,6 +449,143 @@ func translateGroup(pattern string, i int) (string, int, error) {
 	default:
 		return "", 0, errors.New("invalid regular expression: unsupported group")
 	}
+}
+
+// rewriteJSUnicodeProperty 将 ECMAScript `\p{...}` / `\P{...}` 翻译为 Go RE2。
+//
+// Go 只接受 `\p{Greek}` / `\p{L}` 这类短名，不接受 `Script=Greek`、
+// `Script_Extensions=Han`、`sc=`/`scx=`/`gc=` 等 ECMAScript 键值形式
+// （typebox IDNA hostname 校验依赖 Script=*）。
+// inClass 为 true 时，展开属性直接嵌入字符类，不再外套 []。
+func rewriteJSUnicodeProperty(esc byte, prop string, inClass bool) (string, bool) {
+	neg := esc == 'P'
+	if name, ok := unicodeScriptName(prop); ok {
+		if neg {
+			return `\P{` + name + `}`, true
+		}
+		return `\p{` + name + `}`, true
+	}
+	if name, ok := unicodeGeneralCategoryName(prop); ok {
+		if neg {
+			return `\P{` + name + `}`, true
+		}
+		return `\p{` + name + `}`, true
+	}
+	if esc != 'p' {
+		return "", false
+	}
+	if prop == "ID_Start" {
+		s := `\p{L}\p{Nl}`
+		if inClass {
+			return s, true
+		}
+		return "[" + s + "]", true
+	}
+	if prop == "ID_Continue" {
+		s := `\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_`
+		if inClass {
+			return s, true
+		}
+		return "[" + s + "]", true
+	}
+	if s, ok := unicodePropToGo(prop); ok {
+		if inClass {
+			return s, true
+		}
+		return "[" + s + "]", true
+	}
+	return "", false
+}
+
+func unicodeScriptName(prop string) (string, bool) {
+	for _, prefix := range []string{"Script_Extensions=", "Script=", "scx=", "sc="} {
+		if strings.HasPrefix(prop, prefix) {
+			name := prop[len(prefix):]
+			if name != "" {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+func unicodeGeneralCategoryName(prop string) (string, bool) {
+	for _, prefix := range []string{"General_Category=", "gc="} {
+		if strings.HasPrefix(prop, prefix) {
+			name := prop[len(prefix):]
+			if name != "" {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+// unicodePropBTRanges 把 JS Unicode 属性展开为回溯引擎字符类范围。
+func unicodePropBTRanges(prop string) ([]btRange, error) {
+	switch prop {
+	case "ASCII":
+		return []btRange{{0, 0x7F}}, nil
+	case "ID_Start":
+		return mergeRangeTables(unicode.L, unicode.Nl), nil
+	case "ID_Continue":
+		return append(mergeRangeTables(unicode.L, unicode.Nl, unicode.Mn, unicode.Mc, unicode.Nd, unicode.Pc), btRange{lo: '_', hi: '_'}), nil
+	}
+	rt := unicodeRangeTable(prop)
+	if rt == nil {
+		return nil, fmt.Errorf("invalid regular expression: unknown unicode property %q", prop)
+	}
+	return rangeTableToBTRanges(rt), nil
+}
+
+func mergeRangeTables(tables ...*unicode.RangeTable) []btRange {
+	var out []btRange
+	for _, rt := range tables {
+		out = append(out, rangeTableToBTRanges(rt)...)
+	}
+	return out
+}
+
+func unicodeRangeTable(prop string) *unicode.RangeTable {
+	if name, ok := unicodeScriptName(prop); ok {
+		return unicode.Scripts[name]
+	}
+	if name, ok := unicodeGeneralCategoryName(prop); ok {
+		prop = name
+	}
+	if rt := rangeTableForProp(prop); rt != nil {
+		return rt
+	}
+	if rt := unicode.Scripts[prop]; rt != nil {
+		return rt
+	}
+	return unicode.Properties[prop]
+}
+
+func rangeTableToBTRanges(rt *unicode.RangeTable) []btRange {
+	if rt == nil {
+		return nil
+	}
+	out := make([]btRange, 0, len(rt.R16)+len(rt.R32))
+	for _, r := range rt.R16 {
+		if r.Stride == 1 {
+			out = append(out, btRange{lo: rune(r.Lo), hi: rune(r.Hi)})
+			continue
+		}
+		for v := uint32(r.Lo); v <= uint32(r.Hi); v += uint32(r.Stride) {
+			out = append(out, btRange{lo: rune(v), hi: rune(v)})
+		}
+	}
+	for _, r := range rt.R32 {
+		if r.Stride == 1 {
+			out = append(out, btRange{lo: rune(r.Lo), hi: rune(r.Hi)})
+			continue
+		}
+		for v := r.Lo; v <= r.Hi; v += r.Stride {
+			out = append(out, btRange{lo: rune(v), hi: rune(v)})
+		}
+	}
+	return out
 }
 
 // unicodePropToGo 处理 Go RE2 不支持的 JS Unicode 属性（PropList 衍生属性），

@@ -170,7 +170,7 @@ func Compile(source, flagsStr string) (*Compiled, error) {
 		if errors.Is(err, errLookaround) || errors.Is(err, errBackref) || errors.Is(err, errClassSubset) {
 			bt, berr := compileBacktrack(matchSource, f)
 			if berr != nil {
-				return nil, err
+				return nil, berr
 			}
 			compiled := &Compiled{Source: source, Flags: f, bt: bt}
 			cacheCompiled(key, compiled)

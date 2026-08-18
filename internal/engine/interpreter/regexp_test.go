@@ -256,6 +256,11 @@ func TestRegexpEscapes(t *testing.T) {
 		{`/\bword\b/.test("a word!")`, "true"},
 		{`/[\d]+/.test("123")`, "true"},
 		{`/(?:ab)+/.test("abab")`, "true"},
+		{`/\p{Script=Greek}/u.test("α")`, "true"},
+		{`/\p{Script=Greek}/u.test("a")`, "false"},
+		{`/[\p{Script=Hiragana}\p{Script=Han}]/u.test("漢")`, "true"},
+		{`/(?<!-)[\p{L}]/u.test("a")`, "true"},
+		{`/(?<!-)\p{L}/u.test("-")`, "false"},
 	}
 	for _, c := range cases {
 		if got := vmEvalStr(t, c.code); got != c.want {

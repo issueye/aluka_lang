@@ -1147,7 +1147,27 @@ func (p *btParser) parseClassEscape() (classChar, error) {
 	case '0':
 		p.i++
 		return classChar{kind: 0, lo: 0, parts: []btClassPart{{ranges: []btRange{{0, 0}}}}}, nil
+	case 'p', 'P':
+		if !p.unicode {
+			p.i++
+			ch := rune(e)
+			return classChar{kind: 0, lo: ch, parts: []btClassPart{{ranges: []btRange{{ch, ch}}}}}, nil
+		}
+		neg := e == 'P'
+		prop, err := p.parseUnicodeProperty()
+		if err != nil {
+			return classChar{}, err
+		}
+		ranges, err := unicodePropBTRanges(prop)
+		if err != nil {
+			return classChar{}, err
+		}
+		return classChar{kind: 1, parts: []btClassPart{{neg: neg, ranges: ranges}}}, nil
 	default:
+		if lit, ok := jsIdentityEscape(e); ok {
+			p.i++
+			return classChar{kind: 0, lo: lit, parts: []btClassPart{{ranges: []btRange{{lit, lit}}}}}, nil
+		}
 		if p.unicode {
 			return classChar{}, errors.New("invalid regular expression: invalid escape")
 		}
@@ -1240,6 +1260,21 @@ func (p *btParser) parseEscape() (btNode, error) {
 	case e == '0':
 		p.i++
 		return btNode{kind: btLit, lit: 0}, nil
+	case e == 'p' || e == 'P':
+		if !p.unicode {
+			p.i++
+			return btNode{kind: btLit, lit: rune(e)}, nil
+		}
+		neg := e == 'P'
+		prop, err := p.parseUnicodeProperty()
+		if err != nil {
+			return btNode{}, err
+		}
+		ranges, err := unicodePropBTRanges(prop)
+		if err != nil {
+			return btNode{}, err
+		}
+		return btNode{kind: btClass, negated: neg, parts: []btClassPart{{ranges: ranges}}}, nil
 	case e == 'c':
 		p.i++
 		if p.i < len(p.src) {
@@ -1251,12 +1286,45 @@ func (p *btParser) parseEscape() (btNode, error) {
 		}
 		return btNode{kind: btLit, lit: 'c'}, nil
 	default:
+		if lit, ok := jsIdentityEscape(e); ok {
+			p.i++
+			return btNode{kind: btLit, lit: lit}, nil
+		}
 		if p.unicode {
 			return btNode{}, errors.New("invalid regular expression: invalid escape")
 		}
 		literal, size := utf8.DecodeRuneInString(p.src[p.i:])
 		p.i += size
 		return btNode{kind: btLit, lit: literal}, nil
+	}
+}
+
+// parseUnicodeProperty 从当前 'p'/'P' 处读取 `{Name}`，返回属性名。
+func (p *btParser) parseUnicodeProperty() (string, error) {
+	p.i++ // consume p/P
+	if p.i >= len(p.src) || p.src[p.i] != '{' {
+		return "", errors.New("invalid regular expression: incomplete \\p escape")
+	}
+	p.i++
+	start := p.i
+	for p.i < len(p.src) && p.src[p.i] != '}' {
+		p.i++
+	}
+	if p.i >= len(p.src) {
+		return "", errors.New("invalid regular expression: unterminated \\p escape")
+	}
+	prop := p.src[start:p.i]
+	p.i++
+	return prop, nil
+}
+
+// jsIdentityEscape 是 Unicode 模式下允许的 IdentityEscape（语法字符 + '-'）。
+func jsIdentityEscape(e byte) (rune, bool) {
+	switch e {
+	case '^', '$', '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '/', '-':
+		return rune(e), true
+	default:
+		return 0, false
 	}
 }
 
