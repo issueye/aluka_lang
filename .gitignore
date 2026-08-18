@@ -53,3 +53,5 @@ tests/compat/node22/results/
 
 # .freebuff
 .freebuff/*
+demo/web-bundle-demo/dist/*
+demo/web-bundle-vue-demo/dist/*
