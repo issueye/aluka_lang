@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -67,5 +68,37 @@ func TestFileURLToPathWindowsDrive(t *testing.T) {
 	want := `C:\Users\test\app.js`
 	if filepath.Clean(got) != filepath.Clean(want) {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// TestPathToFileURLStringEscapesSpecialChars：路径含 #/?/空格/非 ASCII 时
+// 必须百分号转义，否则 url.Parse 把 # 后内容当 fragment、? 后当 query，
+// FileURLToPath 往返被截断（对齐 Node pathToFileURL）。
+func TestPathToFileURLStringEscapesSpecialChars(t *testing.T) {
+	if u := PathToFileURLString(filepath.Join("dir", "a#b.js")); !strings.Contains(u, "%23") {
+		t.Errorf("PathToFileURLString(a#b.js) = %q, want %%23 escaping", u)
+	}
+	if u := PathToFileURLString(filepath.Join("dir", "a b.js")); !strings.Contains(u, "%20") {
+		t.Errorf("PathToFileURLString(a b.js) = %q, want %%20 escaping", u)
+	}
+	if u := PathToFileURLString(filepath.Join("dir", "a?b.js")); !strings.Contains(u, "%3F") {
+		t.Errorf("PathToFileURLString(a?b.js) = %q, want %%3F escaping", u)
+	}
+
+	// 文件系统往返（? 在 Windows 文件名中非法，仅做字符串断言）。
+	dir := t.TempDir()
+	for _, name := range []string{"proj#1", "sp ace", "中文"} {
+		target := filepath.Join(dir, name, "mod.js")
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte(""), 0644); err != nil {
+			t.Fatal(err)
+		}
+		u := PathToFileURLString(target)
+		got := FileURLToPath(u)
+		if filepath.Clean(got) != filepath.Clean(target) {
+			t.Errorf("round-trip %q: url=%q → %q, want %q", target, u, got, target)
+		}
 	}
 }

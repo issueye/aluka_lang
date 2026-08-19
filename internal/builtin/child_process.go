@@ -60,15 +60,24 @@ func spawnChild(ctx engine.Context, args []engine.Value) engine.Value {
 		}
 	}
 
-	// fork 的 silent/env 选项（缺省 = 管道；fork 显式传 {silent:false} 继承
-	// stdio，并携带 env）。
+	// silent / env / cwd / windowsHide（缺省 = 管道；fork 显式 {silent:false} 继承 stdio）。
 	var envList []string
 	inheritStdio := false
+	cwd := ""
+	windowsHide := runtime.GOOS == "windows"
 	if len(args) > 2 && args[2].IsObject() {
 		if o, ok := args[2].AsObject(); ok {
 			if v, err := o.Get("silent"); err == nil && !v.IsUndefined() {
 				if b, ok2 := v.Bool(); ok2 {
 					inheritStdio = !b
+				}
+			}
+			if v, err := o.Get("cwd"); err == nil && !v.IsUndefined() && v.String() != "" {
+				cwd = v.String()
+			}
+			if v, err := o.Get("windowsHide"); err == nil && !v.IsUndefined() {
+				if b, ok2 := v.Bool(); ok2 {
+					windowsHide = b
 				}
 			}
 			if v, err := o.Get("env"); err == nil && !v.IsUndefined() {
@@ -84,9 +93,13 @@ func spawnChild(ctx engine.Context, args []engine.Value) engine.Value {
 	}
 
 	cmd := exec.Command(command, cmdArgs...)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
 	if envList != nil {
 		cmd.Env = envList
 	}
+	applyWindowsHide(cmd, windowsHide)
 
 	// stdout/stderr 流（管道模式）。
 	var stdout, stderr engine.Object
@@ -238,6 +251,7 @@ func execChild(ctx engine.Context, args []engine.Value) {
 		} else {
 			cmd = exec.Command("sh", "-c", command)
 		}
+		applyWindowsHide(cmd, runtime.GOOS == "windows")
 		var stdout, stderr strings.Builder
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -286,6 +300,7 @@ func execFileChild(ctx engine.Context, args []engine.Value) {
 	release := ctx.AddRef()
 	go func() {
 		cmd := exec.Command(file, fileArgs...)
+		applyWindowsHide(cmd, runtime.GOOS == "windows")
 		var stdout, stderr strings.Builder
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr

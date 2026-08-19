@@ -137,6 +137,83 @@ globalThis.__resolved = req.resolve('./dep.cjs');
 	}
 }
 
+// TestModuleCreateRequireFileURLHashPath：路径含 # 时 URL 必须百分号转义
+// （# → %23），否则 url.Parse 把 # 后内容当 fragment 截断，require 解析到
+// 错误目录（Node pathToFileURL 语义；jiti/import.meta.url 回归）。
+func TestModuleCreateRequireFileURLHashPath(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "proj#1")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	modPath := filepath.Join(sub, "dep.cjs")
+	if err := os.WriteFile(modPath, []byte(`module.exports = { ok: true };`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(sub, "parent.mjs")
+	parentURL := modmodule.PathToFileURLString(parent)
+	if !strings.Contains(parentURL, "%23") {
+		t.Fatalf("PathToFileURLString(%q) = %q, want %%23 escaping", parent, parentURL)
+	}
+	script := `
+var { createRequire } = require('node:module');
+var req = createRequire(` + strconv.Quote(parentURL) + `);
+var dep = req('./dep.cjs');
+globalThis.__ok = !!(dep && dep.ok === true);
+`
+	env := newHTTPEnv(t)
+	if err := env.runWithLoop(t, script); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__ok"); got != "true" {
+		t.Errorf("createRequire(file URL with #) = %q, want true", got)
+	}
+}
+
+// TestBuiltinDefaultNonEnumerableButReadable：attachSelfDefault 挂的
+// default 不可枚举（Object.keys 对齐 Node、export * 不泄漏），但属性读取
+// 仍可用（jiti/Babel interopDefault 只读 mod.default）。
+func TestBuiltinDefaultNonEnumerableButReadable(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var path = require('node:path');
+globalThis.__r = [
+  Object.keys(path).indexOf('default') >= 0,
+  String('default' in path),
+  typeof path.default.join,
+  path.default === path
+].join(':');
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "false:true:function:true" {
+		t.Errorf("builtin default visibility = %q, want false:true:function:true", got)
+	}
+}
+
+// TestModuleCreateRequireNonFileURLObject：URL 对象（带 href 的对象）仅接受
+// file: scheme（Node ERR_INVALID_URL_SCHEME）；字符串参数不做 scheme 校验。
+func TestModuleCreateRequireNonFileURLObject(t *testing.T) {
+	env := newHTTPEnv(t)
+	err := env.runWithLoop(t, `
+var { createRequire } = require('node:module');
+var u = { href: 'https://example.com/app.js' };
+try {
+  createRequire(u);
+  globalThis.__r = 'no-throw';
+} catch (e) {
+  globalThis.__r = String(e).indexOf('ERR_INVALID_URL_SCHEME') >= 0 ? 'throws' : String(e);
+}
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.globalGet("__r"); got != "throws" {
+		t.Errorf("createRequire(https URL object) = %q, want throws", got)
+	}
+}
+
 // TestBuiltinPathCJSInterop：jiti/Babel 对 node:path 的 default/named 导入。
 func TestBuiltinPathCJSInterop(t *testing.T) {
 	env := newHTTPEnv(t)

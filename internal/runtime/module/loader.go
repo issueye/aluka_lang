@@ -808,8 +808,11 @@ func (l *Loader) loadBuiltin(specifier string) (engine.Value, error) {
 	return exports, nil
 }
 
-// attachSelfDefault 若对象尚无 default，则设为自引用（CJS 模块 / 内置模块
-// 作为 ESM 默认导入时的 Node 互操作形态）。已有 default 的不覆盖。
+// attachSelfDefault 若对象尚无 default，则以不可枚举属性挂自引用（CJS 模块 /
+// 内置模块作为 ESM 默认导入时的 Node 互操作形态）。已有 default 的不覆盖。
+// 不可枚举：Node 的 require(builtin) 没有 default，Object.keys / export *
+// （Object.assign 只拷贝可枚举属性）不应看到它；jiti/Babel 的 interopDefault
+// 只做属性读取 mod.default，不依赖可枚举性。
 func attachSelfDefault(v engine.Value) {
 	o, ok := v.AsObject()
 	if !ok || o == nil {
@@ -818,7 +821,13 @@ func attachSelfDefault(v engine.Value) {
 	if cur, err := o.Get("default"); err == nil && cur != nil && !cur.IsUndefined() {
 		return
 	}
-	_ = o.Set("default", v)
+	_ = engine.DefineOwnProperty(o, "default", engine.Descriptor{
+		HasValue:    true,
+		Value:       v,
+		HasWritable: true, Writable: true,
+		HasEnumerable: true, Enumerable: false,
+		HasConfigurable: true, Configurable: true,
+	})
 }
 
 // GetBuiltin 加载内置模块（process.getBuiltinModule 使用，Node ≥ 22.3）。

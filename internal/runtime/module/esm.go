@@ -189,12 +189,12 @@ func HasESMDecls(prog *ast.Program) bool {
 //	import 'mod'                   →  require('mod')
 //	（import 的 require 调用统一提升到模块体顶部，见函数内注释）
 //
-//	export var x = 1              →  var x = 1;  (plus module.exports.x = x at end)
-//	export function f() {}        →  function f() {}  (plus module.exports.f = f at end)
-//	export class C {}             →  class C {}  (plus module.exports.C = C at end)
-//	export {a, b as c}            →  (plus module.exports.a = a; module.exports.c = b at end)
-//	export default expr           →  (plus module.exports.default = expr at end)
-//	export * from 'mod'           →  Object.assign(module.exports, require('mod'))
+//	export var x = 1              →  var x = 1;  (plus enumerable live getter on exports)
+//	export function f() {}        →  function f() {}  (plus live getter)
+//	export class C {}             →  class C {}  (plus live getter)
+//	export {a, b as c}            →  live getter；a 为导入绑定时经 liveImpRef 守卫
+//	export default expr           →  var __default_N = expr at end; live getter reads it
+//	export * from 'mod'           →  require hoisted; Object.assign copy deferred to end
 func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 	var newBody []ast.Statement
 	// import 的 require 调用提升到模块体顶部（按源码顺序）：ESM 语义要求
@@ -204,7 +204,11 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 	var importRequires []ast.Statement
 	var exportGetters []ast.Statement
 	var lateExports []ast.Statement
+	// export {导入名 as x}（无 from）：导入语句可出现在 export 之后，需等
+	// 主循环结束、导入来源齐全后再生成带守卫的 getter。
+	var localExports []localExportSpec
 	lazyBindings := make(map[string]ast.Expression)
+	importSources := make(map[string]importBinding)
 	impCounter := 0
 	defaultTmp := 0
 
@@ -223,12 +227,15 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 				if spec.Imported == "*" {
 					// import * as ns from 'mod' → var ns = __imp_N
 					newBody = append(newBody, makeVarDecl(spec.Local, &ast.Identifier{Name: impVar, Loc: n.Loc}, n.Loc))
+					importSources[spec.Local] = importBinding{impVar: impVar, imported: "*", source: n.Source}
 				} else if spec.Imported == "" {
 					// Named/default imports use a live property lookup. A plain local
 					// snapshot breaks ESM cycles (for example TypeBox's Record modules).
 					lazyBindings[spec.Local] = makeDefaultImportExpr(impVar, n.Loc)
+					importSources[spec.Local] = importBinding{impVar: impVar, imported: "", source: n.Source}
 				} else {
 					lazyBindings[spec.Local] = makeNamedImportExpr(impVar, spec.Imported, n.Loc)
+					importSources[spec.Local] = importBinding{impVar: impVar, imported: spec.Imported, source: n.Source}
 				}
 			}
 
@@ -241,11 +248,12 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 				}
 			} else if n.IsStar && n.Source != "" {
 				if n.StarName != "" {
-					// export * as ns from 'mod' → 先加载，再 live getter
+					// export * as ns from 'mod' → 先加载，再 live getter；
+					// 循环期间 __imp_N 未赋值时经 require 取部分导出活对象。
 					impVar := fmt.Sprintf("__imp_%d", impCounter)
 					impCounter++
 					importRequires = append(importRequires, makeRequireCall(impVar, n.Source, n.Loc))
-					exportGetters = append(exportGetters, makeExportGetter(n.StarName, impVar, n.Loc))
+					exportGetters = append(exportGetters, makeExportGetterExpr(n.StarName, liveImpRef(impVar, n.Source, n.Loc), n.Loc))
 				} else {
 					// export * from 'mod'：require 提升；拷贝放到模块末尾，
 					// 避免循环依赖时对尚未赋值的命名导出做快照。
@@ -260,12 +268,12 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 				impCounter++
 				importRequires = append(importRequires, makeRequireCall(impVar, n.Source, n.Loc))
 				for _, spec := range n.Specifiers {
-					exportGetters = append(exportGetters, makeExportGetterFrom(spec.Exported, impVar, spec.Local, n.Loc))
+					exportGetters = append(exportGetters, makeExportGetterFrom(spec.Exported, impVar, n.Source, spec.Local, n.Loc))
 				}
 			} else {
-				// export {a, b as c} → live getter
+				// export {a, b as c} → 延后生成（见 localExports 注释）
 				for _, spec := range n.Specifiers {
-					exportGetters = append(exportGetters, makeExportGetter(spec.Exported, spec.Local, n.Loc))
+					localExports = append(localExports, localExportSpec{exported: spec.Exported, local: spec.Local, loc: n.Loc})
 				}
 			}
 
@@ -308,6 +316,33 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 		}
 	}
 
+	// export {导入名 as x}：getter 先于 require 安装，循环依赖的对方模块在
+	// 我们的 import 求值期间读取时 __imp_N 尚未赋值。经 liveImpRef 回退到
+	// require 取依赖方缓存预填的部分导出（活对象），可读到其已提升的函数
+	// 导出（Node ESM 链接语义近似）；裸 `return __imp_N.x` 会在此抛
+	// TypeError。非导入名的局部导出仍用普通 getter。
+	for _, s := range localExports {
+		b, isImport := importSources[s.local]
+		if !isImport {
+			exportGetters = append(exportGetters, makeExportGetter(s.exported, s.local, s.loc))
+			continue
+		}
+		var lazy ast.Expression
+		switch b.imported {
+		case "":
+			lazy = makeDefaultImportExprOn(liveImpRef(b.impVar, b.source, s.loc), s.loc)
+		case "*":
+			lazy = liveImpRef(b.impVar, b.source, s.loc)
+		default:
+			lazy = &ast.MemberExpr{
+				Object:   liveImpRef(b.impVar, b.source, s.loc),
+				Property: &ast.Identifier{Name: b.imported, Loc: s.loc},
+				Loc:      s.loc,
+			}
+		}
+		exportGetters = append(exportGetters, makeExportGetterExpr(s.exported, lazy, s.loc))
+	}
+
 	// 命名导出 getter 必须先于 import require 安装：循环依赖的对方模块
 	// 在我们的 import 求值期间就能读到 hoisted function 等活绑定。
 	var body []ast.Statement
@@ -329,9 +364,16 @@ func TransformESMToCJS(prog *ast.Program, filename string) *ast.Program {
 
 // makeDefaultImportExpr creates the live lookup used for a default import.
 func makeDefaultImportExpr(impVar string, loc ast.Pos) ast.Expression {
-	imp := &ast.Identifier{Name: impVar, Loc: loc}
+	return makeDefaultImportExprOn(&ast.Identifier{Name: impVar, Loc: loc}, loc)
+}
+
+// makeDefaultImportExprOn 是 makeDefaultImportExpr 的泛化形态，依赖对象
+// （root）可为 liveImpRef 生成的守卫表达式：
+//
+//	root.default !== undefined ? root.default : root
+func makeDefaultImportExprOn(root ast.Expression, loc ast.Pos) ast.Expression {
 	defaultProp := &ast.MemberExpr{
-		Object:   imp,
+		Object:   root,
 		Property: &ast.Identifier{Name: "default", Loc: loc},
 		Loc:      loc,
 	}
@@ -343,7 +385,7 @@ func makeDefaultImportExpr(impVar string, loc ast.Pos) ast.Expression {
 			Loc:   loc,
 		},
 		Consequent: defaultProp,
-		Alternate:  &ast.Identifier{Name: impVar, Loc: loc},
+		Alternate:  root,
 		Loc:        loc,
 	}
 }
@@ -418,6 +460,44 @@ func makeRequireCall(varName, source string, loc ast.Pos) *ast.VarDecl {
 	}
 }
 
+// importBinding 记录一个导入本地名的来源：依赖 require 变量、导入名
+// （"" 为 default，"*" 为命名空间导入）与模块说明符（循环期间惰性 require 用）。
+type importBinding struct {
+	impVar   string
+	imported string
+	source   string
+}
+
+// localExportSpec 是无 from 的 `export {a as b}` 待延后生成的导出。
+type localExportSpec struct {
+	exported string
+	local    string
+	loc      ast.Pos
+}
+
+// liveImpRef 生成 `__imp_N != null ? __imp_N : __importReq('source')`：
+// 模块求值完成后走已赋值的 __imp_N（零额外调用）；循环依赖期间 __imp_N
+// 尚未赋值，回退 require 取缓存预填的部分导出（活对象），使对方模块能
+// 读到我们已提升/已就绪的导出。require 对加载中的模块命中预填缓存，
+// 不会重入求值。
+func liveImpRef(impVar, source string, loc ast.Pos) ast.Expression {
+	return &ast.ConditionalExpr{
+		Test: &ast.BinaryExpr{
+			Left:  &ast.Identifier{Name: impVar, Loc: loc},
+			Op:    "!=",
+			Right: &ast.NullLit{Loc: loc},
+			Loc:   loc,
+		},
+		Consequent: &ast.Identifier{Name: impVar, Loc: loc},
+		Alternate: &ast.CallExpr{
+			Callee:    &ast.Identifier{Name: "__importReq", Loc: loc},
+			Arguments: []ast.Expression{&ast.StringLit{Value: source, Loc: loc}},
+			Loc:       loc,
+		},
+		Loc: loc,
+	}
+}
+
 // makeVarDecl creates: var name = <expr>
 func makeVarDecl(name string, expr ast.Expression, loc ast.Pos) *ast.VarDecl {
 	return &ast.VarDecl{
@@ -442,27 +522,16 @@ func makeExportGetter(exported, local string, loc ast.Pos) ast.Statement {
 	return makeExportGetterExpr(exported, &ast.Identifier{Name: local, Loc: loc}, loc)
 }
 
-// makeExportGetterFrom creates a live getter: return __imp_N.<local>
-// （依赖尚未赋值时返回 undefined，避免循环加载期抛 TypeError）。
-func makeExportGetterFrom(exported, impVar, local string, loc ast.Pos) ast.Statement {
-	imp := &ast.Identifier{Name: impVar, Loc: loc}
+// makeExportGetterFrom creates a live getter: return <liveRef>.<local>
+// （liveRef 见 liveImpRef：循环期间 __imp_N 未赋值时回退 require 取依赖方
+// 部分导出，能读到其已提升的函数导出；正常路径只读已赋值的 __imp_N）。
+func makeExportGetterFrom(exported, impVar, source, local string, loc ast.Pos) ast.Statement {
 	member := &ast.MemberExpr{
-		Object:   imp,
+		Object:   liveImpRef(impVar, source, loc),
 		Property: &ast.Identifier{Name: local, Loc: loc},
 		Loc:      loc,
 	}
-	rhs := &ast.ConditionalExpr{
-		Test: &ast.BinaryExpr{
-			Left:  imp,
-			Op:    "!=",
-			Right: &ast.NullLit{Loc: loc},
-			Loc:   loc,
-		},
-		Consequent: member,
-		Alternate:  &ast.UndefinedLit{Loc: loc},
-		Loc:        loc,
-	}
-	return makeExportGetterExpr(exported, rhs, loc)
+	return makeExportGetterExpr(exported, member, loc)
 }
 
 func makeExportGetterExpr(exported string, rhs ast.Expression, loc ast.Pos) ast.Statement {

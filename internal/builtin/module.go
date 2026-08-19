@@ -7,6 +7,7 @@ package builtin
 // syncBuiltinESMExports/findSourceMap/stripTypeScriptTypes 等，多为 API 面）。
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -49,7 +50,13 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 	_ = m.Set("createRequire", engine.NewFunction("createRequire", func(args []engine.Value) (engine.Value, error) {
 		parentPath := ""
 		if len(args) > 0 {
-			parentPath = createRequireFilename(args[0])
+			href, isURL := createRequireFilename(args[0])
+			// Node 语义：URL 对象仅接受 file: scheme（ERR_INVALID_URL_SCHEME）；
+			// 字符串参数一律当文件名，不做 scheme 校验。
+			if isURL && !strings.HasPrefix(strings.ToLower(href), "file:") {
+				return engine.Undefined(), fmt.Errorf("%w [ERR_INVALID_URL_SCHEME]: The URL must be of scheme file", engine.ErrTypeError)
+			}
+			parentPath = href
 		}
 		parentPath = modmodule.NormalizeModulePath(parentPath)
 		if parentPath != "" {
@@ -199,15 +206,16 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 }
 
 // createRequireFilename 从 createRequire 参数提取路径/URL 字符串。
-// 支持 string 与带 href 的 URL 对象（Node 语义）。
-func createRequireFilename(v engine.Value) string {
+// 支持 string 与带 href 的 URL 对象（Node 语义）；第二个返回值标记参数
+// 是否为 URL 对象（只有 URL 对象才强制 file: scheme）。
+func createRequireFilename(v engine.Value) (string, bool) {
 	if o, ok := v.AsObject(); ok {
 		if href, err := o.Get("href"); err == nil && href != nil && !href.IsUndefined() && !href.IsNull() {
 			s := href.String()
 			if s != "" {
-				return s
+				return s, true
 			}
 		}
 	}
-	return v.String()
+	return v.String(), false
 }

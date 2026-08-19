@@ -639,6 +639,36 @@ func TestVMJSONToJSONHook(t *testing.T) {
 	}
 }
 
+// TestVMJSONToJSONKeyArgument：toJSON 收到的第一个参数是序列化上下文键——
+// 根值为 ""、对象属性为属性名、数组元素为下标字符串（ES SerializeJSONProperty）。
+func TestVMJSONToJSONKeyArgument(t *testing.T) {
+	cases := []struct{ src, want string }{
+		{`JSON.stringify({ toJSON(k) { return 'root:' + k; } })`, `"root:"`},
+		{`JSON.stringify({ key: { toJSON(k) { return 'k=' + k; } } })`, `{"key":"k=key"}`},
+		{`JSON.stringify([{ toJSON(k) { return 'k=' + k; } }])`, `["k=0"]`},
+		{`JSON.stringify({a: [1, {toJSON(k) { return 'k=' + k; }}]})`, `{"a":[1,"k=1"]}`},
+	}
+	for _, c := range cases {
+		if got := vmEvalStr(t, c.src); got != c.want {
+			t.Errorf("%s = %q, want %q", c.src, got, c.want)
+		}
+	}
+}
+
+// TestVMJSONStringifyGetterProps：getter 属性（如 ESM 命名空间活绑定导出）
+// 必须经 getter 求值序列化，不能把访问器写成 null。
+func TestVMJSONStringifyGetterProps(t *testing.T) {
+	got := vmEvalStr(t, `
+var o = {};
+Object.defineProperty(o, 'a', { enumerable: true, configurable: true, get: function() { return 1; } });
+Object.defineProperty(o, 'b', { enumerable: true, configurable: true, get: function() { return 'x'; } });
+JSON.stringify(o);
+`)
+	if got != `{"a":1,"b":"x"}` {
+		t.Errorf("JSON.stringify(getters) = %q, want %q", got, `{"a":1,"b":"x"}`)
+	}
+}
+
 // === Error handling ======================================================
 
 func TestVMErrorConstructor(t *testing.T) {

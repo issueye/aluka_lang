@@ -338,3 +338,39 @@ globalThis.__fd = fd.get('k1') + ':' + fd.getAll('k2').length;
 		t.Errorf("formdata = %q, want v1b:1", got)
 	}
 }
+
+// TestFetchProxy 验证 fetch({ proxy }) 走 HTTP 代理而不是直连目标站。
+func TestFetchProxy(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "from-target")
+	}))
+	defer target.Close()
+
+	proxyHit := false
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHit = true
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "from-proxy")
+	}))
+	defer proxy.Close()
+
+	ctx := newFetchTestEnv(t)
+	code := fmt.Sprintf(`
+fetch(%q, { proxy: %q })
+  .then(function(res) { return res.text(); })
+  .then(function(text) { globalThis.__body = text; })
+  .catch(function(err) { globalThis.__err = String(err); });
+`, target.URL, proxy.URL)
+	if err := fetchRun(t, ctx, code); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := webGlobalGet(ctx, "__err"); got != "" && got != "undefined" {
+		t.Fatalf("fetch error: %s", got)
+	}
+	if !proxyHit {
+		t.Fatal("proxy was not used")
+	}
+	if got := webGlobalGet(ctx, "__body"); got != "from-proxy" {
+		t.Errorf("body = %q, want from-proxy", got)
+	}
+}

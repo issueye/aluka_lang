@@ -36,7 +36,13 @@ const bcCacheDirName = ".aluka/cache"
 //
 //	与 globalThis.Object.assign，避免模块 `import { Object }` 时把注入的
 //	Object.defineProperty 改写成未初始化的 __imp.Object（TypeBox）。
-const pipelineVersion = 3
+//
+// v3 → v4：再导出 getter（export {x} from / export {导入名 as x} /
+//
+//	export * as ns from）改为 liveImpRef 形态——循环依赖期间 __imp_N
+//	未赋值时回退 __importReq 取部分导出活对象，替代原先返回 undefined
+//	（或裸 __imp_N.x 抛 TypeError）的守卫。
+const pipelineVersion = 4
 
 // bytecodeCache 提供字节码 Module 的磁盘读写。
 type bytecodeCache struct {

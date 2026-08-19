@@ -700,6 +700,78 @@ func TestCJSDefinePropertyNamedExports(t *testing.T) {
 	}
 }
 
+// TestRequireESMLocalReexportImportedBindingInCycle：`import {x} from './b';
+// export {x as y}` 的 getter 先于 require 安装，循环依赖期间对方读取 y 时
+// __imp_N 尚未赋值。getter 必须经 liveImpRef 回退 require 读到 b 已提升的
+// 函数导出（Node ESM 链接语义）；此前裸 `return __imp_N.x` 会在此抛
+// TypeError（jiti/babel barrel 场景）。
+func TestRequireESMLocalReexportImportedBindingInCycle(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"a.mjs": `import { fromB } from './b.mjs';
+			export { fromB as re };
+			export function own() { return 'A'; }`,
+		"b.mjs": `import * as a from './a.mjs';
+			export function fromB() { return 'B'; }
+			globalThis.__midType = typeof a.re;
+			globalThis.__midCall = a.re();
+			globalThis.__ownType = typeof a.own;`,
+		"entry.cjs": `var m = require('./a.mjs');
+			globalThis.__final = m.re() + ':' + typeof m.own;`,
+	})
+	env.run(t, "entry.cjs")
+	if got := env.globalGet("__midType"); got != "function" {
+		t.Errorf("cycle typeof a.re = %q, want function", got)
+	}
+	if got := env.globalGet("__midCall"); got != "B" {
+		t.Errorf("cycle a.re() = %q, want B", got)
+	}
+	if got := env.globalGet("__ownType"); got != "function" {
+		t.Errorf("cycle typeof a.own = %q, want function", got)
+	}
+	if got := env.globalGet("__final"); got != "B:function" {
+		t.Errorf("final = %q, want B:function", got)
+	}
+}
+
+// TestRequireESMReexportFromInCycle：`export {x} from './b'` 的 getter 在
+// 循环期间同样要读到依赖方已提升的函数（liveImpRef 回退 require）。
+func TestRequireESMReexportFromInCycle(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"c.mjs": `export { fromB as cf } from './b.mjs';
+			export function own() { return 'C'; }`,
+		"b.mjs": `import * as c from './c.mjs';
+			export function fromB() { return 'B'; }
+			globalThis.__cfType = typeof c.cf;
+			globalThis.__ownType = typeof c.own;`,
+		"entry.cjs": `var m = require('./c.mjs');
+			globalThis.__final = m.cf();`,
+	})
+	env.run(t, "entry.cjs")
+	if got := env.globalGet("__cfType"); got != "function" {
+		t.Errorf("cycle typeof c.cf = %q, want function", got)
+	}
+	if got := env.globalGet("__ownType"); got != "function" {
+		t.Errorf("cycle typeof c.own = %q, want function", got)
+	}
+	if got := env.globalGet("__final"); got != "B" {
+		t.Errorf("final = %q, want B", got)
+	}
+}
+
+// TestJSONStringifyESMNamespace：命名导出是活绑定 getter，JSON.stringify
+// 必须经 getter 求值（不能把访问器序列化成 null）。__esModule 为求值后
+// 追加的数据属性，位于键序末尾。
+func TestJSONStringifyESMNamespace(t *testing.T) {
+	env := newTestEnv(t, map[string]string{
+		"m.mjs":     `export const a = 1; export const b = "x";`,
+		"entry.cjs": `globalThis.__r = JSON.stringify(require('./m.mjs'));`,
+	})
+	env.run(t, "entry.cjs")
+	if got := env.globalGet("__r"); got != `{"a":1,"b":"x","__esModule":true}` {
+		t.Errorf("JSON.stringify(esm ns) = %q, want %q", got, `{"a":1,"b":"x","__esModule":true}`)
+	}
+}
+
 func TestESMNamedDefaultFunctionAndClassLocalBinding(t *testing.T) {
 	env := newTestEnv(t, map[string]string{
 		"main.mjs": `

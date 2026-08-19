@@ -119,16 +119,17 @@ func registerChildProcessSync(m engine.Object) {
 
 // spawnSyncOptions 同步子进程选项。
 type spawnSyncOptions struct {
-	cwd      string
-	env      []string
-	input    []byte
-	timeout  time.Duration
-	encoding string
+	cwd         string
+	env         []string
+	input       []byte
+	timeout     time.Duration
+	encoding    string
+	windowsHide bool
 }
 
 // parseSpawnSyncOptions 解析 options 对象。
 func parseSpawnSyncOptions(optsVal engine.Value) spawnSyncOptions {
-	o := spawnSyncOptions{}
+	o := spawnSyncOptions{windowsHide: runtime.GOOS == "windows"}
 	if optsVal.IsUndefined() {
 		return o
 	}
@@ -166,6 +167,11 @@ func parseSpawnSyncOptions(optsVal engine.Value) spawnSyncOptions {
 	if v, err := oo.Get("encoding"); err == nil && v.Type() == engine.TypeString {
 		o.encoding = v.String()
 	}
+	if v, err := oo.Get("windowsHide"); err == nil && !v.IsUndefined() {
+		if b, ok2 := v.Bool(); ok2 {
+			o.windowsHide = b
+		}
+	}
 	return o
 }
 
@@ -192,6 +198,7 @@ func runSyncCommand(cmd *exec.Cmd, optsVal engine.Value) (engine.Value, error) {
 	if opts.env != nil {
 		cmd.Env = opts.env
 	}
+	applyWindowsHide(cmd, opts.windowsHide)
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf

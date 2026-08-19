@@ -55,10 +55,14 @@ func FileURLToPath(input string) string {
 }
 
 // PathToFileURLString 将绝对路径转为 file:// URL（Windows 驱动器盘符带斜杠）。
+// 经 url.URL.String() 做百分号转义（# → %23、空格 → %20、? → %3F、
+// 非 ASCII → UTF-8 百分号编码），对齐 Node pathToFileURL；不转义时含 #
+// 的路径会被 FileURLToPath 的 url.Parse 当成 fragment 截断。
 func PathToFileURLString(abs string) string {
 	slash := filepath.ToSlash(abs)
 	if len(slash) >= 2 && slash[1] == ':' {
 		slash = "/" + slash
 	}
-	return "file://" + slash
+	u := &url.URL{Scheme: "file", Path: slash}
+	return u.String()
 }

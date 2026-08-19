@@ -7,17 +7,18 @@ package globals
 //     在响应头到达后 resolve 一个 Response 对象（用全局 Promise 构造器）。
 //   - fetch Response.body 是实时 ReadableStream，网络数据按读取批次入队；
 //     text()/json()/arrayBuffer() 等待流结束后聚合响应体。
-//   - Headers/FormData 用有序键值对列表（保持插入顺序，键名不区分大小写）。
+//   - fetch init.proxy：HTTP/HTTPS/SOCKS 代理 URL（覆盖环境变量 HTTP_PROXY）。
 
 import (
 	"fmt"
-	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // FetchConfig 配置 fetch 全局（当前无可用选项）。
@@ -867,6 +868,7 @@ func doFetch(ctx engine.Context, args []engine.Value) (engine.Value, error) {
 	var headersInit engine.Value
 	bodyStr := ""
 	redirectMode := "follow"
+	proxyURLStr := ""
 
 	// input：字符串或 Request。
 	if args[0].Type() == engine.TypeString {
@@ -898,6 +900,9 @@ func doFetch(ctx engine.Context, args []engine.Value) (engine.Value, error) {
 			if v, err := o.Get("redirect"); err == nil && !v.IsUndefined() && v.String() != "" {
 				redirectMode = v.String()
 			}
+			if v, err := o.Get("proxy"); err == nil && !v.IsUndefined() && v.String() != "" {
+				proxyURLStr = strings.TrimSpace(v.String())
+			}
 		}
 	}
 
@@ -923,6 +928,26 @@ func doFetch(ctx engine.Context, args []engine.Value) (engine.Value, error) {
 			h := headersToGo(headersInit)
 			req.Header = h
 			client := &http.Client{}
+			if proxyURLStr != "" {
+				proxyURL, proxyErr := url.Parse(proxyURLStr)
+				if proxyErr != nil || proxyURL.Scheme == "" || proxyURL.Host == "" {
+					msg := "fetch failed: invalid proxy"
+					if proxyErr != nil {
+						msg = "fetch failed: invalid proxy: " + proxyErr.Error()
+					}
+					ctx.PostTask(func() {
+						defer release()
+						callRejectError(reject, newTypeError(ctx, msg))
+					})
+					return
+				}
+				transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+				if base, ok := http.DefaultTransport.(*http.Transport); ok {
+					transport = base.Clone()
+					transport.Proxy = http.ProxyURL(proxyURL)
+				}
+				client.Transport = transport
+			}
 			switch redirectMode {
 			case "manual":
 				// 返回 3xx 原始响应（Go 的 ErrUseLastResponse 语义）。

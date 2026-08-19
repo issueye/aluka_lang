@@ -2028,7 +2028,7 @@ func (interp *Interpreter) setupJSON() {
 }
 
 func (interp *Interpreter) jsonValueToJSON(v engine.Value) (string, error) {
-	data, err := interp.valueToJSON(v, make(map[engine.Object]bool))
+	data, err := interp.valueToJSON(v, make(map[engine.Object]bool), "")
 	if err != nil {
 		return "", err
 	}
@@ -2036,11 +2036,13 @@ func (interp *Interpreter) jsonValueToJSON(v engine.Value) (string, error) {
 	return string(b), err
 }
 
-// applyToJSON 实现 JSON.stringify 的 toJSON 钩子（ES：枚举属性前调用）。
+// applyToJSON 实现 JSON.stringify 的 toJSON 钩子（ES SerializeJSONProperty：
+// 枚举属性前调用）。key 是序列化上下文键——根值为 ""、对象属性为属性名、
+// 数组元素为下标字符串，与 Node 一致。
 // jiti 的 import.meta.url 替换依赖 JSON.stringify(pathToFileURL(filename))；
 // URL.toJSON 必须返回 href 字符串，否则 Babel template.ast 会吃到对象字面量
 // 里的 Windows 盘符路径。
-func (interp *Interpreter) applyToJSON(v engine.Value) (engine.Value, error) {
+func (interp *Interpreter) applyToJSON(v engine.Value, key string) (engine.Value, error) {
 	if v == nil || v.IsUndefined() || v.IsNull() {
 		return v, nil
 	}
@@ -2062,10 +2064,11 @@ func (interp *Interpreter) applyToJSON(v engine.Value) (engine.Value, error) {
 		result engine.Value
 		err    error
 	)
+	args := []engine.Value{engine.Str(key)}
 	if vm := interp.currentVM; vm != nil {
-		result, err = vm.InvokeFn(toJSON, v, []engine.Value{engine.Str("")})
+		result, err = vm.InvokeFn(toJSON, v, args)
 	} else if f, ok := toJSON.AsFunction(); ok {
-		result, err = f.Call([]engine.Value{engine.Str("")})
+		result, err = f.Call(args)
 	} else {
 		return v, nil
 	}
@@ -2114,12 +2117,13 @@ func (o *orderedJSON) MarshalJSON() ([]byte, error) {
 	return []byte("{" + strings.Join(parts, ",") + "}"), nil
 }
 
-// valueToJSON 将 JS 值转为可 JSON 序列化的 Go 结构。
+// valueToJSON 将 JS 值转为可 JSON 序列化的 Go 结构。key 为当前序列化
+// 上下文键（根值 ""、属性名、数组下标），透传给 toJSON 钩子。
 // seen 记录当前递归路径上的对象，用于检测循环引用（命中返回 TypeError，
 // 避免无限递归导致 Go 栈溢出崩溃）。对象在完成自身序列化后从 seen 移除，
 // 因此共享但非循环的引用不会被误判。
-func (interp *Interpreter) valueToJSON(v engine.Value, seen map[engine.Object]bool) (interface{}, error) {
-	converted, err := interp.applyToJSON(v)
+func (interp *Interpreter) valueToJSON(v engine.Value, seen map[engine.Object]bool, key string) (interface{}, error) {
+	converted, err := interp.applyToJSON(v, key)
 	if err != nil {
 		return nil, err
 	}
@@ -2152,7 +2156,8 @@ func (interp *Interpreter) valueToJSON(v engine.Value, seen map[engine.Object]bo
 					result[i] = nil
 					continue
 				}
-				r, err := interp.valueToJSON(e, seen)
+				e = interp.resolveJSONAccessor(v, strconv.Itoa(i), e)
+				r, err := interp.valueToJSON(e, seen, strconv.Itoa(i))
 				if err != nil {
 					return nil, err
 				}
@@ -2168,11 +2173,12 @@ func (interp *Interpreter) valueToJSON(v engine.Value, seen map[engine.Object]bo
 			seen[o] = true
 			oj := &orderedJSON{}
 			for _, k := range o.Keys() {
-				val, _ := o.Get(k)
+				raw, _ := o.Get(k)
+				val := interp.resolveJSONAccessor(v, k, raw)
 				if val.IsFunction() || val.IsUndefined() {
 					continue
 				}
-				r, err := interp.valueToJSON(val, seen)
+				r, err := interp.valueToJSON(val, seen, k)
 				if err != nil {
 					return nil, err
 				}
@@ -2184,6 +2190,30 @@ func (interp *Interpreter) valueToJSON(v engine.Value, seen map[engine.Object]bo
 		}
 	}
 	return nil, nil
+}
+
+// resolveJSONAccessor 把 Go 侧 Get 拿到的访问器值（AccessorValue）换成
+// getter 求值结果：ESM 命名空间导出是活绑定 getter，Object.Get 不触发
+// JS getter，不解析会把导出序列化成 null。非访问器原样返回，常规对象
+// 序列化零额外开销。
+func (interp *Interpreter) resolveJSONAccessor(owner engine.Value, key string, raw engine.Value) engine.Value {
+	if !engine.IsAccessorValue(raw) {
+		return raw
+	}
+	if vm := interp.currentVM; vm != nil {
+		if v, err := vm.getProperty(owner, key); err == nil {
+			return v
+		}
+		return engine.Undefined()
+	}
+	if acc, ok := raw.(*engine.AccessorValue); ok && acc.Getter != nil && acc.Getter.IsFunction() {
+		if f, ok := acc.Getter.AsFunction(); ok {
+			if v, err := f.Call(nil); err == nil {
+				return v
+			}
+		}
+	}
+	return engine.Undefined()
 }
 
 func jsonToValue(data interface{}) engine.Value {
