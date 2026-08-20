@@ -37,7 +37,7 @@ import (
 )
 
 // version 在构建时通过 ldflags 注入。
-var version = "0.1.0-dev"
+var version = "0.2.0-dev"
 
 // profileStop 是 --profile 的收尾函数（StopCPUProfile + heap dump）。
 // 经 osExit 统一调用，保证错误路径也能落盘（O1-C1）。

@@ -2,7 +2,7 @@
 # Phase 0 工程基座
 # 目标：build / test / install / clean / release
 
-VERSION ?= 0.1.0-dev
+VERSION ?= 0.2.0-dev
 BINARY  ?= aluka
 MODULE  := github.com/aluka-lang/aluka
 PKG     := ./cmd/aluka
