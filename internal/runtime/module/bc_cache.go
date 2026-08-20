@@ -39,10 +39,15 @@ const bcCacheDirName = ".aluka/cache"
 //
 // v3 → v4：再导出 getter（export {x} from / export {导入名 as x} /
 //
-//	export * as ns from）改为 liveImpRef 形态——循环依赖期间 __imp_N
-//	未赋值时回退 __importReq 取部分导出活对象，替代原先返回 undefined
+//	export * as ns from 'mod'）改为 liveImpRef 形态——循环依赖期间 __imp_N
+//	未赋值时回退 __importReq 取部分导出活对象，替代此前返回 undefined
 //	（或裸 __imp_N.x 抛 TypeError）的守卫。
-const pipelineVersion = 4
+//
+// v4 → v5：可选链链值计数修复——普通调用 f(a)?.x 的实参计数未随 OpCall
+//
+//	回补，短路清理块多发 POP 把局部槽弹掉（运行期帧栈越界 panic）；spread
+//	调用两分支计数少 1（短路残留泄漏）。产物语义已变化，旧缓存必须失效。
+const pipelineVersion = 5
 
 // bytecodeCache 提供字节码 Module 的磁盘读写。
 type bytecodeCache struct {

@@ -69,6 +69,48 @@ func TestVMOptionalChainResidualRegression(t *testing.T) {
 	}
 }
 
+// === 普通调用作链对象的短路计数回归 ========================================
+//
+// `f(a)?.x` / `f(a,b)?.m(cb)`：compileCall 普通调用分支的实参经 compileCallArg
+// 计入链值计数（每实参 +1），但 OpCall 后未回补 -N——链计数比真实栈值多
+// N-1，父 MemberExpr 再 +1 后短路残留多记 N，清理块多发 POP 把局部槽当操
+// 作数弹掉，后续 LOAD_LOCAL 帧栈越界 panic（aluka-desktop registry.ts
+// findProviderModel 形态）。spread 调用两分支则少计 1（短路残留泄漏）。
+func TestVMOptionalChainPlainCallArgRegression(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		// 崩溃原形态：findProviderEntry(provider)?.models.find(cb) 短路
+		//（返回 undefined），随后读取局部槽不得越界。
+		{`function findEntry(p) { return undefined; } function f(provider, modelId) { const id = modelId?.trim(); if (!id) return "early"; if (provider?.trim()) { return findEntry(provider)?.models.find((m) => m.id === id) ?? "none"; } return "fall"; } f("p", "m")`, "none"},
+		// 非短路路径取真实值。
+		{`function findEntry(p) { return { models: { find: (cb) => cb({ id: "x" }) } }; } findEntry("p")?.models.find((m) => m.id)`, "x"},
+		// 多实参（旧产物多发 2 个 POP）。
+		{`function f(a, b) { return undefined; } f(1, 2)?.x ?? "none"`, "none"},
+		{`function f(a, b) { return { x: 9 }; } f(1, 2)?.x ?? -1`, "9"},
+		// 零实参（计数原本正确，不得回归）。
+		{`function f() { return undefined; } f()?.x ?? "none"`, "none"},
+		// 短路后继续读同帧局部变量（局部槽被误弹即崩）。
+		{`let acc = ""; function miss(a) { return undefined; } function run(k) { const id = k; const hit = miss(k)?.deep.value; acc = id + ":" + (hit ?? "u"); return acc; } run("K")`, "K:u"},
+		// spread 普通调用作链对象（短路残留泄漏回归）。
+		{`function f(...xs) { return undefined; } f(...[1, 2])?.x ?? "none"`, "none"},
+		{`function f(...xs) { return { x: xs.length }; } f(...[1, 2, 3])?.x ?? -1`, "3"},
+		// 可选调用 a?.(...spread)：短路与调用路径。
+		{`const o = {}; o.m?.(...[1, 2]) ?? -1`, "-1"},
+		{`const f = (...xs) => xs.length; f?.(...[1, 2, 3])`, "3"},
+		// 方法 spread 调用作链对象：短路与调用路径。
+		{`const o = { m(...xs) { return { v: 6 + xs.length }; } }; o.m(...[1, 2])?.v ?? -1`, "8"},
+		{`const o = null; o?.m(...[1, 2]) ?? -1`, "-1"},
+	}
+	for _, c := range cases {
+		got := vmEvalStr(t, c.code)
+		if got != c.want {
+			t.Errorf("VM.Eval(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
 // === for-of 无声明迭代变量回归 ============================================
 //
 // `for (x of ...)`（赋给已有变量，非 let/const 声明）无 per-iteration

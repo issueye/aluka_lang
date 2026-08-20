@@ -932,19 +932,21 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 				}
 				c.emit(bytecode.OpCallWithThis, uint32(len(n.Arguments)))
 				c.optChainDelta(-(len(n.Arguments) + 1))
-			} else {
-				c.compileArgsArray(n.Arguments)
-				c.optPushValue()
-				c.emit(bytecode.OpCallWithThisArgs, 0)
-				c.optChainDelta(-2)
-			}
-			if chainHead {
-				c.endOptionalChain()
-			}
-			return nil
+		} else {
+			c.compileArgsArray(n.Arguments)
+			c.optPushValue()
+			c.emit(bytecode.OpCallArgs, 0)
+			// callee(+1) + 数组(+1)，CALL_ARGS 弹 callee+数组压结果：链计数
+			// 净 +1（tracks=true，父层不再补 +1）。
+			c.optChainDelta(-1)
 		}
+		if chainHead {
+			c.endOptionalChain()
+		}
+		return nil
+	}
 
-		// Optional call with non-MemberExpr callee: a?.()
+	// Optional call with non-MemberExpr callee: a?.()
 		if err := c.compileExpr(n.Callee); err != nil {
 			return err
 		}
@@ -1042,7 +1044,9 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 			c.optPushValue()
 			nameIdx := c.cur().tmpl.AddStringConst(m.Property.(*ast.Identifier).Name)
 			c.emit(bytecode.OpCallMethodArgs, uint32(nameIdx))
-			c.optChainDelta(-2)
+			// receiver(+1) + 数组(+1)，CALL_METHOD_ARGS 弹 receiver+数组压结果：
+			// 链计数净 +1（tracks=true，父层不再补 +1）。
+			c.optChainDelta(-1)
 		}
 		if chainHead {
 			c.endOptionalChain()
@@ -1072,6 +1076,10 @@ func (c *Compiler) compileCall(n *ast.CallExpr) error {
 			}
 		}
 		c.emit(bytecode.OpCall, uint32(len(n.Arguments)))
+		// compileCallArg 已为每个非链实参 +1；OpCall 弹 callee+args 压结果，
+		// 链计数须同步 -args（否则 `f(a)?.x` 短路时残留多记 N 个，清理块
+		// 多弹 N 槽，把局部槽当操作数弹掉——帧栈越界 panic）。
+		c.optChainDelta(-len(n.Arguments))
 	} else {
 		c.compileArgsArray(n.Arguments)
 		c.emit(bytecode.OpCallArgs, 0)
