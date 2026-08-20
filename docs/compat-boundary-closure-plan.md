@@ -129,12 +129,12 @@ CSS Modules 是打包器职责（Vite 中由 postcss-modules 完成，不是 com
 
 ### B.2 里程碑
 
-| ID | 内容 | 验收标准 |
-|----|------|---------|
-| **B1** | **全量审计**：扩展 m8 探针为"全局实例 × own-keys × 原型链"双跑差分（`tests/compat/node22/`），枚举所有 `typeof x === 'object'` 的全局实例，对比 aluka 与 node 22.23.1 的自有键集合与 `Object.getPrototypeOf` 链 | 产出偏差对象清单（预期至少：`crypto`、`crypto.subtle`、`performance`；以实测为准），清单进本文档附录 |
-| **B2** | 迁移基建：抽一个"构造器 + prototype 方法注册"helper（泛化 M8-11 的 SetProto 模式），保证方法描述符 flags（WebIDL：`{writable:true, enumerable:true, configurable:true}`）一次到位 | helper 单测；既有 `instanceof` 断言不回退 |
-| **B3** | 按 B1 清单逐对象迁移：P0 = `crypto`/`subtle`/`performance`；P1 = 清单其余 | 每对象一组差分用例：`getOwnPropertyNames`、`keys`、`delete`（实例上删除返回 true 但不删原型方法）、`for...in` 含原型链遍历、`hasOwnProperty` |
-| **B4** | 边缘收口：`Object.getPrototypeOf(globalThis)`、`globalThis` 自有属性可枚举性/顺序与 Node 快照对拍；`console`/`process` 等在 Node 中本就是自有属性的对象**保持不动**（防止过度迁移） | 差分全绿；knownDifference 从开发日志移除并记录撤销日期 |
+| ID | 内容 | 验收标准 | 状态 |
+|----|------|---------|------|
+| **B1** | **全量审计**：扩展 m8 探针为"全局实例 × own-keys × 原型链"双跑差分（`tests/compat/node22/`），枚举所有 `typeof x === 'object'` 的全局实例，对比 aluka 与 node 22.23.1 的自有键集合与 `Object.getPrototypeOf` 链 | 产出偏差对象清单（预期至少：`crypto`、`crypto.subtle`、`performance`；以实测为准），清单进本文档附录 | ✅ 2026-08-20（附录 B1） |
+| **B2** | 迁移基建：抽一个"构造器 + prototype 方法注册"helper（泛化 M8-11 的 SetProto 模式），保证方法描述符 flags（WebIDL：`{writable:true, enumerable:true, configurable:true}`）一次到位 | helper 单测；既有 `instanceof` 断言不回退 | ✅ 2026-08-20 |
+| **B3** | 按 B1 清单逐对象迁移：P0 = `crypto`/`subtle`/`performance`；P1 = 清单其余 | 每对象一组差分用例：`getOwnPropertyNames`、`keys`、`delete`（实例上删除返回 true 但不删原型方法）、`for...in` 含原型链遍历、`hasOwnProperty` | ✅ 2026-08-20（P0+EventTarget+navigator） |
+| **B4** | 边缘收口：`Object.getPrototypeOf(globalThis)`、`globalThis` 自有属性可枚举性/顺序与 Node 快照对拍；`console`/`process` 等在 Node 中本就是自有属性的对象**保持不动**（防止过度迁移） | 差分全绿；knownDifference 从开发日志移除并记录撤销日期 | ✅ 2026-08-20（可枚举性对齐；残留项见 B1.3） |
 
 ### B.3 风险
 
@@ -157,11 +157,11 @@ CSS Modules 是打包器职责（Vite 中由 postcss-modules 完成，不是 com
 
 ### C.2 里程碑
 
-| ID | 内容 | 验收标准 |
-|----|------|---------|
-| **C1** | 语料生成 + 复现：参数化生成批量 await 程序（维度：await 数量 × Promise/nextTick/queueMicrotask 混合 × rejection 比例 × TLA 模块数 × 定时器交错）；跑通双跑差分，固定化最小复现用例入库 | 至少一个稳定复现用例 + 序列差证据；若全部语料零差异，则以 10 万次循环扰动跑测（随机种子语料）兜底确认 |
-| **C2** | 定位与修复（按 C1 结论，候选实施点）：① `maybeUnhandledRejection` 改为检查点末尾统一判定（drainJobQueues 返回前扫 pending rejected promises，对齐 Node 时机）；② AwaitPromise 与 RunLoop 检查点对齐（消除 1ms sleep 轮询引入的时序空窗）；③ 其余由复现证据指认 | 最小复现用例差分为零；C1 全语料双跑零差异 |
-| **C3** | 回归闭环：语料转正式差分用例组（固定种子集）+ engine 微任务单元回归；`defect-fixes-plan.md` 遗留项改 ✅ 并记录修复提交 | `docs/defect-fixes-plan.md` 状态闭环；conformance 全绿 |
+| ID | 内容 | 验收标准 | 状态 |
+|----|------|---------|------|
+| **C1** | 语料生成 + 复现：参数化生成批量 await 程序（维度：await 数量 × Promise/nextTick/queueMicrotask 混合 × rejection 比例 × TLA 模块数 × 定时器交错）；跑通双跑差分，固定化最小复现用例入库 | 至少一个稳定复现用例 + 序列差证据；若全部语料零差异，则以 10 万次循环扰动跑测（随机种子语料）兜底确认 | ✅ 2026-08-20（`microtask-corpus/` 60 例，22 例复现） |
+| **C2** | 定位与修复（按 C1 结论，候选实施点）：① `maybeUnhandledRejection` 改为检查点末尾统一判定（drainJobQueues 返回前扫 pending rejected promises，对齐 Node 时机）；② AwaitPromise 与 RunLoop 检查点对齐（消除 1ms sleep 轮询引入的时序空窗）；③ 其余由复现证据指认 | 最小复现用例差分为零；C1 全语料双跑零差异 | ✅ 2026-08-20（见 C 完成记录；TLA 串行化为结构性已知差异，单列） |
+| **C3** | 回归闭环：语料转正式差分用例组（固定种子集）+ engine 微任务单元回归；`defect-fixes-plan.md` 遗留项改 ✅ 并记录修复提交 | `docs/defect-fixes-plan.md` 状态闭环；conformance 全绿 | ✅ 2026-08-20 |
 
 ### C.3 风险与边界
 
@@ -170,6 +170,24 @@ CSS Modules 是打包器职责（Vite 中由 postcss-modules 完成，不是 com
 | checkpoint 语义改动波及 promise/async/事件循环全链路 | C2 每步跑 engine 全量 + jitdiff 三 tier 零失配 + `interpreter` 事件循环/timers 测试；分小 PR 落地 |
 | unhandledRejection 时机改动影响既有 M2-4 行为（同拍挂处理者不误报） | promise.go 现有单测全保留，新增"先 reject 后同检查点内 catch"边界用例 |
 | 若涉及 async 续体编译形态变化需 bump `bytecode/serialize.go FormatVersion` | C2 评审清单固定项；缓存兼容测试跟随 |
+
+### C 完成记录（2026-08-20）
+
+**C1 工具与语料**（`tests/compat/node22/microtask-corpus/`）：
+- `gen.mjs`：种子化（mulberry32）参数化生成——async 函数数（2..5）× 每函数 await 数（1..3）× await 目标形状（已决 promise then / queueMicrotask / nextTick / rejected 定向 / setTimeout(0)）× 顶层交错（micro/tick/then）× TLA 模块数（1..3，ESM 目录）；每回调立即打一行标签，stdout 顺序即调度序列证据。
+- `run.sh`：逐用例 aluka vs node 双跑行级对比。seed 42 / 60 例首轮 **22 例复现**（15 CJS + 7 TLA）。
+
+**C2 修复**（按复现证据指认，两个真实偶发根因）：
+1. **unhandledRejection 检查点末尾统一判定**（`promise.go`/`microtask.go`）：原实现在 reject 瞬间把检查任务按入队位置插入微任务队列——事件提前于后续微任务触发，且"同检查点内稍后挂 catch"会假阳性。改为 `unhandledQueue` 登记（rejection FIFO）+ `drainJobQueues` 排干后统一判定（监听器再入队则回到排水循环直至稳定）；`unhandledReported` 保证一次性派发。
+2. **同刻到期定时器 FIFO**（`globals/timers.go`）：原实现每个 setTimeout 独立 `time.AfterFunc`，多个 0ms 定时器并发竞争投递 taskCh，实测 case-0049 20 次出现 2 种序列（`ti:final` 偶发提前）。改为集中式到期队列：`(deadline, seq)` 最小堆 + 单一派发 goroutine 依序 PostTask（Node timer list 语义；setInterval 仍走 Ticker）。
+3. **AwaitPromise 1ms 轮询分析结论**：sleep 窗口只引入任务派发**延迟**、不改变顺序（taskCh FIFO 保持）；语料与差分均无顺序型证据指向它，保持现状。
+4. **TLA 多模块求值串行化（结构性已知差异，未在本工作流修）**：aluka loader 对每个 TLA 模块 `AwaitPromise` 串行驱动到完成（mod1 完成后 mod2 体才启动）；Node 为全体模块体先同步执行到首个 TLA await，再经共享微任务链交错完成（期间 nextTick 不抢占、队列排空后的检查点才排）。数据语义正确、仅跨模块事件观测顺序不同；修复需编译器/loader 级 TLA 求值重构（import 挂起传播），单列后续工作项。语料中 6 个 TLA 用例稳定复现此差异。
+
+**C3 回归闭环**：
+- 最小复现正式差分用例：`tests/compat/node22/diff/c2-microtask-order.cjs`（检查点末尾判定 + FIFO + 同拍 catch 不误报 + 跨 tick catch 迟到仍派发）、`c2-timer-fifo.cjs`（同刻 FIFO + 微任务期注册排序 + 回调内再注册排序）——两者在修复前基线二进制上 FAIL、修复后 PASS（timer 用例 30/30 稳定）。
+- 语料稳定性：seed 42 / 60 例连续 5 轮 **54/60**（CJS 全绿，6 TLA 为上述结构性差异）。
+- 全 workspace `go test` 绿；jitdiff 三 tier 零失配；node22 差分 59+2/66+2（7 个失败与基线逐字节一致，存量）。
+- `docs/defect-fixes-plan.md`「queueMicrotask 顺序边界」⚠️ → ✅（2026-08-20），含结构性残留说明。
 
 ---
 
@@ -206,3 +224,88 @@ A0 spike（与 C1 并行启动）──> A1 预处理器通道 ──> A2 CSS Mo
 3. **代码内注释**：`internal/bundler/vue/sfc.go` 包注释、`src.go rejectUnsupportedStyle`、`official.go` fail 文案与实际行为对齐；
 4. **knownDifference 台账**：`node22-api-development-log.md` M8 原型链条目随 B4 撤销；`defect-fixes-plan.md` queueMicrotask 条目随 C3 改 ✅；
 5. 本文档每个里程碑完成时回填"完成记录"（日期 + 提交 + 证据），状态列与完成记录保持一致，避免再现"清单 ⬜ / 记录已填"的漂移。
+
+---
+
+## 附录 B1：全局实例原型链审计清单（2026-08-20 实测）
+
+审计工具：`tests/compat/node22/probe/protos.cjs`（双跑 JSON 差分，已注册进 `run-probe.sh`）；分类报告 `tools/audit-protos.mjs`。基线 node 22.23.1（冻结版）。
+
+### B1.1 P0 迁移目标（Web API 实例，B3 范围）
+
+| 实例 | Node 期望自有键 | Node 原型链（ctor: 自有键） | aluka 现状 |
+|------|----------------|---------------------------|-----------|
+| `crypto` | `[]`，`[object Crypto]` | `Crypto.prototype{constructor,getRandomValues,randomUUID,subtle}` → `Object.prototype` | 方法/`subtle` 为自有属性；`Crypto.prototype` 存在但为空且其 proto 为 null；无 toStringTag |
+| `crypto.subtle` | `[]`，`[object SubtleCrypto]` | `SubtleCrypto.prototype{encrypt,decrypt,deriveBits,deriveKey,digest,exportKey,generateKey,importKey,sign,unwrapKey,verify,wrapKey,constructor}` → `Object.prototype` | 全部方法为自有属性 |
+| `performance` | `[]`，`[object Performance]` | `Performance.prototype{17 方法/getter}` → `EventTarget.prototype{addEventListener,constructor,dispatchEvent,removeEventListener}` → `Object.prototype` | 9 个键全为自有（含 `timeOrigin`——Node 中是原型 getter）；proto 为 null |
+| `navigator` | `[]`，`[object Object]` | `Navigator.prototype{constructor,hardwareConcurrency,language,languages,platform,userAgent}`（全 getter）→ `Object.prototype` | 6 个属性全为自有数据属性；proto 为 null |
+
+delete 行为差（自有属性模型）：`delete crypto.randomUUID` / `delete performance.now` / `delete navigator.userAgent` 在 aluka 后方法不可达（`undefined`），Node 中仍可用——迁移后应与 Node 一致。
+
+### B1.2 耦合的引擎前提（B3 验收依赖，随 B3 一起修）
+
+> 2026-08-20 更新：以下 4 项已随 B3/B4 全部修复，详见附录 B 完成记录。
+
+1. **for-in 不遍历原型链（引擎 bug）**：`for (k in Object.create({a:1}))` aluka 得 `[]`，Node 得 `["a"]`。不修则迁移后 `for (k in crypto)` 仍与 Node 差异（Node 枚举原型上可枚举方法）。→ 已修（OpEnumKeys）
+2. **Object.prototype 成员可枚举**：aluka 中 `Object.keys(Object.prototype)` 有 6 键、描述符 `enumerable:true`；Node 中 `[]`（全不可枚举）。与 #1 耦合：for-in 一旦走原型链，可枚举的 Object.prototype 成员会泄漏进所有 for-in。→ 已修（sweepBuiltinEnumerability）
+3. **Object.prototype 面**：aluka 缺 `__defineGetter__` / `__defineSetter__` / `__lookupGetter__` / `__lookupSetter__` / `__proto__` / `toLocaleString`（6/12）。→ 已修（12/12）
+4. **null 原型根源**：Go 侧 `engine.NewObject()` 创建的对象原型为 null（JS 字面量 `{}` 才接 objectProto）——全局实例与其 prototype 对象普遍如此，`Math.hasOwnProperty` 直接抛 TypeError。→ Web API 实例已迁移；Math/JSON/Reflect 已补链（console/process/Intl 残留属 B1.3 超范围记录）。
+
+### B1.3 超范围记录（不在工作流 B 内修，供其他工作流/缺陷台账引用）
+
+> 2026-08-20 更新：`Performance`/`Navigator` 构造器已随 B3 注册；Math/JSON/Reflect 与 globalThis 的可枚举性、Math/JSON/Reflect 原型链与 toStringTag 已随 B4 修复；console/process/Intl 与成员缺失项仍为遗留。
+
+- ~~**可枚举性（B4 部分）**~~：已修——Math/JSON/Reflect 成员、globalThis 的 ES 内建属性不可枚举；globalThis 可枚举集合 = Node 的 15 个（插入顺序仍有差，遗留）。
+- **toStringTag（遗留）**：console/process/globalThis 之外的残留——console/process 按计划保持不动；Intl 无 tag。
+- **成员缺失（遗留）**：`Math.hypot`、`JSON.isRawJSON/rawJSON`、`Intl.DisplayNames/Locale/supportedValuesOf`、`Atomics`、`WebAssembly`、`Iterator`、`WeakRef`、`SharedArrayBuffer`、`eval`/`escape`/`unescape`、`AggregateError`/`EvalError`/`URIError`、`ReadableStreamBYOBRequest` 构造器。
+- ~~**globalThis 自有 `hasOwnProperty` 键**~~：已修（误注册移除，经原型链解析）；`Aluka`/`Bun`/`URLPattern`/`gc` 为已知超集（Bun 兼容，保留）。
+- **console/process**：按计划保持不动（Node 中本就是自有属性模型；`process` 的 `on/off/emit` 在 Node 挂 `EventEmitter` 原型链，属已知偏差，不在 B 内迁移）。
+- **globalThis 原型链（遗留）**：Node 为 `globalThis → (V8 单键中间对象) → Object.prototype`，aluka 直连 Object.prototype；中间层为 V8 global proxy 细节，不追。
+- **函数对象枚举性（遗留）**：普通函数 `name`/`length`/`prototype` 仍可枚举（Node 不可枚举）；闭包创建热路径加 attrs 映射有分配成本，留待后续以 shape 级方案处理。
+- **Intl 命名空间（遗留）**：成员可枚举 + null 原型 + 缺 3 成员。
+
+### B1 完成记录
+
+- 2026-08-20：`probe/protos.cjs` + `run-probe.sh` 注册 + `tools/compare-probe.mjs`/`tools/audit-protos.mjs` 落库；node 22.23.1 vs aluka 双跑，偏差分类如上（P0 命中计划预期并新增 navigator；另发现 for-in 原型链缺失、Object.prototype 面与可枚举性两个耦合引擎前提）。
+
+---
+
+## 附录 B 完成记录（2026-08-20）
+
+### B2：迁移基建 ✅
+
+- `engine.Context` 新增 `ObjectPrototype() Object`（Interpreter/VM/stub 三实现），供全局注册把接口原型接到 `%Object.prototype%`。
+- `internal/runtime/globals/interface.go`：`RegisterInterface(ctx, WebInterface{Name, Tag, Base, Ctor})` —— ctor.prototype `{w:false,e:false,c:false}`、proto.constructor 不可枚举、原型链接 Base/Object.prototype、Symbol.toStringTag 非可枚举；方法经 `proto.Set`（wec 全 true，WebIDL 一致）、访问器经 `engine.SetAccessor`。
+- 引擎补 `Object.prototype.toString` 的 `Symbol.toStringTag` 协议（ES2020 20.1.3.6 step 5，此前恒 `[object Object]`）。
+- 单测 `interface_test.go`（描述符/原型链/instanceof/delete/hasOwnProperty/new 抛 TypeError/多级 Base）。
+
+### B3：迁移与耦合引擎修复 ✅
+
+**迁移对象（node22 protos 探针差分清零）**：
+- `crypto`（自有键空；`getRandomValues`/`randomUUID` 上原型；`subtle` 为原型访问器恒返回共享实例）
+- `crypto.subtle`（12 方法 + wrapKey/unwrapKey 上 `SubtleCrypto.prototype`）
+- `CryptoKey`（内部状态存 Symbol 键槽位，own keys 空；type/extractable/algorithm/usages 原型 getter）
+- `performance`（9 键全迁移；补齐 Node 22 的 17 键原型面：clearMeasures/clearResourceTimings/eventLoopUtilization/nodeTiming/onresourcetimingbufferfull/setResourceTimingBufferSize/timerify/toJSON；链 `Performance.prototype → EventTarget.prototype → Object.prototype`；注册全局 `Performance` 构造器）
+- `navigator`（6 属性为 `Navigator.prototype` getter；注册全局 `Navigator`；无 toStringTag——对齐 Node）
+- `EventTarget`（方法上原型 + Symbol 槽位监听状态；AbortSignal.prototype → EventTarget.prototype；修复 Go 侧触发路径经 `eventTargetAddListener`/`eventTargetDispatch` 直调）
+- `node:perf_hooks` 模块改为增强既有原型（此前重挂空原型导致回归，已修复并回归 m6-4 差分 PASS）
+
+**耦合引擎修复**：
+- for-in 原型链遍历：新 opcode `OpEnumKeys`（meta 登记，JIT 白名单外自动拒编译），VM/AST 共用 `engine.EnumerateForInKeys`；**FormatVersion 28 → 29**
+- `Object.prototype` 补齐 12 键（新增 `toLocaleString`/`__defineGetter__`/`__defineSetter__`/`__lookupGetter__`/`__lookupSetter__`/`__proto__` 访问器）
+- 内建枚举性清扫（`sweepBuiltinEnumerability`）：全部内建构造器静态方法、原型成员、Math/JSON/Reflect 成员统一不可枚举；class 原型 constructor 与方法不可枚举
+
+### B4：边缘收口 ✅
+
+- globalThis：`[[Prototype]] = %Object.prototype%`（移除误注册的自有 `hasOwnProperty` 键，babel 风格 `hasOwnProperty.call` 经原型链解析）；`Symbol.toStringTag = 'global'`
+- globalThis 可枚举性：engine 侧（setupBuiltins 末尾）+ globals 侧（`SweepGlobalEnumerability`，注册完成后调用）双段清扫，白名单 = Node 22 的 15 个可枚举全局；`Object.keys(globalThis)` 与 Node 集合一致（顺序仍有插入序差，残留）
+- Math/JSON/Reflect：补原型链 + `Symbol.toStringTag`
+- knownDifference 撤销：`node22-api-development-log.md` M8 记录 2026-08-20 撤销条目
+
+### B 验收证据（2026-08-20）
+
+- node22 protos 探针：crypto/crypto.subtle/performance/navigator/deleteTest 全清零；Math/JSON/Reflect/Intl/console/process/globalThis 残留差异均为 B1.3 记录的超范围项
+- node22 差分套件 59/66；7 个失败与基线二进制逐字节一致（存量，非本工作流回归）
+- 全 workspace `go test` 绿；jitdiff 三 tier 零失配；optimize_equivalence 通过；test262 子集 8/8
+- 属性访问基准（PropAccess/Polymorphic/Miss/Set ×3）：基线对比 −6.5% ~ +2.2%（噪声内，未超 5% 阈值）
+- conformance：build 23/23；webbuild/vue-sfc 失败项与基线一致（环境性存量）

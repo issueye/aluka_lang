@@ -83,6 +83,72 @@ func (interp *Interpreter) setupBuiltins() {
 	// Global functions
 	interp.setupGlobalFuncs()
 	interp.setupFinalizationRegistry()
+
+	// 内建枚举性清扫：所有内建构造器静态方法与其 prototype 成员统一为
+	// 不可枚举（ES 惯例）。for-in 走原型链后若不清扫，内建方法会泄漏进
+	// 所有数组/字符串等的 for-in 结果（Node 中 for (k in []) 仅得索引）。
+	interp.sweepBuiltinEnumerability()
+}
+
+// sweepBuiltinEnumerability 把 constructors 表中全部内建构造器与其原型对象
+// 的（可枚举）成员重定义为不可枚举。WebIDL 接口（globals 包经
+// RegisterInterface 注册）不在此表，方法保持 WebIDL 的可枚举语义。
+// 同时收口 globalThis：内建全局键不可枚举（Node 仅 web 类全局可枚举）、
+// 原型链接 %Object.prototype%、补 Symbol.toStringTag 'global'。
+func (interp *Interpreter) sweepBuiltinEnumerability() {
+	swept := make(map[engine.Object]bool)
+	sweep := func(o engine.Object) {
+		if o == nil || swept[o] {
+			return
+		}
+		swept[o] = true
+		for _, k := range o.Keys() {
+			_ = engine.DefineOwnProperty(o, k, engine.Descriptor{HasEnumerable: true, Enumerable: false})
+		}
+	}
+	// 内建命名空间（非构造器）：Math/JSON/Reflect 成员同样不可枚举，且
+	// 原型链接 %Object.prototype%（此前为 null 原型）并补 Symbol.toStringTag。
+	for _, name := range []string{"Math", "JSON", "Reflect"} {
+		if v, err := interp.globalObj.Get(name); err == nil {
+			if o, ok := v.AsObject(); ok {
+				engine.SetProto(o, interp.objectProto)
+				sweep(o)
+				tagKey := engine.SymbolToStringTag.SymbolKey()
+				_ = o.Set(tagKey, engine.Str(name))
+				_ = engine.DefineOwnProperty(o, tagKey, engine.Descriptor{HasEnumerable: true, Enumerable: false})
+			}
+		}
+	}
+	for _, ctor := range interp.constructors {
+		sweep(ctor)
+		if pv, err := ctor.Get("prototype"); err == nil {
+			if po, ok := pv.AsObject(); ok {
+				sweep(po)
+			}
+		}
+	}
+	// globalThis 自有键清扫：engine 侧注册的内建一律不可枚举；例外为 Node
+	// 22 同样可枚举的 engine 注册项。globals 包（crypto/fetch/timers 等）
+	// 在 setupBuiltins 之后注册，不受影响，保持可枚举（对齐 Node）。
+	for _, k := range interp.globalObj.Keys() {
+		if !globalEnumerableAllowlist[k] {
+			_ = engine.DefineOwnProperty(interp.globalObj, k, engine.Descriptor{HasEnumerable: true, Enumerable: false})
+		}
+	}
+	// globalThis [[Prototype]] = %Object.prototype%（hasOwnProperty 等经原型
+	// 链解析，Node 语义）+ Symbol.toStringTag 'global'。
+	engine.SetProto(interp.globalObj, interp.objectProto)
+	tagKey := engine.SymbolToStringTag.SymbolKey()
+	_ = interp.globalObj.Set(tagKey, engine.Str("global"))
+	_ = engine.DefineOwnProperty(interp.globalObj, tagKey, engine.Descriptor{HasEnumerable: true, Enumerable: false})
+}
+
+// globalEnumerableAllowlist 是 Node 22 中可枚举、且由 engine（而非 globals
+// 包）注册的 globalThis 属性。其余 engine 注册项一律不可枚举。
+var globalEnumerableAllowlist = map[string]bool{
+	"structuredClone": true,
+	"queueMicrotask":  true,
+	"global":          true,
 }
 
 // --- BigInt.prototype ---
@@ -159,22 +225,44 @@ func (interp *Interpreter) setupObjectProto() {
 		return engine.Boolean(engine.HasOwnProperty(o, key)), nil
 	}))
 	_ = p.Set("toString", interp.nativeMethod("toString", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		var builtinTag string
 		switch this.Type() {
 		case engine.TypeUndefined:
 			return engine.Str("[object Undefined]"), nil
 		case engine.TypeNull:
 			return engine.Str("[object Null]"), nil
 		case engine.TypeBoolean:
-			return engine.Str("[object Boolean]"), nil
+			builtinTag = "Boolean"
 		case engine.TypeNumber:
-			return engine.Str("[object Number]"), nil
+			builtinTag = "Number"
 		case engine.TypeString:
-			return engine.Str("[object String]"), nil
+			builtinTag = "String"
 		case engine.TypeFunction:
-			return engine.Str("[object Function]"), nil
+			builtinTag = "Function"
+		case engine.TypeBigInt:
+			builtinTag = "BigInt"
 		default:
-			return engine.Str("[object Object]"), nil
+			builtinTag = "Object"
 		}
+		// Symbol.toStringTag 协议（ES2020 20.1.3.6 step 5）：沿原型链查
+		// @@toStringTag，字符串值覆盖 builtin tag；否则保持内建标签。
+		if o, ok := this.AsObject(); ok {
+			key := engine.SymbolToStringTag.SymbolKey()
+			for cur := engine.Value(o); cur != nil; {
+				co, ok := cur.AsObject()
+				if !ok {
+					break
+				}
+				if tag, err := co.Get(key); err == nil && tag != nil && !tag.IsUndefined() {
+					if tag.Type() == engine.TypeString {
+						builtinTag = tag.String()
+					}
+					break
+				}
+				cur = engine.GetProto(co)
+			}
+		}
+		return engine.Str("[object " + builtinTag + "]"), nil
 	}))
 	_ = p.Set("valueOf", interp.nativeMethod("valueOf", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		return this, nil
@@ -211,6 +299,111 @@ func (interp *Interpreter) setupObjectProto() {
 		}
 		return engine.Boolean(false), nil
 	}))
+	_ = p.Set("toLocaleString", interp.nativeMethod("toLocaleString", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		// 默认实现等价 Invoke(this, "toString")。
+		if o, ok := this.AsObject(); ok {
+			if ts, err := o.Get("toString"); err == nil && ts.IsFunction() {
+				if f, ok := ts.AsFunction(); ok {
+					return f.Call([]engine.Value{this})
+				}
+			}
+		}
+		return engine.Str(this.String()), nil
+	}))
+
+	// --- Legacy accessor helpers（Annex B）---
+	legacyDefineAccessor := func(isGetter bool) engine.Value {
+		name := "__defineSetter__"
+		if isGetter {
+			name = "__defineGetter__"
+		}
+		return interp.nativeMethod(name, func(this engine.Value, args []engine.Value) (engine.Value, error) {
+			o, ok := this.AsObject()
+			if !ok {
+				return engine.Undefined(), fmt.Errorf("%w: Object.prototype.%s called on non-object", engine.ErrTypeError, name)
+			}
+			if len(args) < 2 || !args[1].IsFunction() {
+				return engine.Undefined(), fmt.Errorf("%w: %s requires a function", engine.ErrTypeError, name)
+			}
+			key := propertyKeyOf(args[0])
+			d := engine.Descriptor{HasEnumerable: true, Enumerable: true, HasConfigurable: true, Configurable: true}
+			if isGetter {
+				d.HasGet, d.Get = true, args[1]
+			} else {
+				d.HasSet, d.Set = true, args[1]
+			}
+			if err := engine.DefineOwnProperty(o, key, d); err != nil {
+				return engine.Undefined(), err
+			}
+			return engine.Undefined(), nil
+		})
+	}
+	_ = p.Set("__defineGetter__", legacyDefineAccessor(true))
+	_ = p.Set("__defineSetter__", legacyDefineAccessor(false))
+
+	legacyLookupAccessor := func(isGetter bool) engine.Value {
+		name := "__lookupSetter__"
+		if isGetter {
+			name = "__lookupGetter__"
+		}
+		return interp.nativeMethod(name, func(this engine.Value, args []engine.Value) (engine.Value, error) {
+			if len(args) == 0 {
+				return engine.Undefined(), nil
+			}
+			key := propertyKeyOf(args[0])
+			for cur := this; cur != nil; {
+				co, ok := cur.AsObject()
+				if !ok {
+					break
+				}
+				if v, exists := engine.GetOwnSlot(co, key); exists {
+					if acc, ok := v.(*engine.AccessorValue); ok {
+						if isGetter {
+							return orUndefinedValue(acc.Getter), nil
+						}
+						return orUndefinedValue(acc.Setter), nil
+					}
+					return engine.Undefined(), nil
+				}
+				cur = engine.GetProto(co)
+			}
+			return engine.Undefined(), nil
+		})
+	}
+	_ = p.Set("__lookupGetter__", legacyLookupAccessor(true))
+	_ = p.Set("__lookupSetter__", legacyLookupAccessor(false))
+
+	// __proto__ 访问器（Annex B）：get = getPrototypeOf；set 走 [[SetPrototypeOf]]
+	// 语义（非对象/环静默失败）。
+	engine.SetAccessor(p, "__proto__",
+		interp.nativeMethod("get __proto__", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+			proto := engine.GetProto(this)
+			if proto == nil {
+				return engine.Null(), nil
+			}
+			return proto, nil
+		}),
+		interp.nativeMethod("set __proto__", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+			if len(args) == 0 {
+				return engine.Undefined(), nil
+			}
+			if _, ok := this.AsObject(); !ok {
+				return engine.Undefined(), nil
+			}
+			if args[0].IsNull() {
+				engine.SetProto(this, nil)
+				return engine.Undefined(), nil
+			}
+			proto, ok := args[0].AsObject()
+			if !ok {
+				return engine.Undefined(), nil
+			}
+			engine.TrySetProto(this, proto)
+			return engine.Undefined(), nil
+		}),
+	)
+	// 成员不可枚举统一在 setupBuiltins 末尾的 sweepBuiltinEnumerability 处理
+	// （constructor 亦经 Object 构造器的 prototype 链接被覆盖）。
 }
 
 // --- Object constructor ---
@@ -2297,13 +2490,9 @@ func (interp *Interpreter) setupGlobalFuncs() {
 		f, ok := args[0].Float()
 		return engine.Boolean(ok && !math.IsNaN(f) && !math.IsInf(f, 0)), nil
 	}))
-	// Node/V8 把 Object.prototype.hasOwnProperty 暴露为全局属性（babel 等
-	// 库的编译产物常以自由变量 `hasOwnProperty.call(...)` 形式引用，严格
-	// 模式下未声明标识符回退到全局查找——Aluka 缺此全局导致
-	// "Cannot read properties of undefined (reading 'call')"）。
-	if hp, ok := interp.objectProto.Get("hasOwnProperty"); ok == nil {
-		_ = interp.globalObj.Set("hasOwnProperty", hp)
-	}
+	// Node/V8 中 `hasOwnProperty.call(...)` 自由变量经 globalThis 的原型链
+	// （→ Object.prototype）解析，不是全局自有键。globalThis 的原型链在
+	// sweepBuiltinEnumerability 中统一挂接，这里不再误注册自有键。
 	_ = interp.globalObj.Set("String", interp.constructors["String"])
 }
 

@@ -26,40 +26,30 @@ import (
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // WebCryptoConfig 配置 crypto 全局。
 type WebCryptoConfig struct{}
 
 // NewWebCrypto 注册全局 crypto, Crypto, SubtleCrypto, CryptoKey 对象。
+// WebIDL 原型链语义（compat-boundary-closure-plan 工作流 B3）：
+//   - crypto / crypto.subtle 自有键为空，方法挂 Crypto.prototype /
+//     SubtleCrypto.prototype（可枚举、wec 全 true），实例经 SetProto 接入；
+//   - subtle 是 Crypto.prototype 上的访问器，恒返回同一共享实例；
+//   - CryptoKey 实例内部状态存 Symbol 键槽位（own keys / for-in 均为空，
+//     对齐 Node），type/extractable/algorithm/usages 为原型 getter。
 func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
-	crypto := engine.NewObject()
-
-	// getRandomValues(typedArray)：填充随机字节，返回同一数组。
-	_ = crypto.Set("getRandomValues", engine.NewFunction("getRandomValues", func(args []engine.Value) (engine.Value, error) {
-		if len(args) > 0 {
-			if b, ok := engine.AsBuffer(args[0]); ok {
-				_, _ = rand.Read(b)
-				return args[0], nil
-			}
-			if ta, ok := engine.AsTypedArray(args[0]); ok &&
-				ta.Kind() != engine.KindFloat32 && ta.Kind() != engine.KindFloat64 {
-				_, _ = rand.Read(ta.Bytes())
-				return args[0], nil
-			}
-		}
-		return engine.Undefined(), fmt.Errorf("getRandomValues: expects an integer typed array")
-	}))
-
-	// randomUUID() → UUID v4 字符串。
-	_ = crypto.Set("randomUUID", engine.NewFunction("randomUUID", func(args []engine.Value) (engine.Value, error) {
-		return engine.Str(randomUUID()), nil
-	}))
-
 	subtle := engine.NewObject()
 
+	// --- SubtleCrypto 接口 ---
+	_, subtleProto, err := RegisterInterface(ctx, WebInterface{Name: "SubtleCrypto", Tag: "SubtleCrypto"})
+	if err != nil {
+		return err
+	}
+
 	// 1. digest(algorithm, data) -> Promise<ArrayBuffer>
-	_ = subtle.Set("digest", engine.NewFunction("digest", func(args []engine.Value) (engine.Value, error) {
+	_ = subtleProto.Set("digest", engine.NewFunction("digest", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return promiseRejectValue(ctx, "digest: algorithm and data required")
 		}
@@ -89,7 +79,7 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 	}))
 
 	// 2. importKey(format, keyData, algorithm, extractable, keyUsages) -> Promise<CryptoKey>
-	_ = subtle.Set("importKey", engine.NewFunction("importKey", func(args []engine.Value) (engine.Value, error) {
+	_ = subtleProto.Set("importKey", engine.NewFunction("importKey", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 3 {
 			return promiseRejectValue(ctx, "importKey: format, keyData and algorithm required")
 		}
@@ -142,7 +132,7 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 	}))
 
 	// 3. exportKey(format, key) -> Promise<ArrayBuffer|Object>
-	_ = subtle.Set("exportKey", engine.NewFunction("exportKey", func(args []engine.Value) (engine.Value, error) {
+	_ = subtleProto.Set("exportKey", engine.NewFunction("exportKey", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return promiseRejectValue(ctx, "exportKey: format and key required")
 		}
@@ -153,10 +143,8 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 			return promiseRejectValue(ctx, "exportKey: invalid key object")
 		}
 
-		if extV, err := keyObj.Get("extractable"); err == nil {
-			if ext, ok := extV.Bool(); ok && !ext {
-				return promiseRejectValue(ctx, "exportKey: key is not extractable")
-			}
+		if ext := cryptoKeyExtractable(keyObj); !ext {
+			return promiseRejectValue(ctx, "exportKey: key is not extractable")
 		}
 
 		keyData := extractKeyBytes(keyObj)
@@ -169,11 +157,9 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 			_ = jwk.Set("kty", engine.Str("oct"))
 			_ = jwk.Set("k", engine.Str(base64.RawURLEncoding.EncodeToString(keyData)))
 			_ = jwk.Set("ext", engine.Boolean(true))
-			if algV, err := keyObj.Get("algorithm"); err == nil {
-				if ao, ok := algV.AsObject(); ok {
-					if nameV, err := ao.Get("name"); err == nil {
-						_ = jwk.Set("alg", nameV)
-					}
+			if algo := extractKeyAlgorithm(keyObj); algo != nil {
+				if nameV, err := algo.Get("name"); err == nil {
+					_ = jwk.Set("alg", nameV)
 				}
 			}
 			return promiseResolveValue(ctx, jwk)
@@ -183,7 +169,7 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 	}))
 
 	// 4. generateKey(algorithm, extractable, keyUsages) -> Promise<CryptoKey|CryptoKeyPair>
-	_ = subtle.Set("generateKey", engine.NewFunction("generateKey", func(args []engine.Value) (engine.Value, error) {
+	_ = subtleProto.Set("generateKey", engine.NewFunction("generateKey", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 1 {
 			return promiseRejectValue(ctx, "generateKey: algorithm required")
 		}
@@ -232,7 +218,7 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 	}))
 
 	// 5. sign(algorithm, key, data) -> Promise<ArrayBuffer>
-	_ = subtle.Set("sign", engine.NewFunction("sign", func(args []engine.Value) (engine.Value, error) {
+	_ = subtleProto.Set("sign", engine.NewFunction("sign", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 3 {
 			return promiseRejectValue(ctx, "sign: algorithm, key and data required")
 		}
@@ -265,7 +251,7 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 	}))
 
 	// 6. verify(algorithm, key, signature, data) -> Promise<boolean>
-	_ = subtle.Set("verify", engine.NewFunction("verify", func(args []engine.Value) (engine.Value, error) {
+	_ = subtleProto.Set("verify", engine.NewFunction("verify", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 4 {
 			return promiseRejectValue(ctx, "verify: algorithm, key, signature and data required")
 		}
@@ -300,7 +286,7 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 	}))
 
 	// 7. encrypt(algorithm, key, data) -> Promise<ArrayBuffer>
-	_ = subtle.Set("encrypt", engine.NewFunction("encrypt", func(args []engine.Value) (engine.Value, error) {
+	_ = subtleProto.Set("encrypt", engine.NewFunction("encrypt", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 3 {
 			return promiseRejectValue(ctx, "encrypt: algorithm, key and data required")
 		}
@@ -378,7 +364,7 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 	}))
 
 	// 8. decrypt(algorithm, key, data) -> Promise<ArrayBuffer>
-	_ = subtle.Set("decrypt", engine.NewFunction("decrypt", func(args []engine.Value) (engine.Value, error) {
+	_ = subtleProto.Set("decrypt", engine.NewFunction("decrypt", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 3 {
 			return promiseRejectValue(ctx, "decrypt: algorithm, key and data required")
 		}
@@ -456,13 +442,13 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 	}))
 
 	// 9. deriveBits(algorithm, baseKey, length) -> Promise<ArrayBuffer>
-	_ = subtle.Set("deriveBits", engine.NewFunction("deriveBits", func(args []engine.Value) (engine.Value, error) {
+	_ = subtleProto.Set("deriveBits", engine.NewFunction("deriveBits", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 3 {
 			return promiseRejectValue(ctx, "deriveBits: algorithm, baseKey, length required")
 		}
 		keyObj, ok := args[1].AsObject()
 		if !ok {
-			return promiseRejectValue(ctx, "deriveBits: invalid baseKey")
+			return promiseRejectValue(ctx, "deriveBits: invalid base key")
 		}
 		keyBytes := extractKeyBytes(keyObj)
 		length := 256
@@ -494,13 +480,13 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 	}))
 
 	// 10. deriveKey(algorithm, baseKey, derivedKeyType, extractable, keyUsages) -> Promise<CryptoKey>
-	_ = subtle.Set("deriveKey", engine.NewFunction("deriveKey", func(args []engine.Value) (engine.Value, error) {
+	_ = subtleProto.Set("deriveKey", engine.NewFunction("deriveKey", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 3 {
 			return promiseRejectValue(ctx, "deriveKey: algorithm, baseKey and derivedKeyType required")
 		}
 		keyObj, ok := args[1].AsObject()
 		if !ok {
-			return promiseRejectValue(ctx, "deriveKey: invalid baseKey")
+			return promiseRejectValue(ctx, "deriveKey: invalid base key")
 		}
 		keyBytes := extractKeyBytes(keyObj)
 
@@ -541,44 +527,82 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 		return promiseRejectValue(ctx, "deriveKey: unsupported algorithm "+algName)
 	}))
 
-	_ = crypto.Set("subtle", subtle)
+	// 11/12. wrapKey/unwrapKey —— 原型面占位（对齐 Node 原型键集合；当前
+	// 算法矩阵下按既有惯例拒绝，走 promise reject 而非静默成功）。
+	_ = subtleProto.Set("wrapKey", engine.NewFunction("wrapKey", func(args []engine.Value) (engine.Value, error) {
+		return promiseRejectValue(ctx, "wrapKey: unsupported algorithm")
+	}))
+	_ = subtleProto.Set("unwrapKey", engine.NewFunction("unwrapKey", func(args []engine.Value) (engine.Value, error) {
+		return promiseRejectValue(ctx, "unwrapKey: unsupported algorithm")
+	}))
+
+	engine.SetProto(subtle, subtleProto)
+
+	// --- Crypto 接口 ---
+	_, cryptoProto, err := RegisterInterface(ctx, WebInterface{Name: "Crypto", Tag: "Crypto"})
+	if err != nil {
+		return err
+	}
+
+	// getRandomValues(typedArray)：填充随机字节，返回同一数组。
+	_ = cryptoProto.Set("getRandomValues", engine.NewFunction("getRandomValues", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			if b, ok := engine.AsBuffer(args[0]); ok {
+				_, _ = rand.Read(b)
+				return args[0], nil
+			}
+			if ta, ok := engine.AsTypedArray(args[0]); ok &&
+				ta.Kind() != engine.KindFloat32 && ta.Kind() != engine.KindFloat64 {
+				_, _ = rand.Read(ta.Bytes())
+				return args[0], nil
+			}
+		}
+		return engine.Undefined(), fmt.Errorf("getRandomValues: expects an integer typed array")
+	}))
+
+	// randomUUID() → UUID v4 字符串。
+	_ = cryptoProto.Set("randomUUID", engine.NewFunction("randomUUID", func(args []engine.Value) (engine.Value, error) {
+		return engine.Str(randomUUID()), nil
+	}))
+
+	// subtle 访问器：恒返回共享实例（crypto.subtle === crypto.subtle）。
+	engine.SetAccessor(cryptoProto, "subtle",
+		interpreter.NewNativeMethod("get subtle", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+			return subtle, nil
+		}),
+		engine.Undefined())
+
+	crypto := engine.NewObject()
+	engine.SetProto(crypto, cryptoProto)
 	if err := ctx.Global().Set("crypto", crypto); err != nil {
 		return err
 	}
 
-	// 构造器注入
-	cryptoCtor := engine.NewFunction("Crypto", func(args []engine.Value) (engine.Value, error) {
-		return engine.Undefined(), fmt.Errorf("%w: Illegal constructor", engine.ErrTypeError)
-	})
-	cryptoProto := engine.NewObject()
-	_ = cryptoProto.Set("constructor", cryptoCtor)
-	if co, ok := cryptoCtor.AsObject(); ok {
-		_ = co.Set("prototype", cryptoProto)
+	// --- CryptoKey 接口 ---
+	_, keyProto, err := RegisterInterface(ctx, WebInterface{Name: "CryptoKey", Tag: "CryptoKey"})
+	if err != nil {
+		return err
 	}
-	engine.SetProto(crypto, cryptoProto)
-	_ = ctx.Global().Set("Crypto", cryptoCtor)
-
-	subtleCtor := engine.NewFunction("SubtleCrypto", func(args []engine.Value) (engine.Value, error) {
-		return engine.Undefined(), fmt.Errorf("%w: Illegal constructor", engine.ErrTypeError)
-	})
-	subtleProto := engine.NewObject()
-	_ = subtleProto.Set("constructor", subtleCtor)
-	if so, ok := subtleCtor.AsObject(); ok {
-		_ = so.Set("prototype", subtleProto)
-	}
-	engine.SetProto(subtle, subtleProto)
-	_ = ctx.Global().Set("SubtleCrypto", subtleCtor)
-
-	keyCtor := engine.NewFunction("CryptoKey", func(args []engine.Value) (engine.Value, error) {
-		return engine.Undefined(), fmt.Errorf("%w: Illegal constructor", engine.ErrTypeError)
-	})
-	keyProto := engine.NewObject()
-	_ = keyProto.Set("constructor", keyCtor)
-	if ko, ok := keyCtor.AsObject(); ok {
-		_ = ko.Set("prototype", keyProto)
+	for _, g := range []struct {
+		name string
+		slot *engine.SymbolValue
+	}{
+		{"type", slotKeyType},
+		{"extractable", slotKeyExtractable},
+		{"algorithm", slotKeyAlgorithm},
+		{"usages", slotKeyUsages},
+	} {
+		slot := g.slot
+		engine.SetAccessor(keyProto, g.name,
+			interpreter.NewNativeMethod("get "+g.name, func(this engine.Value, args []engine.Value) (engine.Value, error) {
+				if o, ok := this.AsObject(); ok {
+					return o.Get(slot.SymbolKey())
+				}
+				return engine.Undefined(), nil
+			}),
+			engine.Undefined())
 	}
 	cryptoKeyProto = keyProto
-	_ = ctx.Global().Set("CryptoKey", keyCtor)
 
 	return nil
 }
@@ -586,14 +610,23 @@ func NewWebCrypto(ctx engine.Context, cfg WebCryptoConfig) error {
 // cryptoKeyProto 是 CryptoKey.prototype
 var cryptoKeyProto engine.Object
 
+// CryptoKey 内部槽位：Symbol 键对 JS 侧 own keys / for-in / getOwnPropertyNames
+// 均不可见（Object.keys/getOwnPropertyNames 过滤 symbol 键），对齐 Node 的
+// 空 own-key 语义；type/extractable/algorithm/usages 由原型 getter 读取。
+var (
+	slotKeyType        = engine.NewSymbol("aluka.CryptoKey.type")
+	slotKeyExtractable = engine.NewSymbol("aluka.CryptoKey.extractable")
+	slotKeyAlgorithm   = engine.NewSymbol("aluka.CryptoKey.algorithm")
+	slotKeyUsages      = engine.NewSymbol("aluka.CryptoKey.usages")
+	slotKeyData        = engine.NewSymbol("aluka.CryptoKey.keyData")
+)
+
 // newCryptoKey 构造标准 CryptoKey 对象。
 func newCryptoKey(typeStr string, extractable bool, algorithmName, hashName string, usages []string, keyData []byte) engine.Value {
 	key := engine.NewObject()
 	if cryptoKeyProto != nil {
 		engine.SetProto(key, cryptoKeyProto)
 	}
-	_ = key.Set("type", engine.Str(typeStr))
-	_ = key.Set("extractable", engine.Boolean(extractable))
 
 	algo := engine.NewObject()
 	_ = algo.Set("name", engine.Str(algorithmName))
@@ -605,14 +638,17 @@ func newCryptoKey(typeStr string, extractable bool, algorithmName, hashName stri
 	if len(keyData) > 0 {
 		_ = algo.Set("length", engine.Number(float64(len(keyData)*8)))
 	}
-	_ = key.Set("algorithm", algo)
 
 	usagesVals := make([]engine.Value, len(usages))
 	for i, u := range usages {
 		usagesVals[i] = engine.Str(u)
 	}
-	_ = key.Set("usages", engine.NewArray(usagesVals))
-	_ = key.Set("_keyData", NewBufferInstance(keyData))
+
+	_ = key.Set(slotKeyType.SymbolKey(), engine.Str(typeStr))
+	_ = key.Set(slotKeyExtractable.SymbolKey(), engine.Boolean(extractable))
+	_ = key.Set(slotKeyAlgorithm.SymbolKey(), algo)
+	_ = key.Set(slotKeyUsages.SymbolKey(), engine.NewArray(usagesVals))
+	_ = key.Set(slotKeyData.SymbolKey(), NewBufferInstance(keyData))
 	return key
 }
 
@@ -631,7 +667,7 @@ func getBytesFromValue(v engine.Value) []byte {
 }
 
 func extractKeyBytes(keyObj engine.Object) []byte {
-	if v, err := keyObj.Get("_keyData"); err == nil {
+	if v, err := keyObj.Get(slotKeyData.SymbolKey()); err == nil {
 		if b, ok := engine.AsBuffer(v); ok {
 			return b
 		}
@@ -639,8 +675,28 @@ func extractKeyBytes(keyObj engine.Object) []byte {
 	return nil
 }
 
+// cryptoKeyExtractable 读取 CryptoKey 的 extractable 槽位。
+func cryptoKeyExtractable(keyObj engine.Object) bool {
+	if v, err := keyObj.Get(slotKeyExtractable.SymbolKey()); err == nil {
+		if b, ok := v.Bool(); ok {
+			return b
+		}
+	}
+	return false
+}
+
+// extractKeyAlgorithm 返回 CryptoKey 的 algorithm 槽位对象。
+func extractKeyAlgorithm(keyObj engine.Object) engine.Object {
+	if v, err := keyObj.Get(slotKeyAlgorithm.SymbolKey()); err == nil {
+		if o, ok := v.AsObject(); ok {
+			return o
+		}
+	}
+	return nil
+}
+
 func extractKeyAlgorithmName(keyObj engine.Object) string {
-	if algV, err := keyObj.Get("algorithm"); err == nil {
+	if algV, err := keyObj.Get(slotKeyAlgorithm.SymbolKey()); err == nil {
 		if ao, ok := algV.AsObject(); ok {
 			if nameV, err := ao.Get("name"); err == nil {
 				return nameV.String()
@@ -651,7 +707,7 @@ func extractKeyAlgorithmName(keyObj engine.Object) string {
 }
 
 func extractKeyHashName(keyObj engine.Object) string {
-	if algV, err := keyObj.Get("algorithm"); err == nil {
+	if algV, err := keyObj.Get(slotKeyAlgorithm.SymbolKey()); err == nil {
 		if ao, ok := algV.AsObject(); ok {
 			if hV, err := ao.Get("hash"); err == nil {
 				if ho, ok := hV.AsObject(); ok {

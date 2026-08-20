@@ -185,6 +185,11 @@ const (
 	OpInc
 	OpDec
 
+	// for-in 头部键枚举：pop 对象，push 原型链可枚举字符串键数组
+	// （EnumerateObjectProperties 语义，派生键遮蔽原型键；null/undefined
+	// 与无包装属性的原始值得空数组）。
+	OpEnumKeys
+
 	OpEnd // sentinel marking end of code (for safety)
 )
 

@@ -32,7 +32,11 @@ func NewAbort(ctx engine.Context, cfg AbortConfig) error {
 	})
 	asObj, _ := abortSignalCtor.AsObject()
 	abortSignalProto = engine.NewObject()
+	// AbortSignal.prototype → EventTarget.prototype（继承 add/remove/dispatchEvent）。
+	ensureEventTargetProto()
+	engine.SetProto(abortSignalProto, eventTargetProto)
 	_ = abortSignalProto.Set("constructor", abortSignalCtor)
+	_ = engine.DefineOwnProperty(abortSignalProto, "constructor", engine.Descriptor{HasEnumerable: true, Enumerable: false})
 	_ = asObj.Set("prototype", abortSignalProto)
 
 	acCtor := engine.NewFunction("AbortController", func(args []engine.Value) (engine.Value, error) {
@@ -117,18 +121,12 @@ func NewAbort(ctx engine.Context, cfg AbortConfig) error {
 					}
 				}
 				// 注册 abort 监听：源信号中断时传播。
-				if fn, err := src.Get("addEventListener"); err == nil && fn.IsFunction() {
-					if f, ok := fn.AsFunction(); ok {
-						listener := engine.NewFunction("abortListener", func(a []engine.Value) (engine.Value, error) {
-							reason, _ := src.Get("reason")
-							abortSignal(signal, reason)
-							return engine.Undefined(), nil
-						})
-						if _, err := f.Call([]engine.Value{engine.Str("abort"), listener}); err != nil {
-							interpreter.ReportUncaught(nil, err)
-						}
-					}
-				}
+				listener := engine.NewFunction("abortListener", func(a []engine.Value) (engine.Value, error) {
+					reason, _ := src.Get("reason")
+					abortSignal(signal, reason)
+					return engine.Undefined(), nil
+				})
+				eventTargetAddListener(src, "abort", toEventListener(listener))
 			}
 		}
 		return signal, nil
@@ -196,13 +194,7 @@ func abortSignal(signal engine.Value, reason engine.Value) {
 			}
 		}
 		// 'abort' 事件。
-		if d, err := o.Get("dispatchEvent"); err == nil && d.IsFunction() {
-			if f, ok := d.AsFunction(); ok {
-				ev, _ := newEventInstance([]engine.Value{engine.Str("abort")}).AsObject()
-				if _, err := f.Call([]engine.Value{ev}); err != nil {
-					interpreter.ReportUncaught(nil, err)
-				}
-			}
-		}
+		ev, _ := newEventInstance([]engine.Value{engine.Str("abort")}).AsObject()
+		eventTargetDispatch(o, ev)
 	}
 }

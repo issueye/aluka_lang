@@ -257,6 +257,9 @@ func (v *VM) EnqueueNextTick(fn func()) {
 // Global returns the global object (implements engine.Context).
 func (v *VM) Global() engine.Object { return v.interp.Global() }
 
+// ObjectPrototype returns %Object.prototype% (implements engine.Context).
+func (v *VM) ObjectPrototype() engine.Object { return v.interp.objectProto }
+
 // RegisterFunc registers a Go function as a global (implements engine.Context).
 func (v *VM) RegisterFunc(name string, fn engine.Func) error {
 	return v.interp.RegisterFunc(name, fn)
@@ -682,6 +685,15 @@ func (v *VM) run() (engine.Value, error) {
 					return v.handleThrow(err)
 				}
 				v.push(updated)
+			case bytecode.OpEnumKeys:
+				// for-in 头部键枚举：原型链可枚举键（EnumerateObjectProperties）。
+				src := v.pop()
+				keys := engine.EnumerateForInKeys(src)
+				vals := make([]engine.Value, len(keys))
+				for i, k := range keys {
+					vals[i] = engine.Str(k)
+				}
+				v.push(engine.NewArray(vals))
 			case bytecode.OpAdd:
 				r := v.pop()
 				l := v.pop()
@@ -1795,6 +1807,9 @@ func (v *VM) doMakeClass(classIdx int) (engine.Value, error) {
 		engine.SetProto(proto, v.interp.objectProto)
 	}
 	_ = proto.Set("constructor", ctor)
+	// class 原型成员不可枚举（ES：Object.keys(A.prototype) 为空、for-in
+	// 不泄漏 constructor）。
+	_ = engine.DefineOwnProperty(proto, "constructor", engine.Descriptor{HasEnumerable: true, Enumerable: false})
 	_ = ctor.obj.Set("prototype", proto)
 
 	// Wire up static inheritance: constructor's [[Prototype]] = superclass.
@@ -1839,6 +1854,8 @@ func (v *VM) doMakeClass(classIdx int) (engine.Value, error) {
 		switch m.Kind {
 		case bytecode.MethodKindNormal:
 			_ = target.Set(name, mClosure)
+			// class 方法（含静态）不可枚举（ES class 元素语义）。
+			_ = engine.DefineOwnProperty(target, name, engine.Descriptor{HasEnumerable: true, Enumerable: false})
 		case bytecode.MethodKindGetter:
 			engine.UpdateAccessor(target, name, true, mClosure)
 		case bytecode.MethodKindSetter:

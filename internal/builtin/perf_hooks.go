@@ -109,6 +109,14 @@ func NewPerfHooks(ctx engine.Context) (engine.Value, error) {
 	if !ok {
 		return engine.Undefined(), fmt.Errorf("perf_hooks: global performance not an object")
 	}
+	// 复用 globals 注册的 Performance.prototype（含 WebIDL 原型方法，工作流
+	// B3）：模块加载只增强原型，不重挂实例原型、不在实例上写自有方法——
+	// 保持 performance 自有键为空的原型链语义。
+	perfProto := engine.GetProto(perfVal)
+	if perfProto == nil {
+		perfProto = engine.NewObject()
+		engine.SetProto(perfVal, perfProto)
+	}
 	state := newPerfState()
 
 	nowFn := func() float64 {
@@ -134,7 +142,7 @@ func NewPerfHooks(ctx engine.Context) (engine.Value, error) {
 	}
 
 	// --- mark(name) -------------------------------------------------------
-	_ = perfObj.Set("mark", engine.NewFunction("mark", func(args []engine.Value) (engine.Value, error) {
+	_ = perfProto.Set("mark", engine.NewFunction("mark", func(args []engine.Value) (engine.Value, error) {
 		name := strArg(args, 0)
 		st := nowFn()
 		entry := makeEntry(name, "mark", st, 0)
@@ -150,7 +158,7 @@ func NewPerfHooks(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// --- measure(name[, startMarkOrOptions][, endMark]) -------------------
-	_ = perfObj.Set("measure", engine.NewFunction("measure", func(args []engine.Value) (engine.Value, error) {
+	_ = perfProto.Set("measure", engine.NewFunction("measure", func(args []engine.Value) (engine.Value, error) {
 		name := strArg(args, 0)
 		start := 0.0
 		end := nowFn()
@@ -193,13 +201,13 @@ func NewPerfHooks(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// --- getEntries 系列 ---------------------------------------------------
-	_ = perfObj.Set("getEntries", engine.NewFunction("getEntries", func(args []engine.Value) (engine.Value, error) {
+	_ = perfProto.Set("getEntries", engine.NewFunction("getEntries", func(args []engine.Value) (engine.Value, error) {
 		state.mu.Lock()
 		all := append([]engine.Value(nil), state.entries...)
 		state.mu.Unlock()
 		return engine.NewArray(all), nil
 	}))
-	_ = perfObj.Set("getEntriesByType", engine.NewFunction("getEntriesByType", func(args []engine.Value) (engine.Value, error) {
+	_ = perfProto.Set("getEntriesByType", engine.NewFunction("getEntriesByType", func(args []engine.Value) (engine.Value, error) {
 		t := strArg(args, 0)
 		state.mu.Lock()
 		var out []engine.Value
@@ -213,7 +221,7 @@ func NewPerfHooks(ctx engine.Context) (engine.Value, error) {
 		state.mu.Unlock()
 		return engine.NewArray(out), nil
 	}))
-	_ = perfObj.Set("getEntriesByName", engine.NewFunction("getEntriesByName", func(args []engine.Value) (engine.Value, error) {
+	_ = perfProto.Set("getEntriesByName", engine.NewFunction("getEntriesByName", func(args []engine.Value) (engine.Value, error) {
 		name := strArg(args, 0)
 		typ := ""
 		if len(args) > 1 {
@@ -238,7 +246,7 @@ func NewPerfHooks(ctx engine.Context) (engine.Value, error) {
 		state.mu.Unlock()
 		return engine.NewArray(out), nil
 	}))
-	_ = perfObj.Set("clearMarks", engine.NewFunction("clearMarks", func(args []engine.Value) (engine.Value, error) {
+	_ = perfProto.Set("clearMarks", engine.NewFunction("clearMarks", func(args []engine.Value) (engine.Value, error) {
 		name := strArg(args, 0)
 		state.mu.Lock()
 		if name == "" {
@@ -250,19 +258,19 @@ func NewPerfHooks(ctx engine.Context) (engine.Value, error) {
 		state.mu.Unlock()
 		return engine.Undefined(), nil
 	}))
-	_ = perfObj.Set("clearMeasures", engine.NewFunction("clearMeasures", func(args []engine.Value) (engine.Value, error) {
+	_ = perfProto.Set("clearMeasures", engine.NewFunction("clearMeasures", func(args []engine.Value) (engine.Value, error) {
 		name := strArg(args, 0)
 		state.mu.Lock()
 		state.entries = filterEntries(state.entries, "measure", name)
 		state.mu.Unlock()
 		return engine.Undefined(), nil
 	}))
-	_ = perfObj.Set("clearResourceTimings", engine.NewFunction("clearResourceTimings", func(args []engine.Value) (engine.Value, error) {
+	_ = perfProto.Set("clearResourceTimings", engine.NewFunction("clearResourceTimings", func(args []engine.Value) (engine.Value, error) {
 		return engine.Undefined(), nil
 	}))
 
 	// --- timerify(fn) ------------------------------------------------------
-	_ = perfObj.Set("timerify", engine.NewFunction("timerify", func(args []engine.Value) (engine.Value, error) {
+	_ = perfProto.Set("timerify", engine.NewFunction("timerify", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 || !args[0].IsFunction() {
 			return engine.Undefined(), fmt.Errorf("perf_hooks: timerify requires a function")
 		}
@@ -277,14 +285,14 @@ func NewPerfHooks(ctx engine.Context) (engine.Value, error) {
 	}))
 
 	// --- eventLoopUtilization / nodeTiming ---------------------------------
-	_ = perfObj.Set("eventLoopUtilization", engine.NewFunction("eventLoopUtilization", func(args []engine.Value) (engine.Value, error) {
+	_ = perfProto.Set("eventLoopUtilization", engine.NewFunction("eventLoopUtilization", func(args []engine.Value) (engine.Value, error) {
 		o := engine.NewObject()
 		_ = o.Set("idle", engine.Number(0))
 		_ = o.Set("active", engine.Number(0))
 		_ = o.Set("utilization", engine.Number(0))
 		return o, nil
 	}))
-	_ = perfObj.Set("nodeTiming", makeNodeTiming(nowFn()))
+	_ = perfProto.Set("nodeTiming", makeNodeTiming(nowFn()))
 
 	// --- PerformanceObserver -----------------------------------------------
 	obsProto := engine.NewObject()
@@ -360,16 +368,15 @@ func NewPerfHooks(ctx engine.Context) (engine.Value, error) {
 	moduleObj := engine.NewObject()
 	_ = moduleObj.Set("performance", perfVal)
 
-	// Performance 类（performance 实例所属类）。
+	// Performance 类（performance 实例所属类）：prototype 复用实例现有原型。
 	perfCtor := engine.NewFunction("Performance", func(args []engine.Value) (engine.Value, error) {
 		return perfVal, nil
 	})
-	perfProto := engine.NewObject()
 	_ = perfProto.Set("constructor", perfCtor)
+	_ = engine.DefineOwnProperty(perfProto, "constructor", engine.Descriptor{HasEnumerable: true, Enumerable: false})
 	if co, ok := perfCtor.AsObject(); ok {
 		_ = co.Set("prototype", perfProto)
 	}
-	engine.SetProto(perfVal, perfProto)
 
 	// PerformanceMark / PerformanceMeasure 类（mark/measure 返回实例的原型）。
 	markCtor := engine.NewFunction("PerformanceMark", func(args []engine.Value) (engine.Value, error) {

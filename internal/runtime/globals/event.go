@@ -11,6 +11,8 @@ package globals
 //   - 实例方法/状态均以闭包捕获（绕过 engine.Func 无 this 绑定限制）。
 
 import (
+	"sync"
+
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
@@ -22,19 +24,146 @@ type EventConfig struct{}
 var (
 	eventProto        engine.Object
 	eventTargetProto  engine.Object
+	eventTargetCtor   engine.Value
 	customEventProto  engine.Object
 	messageEventProto engine.Object
 )
 
+// eventTargetProtoOnce 保证 EventTarget 原型只构建一次（跨注册顺序可用）。
+var eventTargetProtoOnce sync.Once
+
+// ensureEventTargetProto 惰性构建 EventTarget 原型与构造器：AbortSignal /
+// WebSocket 等在 NewEvent 之前注册时，newEventTargetInstance 也能挂到完整
+// 原型。上下文相关部分（%Object.prototype% 链接、全局注册）在 NewEvent 补。
+func ensureEventTargetProto() {
+	eventTargetProtoOnce.Do(func() {
+		proto := engine.NewObject()
+		ctor := engine.NewFunction("EventTarget", func(args []engine.Value) (engine.Value, error) {
+			return newEventTargetInstance(), nil
+		})
+		// WebIDL：constructor 不可枚举；ctor.prototype 不可写/枚举/配置。
+		_ = proto.Set("constructor", ctor)
+		_ = engine.DefineOwnProperty(proto, "constructor", engine.Descriptor{HasEnumerable: true, Enumerable: false})
+		if co, ok := ctor.AsObject(); ok {
+			_ = co.Set("prototype", proto)
+			_ = engine.DefineOwnProperty(co, "prototype", engine.Descriptor{
+				HasWritable: true, Writable: false,
+				HasEnumerable: true, Enumerable: false,
+				HasConfigurable: true, Configurable: false,
+			})
+		}
+		installEventTargetMethods(proto)
+		eventTargetProto = proto
+		eventTargetCtor = ctor
+	})
+}
+
+// installEventTargetMethods 把 add/remove/dispatchEvent 挂到原型（可枚举，
+// WebIDL 成员语义）。内部 listeners 状态存 Symbol 键槽位（对外不可见），
+// 方法经 this 读写。
+func installEventTargetMethods(proto engine.Object) {
+	_ = proto.Set("addEventListener", interpreter.NewNativeMethod("addEventListener", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), nil
+		}
+		state := eventTargetStateOf(this)
+		if state == nil {
+			state = make(map[string][]eventListener)
+		}
+		eventType := args[0].String()
+		l := toEventListener(args[1])
+		if l.fn == nil && l.obj == nil {
+			return engine.Undefined(), nil
+		}
+		if len(args) > 2 && args[2].IsObject() {
+			if o, ok := args[2].AsObject(); ok {
+				if once, err := o.Get("once"); err == nil {
+					if b, ok := once.Bool(); ok && b {
+						l.once = true
+					}
+				}
+			}
+		}
+		// WHATWG 语义：同一 (type, listener, capture) 去重——先移除再追加。
+		var out []eventListener
+		for _, old := range state[eventType] {
+			if !sameListener(old, l) {
+				out = append(out, old)
+			}
+		}
+		state[eventType] = append(out, l)
+		saveEventTargetListeners(this, state)
+		return engine.Undefined(), nil
+	}))
+	_ = proto.Set("removeEventListener", interpreter.NewNativeMethod("removeEventListener", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		state := eventTargetStateOf(this)
+		if state == nil || len(args) < 2 {
+			return engine.Undefined(), nil
+		}
+		eventType := args[0].String()
+		target := toEventListener(args[1])
+		var out []eventListener
+		for _, l := range state[eventType] {
+			if !sameListener(l, target) {
+				out = append(out, l)
+			}
+		}
+		state[eventType] = out
+		saveEventTargetListeners(this, state)
+		return engine.Undefined(), nil
+	}))
+	_ = proto.Set("dispatchEvent", interpreter.NewNativeMethod("dispatchEvent", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Boolean(false), nil
+		}
+		state := eventTargetStateOf(this)
+		ev := args[0]
+		if evObj, ok := ev.AsObject(); ok {
+			_ = evObj.Set("target", this)
+			_ = evObj.Set("currentTarget", this)
+		}
+		eventType := ""
+		if evObj, ok := ev.AsObject(); ok {
+			if t, err := evObj.Get("type"); err == nil {
+				eventType = t.String()
+			}
+		}
+		if state != nil {
+			ls := state[eventType]
+			snapshot := make([]eventListener, len(ls))
+			copy(snapshot, ls)
+			for _, l := range snapshot {
+				if l.once {
+					state = removeListenerOnceIn(state, eventType, l)
+				}
+				dispatchToListener(l, ev)
+			}
+			if len(ls) > 0 {
+				saveEventTargetListeners(this, state)
+			}
+		}
+		// 返回 !defaultPrevented。
+		if evObj, ok := ev.AsObject(); ok {
+			if v, err := evObj.Get("defaultPrevented"); err == nil {
+				if b, ok := v.Bool(); ok {
+					return engine.Boolean(!b), nil
+				}
+			}
+		}
+		return engine.Boolean(true), nil
+	}))
+}
+
 // NewEvent 注册全局 Event / EventTarget / CustomEvent / MessageEvent 构造器。
 func NewEvent(ctx engine.Context, cfg EventConfig) error {
-	etCtor := engine.NewFunction("EventTarget", func(args []engine.Value) (engine.Value, error) {
-		return newEventTargetInstance(), nil
-	})
-	etObj, _ := etCtor.AsObject()
-	eventTargetProto = engine.NewObject()
-	_ = eventTargetProto.Set("constructor", etCtor)
-	_ = etObj.Set("prototype", eventTargetProto)
+	// EventTarget 原型与方法惰性构建（ensureEventTargetProto）：AbortSignal /
+	// WebSocket 等在 NewEvent 之前注册时也能得到完整原型。此处补上下文相关
+	// 部分：原型链接 %Object.prototype% 并注册全局构造器。
+	ensureEventTargetProto()
+	engine.SetProto(eventTargetProto, ctx.ObjectPrototype())
+	if err := ctx.Global().Set("EventTarget", eventTargetCtor); err != nil {
+		return err
+	}
 
 	evCtor := engine.NewFunction("Event", func(args []engine.Value) (engine.Value, error) {
 		return newEventInstance(args), nil
@@ -79,9 +208,7 @@ func NewEvent(ctx engine.Context, cfg EventConfig) error {
 	_ = messageEventProto.Set("constructor", meCtor)
 	_ = meObj.Set("prototype", messageEventProto)
 
-	if err := ctx.Global().Set("EventTarget", etCtor); err != nil {
-		return err
-	}
+	// EventTarget 构造器已由 RegisterInterface 注册为全局。
 	if err := ctx.Global().Set("Event", evCtor); err != nil {
 		return err
 	}
@@ -173,98 +300,152 @@ type eventListener struct {
 	once bool
 }
 
-// newEventTargetInstance 构造 EventTarget 实例。
-func newEventTargetInstance() engine.Value {
-	et := engine.NewObject()
-	if eventTargetProto != nil {
-		engine.SetProto(et, eventTargetProto)
+// eventTargetListenersSlot 是 EventTarget 内部监听状态的 Symbol 键槽位
+// （own keys / for-in / getOwnPropertyNames 均不可见，对齐 Node）。槽位值是
+// JS 对象 { "<type>": [{fn, obj, once}, ...] }，原型方法经 this 读写。
+var eventTargetListenersSlot = engine.NewSymbol("aluka.EventTarget.listeners")
+
+// eventTargetAddListener 是 addEventListener 的 Go 直调版（Go 侧内部触发
+// 注册用；NativeMethod.Call 无 this 绑定，Go 调用方不能走 JS 方法路径）。
+func eventTargetAddListener(target engine.Value, eventType string, l eventListener) {
+	state := eventTargetStateOf(target)
+	if state == nil {
+		state = make(map[string][]eventListener)
 	}
-	state := &eventTargetState{listeners: make(map[string][]eventListener)}
+	var out []eventListener
+	for _, old := range state[eventType] {
+		if !sameListener(old, l) {
+			out = append(out, old)
+		}
+	}
+	state[eventType] = append(out, l)
+	saveEventTargetListeners(target, state)
+}
 
-	// addEventListener(type, listener[, options])
-	_ = et.Set("addEventListener", engine.NewFunction("addEventListener", func(args []engine.Value) (engine.Value, error) {
-		if len(args) < 2 {
-			return engine.Undefined(), nil
+// eventTargetDispatch 是 dispatchEvent 的 Go 直调版（Go 侧触发事件用），
+// 返回 !defaultPrevented。
+func eventTargetDispatch(target engine.Value, ev engine.Value) bool {
+	state := eventTargetStateOf(target)
+	if evObj, ok := ev.AsObject(); ok {
+		_ = evObj.Set("target", target)
+		_ = evObj.Set("currentTarget", target)
+	}
+	eventType := ""
+	if evObj, ok := ev.AsObject(); ok {
+		if t, err := evObj.Get("type"); err == nil {
+			eventType = t.String()
 		}
-		eventType := args[0].String()
-		l := toEventListener(args[1])
-		if l.fn == nil && l.obj == nil {
-			return engine.Undefined(), nil
-		}
-		if len(args) > 2 && args[2].IsObject() {
-			if o, ok := args[2].AsObject(); ok {
-				if once, err := o.Get("once"); err == nil {
-					if b, ok := once.Bool(); ok && b {
-						l.once = true
-					}
-				}
-			}
-		}
-		// WHATWG 语义：同一 (type, listener, capture) 去重——先移除再追加。
-		out := state.listeners[eventType][:0]
-		for _, old := range state.listeners[eventType] {
-			if !sameListener(old, l) {
-				out = append(out, old)
-			}
-		}
-		state.listeners[eventType] = append(out, l)
-		return engine.Undefined(), nil
-	}))
-
-	// removeEventListener(type, listener[, options])
-	_ = et.Set("removeEventListener", engine.NewFunction("removeEventListener", func(args []engine.Value) (engine.Value, error) {
-		if len(args) < 2 {
-			return engine.Undefined(), nil
-		}
-		eventType := args[0].String()
-		target := toEventListener(args[1])
-		ls := state.listeners[eventType]
-		out := ls[:0]
-		for _, l := range ls {
-			if !sameListener(l, target) {
-				out = append(out, l)
-			}
-		}
-		state.listeners[eventType] = out
-		return engine.Undefined(), nil
-	}))
-
-	// dispatchEvent(event)：返回 false 若 preventDefault 被调用。
-	_ = et.Set("dispatchEvent", engine.NewFunction("dispatchEvent", func(args []engine.Value) (engine.Value, error) {
-		if len(args) == 0 {
-			return engine.Boolean(false), nil
-		}
-		ev := args[0]
-		if evObj, ok := ev.AsObject(); ok {
-			_ = evObj.Set("target", et)
-			_ = evObj.Set("currentTarget", et)
-		}
-		eventType := ""
-		if evObj, ok := ev.AsObject(); ok {
-			if t, err := evObj.Get("type"); err == nil {
-				eventType = t.String()
-			}
-		}
-		ls := state.listeners[eventType]
+	}
+	if state != nil {
+		ls := state[eventType]
 		snapshot := make([]eventListener, len(ls))
 		copy(snapshot, ls)
 		for _, l := range snapshot {
 			if l.once {
-				removeListenerOnce(state, eventType, l)
+				state = removeListenerOnceIn(state, eventType, l)
 			}
 			dispatchToListener(l, ev)
 		}
-		// 返回 !defaultPrevented。
-		if evObj, ok := ev.AsObject(); ok {
-			if v, err := evObj.Get("defaultPrevented"); err == nil {
-				if b, ok := v.Bool(); ok {
-					return engine.Boolean(!b), nil
-				}
+		if len(ls) > 0 {
+			saveEventTargetListeners(target, state)
+		}
+	}
+	if evObj, ok := ev.AsObject(); ok {
+		if v, err := evObj.Get("defaultPrevented"); err == nil {
+			if b, ok := v.Bool(); ok {
+				return !b
 			}
 		}
-		return engine.Boolean(true), nil
-	}))
+	}
+	return true
+}
 
+// eventTargetListenersOf 读取 this 的监听状态（无槽位返回 nil）。
+func eventTargetListenersOf(this engine.Value) map[string][]eventListener {
+	o, ok := this.AsObject()
+	if !ok {
+		return nil
+	}
+	v, err := o.Get(eventTargetListenersSlot.SymbolKey())
+	if err != nil || !v.IsObject() {
+		return nil
+	}
+	holder, _ := v.AsObject()
+	out := make(map[string][]eventListener)
+	for _, typ := range holder.Keys() {
+		arrV, _ := holder.Get(typ)
+		if arrV == nil || !arrV.IsObject() {
+			continue
+		}
+		if a, ok := arrV.(*engine.ArrayValue); ok {
+			for _, w := range a.Elems() {
+				wo, ok := w.AsObject()
+				if !ok {
+					continue
+				}
+				var l eventListener
+				if fn, err := wo.Get("fn"); err == nil && fn.IsFunction() {
+					l.fn = fn
+				}
+				if obj, err := wo.Get("obj"); err == nil && obj.IsObject() {
+					if oo, ok := obj.AsObject(); ok {
+						l.obj = oo
+					}
+				}
+				if once, err := wo.Get("once"); err == nil {
+					if b, ok := once.Bool(); ok {
+						l.once = b
+					}
+				}
+				out[typ] = append(out[typ], l)
+			}
+		}
+	}
+	return out
+}
+
+// saveEventTargetListeners 把监听状态写回 this 的槽位（整体重写，读多写少
+// 的低频路径；事件类型间无顺序语义）。
+func saveEventTargetListeners(this engine.Value, m map[string][]eventListener) {
+	o, ok := this.AsObject()
+	if !ok {
+		return
+	}
+	holder := engine.NewObject()
+	for typ, ls := range m {
+		vals := make([]engine.Value, len(ls))
+		for i, l := range ls {
+			w := engine.NewObject()
+			if l.fn != nil {
+				_ = w.Set("fn", l.fn)
+			} else {
+				_ = w.Set("fn", engine.Undefined())
+			}
+			if l.obj != nil {
+				_ = w.Set("obj", l.obj)
+			} else {
+				_ = w.Set("obj", engine.Undefined())
+			}
+			_ = w.Set("once", engine.Boolean(l.once))
+			vals[i] = w
+		}
+		_ = holder.Set(typ, engine.NewArray(vals))
+	}
+	_ = o.Set(eventTargetListenersSlot.SymbolKey(), holder)
+}
+
+// eventTargetStateOf 兼容别名：原型方法内以 map 形式取状态。
+func eventTargetStateOf(this engine.Value) map[string][]eventListener {
+	return eventTargetListenersOf(this)
+}
+
+// newEventTargetInstance 构造 EventTarget 实例：自有键为空，方法经
+// EventTarget.prototype 继承，监听状态存 Symbol 键槽位。
+func newEventTargetInstance() engine.Value {
+	ensureEventTargetProto()
+	et := engine.NewObject()
+	engine.SetProto(et, eventTargetProto)
+	_ = et.Set(eventTargetListenersSlot.SymbolKey(), engine.NewObject())
 	return et
 }
 
@@ -322,4 +503,16 @@ func removeListenerOnce(state *eventTargetState, eventType string, target eventL
 		}
 	}
 	state.listeners[eventType] = out
+}
+
+// removeListenerOnceIn 是 removeListenerOnce 的 map 形态（原型方法路径）。
+func removeListenerOnceIn(state map[string][]eventListener, eventType string, target eventListener) map[string][]eventListener {
+	var out []eventListener
+	for _, l := range state[eventType] {
+		if !sameListener(l, target) {
+			out = append(out, l)
+		}
+	}
+	state[eventType] = out
+	return state
 }

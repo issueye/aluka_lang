@@ -19,7 +19,7 @@
 | **P1-2** `Aluka.$` 标记模板损坏 | ✅ 已修复 | 模板数组参数正确取 quasis |
 | **P1-3** crypto.subtle.digest 非标准 | ✅ 已修复 | Buffer 暴露 byteLength/length/索引 |
 | **P1-4** structuredClone 缺失 | ✅ 已修复 | 深拷贝对象/数组/Map/Set/Date/Buffer + 循环引用 |
-| queueMicrotask 顺序边界 | ⚠️ 遗留 | 隔离测试正确；批量 await 场景偶发顺序差异，非阻断 |
+| queueMicrotask 顺序边界 | ✅ 已修复（2026-08-20） | compat-boundary-closure-plan 工作流 C 闭环：① unhandledRejection 改微任务检查点末尾统一判定（FIFO，同检查点稍后挂 catch 不误报）；② 同刻到期定时器改集中式到期队列（(deadline, seq) 堆序派发），消除独立 AfterFunc 竞争投递的偶发乱序。最小复现差分 `tests/compat/node22/diff/c2-microtask-order.cjs`、`c2-timer-fifo.cjs`（修复前失败、修复后 30/30 稳定 PASS）；参数化语料 `tests/compat/node22/microtask-corpus/` 54/60 双跑一致。已知结构性残留：多 TLA 模块求值串行完成（Node 为全体模块体先启动再共享队列交错），数据语义正确、仅观测顺序不同，需编译器/loader 级 TLA 重构（见计划文档 C 完成记录） |
 
 验证：`go vet ./...` 与 `go test ./... -count=1` 全绿（12 包）；测试函数 561 → **585**；
 冒烟基线：ES 37/37、TS 11/11、Web 20/21、Aluka 13/14（余项为测试断言口径问题，API 实测正常）。

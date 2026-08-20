@@ -43,6 +43,10 @@ type Context interface {
 	// 续期等），返回本次是否执行了微任务。供 HTTP handler 等场景在同步
 	// handler 返回后驱动异步续期，直到响应完成。
 	FlushMicrotasks() bool
+
+	// ObjectPrototype 返回当前上下文的 %Object.prototype%。全局对象注册
+	// 时用它把 WebIDL 接口原型接到标准原型链（X.prototype → Object.prototype）。
+	ObjectPrototype() Object
 }
 
 // NextTickScheduler is implemented by runtimes that provide Node-compatible

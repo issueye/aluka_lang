@@ -164,15 +164,9 @@ func wsDispatch(ctx engine.Context, ws engine.Object, event string, data engine.
 		}
 	}
 	// EventTarget dispatchEvent（addEventListener 监听器）。
-	if d, err := ws.Get("dispatchEvent"); err == nil && d.IsFunction() {
-		if f, ok := d.AsFunction(); ok {
-			ev, _ := newEventInstance([]engine.Value{engine.Str(event)}).AsObject()
-			if data != nil && !data.IsUndefined() {
-				_ = ev.Set("data", data)
-			}
-			if _, err := f.Call([]engine.Value{ev}); err != nil {
-				interpreter.ReportUncaught(nil, err)
-			}
-		}
+	ev, _ := newEventInstance([]engine.Value{engine.Str(event)}).AsObject()
+	if data != nil && !data.IsUndefined() {
+		_ = ev.Set("data", data)
 	}
+	eventTargetDispatch(ws, ev)
 }

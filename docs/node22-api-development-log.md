@@ -352,6 +352,7 @@ b: 2')` 字符串形态（node 22.23.1 undici 拒绝，改 sequence 形态）。
 | 2026-08-07 | M8-8 | 全局 `PerformanceObserver` + entries API（mark/measure 记录、getEntries*/clear*、observer 回调）启动期注册（globals/performance.go 基础实现；node:perf_hooks 加载后由 builtin 完整实现覆盖同名全局）；Performance/PerformanceEntry/PerformanceMark/PerformanceMeasure/PerformanceObserver/PerformanceObserverEntryList/PerformanceResourceTiming 七构造器全局注册。m8-* 与 perf 探针与 node 22.23.1 对齐。 |
 | 2026-08-07 | M8-11 | 全局 `Crypto`/`SubtleCrypto`/`CryptoKey` 构造器（new 抛 TypeError；crypto instanceof Crypto、crypto.subtle instanceof SubtleCrypto、CryptoKey 实例 instanceof 成立，经 SetProto 原型链）。crypto 全局探针与 node 对齐。 |
 | 2026-08-07 | M8 验收 | m8-* 差分 9/9 全 PASS；全局 surface 探针与 node 22.23.1 一致（唯一差异：URLPattern aluka 始终可用，node 需 --experimental-urlpattern——超集）。knownDifference：全局对象方法为自有属性（原型链简化模型）；crypto 自有键含 getRandomValues/randomUUID/subtle（node 在原型上）。 |
+| 2026-08-20 | M8 knownDifference 撤销 | **撤销 2026-08-07 M8 验收的 knownDifference「全局对象方法为自有属性；crypto 自有键含 getRandomValues/randomUUID/subtle」**。compat-boundary-closure-plan 工作流 B 落地：crypto/crypto.subtle/CryptoKey/performance/navigator/EventTarget 全部迁移为 WebIDL 原型链语义（自有键空、方法挂 X.prototype、Symbol.toStringTag、delete 后仍可达），node22 protos 探针（probe/protos.cjs）上述对象差分清零；globalThis 补原型链/toStringTag 'global'/可枚举性白名单（15 键与 node 一致）；Object.prototype 补齐 12 键面并全内建不可枚举；for-in 补原型链遍历（OpEnumKeys，FormatVersion 29）。剩余残留（console/process 内部字段、Intl 成员、globalThis V8 中间层原型）见计划附录 B1.3。 |
 
 ### M9 完成记录
 

@@ -77,6 +77,9 @@ type Interpreter struct {
 	nextTickQueue []func()
 	// microtaskQueue holds pending microtasks (Promise reactions, queueMicrotask).
 	microtaskQueue []func()
+	// unhandledQueue holds promises rejected without a handler, judged at the
+	// end of each microtask checkpoint (Node's unhandledRejection timing).
+	unhandledQueue []*PromiseValue
 
 	// currentVM is the VM currently executing on this interpreter (set in
 	// runModule). Used by native callbacks (Proxy traps, etc.) that need to
@@ -125,6 +128,11 @@ func NewInterpreter() (*Interpreter, error) {
 	}
 	interp.setupBuiltins()
 	interp.setupGlobalThis()
+	// globalThis/undefined/NaN/Infinity 在 setupGlobalThis 后置注册，统一
+	// 收口为不可枚举（对齐 Node）。
+	for _, k := range []string{"globalThis", "undefined", "NaN", "Infinity"} {
+		_ = engine.DefineOwnProperty(interp.globalObj, k, engine.Descriptor{HasEnumerable: true, Enumerable: false})
+	}
 	return interp, nil
 }
 
@@ -158,6 +166,9 @@ func (interp *Interpreter) Eval(code string, filename string) (engine.Value, err
 }
 
 func (interp *Interpreter) Global() engine.Object { return interp.globalObj }
+
+// ObjectPrototype 返回 %Object.prototype%（供 globals 注册把接口原型接上标准原型链）。
+func (interp *Interpreter) ObjectPrototype() engine.Object { return interp.objectProto }
 
 func (interp *Interpreter) RegisterFunc(name string, fn engine.Func) error {
 	return interp.globalObj.Set(name, engine.NewFunction(name, fn))
@@ -502,11 +513,8 @@ func (interp *Interpreter) execForIn(s *ast.ForInStmt, scope *Scope) (engine.Val
 	if err != nil {
 		return nil, err
 	}
-	obj, ok := right.AsObject()
-	if !ok {
-		return nil, nil
-	}
-	for _, key := range obj.Keys() {
+	// EnumerateObjectProperties：原型链可枚举键（与 VM 的 OpEnumKeys 同一 helper）。
+	for _, key := range engine.EnumerateForInKeys(right) {
 		loopScope := scope.NewChild()
 		interp.assignForLeft(s.Left, engine.Str(key), loopScope)
 		_, err := interp.execStmt(s.Body, loopScope)
@@ -1041,13 +1049,11 @@ func (interp *Interpreter) getProperty(obj engine.Value, key string) (engine.Val
 
 // globalHas 判断 name 是否为 globalObj 的自有属性。
 // 用于区分"属性缺失"与"属性存在但值为 undefined"（Get 对两者都返回 Undefined）。
+// 用 GetOwnSlot（不感知可枚举性）判断，globalThis/undefined/NaN/Infinity 收口为
+// 不可枚举后，Keys() 会漏判这些全局名并误抛 ReferenceError。
 func (interp *Interpreter) globalHas(name string) bool {
-	for _, k := range interp.globalObj.Keys() {
-		if k == name {
-			return true
-		}
-	}
-	return false
+	_, ok := engine.GetOwnSlot(interp.globalObj, name)
+	return ok
 }
 
 func (interp *Interpreter) evalCall(e *ast.CallExpr, scope *Scope) (engine.Value, error) {

@@ -67,6 +67,8 @@ type PromiseValue struct {
 	result     engine.Value
 	reactions  []promiseReaction
 	hadHandler bool // M2-4：是否已挂接处理（Then/Catch），用于 unhandledRejection 判定
+	// unhandledReported：已派发过 unhandledRejection（一次性，防跨检查点重复）。
+	unhandledReported bool
 }
 
 // NewPromiseValue creates a new pending Promise.
@@ -108,22 +110,12 @@ func (p *PromiseValue) Reject(reason engine.Value) {
 	p.state = promiseRejected
 	p.result = reason
 	p.triggerReactions()
-	// M2-4：无处理者时，在当前微任务检查点结束时判定 unhandledRejection
-	// （若同拍挂上处理者，hadHandler 已置位，不会误报）。
+	// 无处理者：登记待判定列表，微任务检查点末尾统一判定（Node 语义：
+	// 排干后仍无处理者才派发 unhandledRejection，顺序 = rejection FIFO；
+	// 同检查点内稍后挂 catch 不误报）。
 	if !p.hadHandler {
-		p.maybeUnhandledRejection()
+		p.interp.trackUnhandled(p)
 	}
-}
-
-// maybeUnhandledRejection 在微任务检查点末尾检查是否仍无处理者；若是则
-// 向全局 process 派发 'unhandledRejection'（Node 语义）。
-func (p *PromiseValue) maybeUnhandledRejection() {
-	p.interp.enqueueMicrotask(func() {
-		if p.hadHandler {
-			return
-		}
-		p.dispatchUnhandledRejection()
-	})
 }
 
 // dispatchUnhandledRejection 调用 process.emit('unhandledRejection', reason, promise)；

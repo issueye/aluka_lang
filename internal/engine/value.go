@@ -660,6 +660,51 @@ func GetProto(obj Value) Object {
 	return nil
 }
 
+// EnumerateForInKeys 实现 for-in 头部的 EnumerateObjectProperties（ES2023
+// 14.7.5.9）：沿 [[Prototype]] 链收集可枚举字符串键，派生对象键遮蔽同名
+// 原型键。null/undefined 返回空；原始值中仅字符串产生索引键（UTF-16 单位
+// 计）。链深上限防御原型环（超出按枚举完毕处理）。
+func EnumerateForInKeys(v Value) []string {
+	if v == nil || v.IsUndefined() || v.IsNull() {
+		return nil
+	}
+	if !v.IsObject() {
+		if v.Type() == TypeString {
+			// 索引键按 UTF-16 code unit 计（星面字符占 2 个）。
+			units := 0
+			for _, r := range v.String() {
+				if r > 0xFFFF {
+					units += 2
+				} else {
+					units++
+				}
+			}
+			keys := make([]string, 0, units)
+			for i := 0; i < units; i++ {
+				keys = append(keys, strconv.Itoa(i))
+			}
+			return keys
+		}
+		return nil
+	}
+	var out []string
+	seen := make(map[string]bool)
+	for depth := 0; depth < 128 && v != nil; depth++ {
+		o, ok := v.AsObject()
+		if !ok {
+			break
+		}
+		for _, k := range o.Keys() {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+		v = GetProto(o)
+	}
+	return out
+}
+
 func (o *objectValue) Type() ValueType { return TypeObject }
 
 // String 返回对象的字符串表示（简化版，类似 Node util.inspect）。

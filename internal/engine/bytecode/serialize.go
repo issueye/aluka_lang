@@ -70,7 +70,11 @@ import (
 //
 //	`let l; l || (l = x)` 把第一轮赋值带到后续轮次；babel template.ast
 //	因此只生成第一份 require）。旧缓存含错误循环槽位，必须失效。
-const FormatVersion = 28
+//
+// v28 → v29：for-in 脱糖改为 OpEnumKeys（原型链可枚举键，替代全局
+//
+//	Object.keys 调用序列）。旧缓存的 for-in 循环不含原型链语义，必须失效。
+const FormatVersion = 29
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")

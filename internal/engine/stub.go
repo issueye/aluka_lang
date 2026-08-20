@@ -46,7 +46,8 @@ func (e *stubEngine) Version() string { return "stub-0.1.0" }
 
 // stubContext 是桩引擎的执行上下文。
 type stubContext struct {
-	global Object
+	global      Object
+	objectProto Object
 }
 
 func (c *stubContext) Eval(code string, filename string) (Value, error) {
@@ -84,6 +85,14 @@ func (c *stubContext) AddRef() func() { return func() {} }
 
 // FlushMicrotasks stub 无微任务队列，no-op。
 func (c *stubContext) FlushMicrotasks() bool { return false }
+
+// ObjectPrototype stub 无真实原型体系，返回惰性创建的普通对象占位。
+func (c *stubContext) ObjectPrototype() Object {
+	if c.objectProto == nil {
+		c.objectProto = NewObject()
+	}
+	return c.objectProto
+}
 
 // === 词法分析器 ============================================================
 

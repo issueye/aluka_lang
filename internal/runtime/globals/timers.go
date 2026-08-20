@@ -1,12 +1,19 @@
 package globals
 
 // 全局定时器（setTimeout/setInterval/setImmediate/clear*）。
-// 基于事件循环的 PostTask 机制：Go time.AfterFunc 到期后把 JS 回调投递到 JS 线程。
+// 基于事件循环的 PostTask 机制：到期后把 JS 回调投递到 JS 线程。
+//
+// 一次性定时器（setTimeout/setImmediate）经集中式到期队列派发：所有条目
+// 按（到期时刻, 注册序号）堆序由单一派发 goroutine 依序 PostTask，消除
+// 多个独立 AfterFunc 各自竞争投递导致的同刻到期乱序（Node 的 timer list
+// 保证同批按注册顺序执行；compat-boundary-closure-plan 工作流 C2）。
+// setInterval 仍走独立 Ticker（重复语义）。
 //
 // 注意：回调以 engine.Value（函数）形式存储，执行时经 engine.Function.Call
 // 在 JS 线程调用（PostTask 保证在 JS 单线程执行）。
 
 import (
+	"container/heap"
 	"sync"
 	"time"
 
@@ -20,6 +27,36 @@ type TimerConfig struct {
 	MaxTimers int
 }
 
+// fireEntry 是一次性定时器的到期限排队条目。
+type fireEntry struct {
+	deadline time.Time
+	seq      int64
+	run      func() // PostTask 投递 JS 回调
+	done     func()
+	stopped  bool
+}
+
+// fireQueue 按 (deadline, seq) 的最小堆。
+type fireQueue []*fireEntry
+
+func (q fireQueue) Len() int { return len(q) }
+func (q fireQueue) Less(i, j int) bool {
+	if !q[i].deadline.Equal(q[j].deadline) {
+		return q[i].deadline.Before(q[j].deadline)
+	}
+	return q[i].seq < q[j].seq
+}
+func (q fireQueue) Swap(i, j int) { q[i], q[j] = q[j], q[i] }
+func (q *fireQueue) Push(x any)   { *q = append(*q, x.(*fireEntry)) }
+func (q *fireQueue) Pop() any {
+	old := *q
+	n := len(old)
+	e := old[n-1]
+	old[n-1] = nil
+	*q = old[:n-1]
+	return e
+}
+
 // NewTimers 注册全局定时器函数到 ctx。
 func NewTimers(ctx engine.Context, cfg TimerConfig) error {
 	// 每个 Context 一个定时器状态（闭包捕获）。
@@ -28,7 +65,9 @@ func NewTimers(ctx engine.Context, cfg TimerConfig) error {
 		nextID:    1,
 		timers:    make(map[int]*activeTimer),
 		maxTimers: cfg.MaxTimers,
+		fireWake:  make(chan struct{}, 1),
 	}
+	state.startFireLoop()
 
 	g := ctx.Global()
 
@@ -54,6 +93,61 @@ type activeTimer struct {
 	stopFn func()
 }
 
+// wakeFireLoop 唤醒集中派发 goroutine（非阻塞）。
+func (s *timerState) wakeFireLoop() {
+	select {
+	case s.fireWake <- struct{}{}:
+	default:
+	}
+}
+
+// startFireLoop 启动一次性定时器的集中派发 goroutine：循环取出所有已到期
+// 条目（堆序 = (deadline, seq)）依序 PostTask 到 JS 线程，随后休眠至最早
+// 到期或被新调度唤醒。单一 goroutine 派发消除了多个 AfterFunc 各自竞争
+// 投递 taskCh 的乱序窗口。
+func (s *timerState) startFireLoop() {
+	go func() {
+		for {
+			var due []*fireEntry
+			var next time.Time
+			s.mu.Lock()
+			now := time.Now()
+			for s.fireHeap.Len() > 0 {
+				top := s.fireHeap[0]
+				if top.deadline.After(now) {
+					next = top.deadline
+					break
+				}
+				e := heap.Pop(&s.fireHeap).(*fireEntry)
+				if !e.stopped {
+					due = append(due, e)
+				}
+			}
+			s.mu.Unlock()
+			for _, e := range due {
+				e.run()
+				e.done() // 单次触发后释放句柄
+			}
+			if len(due) > 0 {
+				continue // 派发期间可能又有到期或新调度
+			}
+			// 休眠至最早到期时刻或新调度唤醒。
+			var timerC <-chan time.Time
+			if !next.IsZero() {
+				t := time.NewTimer(time.Until(next))
+				timerC = t.C
+				select {
+				case <-s.fireWake:
+					t.Stop()
+				case <-timerC:
+				}
+			} else {
+				<-s.fireWake
+			}
+		}
+	}()
+}
+
 // timerState 持有当前 Context 的定时器状态。
 type timerState struct {
 	ctx       engine.Context
@@ -61,6 +155,11 @@ type timerState struct {
 	nextID    int
 	timers    map[int]*activeTimer
 	maxTimers int
+
+	// 一次性定时器集中派发：堆序 = (deadline, seq)，同刻到期按注册序 FIFO。
+	fireSeq  int64
+	fireHeap fireQueue
+	fireWake chan struct{}
 }
 
 // timerHandle 管理定时器的活跃引用，实现 Node 的 unref/ref/hasRef 语义：
@@ -216,14 +315,23 @@ func (s *timerState) schedule(args []engine.Value, interval bool, forcedDelay ..
 			}
 		}()
 	} else {
-		// setTimeout/setImmediate：单次。
-		delayDur := time.Duration(delay) * time.Millisecond
-		t := time.AfterFunc(delayDur, func() {
-			run()
-			handle.done() // 单次触发后释放句柄
-		})
+		// setTimeout/setImmediate：单次，经集中到期队列按 (deadline, seq)
+		// 依序派发（同刻到期的定时器按注册顺序执行，对齐 Node）。
+		entry := &fireEntry{
+			deadline: time.Now().Add(time.Duration(delay) * time.Millisecond),
+			run:      run,
+			done:     handle.done,
+		}
+		s.mu.Lock()
+		s.fireSeq++
+		entry.seq = s.fireSeq
+		heap.Push(&s.fireHeap, entry)
+		s.mu.Unlock()
+		s.wakeFireLoop()
 		stopFn = func() {
-			t.Stop()
+			s.mu.Lock()
+			entry.stopped = true
+			s.mu.Unlock()
 			handle.done()
 		}
 	}

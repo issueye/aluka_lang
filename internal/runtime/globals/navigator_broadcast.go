@@ -30,14 +30,42 @@ type bcState struct {
 }
 
 // NewNavigator 注册全局 navigator 对象（N22-C4）。
+// WebIDL 原型链语义（工作流 B3）：navigator 自有键为空，属性为
+// Navigator.prototype 上的 getter；无 Symbol.toStringTag（Node 的
+// Object.prototype.toString.call(navigator) 为 "[object Object]"）。
 func NewNavigator(ctx engine.Context, cfg NavigatorConfig) error {
+	_, navProto, err := RegisterInterface(ctx, WebInterface{Name: "Navigator"})
+	if err != nil {
+		return err
+	}
+
+	userAgent := engine.Str("aluka/0.1.0")
+	platform := engine.Str(nodePlatform())
+	hardwareConcurrency := engine.IntValue(runtime.NumCPU())
+	language := engine.Str("en-US")
+	languages := engine.NewArray([]engine.Value{engine.Str("en-US")})
+
+	for _, g := range []struct {
+		name string
+		val  engine.Value
+	}{
+		{"userAgent", userAgent},
+		{"platform", platform},
+		{"hardwareConcurrency", hardwareConcurrency},
+		{"language", language},
+		{"languages", languages},
+		// Node 22 的 Navigator.prototype 无 onLine（浏览器独有），保持对齐。
+	} {
+		val := g.val
+		engine.SetAccessor(navProto, g.name,
+			interpreter.NewNativeMethod("get "+g.name, func(this engine.Value, args []engine.Value) (engine.Value, error) {
+				return val, nil
+			}),
+			engine.Undefined())
+	}
+
 	nav := engine.NewObject()
-	_ = nav.Set("userAgent", engine.Str("aluka/0.1.0"))
-	_ = nav.Set("platform", engine.Str(nodePlatform()))
-	_ = nav.Set("hardwareConcurrency", engine.IntValue(runtime.NumCPU()))
-	_ = nav.Set("language", engine.Str("en-US"))
-	_ = nav.Set("languages", engine.NewArray([]engine.Value{engine.Str("en-US")}))
-	_ = nav.Set("onLine", engine.Boolean(true))
+	engine.SetProto(nav, navProto)
 	return ctx.Global().Set("navigator", nav)
 }
 

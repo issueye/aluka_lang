@@ -223,6 +223,9 @@ var opMeta = [256]*OpMeta{
 	OpInc: {Name: "INC", Pops: 1, Pushes: 1},
 	OpDec: {Name: "DEC", Pops: 1, Pushes: 1},
 
+	// --- for-in 键枚举（原型链可枚举键数组） ---
+	OpEnumKeys: {Name: "ENUM_KEYS", Pops: 1, Pushes: 1},
+
 	// OpEnd 哨兵：标记代码结尾，不执行。
 	OpEnd: {Name: "END"},
 }

@@ -1084,6 +1084,8 @@ func registerRuntimeGlobals(ctx engine.Context) error {
 	if err := globals.NewAluka(ctx, globals.AlukaConfig{}); err != nil {
 		return fmt.Errorf("register Aluka: %w", err)
 	}
+	// 全部全局注册完成后收口可枚举性（对齐 Node 22：仅 web 类全局可枚举）。
+	globals.SweepGlobalEnumerability(ctx)
 	return nil
 }
 
@@ -1185,6 +1187,8 @@ func execute(code string, filename string, vm bool) error {
 	if err := globals.NewAluka(ctx, globals.AlukaConfig{}); err != nil {
 		return fmt.Errorf("register Aluka: %w", err)
 	}
+	// 全部全局注册完成后收口可枚举性（对齐 Node 22：仅 web 类全局可枚举）。
+	globals.SweepGlobalEnumerability(ctx)
 
 	// 启动期注册阶段产生大量中间分配，执行前归还一次 OS 内存（同 runModule）。
 	engine.FreeOSMemory()

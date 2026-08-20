@@ -141,7 +141,6 @@ func (c *Compiler) compileStmt(s ast.Statement) error {
 	return fmt.Errorf("unsupported statement %T", s)
 }
 
-
 func (c *Compiler) compileBlock(b *ast.BlockStmt) error {
 	c.pushBlock()
 	defer c.popBlock()
@@ -483,7 +482,9 @@ func (c *Compiler) compileForOf(left ast.Node, right ast.Expression, body ast.St
 	return nil
 }
 
-// compileForIn compiles `for (left in right) body` using Object.keys + index.
+// compileForIn compiles `for (left in right) body` using OpEnumKeys + index.
+// OpEnumKeys 按 EnumerateObjectProperties 语义枚举原型链可枚举键，避免
+// 脱糖到全局 Object.keys（会被用户覆写且不含原型链键）。
 func (c *Compiler) compileForIn(left ast.Node, right ast.Expression, body ast.Statement) error {
 	c.pushBlock()
 	defer c.popBlock()
@@ -497,14 +498,10 @@ func (c *Compiler) compileForIn(left ast.Node, right ast.Expression, body ast.St
 	tmpIdx := c.declareLocal("__iter_idx__")
 	tmpLen := c.declareLocal("__iter_len__")
 
-	// keys = Object.keys(source)
+	// keys = EnumerateObjectProperties(source)
 	nameLen := c.cur().tmpl.AddStringConst("length")
-	objIdx := c.cur().tmpl.AddStringConst("Object")
-	keysIdx := c.cur().tmpl.AddStringConst("keys")
-	c.emit(bytecode.OpLoadGlobal, uint32(objIdx))
-	c.emit(bytecode.OpGetProp, uint32(keysIdx))
 	c.emit(bytecode.OpLoadLocal, uint32(tmpRight))
-	c.emit(bytecode.OpCall, 1)
+	c.emit(bytecode.OpEnumKeys, 0)
 	c.emit(bytecode.OpStoreLocal, uint32(tmpKeys))
 	c.emit(bytecode.OpLoadLocal, uint32(tmpKeys))
 	c.emit(bytecode.OpGetProp, uint32(nameLen))
@@ -1061,4 +1058,3 @@ func isLoopStmt(s ast.Statement) bool {
 }
 
 // === expressions ==========================================================
-

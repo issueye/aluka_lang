@@ -1,0 +1,3 @@
+# 语料用例由 gen.mjs 按种子生成，可重现，不入库：
+#   node gen.mjs --seed 42 --count 60 --outdir cases
+cases/
