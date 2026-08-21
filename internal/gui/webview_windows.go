@@ -4,6 +4,8 @@ package gui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -19,6 +21,8 @@ var (
 	ole32    = syscall.NewLazyDLL("ole32.dll")
 	shlwapi  = syscall.NewLazyDLL("shlwapi.dll")
 	dwmapi   = syscall.NewLazyDLL("dwmapi.dll")
+
+	// shell32 由 tray_windows.go 声明（托盘与文件夹对话框共用）
 
 	procRegisterClassExW      = user32.NewProc("RegisterClassExW")
 	procCreateWindowExW       = user32.NewProc("CreateWindowExW")
@@ -43,6 +47,8 @@ var (
 	procGetModuleHandleW      = kernel32.NewProc("GetModuleHandleW")
 	procGetOpenFileNameW      = comdlg32.NewProc("GetOpenFileNameW")
 	procGetSaveFileNameW      = comdlg32.NewProc("GetSaveFileNameW")
+	procSHBrowseForFolderW    = shell32.NewProc("SHBrowseForFolderW")
+	procSHGetPathFromIDListW  = shell32.NewProc("SHGetPathFromIDListW")
 	procCoTaskMemFree         = ole32.NewProc("CoTaskMemFree")
 	procCoInitializeEx        = ole32.NewProc("CoInitializeEx")
 	procSHCreateMemStream     = shlwapi.NewProc("SHCreateMemStream")
@@ -50,6 +56,7 @@ var (
 	procGetWindowLongW        = user32.NewProc("GetWindowLongW")
 	procSetWindowLongW        = user32.NewProc("SetWindowLongW")
 	procSendMessageW          = user32.NewProc("SendMessageW")
+	procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
 )
 
 const (
@@ -74,6 +81,12 @@ const (
 	swpShowWindow = 0x0040
 	hwndTopMost   = ^uintptr(0) // -1
 	hwndNoTopMost = ^uintptr(1) // -2
+
+	wsThickFrame = 0x00040000
+	gwlStyle     = ^uintptr(15) // -16
+	gwlExStyle   = ^uintptr(19) // -20
+	wsExLayered  = 0x00080000
+	lwaAlpha     = 0x00000002
 )
 
 type wndClassExW struct {
@@ -121,13 +134,15 @@ type windowsApp struct {
 
 	uiOnce     sync.Once
 	loopDone   chan struct{}
+	quitDone   chan struct{}
 	pendingMu  sync.Mutex
 	uiThreadID uint32
 	loopExited bool
+	quitOnce   sync.Once
 }
 
 func createNativeApp(app *App) NativeApp {
-	return &windowsApp{app: app, loopDone: make(chan struct{})}
+	return &windowsApp{app: app, loopDone: make(chan struct{}), quitDone: make(chan struct{})}
 }
 
 // ensureUILoop 启动（仅需一次）OS UI 消息循环线程，并等待其就绪。
@@ -178,21 +193,17 @@ func (a *windowsApp) ensureUILoop() {
 // Run 阻塞直至应用退出（消息循环在专用 UI 线程上运行）。
 func (a *windowsApp) Run() error {
 	a.ensureUILoop()
-	<-a.loopDone
+	<-a.quitDone
 	return nil
 }
 
+// Quit 通知应用退出：只关闭退出信号，不向 UI 线程投递 WM_QUIT。
+// 消息循环保持运行，PostAction 在退出流程后仍可安全使用
+// （如测试中"关窗即退出"的 App 级行为，之后仍能创建新窗口）。
 func (a *windowsApp) Quit() {
-	a.pendingMu.Lock()
-	tid := a.uiThreadID
-	exited := a.loopExited
-	a.pendingMu.Unlock()
-
-	if tid != 0 && !exited {
-		procPostThreadMessageW.Call(uintptr(tid), 0x0012 /* WM_QUIT */, 0, 0)
-		return
-	}
-	procPostQuitMessage.Call(0)
+	a.quitOnce.Do(func() {
+		close(a.quitDone)
+	})
 }
 
 func (a *windowsApp) PostAction(fn func()) {
@@ -233,68 +244,165 @@ func (a *windowsApp) uiThreadAlive() bool {
 }
 
 func (a *windowsApp) ShowDialog(opts DialogOptions) (int, []string, error) {
+	opts = NormalizeDialogOptions(opts)
 	if opts.Type == "openFile" || opts.Type == "saveFile" {
-		var buf [4096]uint16
-		type ofnStruct struct {
-			lStructSize       uint32
-			hwndOwner         syscall.Handle
-			hInstance         syscall.Handle
-			lpstrFilter       *uint16
-			lpstrCustomFilter *uint16
-			nMaxCustFilter    uint32
-			nFilterIndex      uint32
-			lpstrFile         *uint16
-			nMaxFile          uint32
-			lpstrFileTitle    *uint16
-			nMaxFileTitle     uint32
-			lpstrInitialDir   *uint16
-			lpstrTitle        *uint16
-			Flags             uint32
-			nFileOffset       uint16
-			nFileExtension    uint16
-			lpstrDefExt       *uint16
-			lCustData         uintptr
-			lpfnHook          uintptr
-			lpTemplateName    *uint16
+		if opts.Directory && opts.Type == "openFile" {
+			path, ok := browseForFolder(opts.Title, opts.DefaultPath)
+			if !ok {
+				return 0, nil, nil
+			}
+			return 1, []string{path}, nil
 		}
-
-		var filterStr string
-		for _, f := range opts.Filters {
-			filterStr += f.Name + "\x00*." + strings.Join(f.Extensions, ";*.") + "\x00"
-		}
-		filterStr += "All Files (*.*)\x00*.*\x00\x00"
-
-		filterUtf16, _ := syscall.UTF16PtrFromString(filterStr)
-		titleUtf16, _ := syscall.UTF16PtrFromString(opts.Title)
-
-		ofn := ofnStruct{
-			lStructSize: uint32(unsafe.Sizeof(ofnStruct{})),
-			lpstrFilter: filterUtf16,
-			lpstrFile:   &buf[0],
-			nMaxFile:    uint32(len(buf)),
-			lpstrTitle:  titleUtf16,
-			Flags:       0x00000800 | 0x00080000, // OFN_PATHMUSTEXIST | OFN_EXPLORER
-		}
-
-		var ok uintptr
-		if opts.Type == "saveFile" {
-			ok, _, _ = procGetSaveFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
-		} else {
-			ok, _, _ = procGetOpenFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
-		}
-
-		if ok != 0 {
-			res := syscall.UTF16ToString(buf[:])
-			return 1, []string{res}, nil
-		}
-		return 0, nil, nil
+		return showFileDialog(opts)
 	}
 
-	// 消息弹窗
 	titlePtr, _ := syscall.UTF16PtrFromString(opts.Title)
 	msgPtr, _ := syscall.UTF16PtrFromString(opts.Message)
-	ret, _, _ := procMessageBoxW.Call(0, uintptr(unsafe.Pointer(msgPtr)), uintptr(unsafe.Pointer(titlePtr)), 0x00000040)
-	return int(ret), nil, nil
+	flags, mapRet := messageBoxStyle(opts)
+	ret, _, _ := procMessageBoxW.Call(0, uintptr(unsafe.Pointer(msgPtr)), uintptr(unsafe.Pointer(titlePtr)), uintptr(flags))
+	return mapRet(int(ret)), nil, nil
+}
+
+func showFileDialog(opts DialogOptions) (int, []string, error) {
+	const (
+		ofnPathMustExist   = 0x00000800
+		ofnFileMustExist   = 0x00001000
+		ofnExplorer        = 0x00080000
+		ofnAllowMulti      = 0x00000200
+		ofnOverwritePrompt = 0x00000002
+		ofnHideReadOnly    = 0x00000004
+	)
+
+	bufSize := 4096
+	if opts.Multiple {
+		bufSize = 65536
+	}
+	buf := make([]uint16, bufSize)
+
+	type ofnStruct struct {
+		lStructSize       uint32
+		hwndOwner         syscall.Handle
+		hInstance         syscall.Handle
+		lpstrFilter       *uint16
+		lpstrCustomFilter *uint16
+		nMaxCustFilter    uint32
+		nFilterIndex      uint32
+		lpstrFile         *uint16
+		nMaxFile          uint32
+		lpstrFileTitle    *uint16
+		nMaxFileTitle     uint32
+		lpstrInitialDir   *uint16
+		lpstrTitle        *uint16
+		Flags             uint32
+		nFileOffset       uint16
+		nFileExtension    uint16
+		lpstrDefExt       *uint16
+		lCustData         uintptr
+		lpfnHook          uintptr
+		lpTemplateName    *uint16
+	}
+
+	filterStr := win32FilterString(opts.Filters)
+	filterUtf16, _ := syscall.UTF16PtrFromString(filterStr)
+	titleUtf16, _ := syscall.UTF16PtrFromString(opts.Title)
+
+	var initialDir *uint16
+	if opts.DefaultPath != "" {
+		dir := opts.DefaultPath
+		if isDir, exists := osStat(dir); exists && !isDir {
+			name, _ := syscall.UTF16FromString(filepath.Base(dir))
+			copy(buf, name)
+			parent := filepath.Dir(dir)
+			initialDir, _ = syscall.UTF16PtrFromString(parent)
+		} else {
+			initialDir, _ = syscall.UTF16PtrFromString(dir)
+		}
+	}
+
+	flags := uint32(ofnExplorer | ofnHideReadOnly | ofnPathMustExist)
+	if opts.Type == "openFile" {
+		flags |= ofnFileMustExist
+		if opts.Multiple {
+			flags |= ofnAllowMulti
+		}
+	} else {
+		flags |= ofnOverwritePrompt
+	}
+
+	ofn := ofnStruct{
+		lStructSize:     uint32(unsafe.Sizeof(ofnStruct{})),
+		lpstrFilter:     filterUtf16,
+		lpstrFile:       &buf[0],
+		nMaxFile:        uint32(len(buf)),
+		lpstrTitle:      titleUtf16,
+		lpstrInitialDir: initialDir,
+		Flags:           flags,
+	}
+
+	var ok uintptr
+	if opts.Type == "saveFile" {
+		ok, _, _ = procGetSaveFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
+	} else {
+		ok, _, _ = procGetOpenFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
+	}
+	if ok == 0 {
+		return 0, nil, nil
+	}
+	if opts.Multiple && opts.Type == "openFile" {
+		files := parseNULSeparatedPaths(buf)
+		return 1, files, nil
+	}
+	return 1, []string{syscall.UTF16ToString(buf)}, nil
+}
+
+// osStat 返回 (isDir, exists)。
+func osStat(path string) (isDir bool, exists bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false, false
+	}
+	return fi.IsDir(), true
+}
+
+// browseForFolder 使用 SHBrowseForFolderW 选择目录。
+func browseForFolder(title, defaultPath string) (string, bool) {
+	type browseInfo struct {
+		hwndOwner      syscall.Handle
+		pidlRoot       uintptr
+		pszDisplayName *uint16
+		lpszTitle      *uint16
+		ulFlags        uint32
+		lpfn           uintptr
+		lParam         uintptr
+		iImage         int32
+	}
+	display := make([]uint16, 260)
+	titlePtr, _ := syscall.UTF16PtrFromString(title)
+	const (
+		bifReturnOnlyFSDirs = 0x00000001
+		bifNewDialogStyle   = 0x00000040
+	)
+	bi := browseInfo{
+		pszDisplayName: &display[0],
+		lpszTitle:      titlePtr,
+		ulFlags:        bifReturnOnlyFSDirs | bifNewDialogStyle,
+	}
+	pidl, _, _ := procSHBrowseForFolderW.Call(uintptr(unsafe.Pointer(&bi)))
+	if pidl == 0 {
+		return "", false
+	}
+	defer procCoTaskMemFree.Call(pidl)
+	pathBuf := make([]uint16, 260)
+	ok, _, _ := procSHGetPathFromIDListW.Call(pidl, uintptr(unsafe.Pointer(&pathBuf[0])))
+	if ok == 0 {
+		return "", false
+	}
+	path := syscall.UTF16ToString(pathBuf)
+	if path == "" {
+		return "", false
+	}
+	_ = defaultPath // 经典 BrowseInfo 无可靠初始目录；保留参数便于日后升级 IFileDialog
+	return path, true
 }
 
 // windowsWindow 实现 NativeWindow 接口。
@@ -366,7 +474,13 @@ func globalWndProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uint
 		}
 	case wmClose:
 		if ok && w.parent != nil {
-			w.parent.Close()
+			if w.parent.IsClosed() {
+				w.wvCloseController()
+				procDestroyWindow.Call(uintptr(hwnd))
+				return 0
+			}
+			// TryClose：拦截失败则吞掉 WM_CLOSE，窗口保持
+			w.parent.TryClose()
 		}
 		return 0
 	case wmDestroy:
@@ -441,6 +555,10 @@ func createWindowOnUIThread(opts WindowOptions, parent *Window) (NativeWindow, e
 	style := uint32(wsOverlappedWindow)
 	if opts.Frame != nil && !*opts.Frame {
 		style = wsPopUp | wsVisible
+	}
+	// resizable 选项（nil 默认 true）：无边框 + 不可调整大小时去掉 THICKFRAME
+	if opts.Resizable != nil && !*opts.Resizable {
+		style &^= wsThickFrame
 	}
 
 	// 居中计算
@@ -601,21 +719,32 @@ func (w *windowsWindow) SetMaxSize(width, height int) {
 }
 
 func (w *windowsWindow) SetResizable(resizable bool) {
-	// 切换 WS_THICKFRAME 样式位
-	const wsThickFrame = 0x00040000
-	style, _, _ := procGetWindowLongW.Call(uintptr(w.hwnd), ^uintptr(0) /* GWL_STYLE */)
+	style, _, _ := procGetWindowLongW.Call(uintptr(w.hwnd), gwlStyle)
 	if resizable {
 		style |= wsThickFrame
 	} else {
 		style &^= wsThickFrame
 	}
-	procSetWindowLongW.Call(uintptr(w.hwnd), ^uintptr(0), style)
+	procSetWindowLongW.Call(uintptr(w.hwnd), gwlStyle, style)
 	const swpFrameChanged = 0x0020
 	const swpNoZOrderLocal = 0x0004
 	const swpNoMoveLocal = 0x0002
 	const swpNoSizeLocal = 0x0001
 	procSetWindowPos.Call(uintptr(w.hwnd), 0, 0, 0, 0, 0,
 		swpFrameChanged|swpNoZOrderLocal|swpNoMoveLocal|swpNoSizeLocal)
+}
+
+func (w *windowsWindow) SetOpacity(opacity float64) {
+	if opacity < 0 {
+		opacity = 0
+	}
+	if opacity > 1 {
+		opacity = 1
+	}
+	style, _, _ := procGetWindowLongW.Call(uintptr(w.hwnd), gwlExStyle)
+	procSetWindowLongW.Call(uintptr(w.hwnd), gwlExStyle, style|wsExLayered)
+	alpha := byte(opacity * 255)
+	procSetLayeredWindowAttributes.Call(uintptr(w.hwnd), 0, uintptr(alpha), lwaAlpha)
 }
 
 // applyBackgroundEffect 应用 DWM 系统背景特效（Windows 11 22H2+，低版本静默忽略）。

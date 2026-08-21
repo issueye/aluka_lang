@@ -131,7 +131,27 @@ func GenerateBridgeScript(windowID uint64, frameless bool) string {
       show: function() { postToHost({ type: 'window_action', name: 'show' }); },
       center: function() { postToHost({ type: 'window_action', name: 'center' }); },
       setTitle: function(title) { postToHost({ type: 'window_action', name: 'setTitle', data: title }); },
-      setSize: function(w, h) { postToHost({ type: 'window_action', name: 'setSize', data: [w, h] }); }
+      setSize: function(w, h) { postToHost({ type: 'window_action', name: 'setSize', data: [w, h] }); },
+      setPosition: function(x, y) { postToHost({ type: 'window_action', name: 'setPosition', data: [x, y] }); },
+      setMinSize: function(w, h) { postToHost({ type: 'window_action', name: 'setMinSize', data: [w, h] }); },
+      setMaxSize: function(w, h) { postToHost({ type: 'window_action', name: 'setMaxSize', data: [w, h] }); },
+      setAlwaysOnTop: function(on) { postToHost({ type: 'window_action', name: 'setAlwaysOnTop', data: !!on }); },
+      setFullscreen: function(on) { postToHost({ type: 'window_action', name: 'setFullscreen', data: !!on }); },
+      openDevTools: function() { postToHost({ type: 'window_action', name: 'openDevTools' }); },
+
+      // 状态查询（异步返回 Promise；经 window_query → rpc_res 回包）
+      _query: function(name) {
+        return new Promise(function(resolve, reject) {
+          var id = 'qry_' + (++rpcCounter);
+          pendingRPC[id] = { resolve: resolve, reject: reject };
+          postToHost({ type: 'window_query', id: id, name: name });
+        });
+      },
+      getSize: function() { return this._query('getSize'); },
+      getPosition: function() { return this._query('getPosition'); },
+      isMaximized: function() { return this._query('isMaximized'); },
+      isFullscreen: function() { return this._query('isFullscreen'); },
+      getTitle: function() { return this._query('getTitle'); }
     },
 
     // 2. 原生系统对话框 API (返回 Promise)
@@ -205,6 +225,33 @@ func RegisterRPCMethod(name string, handler func(params json.RawMessage) (interf
 	globalRPCRegistry.methods[name] = handler
 }
 
+// UnregisterRPCMethod 注销前端 RPC 方法。
+func UnregisterRPCMethod(name string) {
+	globalRPCRegistry.mu.Lock()
+	defer globalRPCRegistry.mu.Unlock()
+	delete(globalRPCRegistry.methods, name)
+}
+
+// RPCResponse 是回传给前端 window.aluka_dispatch('rpc_res') 的载荷。
+type RPCResponse struct {
+	ID     string      `json:"id"`
+	Result interface{} `json:"result,omitempty"`
+	Error  string      `json:"error,omitempty"`
+}
+
+// deliverRPCResponse 将 RPC/对话框结果投递到前端。
+func (w *Window) deliverRPCResponse(id string, result interface{}, err error) {
+	res := RPCResponse{ID: id}
+	if err != nil {
+		res.Error = err.Error()
+	} else {
+		res.Result = result
+	}
+	payload, _ := json.Marshal(res)
+	js := fmt.Sprintf(`if(window.aluka_dispatch){window.aluka_dispatch('rpc_res', %s);}`, string(payload))
+	w.ExecuteScript(js)
+}
+
 // HandleWebMessage 处理来自 WebView 前端的消息分发。
 func (w *Window) HandleWebMessage(rawMessage string) {
 	var msg BridgeMessage
@@ -214,75 +261,37 @@ func (w *Window) HandleWebMessage(rawMessage string) {
 
 	switch msg.Type {
 	case "window_action":
-		switch msg.Name {
-		case "minimize":
-			w.Minimize()
-		case "maximize":
-			w.Maximize()
-		case "unmaximize":
-			w.Unmaximize()
-		case "toggleMaximize":
-			if w.IsMaximized() {
-				w.Unmaximize()
-			} else {
-				w.Maximize()
-			}
-		case "close":
-			w.Close()
-		case "hide":
-			w.Hide()
-		case "show":
-			w.Show()
-		case "center":
-			w.Center()
-		case "setTitle":
-			var title string
-			_ = json.Unmarshal(msg.Data, &title)
-			w.SetTitle(title)
-		case "setSize":
-			var size [2]int
-			_ = json.Unmarshal(msg.Data, &size)
-			w.SetSize(size[0], size[1])
-		case "startDrag":
-			// 无边框拖拽：进入系统原生移动循环
-			if dr, ok := w.native.(interface{ StartDragMove() }); ok {
-				GetApp().PostAction(dr.StartDragMove)
-			}
-		case "startResize":
-			// 无边框边缘缩放：data 为方向（left/topRight/bottom…）
-			var dir string
-			_ = json.Unmarshal(msg.Data, &dir)
-			if rz, ok := w.native.(interface{ StartResize(dir string) }); ok {
-				GetApp().PostAction(func() { rz.StartResize(dir) })
-			}
-		}
+		w.handleWindowAction(msg)
+
+	case "window_query":
+		// 前端查询窗口状态（getSize/getPosition/isMaximized 等），经 rpc_res 回包
+		w.handleWindowQuery(msg)
 
 	case "event":
 		var data interface{}
 		_ = json.Unmarshal(msg.Data, &data)
-		w.Emit(msg.Name, data)
+		// 前端 → 后端方向：仅触发 Go 侧监听，不回投前端（避免回声循环）
+		w.fireLocalEvent(msg.Name, data)
 
 	case "dialog":
 		go func() {
 			var opts DialogOptions
 			_ = json.Unmarshal(msg.Data, &opts)
-			opts.Type = msg.Name
+			if msg.Name != "" {
+				opts.Type = msg.Name
+			}
+			opts = NormalizeDialogOptions(opts)
 
 			app := GetApp()
 			btnIndex, files, err := app.ShowDialog(opts)
 
-			var resPayload string
 			if err != nil {
-				resPayload = fmt.Sprintf(`{"id":%q,"error":%q}`, msg.ID, err.Error())
+				w.deliverRPCResponse(msg.ID, nil, err)
+			} else if opts.Type == "openFile" || opts.Type == "saveFile" {
+				w.deliverRPCResponse(msg.ID, files, nil)
 			} else {
-				if msg.Name == "openFile" || msg.Name == "saveFile" {
-					filesJSON, _ := json.Marshal(files)
-					resPayload = fmt.Sprintf(`{"id":%q,"result":%s}`, msg.ID, string(filesJSON))
-				} else {
-					resPayload = fmt.Sprintf(`{"id":%q,"result":%d}`, msg.ID, btnIndex)
-				}
+				w.deliverRPCResponse(msg.ID, btnIndex, nil)
 			}
-			w.ExecuteScript(fmt.Sprintf("if(window.aluka_dispatch){window.aluka_dispatch('rpc_res', %s);}", resPayload))
 		}()
 
 	case "rpc_call":
@@ -292,20 +301,100 @@ func (w *Window) HandleWebMessage(rawMessage string) {
 			globalRPCRegistry.mu.RUnlock()
 
 			if !ok {
-				resPayload := fmt.Sprintf(`{"id":%q,"error":"method %s not found"}`, msg.ID, msg.Name)
-				w.ExecuteScript(fmt.Sprintf("if(window.aluka_dispatch){window.aluka_dispatch('rpc_res', %s);}", resPayload))
+				w.deliverRPCResponse(msg.ID, nil, fmt.Errorf("method %s not found", msg.Name))
 				return
 			}
 
 			result, err := handler(msg.Data)
-			var resPayload string
-			if err != nil {
-				resPayload = fmt.Sprintf(`{"id":%q,"error":%q}`, msg.ID, err.Error())
-			} else {
-				resJSON, _ := json.Marshal(result)
-				resPayload = fmt.Sprintf(`{"id":%q,"result":%s}`, msg.ID, string(resJSON))
-			}
-			w.ExecuteScript(fmt.Sprintf("if(window.aluka_dispatch){window.aluka_dispatch('rpc_res', %s);}", resPayload))
+			w.deliverRPCResponse(msg.ID, result, err)
 		}()
+	}
+}
+
+// handleWindowAction 处理前端窗口控制指令。
+func (w *Window) handleWindowAction(msg BridgeMessage) {
+	switch msg.Name {
+	case "minimize":
+		w.Minimize()
+	case "maximize":
+		w.Maximize()
+	case "unmaximize":
+		w.Unmaximize()
+	case "toggleMaximize":
+		if w.IsMaximized() {
+			w.Unmaximize()
+		} else {
+			w.Maximize()
+		}
+	case "close":
+		w.TryClose()
+	case "hide":
+		w.Hide()
+	case "show":
+		w.Show()
+	case "center":
+		w.Center()
+	case "setTitle":
+		var title string
+		_ = json.Unmarshal(msg.Data, &title)
+		w.SetTitle(title)
+	case "setSize":
+		var size [2]int
+		_ = json.Unmarshal(msg.Data, &size)
+		w.SetSize(size[0], size[1])
+	case "setPosition":
+		var pos [2]int
+		_ = json.Unmarshal(msg.Data, &pos)
+		w.SetPosition(pos[0], pos[1])
+	case "setMinSize":
+		var size [2]int
+		_ = json.Unmarshal(msg.Data, &size)
+		w.SetMinSize(size[0], size[1])
+	case "setMaxSize":
+		var size [2]int
+		_ = json.Unmarshal(msg.Data, &size)
+		w.SetMaxSize(size[0], size[1])
+	case "setAlwaysOnTop":
+		var on bool
+		_ = json.Unmarshal(msg.Data, &on)
+		w.SetAlwaysOnTop(on)
+	case "setFullscreen":
+		var on bool
+		_ = json.Unmarshal(msg.Data, &on)
+		w.SetFullscreen(on)
+	case "openDevTools":
+		w.OpenDevTools()
+	case "startDrag":
+		// 无边框拖拽：进入系统原生移动循环
+		if dr, ok := w.native.(interface{ StartDragMove() }); ok {
+			GetApp().PostAction(dr.StartDragMove)
+		}
+	case "startResize":
+		// 无边框边缘缩放：data 为方向（left/topRight/bottom…）
+		var dir string
+		_ = json.Unmarshal(msg.Data, &dir)
+		if rz, ok := w.native.(interface{ StartResize(dir string) }); ok {
+			GetApp().PostAction(func() { rz.StartResize(dir) })
+		}
+	}
+}
+
+// handleWindowQuery 处理前端窗口状态查询。
+func (w *Window) handleWindowQuery(msg BridgeMessage) {
+	switch msg.Name {
+	case "getSize":
+		width, height := w.GetSize()
+		w.deliverRPCResponse(msg.ID, []int{width, height}, nil)
+	case "getPosition":
+		x, y := w.GetPosition()
+		w.deliverRPCResponse(msg.ID, []int{x, y}, nil)
+	case "isMaximized":
+		w.deliverRPCResponse(msg.ID, w.IsMaximized(), nil)
+	case "isFullscreen":
+		w.deliverRPCResponse(msg.ID, w.IsFullscreen(), nil)
+	case "getTitle":
+		w.deliverRPCResponse(msg.ID, w.GetTitle(), nil)
+	default:
+		w.deliverRPCResponse(msg.ID, nil, fmt.Errorf("unknown window query %q", msg.Name))
 	}
 }

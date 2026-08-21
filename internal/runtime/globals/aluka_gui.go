@@ -133,94 +133,33 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 	dialogObj := engine.NewObject()
 
 	_ = dialogObj.Set("showMessageBox", engine.NewFunction("showMessageBox", func(args []engine.Value) (engine.Value, error) {
-		var opts gui.DialogOptions
+		opts := gui.DialogOptions{Type: "info"}
 		if len(args) > 0 {
 			if o, ok := args[0].AsObject(); ok {
-				if t, err := o.Get("title"); err == nil && t != nil {
-					opts.Title = t.String()
-				}
-				if m, err := o.Get("message"); err == nil && m != nil {
-					opts.Message = m.String()
-				}
+				opts = parseDialogOptions(o, "info")
 			}
 		}
-
-		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
-			if len(execArgs) < 2 {
-				return engine.Undefined(), nil
-			}
-			resolve := execArgs[0]
-			reject := execArgs[1]
-
-			release := ctx.AddRef()
-			go func() {
-				btnIndex, _, err := app.ShowDialog(opts)
-				ctx.PostTask(func() {
-					defer release()
-					if err != nil {
-						if rf, ok := reject.AsFunction(); ok {
-							errObj := engine.NewObject()
-							_ = errObj.Set("message", engine.Str(err.Error()))
-							_, _ = rf.Call([]engine.Value{errObj})
-						}
-					} else {
-						if rf, ok := resolve.AsFunction(); ok {
-							_, _ = rf.Call([]engine.Value{engine.Number(float64(btnIndex))})
-						}
-					}
-					ctx.FlushMicrotasks()
-				})
-			}()
-			return engine.Undefined(), nil
-		})
-
-		return newPromise(ctx, executor)
+		return newDialogPromise(ctx, app, opts, dialogResultMessage)
 	}))
 
 	_ = dialogObj.Set("showOpenDialog", engine.NewFunction("showOpenDialog", func(args []engine.Value) (engine.Value, error) {
 		opts := gui.DialogOptions{Type: "openFile"}
 		if len(args) > 0 {
 			if o, ok := args[0].AsObject(); ok {
-				if t, err := o.Get("title"); err == nil && t != nil {
-					opts.Title = t.String()
-				}
+				opts = parseDialogOptions(o, "openFile")
 			}
 		}
+		return newDialogPromise(ctx, app, opts, dialogResultFiles)
+	}))
 
-		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
-			if len(execArgs) < 2 {
-				return engine.Undefined(), nil
+	_ = dialogObj.Set("showSaveDialog", engine.NewFunction("showSaveDialog", func(args []engine.Value) (engine.Value, error) {
+		opts := gui.DialogOptions{Type: "saveFile"}
+		if len(args) > 0 {
+			if o, ok := args[0].AsObject(); ok {
+				opts = parseDialogOptions(o, "saveFile")
 			}
-			resolve := execArgs[0]
-			reject := execArgs[1]
-
-			release := ctx.AddRef()
-			go func() {
-				_, files, err := app.ShowDialog(opts)
-				ctx.PostTask(func() {
-					defer release()
-					if err != nil {
-						if rf, ok := reject.AsFunction(); ok {
-							errObj := engine.NewObject()
-							_ = errObj.Set("message", engine.Str(err.Error()))
-							_, _ = rf.Call([]engine.Value{errObj})
-						}
-					} else {
-						if rf, ok := resolve.AsFunction(); ok {
-							var arr []engine.Value
-							for _, f := range files {
-								arr = append(arr, engine.Str(f))
-							}
-							_, _ = rf.Call([]engine.Value{engine.NewArray(arr)})
-						}
-					}
-					ctx.FlushMicrotasks()
-				})
-			}()
-			return engine.Undefined(), nil
-		})
-
-		return newPromise(ctx, executor)
+		}
+		return newDialogPromise(ctx, app, opts, dialogResultSavePath)
 	}))
 
 	_ = guiObj.Set("dialog", dialogObj)
@@ -347,6 +286,141 @@ func newShellPromise(ctx engine.Context, op func(string) error, target string) (
 	return newPromise(ctx, executor)
 }
 
+type dialogResultKind int
+
+const (
+	dialogResultMessage dialogResultKind = iota
+	dialogResultFiles
+	dialogResultSavePath
+)
+
+func newDialogPromise(ctx engine.Context, app *gui.App, opts gui.DialogOptions, kind dialogResultKind) (engine.Value, error) {
+	opts = gui.NormalizeDialogOptions(opts)
+	executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+		if len(execArgs) < 2 {
+			return engine.Undefined(), nil
+		}
+		resolve := execArgs[0]
+		reject := execArgs[1]
+
+		release := ctx.AddRef()
+		go func() {
+			btnIndex, files, err := app.ShowDialog(opts)
+			ctx.PostTask(func() {
+				defer release()
+				if err != nil {
+					if rf, ok := reject.AsFunction(); ok {
+						errObj := engine.NewObject()
+						_ = errObj.Set("message", engine.Str(err.Error()))
+						_, _ = rf.Call([]engine.Value{errObj})
+					}
+					ctx.FlushMicrotasks()
+					return
+				}
+				if rf, ok := resolve.AsFunction(); ok {
+					switch kind {
+					case dialogResultFiles:
+						arr := make([]engine.Value, 0, len(files))
+						for _, f := range files {
+							arr = append(arr, engine.Str(f))
+						}
+						_, _ = rf.Call([]engine.Value{engine.NewArray(arr)})
+					case dialogResultSavePath:
+						if len(files) == 0 {
+							_, _ = rf.Call([]engine.Value{engine.Null()})
+						} else {
+							_, _ = rf.Call([]engine.Value{engine.Str(files[0])})
+						}
+					default:
+						_, _ = rf.Call([]engine.Value{engine.Number(float64(btnIndex))})
+					}
+				}
+				ctx.FlushMicrotasks()
+			})
+		}()
+		return engine.Undefined(), nil
+	})
+	return newPromise(ctx, executor)
+}
+
+func parseDialogOptions(o engine.Object, defaultType string) gui.DialogOptions {
+	opts := gui.DialogOptions{Type: defaultType}
+	getStr := func(key string, dst *string) {
+		if v, err := o.Get(key); err == nil && v != nil && !v.IsUndefined() {
+			*dst = v.String()
+		}
+	}
+	getBool := func(key string, dst *bool) {
+		if v, err := o.Get(key); err == nil && v != nil && !v.IsUndefined() {
+			b, _ := v.Bool()
+			*dst = b
+		}
+	}
+	getInt := func(key string, dst *int) {
+		if v, err := o.Get(key); err == nil && v != nil {
+			if f, ok := v.Float(); ok {
+				*dst = int(f)
+			}
+		}
+	}
+	getStr("title", &opts.Title)
+	getStr("message", &opts.Message)
+	getStr("type", &opts.Type)
+	getStr("defaultPath", &opts.DefaultPath)
+	getBool("directory", &opts.Directory)
+	getBool("multiple", &opts.Multiple)
+	getInt("defaultId", &opts.DefaultID)
+	getInt("cancelId", &opts.CancelID)
+
+	if v, err := o.Get("buttons"); err == nil && v != nil && v.IsObject() {
+		if arr, ok := v.AsObject(); ok {
+			for _, k := range arr.Keys() {
+				if item, err := arr.Get(k); err == nil && item != nil {
+					opts.Buttons = append(opts.Buttons, item.String())
+				}
+			}
+		}
+	}
+	if v, err := o.Get("properties"); err == nil && v != nil && v.IsObject() {
+		if arr, ok := v.AsObject(); ok {
+			for _, k := range arr.Keys() {
+				if item, err := arr.Get(k); err == nil && item != nil {
+					opts.Properties = append(opts.Properties, item.String())
+				}
+			}
+		}
+	}
+	if v, err := o.Get("filters"); err == nil && v != nil && v.IsObject() {
+		if arr, ok := v.AsObject(); ok {
+			for _, k := range arr.Keys() {
+				item, err := arr.Get(k)
+				if err != nil || item == nil || !item.IsObject() {
+					continue
+				}
+				fo, ok := item.AsObject()
+				if !ok {
+					continue
+				}
+				var f gui.FileFilter
+				if n, err := fo.Get("name"); err == nil && n != nil {
+					f.Name = n.String()
+				}
+				if ex, err := fo.Get("extensions"); err == nil && ex != nil && ex.IsObject() {
+					if exArr, ok := ex.AsObject(); ok {
+						for _, ek := range exArr.Keys() {
+							if e, err := exArr.Get(ek); err == nil && e != nil {
+								f.Extensions = append(f.Extensions, e.String())
+							}
+						}
+					}
+				}
+				opts.Filters = append(opts.Filters, f)
+			}
+		}
+	}
+	return gui.NormalizeDialogOptions(opts)
+}
+
 func parseWindowOptions(o engine.Object) gui.WindowOptions {
 	var opts gui.WindowOptions
 	getStr := func(key string, dst *string) {
@@ -393,6 +467,18 @@ func parseWindowOptions(o engine.Object) gui.WindowOptions {
 	getBool("transparent", &opts.Transparent)
 	getBool("alwaysOnTop", &opts.AlwaysOnTop)
 	getBool("devTools", &opts.DevTools)
+	getBool("maximized", &opts.Maximized)
+	getBool("minimized", &opts.Minimized)
+	getStr("preloadScript", &opts.PreloadScript)
+	// 兼容设计稿字段名 preload
+	if opts.PreloadScript == "" {
+		getStr("preload", &opts.PreloadScript)
+	}
+	if v, err := o.Get("opacity"); err == nil && v != nil && !v.IsUndefined() {
+		if f, ok := v.Float(); ok {
+			opts.Opacity = f
+		}
+	}
 	return opts
 }
 
@@ -467,7 +553,44 @@ func wrapWindowInstance(ctx engine.Context, win *gui.Window) engine.Value {
 	}))
 
 	_ = obj.Set("close", engine.NewFunction("close", func(args []engine.Value) (engine.Value, error) {
-		win.Close()
+		force := false
+		if len(args) > 0 {
+			force, _ = args[0].Bool()
+		}
+		if force {
+			win.Close()
+		} else {
+			win.TryClose()
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("onCloseRequested", engine.NewFunction("onCloseRequested", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("window.onCloseRequested requires callback")
+		}
+		fn, ok := args[0].AsFunction()
+		if !ok {
+			return nil, fmt.Errorf("window.onCloseRequested callback must be a function")
+		}
+		// 立即返回 false 拦截原生关闭，避免 UI 线程同步等待 JS；
+		// 真正是否关闭由回调 return true 或 close(true) 决定。
+		win.OnCloseRequested(func() bool {
+			release := ctx.AddRef()
+			ctx.PostTask(func() {
+				defer release()
+				res, err := fn.Call(nil)
+				allow := false
+				if err == nil && res != nil && !res.IsUndefined() {
+					allow, _ = res.Bool()
+				}
+				if allow {
+					win.Close()
+				}
+				ctx.FlushMicrotasks()
+			})
+			return false
+		})
 		return engine.Undefined(), nil
 	}))
 
@@ -555,6 +678,35 @@ func wrapWindowInstance(ctx engine.Context, win *gui.Window) engine.Value {
 		if len(args) > 0 {
 			b, _ := args[0].Bool()
 			win.SetAlwaysOnTop(b)
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("setResizable", engine.NewFunction("setResizable", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			b, _ := args[0].Bool()
+			win.SetResizable(b)
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("getTitle", engine.NewFunction("getTitle", func(args []engine.Value) (engine.Value, error) {
+		return engine.Str(win.GetTitle()), nil
+	}))
+
+	_ = obj.Set("isMaximized", engine.NewFunction("isMaximized", func(args []engine.Value) (engine.Value, error) {
+		return engine.Boolean(win.IsMaximized()), nil
+	}))
+
+	_ = obj.Set("isFullscreen", engine.NewFunction("isFullscreen", func(args []engine.Value) (engine.Value, error) {
+		return engine.Boolean(win.IsFullscreen()), nil
+	}))
+
+	_ = obj.Set("setOpacity", engine.NewFunction("setOpacity", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			if f, ok := args[0].Float(); ok {
+				win.SetOpacity(f)
+			}
 		}
 		return engine.Undefined(), nil
 	}))

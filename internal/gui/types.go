@@ -18,11 +18,19 @@ type WindowOptions struct {
 	BackgroundEffect string `json:"backgroundEffect"` // 现代特效: "mica" / "acrylic" / "vibrancy" / "none"
 	AlwaysOnTop      bool   `json:"alwaysOnTop"`      // 是否置顶
 	Resizable        *bool  `json:"resizable"`        // 是否允许调整大小（nil 默认为 true）
+	Maximized        bool   `json:"maximized"`        // 创建时是否直接最大化
+	Minimized        bool   `json:"minimized"`        // 创建时是否直接最小化
+	Opacity          float64 `json:"opacity"`         // 初始不透明度 0.0~1.0（1 为不透明）
 	URL              string `json:"url"`              // 初始加载 URL（支持 http/https 与 aluka://app/*）
 	HTML             string `json:"html"`             // 直接加载的 HTML 内容
 	PreloadScript    string `json:"preloadScript"`    // 前端预加载注入脚本
 	DevTools         bool   `json:"devTools"`         // 是否开启开发者工具
 	Hidden           bool   `json:"hidden"`           // 创建时是否初始隐藏
+}
+
+// Menu 表示窗口菜单栏（托盘仍直接使用 []MenuItem）。
+type Menu struct {
+	Items []MenuItem
 }
 
 // DialogOptions 原生文件/消息对话框配置。
@@ -37,6 +45,8 @@ type DialogOptions struct {
 	DefaultPath string       `json:"defaultPath"`
 	Directory   bool         `json:"directory"`
 	Multiple    bool         `json:"multiple"`
+	// Properties 兼容 Electron 风格：openDirectory / multiSelections / openFile
+	Properties []string `json:"properties"`
 }
 
 // FileFilter 文件类型过滤器。

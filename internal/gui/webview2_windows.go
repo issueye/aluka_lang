@@ -359,6 +359,11 @@ func (w *windowsWindow) initWebView2() {
 			w.setWebViewError(err)
 			return
 		}
+		// 环境创建为异步：期间窗口可能已被关闭（如测试快速 Close），
+		// 此时再对已销毁 HWND 创建 Controller 会让 WebView2 挂起 UI 线程。
+		if w.parent != nil && w.parent.IsClosed() {
+			return
+		}
 		handler := newComHandler(func(errorCode, controllerPtr uintptr) uintptr {
 			if int32(errorCode) < 0 || controllerPtr == 0 {
 				w.setWebViewError(fmt.Errorf("gui: WebView2 controller creation failed: 0x%08X", uint32(errorCode)))
@@ -376,6 +381,12 @@ func (w *windowsWindow) initWebView2() {
 
 // onWebView2Controller 在 Controller 创建完成（UI 线程）后完成全部接线。
 func (w *windowsWindow) onWebView2Controller(controller uintptr) {
+	// 创建与回调之间窗口可能已被关闭：立即释放刚创建的渲染层，避免对
+	// 已销毁 HWND 做后续 COM 调用（会让 WebView2 阻塞消息循环）。
+	if w.parent != nil && w.parent.IsClosed() {
+		_, _ = comCall(controller, wv2CtlClose)
+		return
+	}
 	// 持有 controller/webview 引用：Invoke 返回后浏览器会释放其侧的引用，
 	// 不 AddRef 的话对象会被 PartitionAlloc 回收，后续调用即悬垂指针崩溃
 	_, _ = comCall(controller, 1 /* AddRef */)
@@ -468,6 +479,13 @@ func (w *windowsWindow) onWebView2Controller(controller uintptr) {
 		if bridge.ptr() != 0 {
 			_, _ = comCall(webview, wv2AddScriptToExecute, bridge.ptr(), noopComHandler)
 			runtime.KeepAlive(bridge)
+		}
+		if w.opts.PreloadScript != "" {
+			preload := newUTF16Buf(w.opts.PreloadScript)
+			if preload.ptr() != 0 {
+				_, _ = comCall(webview, wv2AddScriptToExecute, preload.ptr(), noopComHandler)
+				runtime.KeepAlive(preload)
+			}
 		}
 	}
 

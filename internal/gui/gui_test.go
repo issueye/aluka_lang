@@ -93,3 +93,41 @@ func TestGUIWindowManagement(t *testing.T) {
 		t.Errorf("Expected window to be removed from app after Close()")
 	}
 }
+
+func TestGUIWindowTryCloseIntercept(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		t.Skip("native GUI windows are not supported on this platform")
+	}
+	win, err := NewWindow(WindowOptions{
+		Title:  "Close Intercept",
+		Width:  320,
+		Height: 240,
+		Hidden: true,
+	})
+	if err != nil {
+		if runtime.GOOS == "darwin" {
+			t.Skipf("native window unavailable: %v", err)
+		}
+		t.Fatalf("NewWindow: %v", err)
+	}
+	blocked := true
+	win.OnCloseRequested(func() bool { return !blocked })
+
+	if win.TryClose() {
+		t.Fatal("TryClose should be cancelled while blocked")
+	}
+	if win.IsClosed() {
+		t.Fatal("window should still be open")
+	}
+	if GetApp().GetWindowByID(win.ID()) == nil {
+		t.Fatal("window should remain registered")
+	}
+
+	blocked = false
+	if !win.TryClose() {
+		t.Fatal("TryClose should succeed when allowed")
+	}
+	if !win.IsClosed() {
+		t.Fatal("window should be closed")
+	}
+}
