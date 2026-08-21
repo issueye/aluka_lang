@@ -9,7 +9,7 @@
 >   `CreateWebViewEnvironmentWithOptionsInternal`，全部 COM vtable 经 `syscall.SyscallN` 驱动；
 > - ✅ 专用 UI 线程消息循环模型（窗口创建 / WebView2 挂载 / 任务投递全部收敛到 UI 线程，`PostThreadMessageW` 派发）；
 > - ✅ `aluka://app/*` 虚拟协议经 `WebResourceRequested` 拦截（内部映射 `http://aluka.app/*` 以兼容全版本 SDK），零 TCP 端口；
-> - ✅ 前端 `window.aluka` 桥接注入、WebMessage 双向通道、RPC 注册表、原生文件/消息对话框；
+> - ✅ 前端 `window.aluka` 桥接注入、WebMessage 双向通道、RPC 注册表、原生文件/消息对话框（Win32 深度选项：filters/defaultPath/directory/multiple + Save 对话框）；
 > - ✅ 生命周期：Controller/WebView/Environment 持 COM 引用（AddRef），跨线程销毁经 WM_CLOSE 路由；
 > - ✅ 系统托盘实装（`tray_windows.go`：Shell_NotifyIconW + 共享消息窗口）与原生弹出菜单
 >   （复选/禁用/分隔线/子菜单/JS click 回调）；
@@ -17,7 +17,14 @@
 >   字母/数字/F1-F12/方向键等，跨平台注册表抽象，非 Windows 平台返回未支持）；
 > - ✅ Windows 11 现代背景特效（Mica / Acrylic / MicaAlt，DWM `SYSTEMBACKDROP_TYPE`，旧系统静默忽略）
 >   与 WebView2 透明背景（`put_DefaultBackgroundColor`）联动；
-> - ✅ 窗口尺寸约束（WM_GETMINMAXINFO）与可调整大小切换（WS_THICKFRAME）；
+> - ✅ 窗口尺寸约束（WM_GETMINMAXINFO）、可调整大小切换（WS_THICKFRAME，创建选项 `resizable:false` 亦生效）、
+>   窗口不透明度（SetLayeredWindowAttributes）与任务栏进度/叠加图标 API 面（平台实现待补）；
+> - ✅ **关闭可取消链路**：`TryClose` / `RequestClose` / `OnCloseRequested` 统一路径——
+>   JS `win.close()`、前端 `window.aluka.window.close()`、原生 `WM_CLOSE` 均先走拦截回调，
+>   回调返回 `true` 或 `close(true)` 才真正销毁；「关窗口 → 藏托盘」模式可直接编写；
+> - ✅ 主进程窗口查询 API 与前端对齐：`getSize` / `getPosition` / `getTitle` / `isMaximized` / `isFullscreen` 同步返回；
+>   `setResizable` / `setOpacity` 运行时控制；`onCloseRequested` 关闭拦截；事件订阅 `On` 返回取消函数；
+> - ✅ 创建选项全量解析：`maximized` / `minimized` / `opacity` / `preloadScript`（兼容 `preload` 字段名，源码字符串注入 WebView2）；
 > - ✅ `aluka build --gui` 单文件 GUI 打包：`--web-dir` 前端资源递归内嵌进 payload
 >   （manifest.webAssets，base64+zlib），产物启动时挂载 `aluka://app/` 内存虚拟协议
 >   并分离控制台（Windows 免黑框，`FreeConsole`）；`--icon` 应用图标双通道生效：
@@ -26,7 +33,7 @@
 >   保留 VERSIONINFO 等非图标资源、新数据追加至文件尾并改写节表/数据目录/
 >   SizeOfImage），Explorer 中的 exe 图标即为应用图标；端到端验证：37MB 单文件 exe
 >   加载内嵌页面 + 前端桥接回路全通 + shell 提取图标哈希与基座不同；
-> - ⏳ 待办：Linux WebKitGTK 平台层、macOS Vibrancy。
+> - ⏳ 待办：Linux WebKitGTK 平台层、macOS Vibrancy、窗口菜单栏平台实现、任务栏进度/叠加图标 Windows 实现。
 > - ✅ macOS WKWebView（syscall + libobjc，无 CGO）：NSWindow / WKWebView；`aluka://` 顶层 HTML 经 ResolveAssetURL + inline（**不是** WKURLSchemeHandler，fetch/动态 import 仍不可用）；JS 桥经 hash 轮询；NSStatusItem 托盘（无 Click 回调，带 Click 的菜单返回错误）；Linux 明确报错而非静默 stub。
 
 ---
@@ -127,47 +134,61 @@ graph TB
 
 ### 3.3 前后端统一 JS API 设计（`Aluka.gui` / `aluka:gui`）
 
-开发者可以在主进程脚本中像写现代 Node.js 一样自由调用桌面能力：
+开发者可以在主进程脚本中像写现代 Node.js 一样自由调用桌面能力。**工厂 API 已冻结为正式表面**（`createWindow` / `createTray`，非 `new Window` / `new Tray`；菜单使用 JS 数组模板）：
 
 ```ts
-import { app, Window, Tray, Menu, dialog } from "aluka:gui";
+import { app, createWindow, createTray, dialog, setAssetDir } from "aluka:gui";
 
 // 1. 应用生命周期控制
 app.on("ready", async () => {
   // 2. 创建现代化主窗口
-  const win = new Window({
+  const win = createWindow({
     title: "Aluka Studio",
     width: 1200,
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    frame: false,             // 无边框窗口
-    transparent: true,         // 透明背景
-    backgroundEffect: "mica",  // Windows 11 云母特效 (macOS 自动转为 vibrancy)
-    url: "aluka://app/index.html", // 加载前端页面
-    preload: "./preload.js",   // 预加载脚本
+    frame: false,              // 无边框窗口
+    backgroundEffect: "mica",  // Windows 11 云母特效 (macOS 自动降级)
+    url: "aluka://app/index.html",
+    preloadScript: "window.__PRELOAD__ = true;", // 注入前端执行（字符串源码）
+    maximized: false,
+    opacity: 1,
   });
 
-  // 3. 创建系统托盘与托盘菜单
-  const tray = new Tray({
+  // 3. 关闭拦截：点击关闭按钮 → 最小化到托盘（返回 false 取消，true 或 close(true) 放行）
+  win.onCloseRequested(() => {
+    win.hide();
+    return false;
+  });
+
+  // 4. 创建系统托盘与托盘菜单
+  const tray = createTray({
     icon: "assets/icon.ico",
     tooltip: "Aluka Studio Running",
-    menu: Menu.buildFromTemplate([
+    menu: [
       { label: "显示主窗口", click: () => win.show() },
       { label: "配置项", click: () => openSettings() },
       { type: "separator" },
-      { label: "退出应用", click: () => app.quit() }
-    ])
+      { label: "退出应用", click: () => app.quit() },
+    ],
   });
 
-  // 4. 双向事件与 RPC 绑定
-  win.on("close", (e) => {
-    // 点击关闭时最小化到托盘
-    e.preventDefault();
-    win.hide();
+  // 5. 原生对话框（Promise，失败 reject）
+  const files = await dialog.showOpenDialog({
+    title: "选择文件",
+    properties: ["openFile", "multiSelections"],
+    filters: [{ name: "Markdown", extensions: ["md"] }],
+  });
+
+  // 6. 双向事件与 RPC 绑定
+  win.on("close", () => {
+    console.log("window closed");
   });
 });
 ```
+
+> 说明：`win.close()` 默认走关闭拦截（等价前端 close / 原生 `WM_CLOSE`）；需强制销毁时传 `win.close(true)`。查询类 API（`getSize` / `getPosition` / `getTitle` / `isMaximized` / `isFullscreen`）同步返回。
 
 ---
 
