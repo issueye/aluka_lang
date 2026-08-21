@@ -225,7 +225,23 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 
 	_ = guiObj.Set("dialog", dialogObj)
 
-	// 4. createTray 系统托盘
+	// 4. shell 系统文件/文件夹操作（打开 / 在文件管理器中显示），返回 Promise<{ok,error?}>
+	shellObj := engine.NewObject()
+	_ = shellObj.Set("openPath", engine.NewFunction("openPath", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("shell.openPath requires path")
+		}
+		return newShellPromise(ctx, gui.OpenPath, args[0].String())
+	}))
+	_ = shellObj.Set("showItemInFolder", engine.NewFunction("showItemInFolder", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("shell.showItemInFolder requires path")
+		}
+		return newShellPromise(ctx, gui.ShowItemInFolder, args[0].String())
+	}))
+	_ = guiObj.Set("shell", shellObj)
+
+	// 5. createTray 系统托盘
 	_ = guiObj.Set("createTray", engine.NewFunction("createTray", func(args []engine.Value) (engine.Value, error) {
 		var opts gui.TrayOptions
 		if len(args) > 0 {
@@ -300,6 +316,35 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 	}))
 
 	_ = aluka.Set("gui", guiObj)
+}
+
+// newShellPromise 在后台 goroutine 执行系统文件/文件夹操作，避免阻塞 JS 线程；
+// 结果统一以 {ok:boolean, error?:string} resolve（不 reject，调用侧无需 try/catch）。
+func newShellPromise(ctx engine.Context, op func(string) error, target string) (engine.Value, error) {
+	executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+		if len(execArgs) < 1 {
+			return engine.Undefined(), nil
+		}
+		resolve := execArgs[0]
+
+		release := ctx.AddRef()
+		go func() {
+			err := op(target)
+			ctx.PostTask(func() {
+				defer release()
+				res := map[string]interface{}{"ok": err == nil}
+				if err != nil {
+					res["error"] = err.Error()
+				}
+				if rf, ok := resolve.AsFunction(); ok {
+					_, _ = rf.Call([]engine.Value{jsonToEngine(res)})
+				}
+				ctx.FlushMicrotasks()
+			})
+		}()
+		return engine.Undefined(), nil
+	})
+	return newPromise(ctx, executor)
 }
 
 func parseWindowOptions(o engine.Object) gui.WindowOptions {
