@@ -130,8 +130,8 @@ func (a *App) CreateTray(opts TrayOptions) (NativeTray, error) {
 	return nil, nil
 }
 
-// On 订阅全局应用生命周期事件。
-func (a *App) On(event string, handler func(interface{})) {
+// On 订阅全局应用生命周期事件。返回取消订阅函数。
+func (a *App) On(event string, handler func(interface{})) func() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.events[event] = append(a.events[event], handler)
@@ -139,6 +139,35 @@ func (a *App) On(event string, handler func(interface{})) {
 	// 如果应用已 ready 且当前订阅的是 ready 事件，立即触发
 	if event == "ready" && a.isReady {
 		go handler(nil)
+	}
+	removed := false
+	return func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if removed {
+			return
+		}
+		removed = true
+		handlers := a.events[event]
+		for i, h := range handlers {
+			if sameHandler(h, handler) {
+				a.events[event] = append(handlers[:i], handlers[i+1:]...)
+				return
+			}
+		}
+	}
+}
+
+// Off 取消指定事件处理函数的订阅（无匹配时静默）。
+func (a *App) Off(event string, handler func(interface{})) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	handlers := a.events[event]
+	for i, h := range handlers {
+		if sameHandler(h, handler) {
+			a.events[event] = append(handlers[:i], handlers[i+1:]...)
+			return
+		}
 	}
 }
 

@@ -142,3 +142,60 @@ func TestAlukaGUITrayAndRPC(t *testing.T) {
 		t.Fatalf("Aluka.gui createTray test failed, trayPass=%v", trayPassV)
 	}
 }
+
+// TestAlukaGUIExtendedSurface 验证 Phase B 补充的 API 表面均已在 JS 侧绑定。
+// 仅检查绑定存在性与基础调用，不依赖真实桌面托盘/常驻窗口（无桌面环境时 skips）。
+func TestAlukaGUIExtendedSurface(t *testing.T) {
+	eng := interpreter.NewVMEngine()
+	ctx, err := eng.NewContext()
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	defer ctx.Close()
+
+	if err := NewAluka(ctx, AlukaConfig{}); err != nil {
+		t.Fatalf("NewAluka: %v", err)
+	}
+	_ = ctx.Global().Set("globalThis", ctx.Global())
+
+	src := `
+		var missing = [];
+		function has(fn) { return typeof fn === "function"; }
+
+		// app 级新增 API
+		if (!has(Aluka.gui.app.unregisterRPC)) missing.push("app.unregisterRPC");
+		if (!has(Aluka.gui.app.getWindows)) missing.push("app.getWindows");
+		if (!has(Aluka.gui.app.getWindowById)) missing.push("app.getWindowById");
+		if (!has(Aluka.gui.shell.openExternal)) missing.push("shell.openExternal");
+
+		// app.on 应返回 disposer 函数（Phase B 补）
+		var appDisposer = Aluka.gui.app.on("ready", function() {});
+		if (!has(appDisposer)) missing.push("app.on disposer");
+		else { appDisposer(); }
+
+		// 尝试创建窗口（无桌面环境会失败，此时仅验证绑定存在且跳过窗口级断言）
+		var win = null;
+		try { win = Aluka.gui.createWindow({ hidden: true }); } catch (e) {}
+		if (win) {
+			if (!has(win.setHTML)) missing.push("win.setHTML");
+			if (!has(win.toggleMaximize)) missing.push("win.toggleMaximize");
+			if (!has(win.setProgressBar)) missing.push("win.setProgressBar");
+			if (!has(win.setOverlayIcon)) missing.push("win.setOverlayIcon");
+			if (!has(win.setMenu)) missing.push("win.setMenu");
+			if (!has(win.off)) missing.push("win.off");
+			win.close();
+		}
+
+		globalThis.bindingPass = missing.length === 0;
+		globalThis.bindingMissing = missing.join(",");
+	`
+	if _, err := ctx.Eval(src, "gui_surface_test.js"); err != nil {
+		t.Fatalf("Eval error: %v", err)
+	}
+
+	passV, err := ctx.Global().Get("bindingPass")
+	if err != nil || passV.String() != "true" {
+		missV, _ := ctx.Global().Get("bindingMissing")
+		t.Fatalf("Aluka.gui extended API surface incomplete, missing=%v", missV)
+	}
+}

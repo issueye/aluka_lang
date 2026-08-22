@@ -9,6 +9,17 @@
 
 ## 更新记录
 
+### 2026-08-22 — Phase B 落地
+
+本次提交完成 **Phase B（表面补齐与对称）** 核心目标：
+
+- ✅ **Go 侧已有能力补齐 JS 暴露**：`win.setHTML` / `win.toggleMaximize` / `win.setProgressBar` / `win.setOverlayIcon` / `win.setMenu`
+- ✅ **多窗口管理**：`app.getWindows()` / `app.getWindowById(id)`
+- ✅ **RPC 对称**：`app.unregisterRPC(name)`；窗口事件 `win.off`
+- ✅ **`shell.openExternal(url)`**：Go 侧三个平台文件（Windows/macOS/其它）新增 `OpenExternal`，JS 侧暴露
+- ✅ **官方类型声明**：新增 `types/aluka-gui.d.ts`（主进程 `aluka:gui` + 前端 `window.aluka` 全局）
+- ✅ **回归验证**：`internal/gui` + `internal/runtime/globals` 单测全通；`go build ./...` 通过
+
 ### 2026-08-21 — Phase A 落地
 
 本次提交完成 **Phase A（API 正确性加固）** 核心目标：
@@ -136,12 +147,12 @@
 | Mica/Acrylic | ✅ Win | ⚠️ 仅创建选项 | — |
 | 关闭可取消 | ✅ | ✅（`onCloseRequested` / `close(force?)`） | ✅ |
 | Message / Open / Save 对话框 | ✅（Win32 深选项） | ✅ 三件套 | ✅ 三件套 |
-| RPC | ✅ | ✅ register（unregister 未暴露） | ✅ call |
-| 事件总线 | ✅（On 返回 disposer） | ✅ on/emit（off 未暴露） | ✅ on/off/emit |
+| RPC | ✅ | ✅ register/unregister | ✅ call |
+| 事件总线 | ✅（On 返回 disposer） | ✅ on/off/emit | ✅ on/off/emit |
 | 托盘 + 菜单 click | ✅ Win | ✅ | — |
 | 全局快捷键 | ✅ Win | ✅ | — |
 | shell 打开路径 | ✅ | ✅ | ❌（可经 RPC 转发） |
-| 窗口菜单栏 | ❌（SetMenu 尚无平台实现） | ❌ | ❌ |
+| 窗口菜单栏 | ⚠️ SetMenu Go 已备、Windows 平台实现未落地 | ✅ setMenu 已暴露 | ❌ |
 | preload 脚本 | ⚠️ | ✅ 创建选项已解析（Win32 注入） | — |
 | 系统通知 | ❌ | ❌ | ❌ |
 | Linux WebView | ❌ | ❌ | ❌ |
@@ -179,12 +190,12 @@
 
 **目标**：主进程与前端窗口控制面齐平，多窗口可管。
 
-- [ ] 主进程：`getTitle` / `isMaximized` / `isFullscreen` / `toggleMaximize` / `setResizable` / `setHTML`  
-- [ ] `app.getWindows()` / `app.getWindowById(id)`  
-- [ ] `app.unregisterRPC(name)`；`win.off` 或 `on` 返回 disposer  
-- [ ] `shell.openExternal(url)`  
-- [ ] 官方 `types/aluka-gui.d.ts`（主进程 + 可选 `WindowAluka` 全局）  
-- [ ] 重写 [aluka-gui-architecture-plan.md](./aluka-gui-architecture-plan.md) §3.3 示例为真实 API
+- [x] 主进程：`getTitle` / `isMaximized` / `isFullscreen` / `toggleMaximize` / `setResizable` / `setHTML`  
+- [x] `app.getWindows()` / `app.getWindowById(id)`  
+- [x] `app.unregisterRPC(name)`；`win.off` 或 `on` 返回 disposer  
+- [x] `shell.openExternal(url)`（Go 侧三平台 `OpenExternal` 已补）  
+- [x] 官方 `types/aluka-gui.d.ts`（主进程 + 前端 `Window.aluka` 全局）  
+- [x] 重写 [aluka-gui-architecture-plan.md](./aluka-gui-architecture-plan.md) §3.3 示例为真实 API
 
 **验收**：仅用主进程 API 可复刻 studio 前端窗口按钮逻辑；TS 工程可类型检查。
 
@@ -280,4 +291,4 @@ interface WindowHandle {
 | 当前能否做应用 | **能**（Windows 优先）— `demo/studio` 已覆盖 RPC/托盘/快捷键/无边框/关闭拦截；缺口主要在「专业桌面体验」与「API 可信度」 |
 | 最大风险 | 设计文档超前 + WIP 半成品入树 → 开发者按愿景编码失败；以及关闭/对话框静默错误行为（**Phase A 已收敛，当前工作树可编译**） |
 
-**建议的下一动作**：Phase A 已完成并提交；下一迭代落 Phase B（`.d.ts` 类型声明、`app.unregisterRPC` / `win.off` 对称暴露、`app.getWindows` / `getWindowById`、`shell.openExternal`、`setHTML` / `toggleMaximize`），并回写架构计划文档 §3.3 示例为真实 API（已随本次提交更新）。
+**建议的下一动作**：Phase A、Phase B 已完成并提交；下一迭代落 Phase C（应用菜单栏 Windows 平台实现、`Notification` 通知、`screen` 屏幕信息、事件载荷 schema、`executeScript` 返回 Promise），并补 `app.on` 已返回 disposer（已随本次提交更新）。

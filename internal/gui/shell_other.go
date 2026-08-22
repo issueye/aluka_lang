@@ -18,3 +18,8 @@ func OpenPath(path string) error {
 func ShowItemInFolder(path string) error {
 	return exec.Command("xdg-open", filepath.Dir(path)).Run()
 }
+
+// OpenExternal 用系统默认应用打开一个外部 URL（浏览器 / mailto 等协议）。
+func OpenExternal(url string) error {
+	return exec.Command("xdg-open", url).Run()
+}

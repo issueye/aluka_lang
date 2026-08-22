@@ -16,7 +16,7 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 	appObj := engine.NewObject()
 	app := gui.GetApp()
 
-	// app.on(event, handler)
+	// app.on(event, handler) → 返回取消订阅函数
 	_ = appObj.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("app.on requires event and callback")
@@ -27,7 +27,7 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 			return nil, fmt.Errorf("app.on handler must be a function")
 		}
 
-		app.On(evt, func(data interface{}) {
+		dispose := app.On(evt, func(data interface{}) {
 			release := ctx.AddRef()
 			ctx.PostTask(func() {
 				defer release()
@@ -35,7 +35,11 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 				ctx.FlushMicrotasks()
 			})
 		})
-		return engine.Undefined(), nil
+		// 返回取消订阅函数（disposer）供 JS 调用。
+		return engine.NewFunction("dispose", func(callArgs []engine.Value) (engine.Value, error) {
+			dispose()
+			return engine.Undefined(), nil
+		}), nil
 	}))
 
 	// app.quit()
@@ -110,6 +114,41 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 		return engine.Undefined(), nil
 	}))
 
+	// app.unregisterRPC(name)
+	_ = appObj.Set("unregisterRPC", engine.NewFunction("unregisterRPC", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("app.unregisterRPC requires method name")
+		}
+		gui.UnregisterRPCMethod(args[0].String())
+		return engine.Undefined(), nil
+	}))
+
+	// app.getWindows() → 返回窗口句柄数组
+	_ = appObj.Set("getWindows", engine.NewFunction("getWindows", func(args []engine.Value) (engine.Value, error) {
+		wins := app.Windows()
+		arr := make([]engine.Value, 0, len(wins))
+		for _, w := range wins {
+			arr = append(arr, wrapWindowInstance(ctx, w))
+		}
+		return engine.NewArray(arr), nil
+	}))
+
+	// app.getWindowById(id) → 窗口句柄或 undefined
+	_ = appObj.Set("getWindowById", engine.NewFunction("getWindowById", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("app.getWindowById requires window id")
+		}
+		idf, ok := args[0].Float()
+		if !ok {
+			return engine.Undefined(), nil
+		}
+		w := app.GetWindowByID(uint64(idf))
+		if w == nil {
+			return engine.Undefined(), nil
+		}
+		return wrapWindowInstance(ctx, w), nil
+	}))
+
 	_ = guiObj.Set("app", appObj)
 
 	// 2. Window 构造函数 / 工厂函数
@@ -177,6 +216,12 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 			return nil, fmt.Errorf("shell.showItemInFolder requires path")
 		}
 		return newShellPromise(ctx, gui.ShowItemInFolder, args[0].String())
+	}))
+	_ = shellObj.Set("openExternal", engine.NewFunction("openExternal", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("shell.openExternal requires url")
+		}
+		return newShellPromise(ctx, gui.OpenExternal, args[0].String())
 	}))
 	_ = guiObj.Set("shell", shellObj)
 
@@ -540,6 +585,8 @@ func parseMenuItems(ctx engine.Context, arr engine.Object) []gui.MenuItem {
 func wrapWindowInstance(ctx engine.Context, win *gui.Window) engine.Value {
 	obj := engine.NewObject()
 
+	var winDisposers = map[string][]func(){}
+
 	_ = obj.Set("id", engine.Number(float64(win.ID())))
 
 	_ = obj.Set("show", engine.NewFunction("show", func(args []engine.Value) (engine.Value, error) {
@@ -690,6 +737,43 @@ func wrapWindowInstance(ctx engine.Context, win *gui.Window) engine.Value {
 		return engine.Undefined(), nil
 	}))
 
+	_ = obj.Set("setHTML", engine.NewFunction("setHTML", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			win.SetHTML(args[0].String())
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = obj.Set("toggleMaximize", engine.NewFunction("toggleMaximize", func(args []engine.Value) (engine.Value, error) {
+		if win.IsMaximized() {
+			win.Unmaximize()
+		} else {
+			win.Maximize()
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = obj.Set("setProgressBar", engine.NewFunction("setProgressBar", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			if f, ok := args[0].Float(); ok {
+				win.SetProgressBar(f)
+			}
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = obj.Set("setOverlayIcon", engine.NewFunction("setOverlayIcon", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			win.SetOverlayIcon(args[0].String())
+		}
+		return engine.Undefined(), nil
+	}))
+	// setMenu(menuTemplate)：窗口菜单栏（平台支持时生效）
+	_ = obj.Set("setMenu", engine.NewFunction("setMenu", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 && args[0].IsObject() {
+			if menuObj, ok := args[0].AsObject(); ok {
+				win.SetMenu(&gui.Menu{Items: parseMenuItems(ctx, menuObj)})
+			}
+		}
+		return engine.Undefined(), nil
+	}))
 	_ = obj.Set("getTitle", engine.NewFunction("getTitle", func(args []engine.Value) (engine.Value, error) {
 		return engine.Str(win.GetTitle()), nil
 	}))
@@ -741,7 +825,7 @@ func wrapWindowInstance(ctx engine.Context, win *gui.Window) engine.Value {
 			return nil, fmt.Errorf("window.on handler must be a function")
 		}
 
-		win.On(evt, func(data interface{}) {
+		dispose := win.On(evt, func(data interface{}) {
 			release := ctx.AddRef()
 			ctx.PostTask(func() {
 				defer release()
@@ -749,6 +833,22 @@ func wrapWindowInstance(ctx engine.Context, win *gui.Window) engine.Value {
 				ctx.FlushMicrotasks()
 			})
 		})
+		// 按事件名归档 disposer，供 off(event) 定向注销。
+		winDisposers[evt] = append(winDisposers[evt], dispose)
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("off", engine.NewFunction("off", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("window.off requires event name")
+		}
+		// 定向注销该事件名下的全部处理器；语义与回调身份由 Go 侧保证。
+		for _, d := range winDisposers[args[0].String()] {
+			if d != nil {
+				d()
+			}
+		}
+		delete(winDisposers, args[0].String())
 		return engine.Undefined(), nil
 	}))
 

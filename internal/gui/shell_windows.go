@@ -26,6 +26,11 @@ func ShowItemInFolder(path string) error {
 	return shellExecute("open", "explorer.exe", "/select,"+path, 1)
 }
 
+// OpenExternal 用系统默认应用打开一个外部 URL（浏览器 / mailto 等协议）。
+func OpenExternal(url string) error {
+	return shellExecute("open", url, "", 1 /* SW_SHOWNORMAL */)
+}
+
 // shellExecute 封装 ShellExecuteW 调用；返回值 ≤32 表示失败（0 或 SE_ERR_*）。
 func shellExecute(operation, path, params string, showCmd int) error {
 	if path == "" {

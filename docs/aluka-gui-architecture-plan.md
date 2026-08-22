@@ -137,7 +137,7 @@ graph TB
 开发者可以在主进程脚本中像写现代 Node.js 一样自由调用桌面能力。**工厂 API 已冻结为正式表面**（`createWindow` / `createTray`，非 `new Window` / `new Tray`；菜单使用 JS 数组模板）：
 
 ```ts
-import { app, createWindow, createTray, dialog, setAssetDir } from "aluka:gui";
+import { app, createWindow, createTray, dialog, shell, setAssetDir } from "aluka:gui";
 
 // 1. 应用生命周期控制
 app.on("ready", async () => {
@@ -182,9 +182,23 @@ app.on("ready", async () => {
   });
 
   // 6. 双向事件与 RPC 绑定
+  const dispose = app.on("ready", () => {
+    console.log("ready config done");
+  });
+  // dispose(); // 需要时取消订阅
+
   win.on("close", () => {
     console.log("window closed");
   });
+  win.off("close"); // 定向注销该窗口的 close 事件处理器
+
+  // 7. 多窗口管理 / RPC 注销 / 外部 URL
+  const wins = app.getWindows();
+  const w = app.getWindowById(win.id);
+  app.unregisterRPC("echo");
+
+  // 8. 用系统默认应用打开外部 URL（浏览器 / mailto）
+  await shell.openExternal("https://aluka.dev");
 });
 ```
 
