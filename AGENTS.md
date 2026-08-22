@@ -127,6 +127,8 @@ internal/
   builtin/                 Node.js 内置模块（fs/http/net/crypto/sqlite/test/...，文件名即模块名）
   pkgmanager/              npm 兼容包管理器（semver/registry/resolver/installer/lockfile/workspace/config）
   bundler/                 build --compile + --target=web（graph/shake/minify/emit/webemit/Vue SFC；独立 module）
+  gui/                     跨平台桌面 GUI 框架（Windows WebView2 / macOS WKWebView；参考 Wails v3 架构，无 CGO）
+  ipc/                     Aluka 原生 IPC 协议（AIP：16B 帧头、全双工并发客户端/服务端、管道传输）
   project/                 web 工作台（配置 / 插件 / HTML 入口 / 写盘；JS emit 在 bundler/webemit）
   monitor/                 --monitor 性能/内存指标（独立 module，依赖 engine）
 tests/
@@ -137,7 +139,7 @@ docs/                      需求 / 开发计划 / 兼容计划 / 性能报告 /
 docs/adr/                  架构决策记录（ADR）
 ```
 
-**速记**：新增 Node 内置模块 → `internal/builtin/`；新增 Web API / 全局 → `internal/runtime/globals/`；新增 Aluka（Bun 兼容）API → `internal/runtime/globals/aluka*.go`。
+**速记**：新增 Node 内置模块 → `internal/builtin/`；新增 Web API / 全局 → `internal/runtime/globals/`；新增 Aluka（Bun 兼容）API → `internal/runtime/globals/aluka*.go`；新增 IPC/插件通信 → `internal/runtime/globals/aluka*.go` + `internal/ipc/`；新增桌面 GUI 能力 → `internal/gui/`；新增 web 构建/项目编排 → `internal/project/`。
 
 ---
 

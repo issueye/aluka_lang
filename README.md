@@ -23,7 +23,7 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 
 ## 项目状态
 
-> 评估日期：2026-08-16 ｜ 测试总数：1300+ 个 Go 测试函数（全量通过，0 失败）
+> 评估日期：2026-08-22 ｜ 测试总数：~1,570 个 Go 测试函数（全量通过，0 失败）
 
 | Phase | 名称 | 状态 | 完成度 |
 |-------|------|------|--------|
@@ -241,6 +241,9 @@ aluka_lang/
 │   │   └── module/            # ESM/CJS 模块系统 + package.json 规范 + aluka:plugin 动态透明 RPC 代理
 │   ├── builtin/               # Node.js 内置模块（fs/http/net/crypto/sqlite/v8/inspector/test/...）
 │   ├── bundler/               # 可执行/web 打包器（graph/shake/minify/emit/Vue SFC）
+│   ├── gui/                   # 跨平台桌面 GUI 框架（Windows WebView2 / macOS WKWebView，无 CGO）
+│   ├── project/               # web 构建工作台（项目配置 / 插件会话 / HTML 入口 / 写盘）
+│   ├── monitor/               # --monitor 性能/内存/运行时指标（独立 module）
 │   └── pkgmanager/            # npm 兼容包管理器（semver/registry/resolver/...）
 │       ├── config/            # .npmrc 解析（registry + 鉴权）
 │       └── workspace/         # workspace 发现（glob 展开 + 本地包链接）
