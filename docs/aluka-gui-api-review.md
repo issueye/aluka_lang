@@ -9,6 +9,12 @@
 
 ## 更新记录
 
+### 2026-08-22 — Phase C 起步（窗口事件增强）
+
+- ✅ **窗口级事件增强**：`globalWndProc` 为 `WM_SIZE`/`WM_MOVE`/`WM_SETFOCUS`/`WM_KILLFOCUS` 派发 `resize`/`move`/`focus`/`blur` 事件，带几何/布尔载荷；`win.on` 即可监听（Go 侧 + 前端广播）。
+- ✅ **类型声明**：`types/aluka-gui.d.ts` 补充窗口事件载荷表。
+- ✅ **端到端冒烟**：`TestWebView2Smoke` 增加 resize/move/focus/blur 监听与 SetSize/SetPosition 触发（`ALUKA_GUI_WEBVIEW2=1` 门控）。
+
 ### 2026-08-22 — Phase B 落地
 
 本次提交完成 **Phase B（表面补齐与对称）** 核心目标：
@@ -206,7 +212,7 @@
 - [ ] `Menu` / `setApplicationMenu` / `win.setMenu`（复用现有 `MenuItem` 模型）  
 - [ ] `Notification.show`（Windows Toast / macOS NSUserNotification 路径需纯 Go）  
 - [ ] `screen` 最小集：主屏 bounds / workArea / scaleFactor  
-- [ ] 窗口事件增强：`resize` / `move` / `focus` / `blur`（带几何载荷）  
+- [x] 窗口事件增强：`resize` / `move` / `focus` / `blur`（带几何/布尔载荷）  
 - [ ] `executeScript` → `Promise` 回传结果
 
 **验收**：无第三方 native 模块即可做出带菜单栏 + 托盘 + 通知的工具应用。

@@ -8,6 +8,17 @@
  * 与 internal/gui 及 internal/runtime/globals/aluka_gui.go 保持同源。
  * 平台差异（macOS / Linux 未完整实现的能力）以 `capabilities` 显式降级，
  * 不提供静默成功。
+ *
+ * ## 窗口事件（win.on / window.aluka.events.on）
+ * | 事件名  | 载荷 |
+ * |---------|------|
+ * | `resize` | `{ width: number, height: number }` |
+ * | `move`   | `{ x: number, y: number }` |
+ * | `focus`  | `true` |
+ * | `blur`   | `false` |
+ * | `show` / `hide` / `minimize` / `maximize` / `unmaximize` | 无载荷 |
+ * | `close`  | 无载荷（可用 `onCloseRequested` 拦截） |
+ * | `fullscreen` | `boolean` |
  */
 
 // ---------------------------------------------------------------------------

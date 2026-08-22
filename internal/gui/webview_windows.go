@@ -24,38 +24,38 @@ var (
 
 	// shell32 由 tray_windows.go 声明（托盘与文件夹对话框共用）
 
-	procRegisterClassExW      = user32.NewProc("RegisterClassExW")
-	procCreateWindowExW       = user32.NewProc("CreateWindowExW")
-	procDefWindowProcW        = user32.NewProc("DefWindowProcW")
-	procShowWindow            = user32.NewProc("ShowWindow")
-	procUpdateWindow          = user32.NewProc("UpdateWindow")
-	procDestroyWindow         = user32.NewProc("DestroyWindow")
-	procSetWindowTextW        = user32.NewProc("SetWindowTextW")
-	procGetWindowTextW        = user32.NewProc("GetWindowTextW")
-	procGetWindowRect         = user32.NewProc("GetWindowRect")
-	procGetClientRect         = user32.NewProc("GetClientRect")
-	procSetWindowPos          = user32.NewProc("SetWindowPos")
-	procGetSystemMetrics      = user32.NewProc("GetSystemMetrics")
-	procGetMessageW           = user32.NewProc("GetMessageW")
-	procTranslateMessage      = user32.NewProc("TranslateMessage")
-	procDispatchMessageW      = user32.NewProc("DispatchMessageW")
-	procPostQuitMessage       = user32.NewProc("PostQuitMessage")
-	procPostMessageW          = user32.NewProc("PostMessageW")
-	procPostThreadMessageW    = user32.NewProc("PostThreadMessageW")
-	procGetCurrentThreadId    = kernel32.NewProc("GetCurrentThreadId")
-	procMessageBoxW           = user32.NewProc("MessageBoxW")
-	procGetModuleHandleW      = kernel32.NewProc("GetModuleHandleW")
-	procGetOpenFileNameW      = comdlg32.NewProc("GetOpenFileNameW")
-	procGetSaveFileNameW      = comdlg32.NewProc("GetSaveFileNameW")
-	procSHBrowseForFolderW    = shell32.NewProc("SHBrowseForFolderW")
-	procSHGetPathFromIDListW  = shell32.NewProc("SHGetPathFromIDListW")
-	procCoTaskMemFree         = ole32.NewProc("CoTaskMemFree")
-	procCoInitializeEx        = ole32.NewProc("CoInitializeEx")
-	procSHCreateMemStream     = shlwapi.NewProc("SHCreateMemStream")
-	procDwmSetWindowAttribute = dwmapi.NewProc("DwmSetWindowAttribute")
-	procGetWindowLongW        = user32.NewProc("GetWindowLongW")
-	procSetWindowLongW        = user32.NewProc("SetWindowLongW")
-	procSendMessageW          = user32.NewProc("SendMessageW")
+	procRegisterClassExW           = user32.NewProc("RegisterClassExW")
+	procCreateWindowExW            = user32.NewProc("CreateWindowExW")
+	procDefWindowProcW             = user32.NewProc("DefWindowProcW")
+	procShowWindow                 = user32.NewProc("ShowWindow")
+	procUpdateWindow               = user32.NewProc("UpdateWindow")
+	procDestroyWindow              = user32.NewProc("DestroyWindow")
+	procSetWindowTextW             = user32.NewProc("SetWindowTextW")
+	procGetWindowTextW             = user32.NewProc("GetWindowTextW")
+	procGetWindowRect              = user32.NewProc("GetWindowRect")
+	procGetClientRect              = user32.NewProc("GetClientRect")
+	procSetWindowPos               = user32.NewProc("SetWindowPos")
+	procGetSystemMetrics           = user32.NewProc("GetSystemMetrics")
+	procGetMessageW                = user32.NewProc("GetMessageW")
+	procTranslateMessage           = user32.NewProc("TranslateMessage")
+	procDispatchMessageW           = user32.NewProc("DispatchMessageW")
+	procPostQuitMessage            = user32.NewProc("PostQuitMessage")
+	procPostMessageW               = user32.NewProc("PostMessageW")
+	procPostThreadMessageW         = user32.NewProc("PostThreadMessageW")
+	procGetCurrentThreadId         = kernel32.NewProc("GetCurrentThreadId")
+	procMessageBoxW                = user32.NewProc("MessageBoxW")
+	procGetModuleHandleW           = kernel32.NewProc("GetModuleHandleW")
+	procGetOpenFileNameW           = comdlg32.NewProc("GetOpenFileNameW")
+	procGetSaveFileNameW           = comdlg32.NewProc("GetSaveFileNameW")
+	procSHBrowseForFolderW         = shell32.NewProc("SHBrowseForFolderW")
+	procSHGetPathFromIDListW       = shell32.NewProc("SHGetPathFromIDListW")
+	procCoTaskMemFree              = ole32.NewProc("CoTaskMemFree")
+	procCoInitializeEx             = ole32.NewProc("CoInitializeEx")
+	procSHCreateMemStream          = shlwapi.NewProc("SHCreateMemStream")
+	procDwmSetWindowAttribute      = dwmapi.NewProc("DwmSetWindowAttribute")
+	procGetWindowLongW             = user32.NewProc("GetWindowLongW")
+	procSetWindowLongW             = user32.NewProc("SetWindowLongW")
+	procSendMessageW               = user32.NewProc("SendMessageW")
 	procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
 )
 
@@ -73,6 +73,9 @@ const (
 	wmDestroy          = 0x0002
 	wmClose            = 0x0010
 	wmSize             = 0x0005
+	wmSetFocus         = 0x0007
+	wmKillFocus        = 0x0008
+	wmMove             = 0x0200
 	wmGetMinMaxInfo    = 0x0024
 	wmUser             = 0x0400
 	wmCustomTask       = wmUser + 101
@@ -446,6 +449,24 @@ func globalWndProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uint
 	if msg == wmSize && ok {
 		// 窗口尺寸变化时同步 WebView 渲染层边界（本回调即 UI 线程）
 		w.wvUpdateBounds()
+		width, height := w.parent.GetSize()
+		w.emitWindowEvent("resize", map[string]interface{}{
+			"width":  width,
+			"height": height,
+		})
+	}
+
+	if msg == wmMove && ok {
+		x, y := w.parent.GetPosition()
+		w.emitWindowEvent("move", map[string]interface{}{"x": x, "y": y})
+	}
+
+	if msg == wmSetFocus && ok {
+		w.emitWindowEvent("focus", true)
+	}
+
+	if msg == wmKillFocus && ok {
+		w.emitWindowEvent("blur", false)
 	}
 
 	if msg == wmNCHitTest && ok {
@@ -926,6 +947,15 @@ func (w *windowsWindow) SetHTML(html string) {
 	if ready {
 		GetApp().PostAction(w.wvApplyTarget)
 	}
+}
+
+// emitWindowEvent 把窗口级事件投递到宿主 Window（Go 侧 handler + 前端广播）。
+// globalWndProc 已在 UI 线程执行，Emit 内部对前端经 ExecuteScript（同样要求 UI 线程）。
+func (w *windowsWindow) emitWindowEvent(name string, data interface{}) {
+	if w.parent == nil || w.parent.IsClosed() {
+		return
+	}
+	w.parent.Emit(name, data)
 }
 
 // ExecuteScript 在渲染进程中执行 JavaScript（就绪前投递的任务会排队）。

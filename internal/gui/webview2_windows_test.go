@@ -101,8 +101,24 @@ window.chrome.webview.postMessage(JSON.stringify({
 	// 渲染进程执行脚本不应崩溃
 	native.ExecuteScript("console.log('smoke')")
 
+	// Phase C：验证窗口级事件（resize/move）能被 Go 侧 `on` 监听捕获。
+	windowEvent := make(chan string, 8)
+	for _, ev := range []string{"resize", "move", "focus", "blur"} {
+		name := ev
+		win.On(name, func(data interface{}) {
+			select {
+			case windowEvent <- name:
+			default:
+			}
+		})
+	}
+
 	// 窗口尺寸变化触发 WM_SIZE 边界同步
 	win.SetSize(800, 600)
+	time.Sleep(600 * time.Millisecond)
+
+	// 关闭前再发送一次 move 以覆盖 WM_MOVE 路径（SetSize 通常已触发 WM_SIZE）
+	win.SetPosition(60, 40)
 	time.Sleep(300 * time.Millisecond)
 
 	win.Close()
