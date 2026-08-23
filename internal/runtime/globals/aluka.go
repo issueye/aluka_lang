@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -295,6 +296,10 @@ func alukaServeRequest(ctx engine.Context, handler engine.Value, w http.Response
 		}
 		_ = req.Set("url", engine.Str(urlStr))
 		h := engine.NewObject()
+		// Go net/http 将 Host 放在 r.Host（不在 r.Header）；补进请求头供 handler 校验
+		if r.Host != "" {
+			_ = h.Set("Host", engine.Str(r.Host))
+		}
 		for k, vals := range r.Header {
 			if len(vals) > 0 {
 				_ = h.Set(k, engine.Str(strings.Join(vals, ", ")))
@@ -330,7 +335,17 @@ func alukaThen(ctx engine.Context, value engine.Value, cb func(engine.Value)) {
 						}
 						return engine.Undefined(), nil
 					})
-					if _, err := tf.Call([]engine.Value{onRes}); err != nil {
+					onRej := engine.NewFunction("onRejected", func(args []engine.Value) (engine.Value, error) {
+						msg := "internal error"
+						if len(args) > 0 && args[0] != nil {
+							msg = args[0].String()
+						}
+						cb(errorResponseValue(500, msg))
+						return engine.Undefined(), nil
+					})
+					// then 必须以 value 为 this 调用（Promise.prototype.then 校验接收者），
+					// 拒绝路径回写 500，避免请求悬挂。
+					if _, err := interpreter.CallWithThis(tf, value, []engine.Value{onRes, onRej}); err != nil {
 						interpreter.ReportUncaught(ctx, err)
 					}
 					return
@@ -339,6 +354,19 @@ func alukaThen(ctx engine.Context, value engine.Value, cb func(engine.Value)) {
 		}
 	}
 	cb(value)
+}
+
+// errorResponseValue 构造 serve 可写回的最小错误响应对象（JSON body + 状态码）。
+func errorResponseValue(status int, message string) engine.Value {
+	res := engine.NewObject()
+	_ = res.Set("status", engine.IntValue(status))
+	hdrs := engine.NewObject()
+	_ = hdrs.Set("_pairs", engine.NewArray([]engine.Value{
+		engine.NewArray([]engine.Value{engine.Str("Content-Type"), engine.Str("application/json")}),
+	}))
+	_ = res.Set("headers", hdrs)
+	_ = res.Set("_body", engine.Str(`{"error":`+strconv.Quote(message)+`}`))
+	return res
 }
 
 // alukaWriteResponse 从 Response 对象写 Go 响应。

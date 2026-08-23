@@ -71,7 +71,7 @@ func NewFetch(ctx engine.Context, cfg FetchConfig) error {
 						hasCT := false
 						if hf, err := ho.Get("has"); err == nil && hf.IsFunction() {
 							if hfn, ok := hf.AsFunction(); ok {
-								if r, err := hfn.Call([]engine.Value{engine.Str("Content-Type")}); err == nil {
+								if r, err := interpreter.CallWithThis(hfn, h, []engine.Value{engine.Str("Content-Type")}); err == nil {
 									if b, ok := r.Bool(); ok {
 										hasCT = b
 									}
@@ -81,7 +81,7 @@ func NewFetch(ctx engine.Context, cfg FetchConfig) error {
 						if !hasCT {
 							if sf, err := ho.Get("set"); err == nil && sf.IsFunction() {
 								if sfn, ok := sf.AsFunction(); ok {
-									if _, err := sfn.Call([]engine.Value{engine.Str("Content-Type"), engine.Str("application/json")}); err != nil {
+									if _, err := interpreter.CallWithThis(sfn, h, []engine.Value{engine.Str("Content-Type"), engine.Str("application/json")}); err != nil {
 										interpreter.ReportUncaught(nil, err)
 									}
 								}
