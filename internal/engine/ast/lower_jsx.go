@@ -108,6 +108,71 @@ func LowerJSX(node Node) Node {
 			n.Declaration = LowerJSX(n.Declaration).(Statement)
 		}
 		return n
+
+	// —— 表达式递归：JSX 可出现在任意表达式位置（子元素容器、属性值、变量赋值等） ——
+
+	case *ConditionalExpr: // 三元：{cond ? <a/> : <b/>}
+		n.Test = LowerJSX(n.Test).(Expression)
+		n.Consequent = LowerJSX(n.Consequent).(Expression)
+		n.Alternate = LowerJSX(n.Alternate).(Expression)
+		return n
+
+	case *LogicalExpr: // 逻辑与/或：{cond && <a/>} / {a || <b/>}
+		n.Left = LowerJSX(n.Left).(Expression)
+		n.Right = LowerJSX(n.Right).(Expression)
+		return n
+
+	case *BinaryExpr: // 二元：字符串拼接 {`text` + <a/>}
+		n.Left = LowerJSX(n.Left).(Expression)
+		n.Right = LowerJSX(n.Right).(Expression)
+		return n
+
+	case *AssignExpr: // 赋值：x = <a/>
+		n.Right = LowerJSX(n.Right).(Expression)
+		return n
+
+	case *UnaryExpr: // 一元：{!cond} / {-count}
+		n.Arg = LowerJSX(n.Arg).(Expression)
+		return n
+
+	case *UpdateExpr: // 更新：{x++} / {--x}
+		return n
+
+	case *TemplateLit: // 模板字面量：{`text ${var}`}
+		for i, expr := range n.Expressions {
+			n.Expressions[i] = LowerJSX(expr).(Expression)
+		}
+		return n
+
+	case *MemberExpr: // 成员访问：obj.method() 的 callee
+		n.Object = LowerJSX(n.Object).(Expression)
+		return n
+
+	case *NewExpr: // new 表达式
+		n.Callee = LowerJSX(n.Callee).(Expression)
+		for i, arg := range n.Arguments {
+			n.Arguments[i] = LowerJSX(arg).(Expression)
+		}
+		return n
+
+	case *AwaitExpr: // await 表达式
+		n.Argument = LowerJSX(n.Argument).(Expression)
+		return n
+
+	case *YieldExpr: // yield 表达式
+		if n.Argument != nil {
+			n.Argument = LowerJSX(n.Argument).(Expression)
+		}
+		return n
+
+	case *TaggedTemplateExpr: // 标记模板：tag`a${x}b`
+		n.Tag = LowerJSX(n.Tag).(Expression)
+		if n.Template != nil {
+			for i, expr := range n.Template.Expressions {
+				n.Template.Expressions[i] = LowerJSX(expr).(Expression)
+			}
+		}
+		return n
 	}
 
 	return node

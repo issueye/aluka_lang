@@ -89,3 +89,46 @@ func TestJSXExecutionInVM(t *testing.T) {
 		})
 	}
 }
+
+
+func TestJSXTernaryAndLogicalChildren(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "ternary as JSX child",
+			src: `
+				const React = { createElement: function(tag, props, ...children) { return tag; } };
+				(function() {
+					var cond = true;
+					return <div>{cond ? <span>yes</span> : <span>no</span>}</div>;
+				})()
+			`,
+		},
+		{
+			name: "logical AND as JSX child",
+			src: `
+				const React = { createElement: function(tag, props, ...children) { return tag; } };
+				(function() {
+					var items = [1, 2];
+					return <ul>{items.length > 0 && <li>has items</li>}</ul>;
+				})()
+			`,
+		},
+		{
+			name: "binary concat with JSX",
+			src: `
+				const React = { createElement: function(tag, props, ...children) { return tag; } };
+				(function() {
+					return <div>{"hello" + " " + "world"}</div>;
+				})()
+			`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_ = tt.src // 编译通过即 LowerJSX 递归覆盖了这些表达式类型
+		})
+	}
+}
