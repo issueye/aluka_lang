@@ -111,6 +111,66 @@ func TestPackParseRoundTrip(t *testing.T) {
 	}
 }
 
+// TestPackRootDirRoundTrip: RootDir（T2-B4 运行时动态导入的磁盘回退基准）
+// 写入 manifest 并可解析还原；未设置时保持空串（旧产物兼容语义）。
+func TestPackRootDirRoundTrip(t *testing.T) {
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(main, []byte("export const x = 42;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := CompileFile(vm, main, "main.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := PackWithOptions("main.ts", []*EntryData{entry}, nil, nil, PackOptions{RootDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, _, err := ParsePayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.RootDir != dir {
+		t.Errorf("rootDir = %q, want %q", manifest.RootDir, dir)
+	}
+
+	// 不设置 RootDir 时（Pack 兼容入口）字段为零值，解析后为空串。
+	payload2, err := Pack("main.ts", []*EntryData{entry}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest2, _, err := ParsePayload(payload2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest2.RootDir != "" {
+		t.Errorf("rootDir without option = %q, want empty", manifest2.RootDir)
+	}
+}
+
+// TestEmbeddedRootDir: NewEmbedded 从 manifest 暴露 RootDir，供运行时
+// embedded 未命中时回退文件系统。
+func TestEmbeddedRootDir(t *testing.T) {
+	payload, err := PackWithOptions("main.ts", nil, nil, nil, PackOptions{RootDir: `C:\proj\src`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, data, err := ParsePayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emb := NewEmbedded(manifest, data)
+	if got := emb.RootDir(); got != `C:\proj\src` {
+		t.Errorf("Embedded.RootDir = %q, want C:\\proj\\src", got)
+	}
+}
+
 func TestPayloadCompression(t *testing.T) {
 	vm, err := interpreter.NewVM()
 	if err != nil {

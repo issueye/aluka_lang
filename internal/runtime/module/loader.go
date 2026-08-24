@@ -28,6 +28,11 @@ type EmbeddedResolver interface {
 	LoadModule(key string) (*bytecode.Module, error)
 	// LoadJSON 读取嵌入的 JSON 资源（M3：import x from './data.json'）。
 	LoadJSON(key string) ([]byte, bool)
+	// RootDir 返回入口文件所在目录（构建机绝对路径）。非静态动态导入
+	// （import(变量)）与 createRequire(import.meta.url) 相对解析在构建期
+	// 映射未命中时以此为基准回退文件系统现场加载（空串 = 旧产物，保持
+	// 仅绝对路径可回退的既有语义）。
+	RootDir() string
 }
 
 // Loader loads and caches modules. It supports both CommonJS (require) and
@@ -183,6 +188,28 @@ func (l *Loader) RequireModule(specifier, parentPath string) (engine.Value, erro
 	return l.requireCtx(specifier, parentPath, false)
 }
 
+// mapEmbeddedParentToDisk 把产物模式的虚拟父路径映射回构建机磁盘绝对路径
+// （T2-B4 运行时动态导入回退的解析基准）。
+//
+//   - bun://~BUN/<虚拟key>（import.meta.url 在产物模式的形式，
+//     makeImportMetaFunc 生成）→ <RootDir>/<虚拟key>
+//   - 相对/裸虚拟 key（如 "plugin-ui.ts"、"../../agent/src/loader.ts"）→
+//     <RootDir>/<key>（虚拟 key 恒为 / 分隔，Join 前 FromSlash）
+//   - 已是绝对路径 → 原样返回（外部分发目录/绝对路径 require）
+func mapEmbeddedParentToDisk(rootDir, parentPath string) string {
+	if rootDir == "" || parentPath == "" {
+		return ""
+	}
+	p := parentPath
+	if strings.HasPrefix(p, "bun://~BUN/") {
+		p = strings.TrimPrefix(p, "bun://~BUN/")
+	}
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Join(rootDir, filepath.FromSlash(p))
+}
+
 // requireCtx 是 require 的内部实现，importCtx 指定解析语境（false = require
 // 语境，true = import 语境）。Node 语义：ESM 静态导入/动态 import() 用
 // import 语境解析 exports 条件（含 "import"），CJS require 用 require 语境
@@ -194,6 +221,14 @@ func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engin
 	// 在 Windows 上会传入 pathToFileURL(abs)。
 	specifier = NormalizeModulePath(specifier)
 	parentPath = NormalizeModulePath(parentPath)
+
+	// data: URL 模块（jiti 的 ESM 转译主路径之一，data:text/javascript;base64,…）：
+	// 解码后按 ESM 语义编译执行，不参与文件系统/嵌入解析。仅 import 语境
+	// （动态 import()/静态导入）；require('data:...') 保持 Node 语义走解析
+	// 失败（Cannot find module）。
+	if importCtx && strings.HasPrefix(specifier, "data:") {
+		return l.loadDataSource(specifier)
+	}
 
 	// Bun SQLite 兼容别名：复用纯 Go 的 node:sqlite 实现。
 	if specifier == "bun:sqlite" {
@@ -271,7 +306,15 @@ func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engin
 			return l.RunPrecompiled(key, mod, l.embedded.ModuleTypeOf(key) == "esm")
 		}
 		if !filepath.IsAbs(specifier) && !filepath.IsAbs(parentPath) {
-			return engine.Undefined(), fmt.Errorf("module: compiled mode: cannot load external module %q from %q (not embedded; rebuild with aluka build)", specifier, parentPath)
+			// T2-B4：构建期未静态解析的动态导入（import(变量)）与
+			// createRequire(import.meta.url) 相对解析——把虚拟父路径映射
+			// 回构建机磁盘（manifest.RootDir 基准）后走文件系统现场加载。
+			if rootDir := l.embedded.RootDir(); rootDir != "" {
+				parentPath = mapEmbeddedParentToDisk(rootDir, parentPath)
+			}
+			if !filepath.IsAbs(parentPath) {
+				return engine.Undefined(), fmt.Errorf("module: compiled mode: cannot load external module %q from %q (not embedded; rebuild with aluka build)", specifier, parentPath)
+			}
 		}
 	}
 

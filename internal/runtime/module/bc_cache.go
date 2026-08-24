@@ -47,7 +47,11 @@ const bcCacheDirName = ".aluka/cache"
 //
 //	回补，短路清理块多发 POP 把局部槽弹掉（运行期帧栈越界 panic）；spread
 //	调用两分支计数少 1（短路残留泄漏）。产物语义已变化，旧缓存必须失效。
-const pipelineVersion = 5
+//
+// v5 → v6：CJS 包装器新增 __importMeta 参数（import.meta 在 CJS 中可用），
+//
+//	包装文本变化导致缓存字节码的模块函数形参列表不同，旧缓存必须失效。
+const pipelineVersion = 6
 
 // bytecodeCache 提供字节码 Module 的磁盘读写。
 type bytecodeCache struct {

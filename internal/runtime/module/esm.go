@@ -80,6 +80,7 @@ func (l *Loader) RunPrecompiled(path string, mod *bytecode.Module, isESM bool) (
 			engine.Str(path),
 			engine.Str(filepath.Dir(path)),
 			importFn,
+			l.makeImportMetaFunc(path),
 		}
 	}
 	modResult, evalErr := vm.InvokeFn(wrapper, exports, args)

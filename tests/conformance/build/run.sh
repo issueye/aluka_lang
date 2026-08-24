@@ -133,8 +133,46 @@ else
   check "dynamic import" "dynamic: lazy loaded" "$("$DIR/dyn.exe" 2>&1)"
 fi
 
-# 8) M2 未嵌入模块：动态 import 变量形式（构建期无法静态收集）在运行期
-#    报清晰错误；静态 require 不存在的文件在构建期即失败（正确把关）。
+# 7b) T2-B4 动态 import 变量形式：产物运行期按 manifest.RootDir 回退磁盘
+#     现场加载未嵌入的 .ts/.cjs，createRequire(import.meta.url) 相对解析
+#     同样可用（docs/jiti-dynamic-import-plan.md M1）。
+mkdir -p "$DIR/dynvar"
+cat > "$DIR/dynvar/main.ts" <<'EOF'
+globalThis.__which = 'a';
+import('./mod-' + globalThis.__which + '.cjs').then(async m => {
+  console.log('dynvar-cjs: ' + m.add(2, 3));
+  globalThis.__which = 'b';
+  const m2 = await import('./mod-' + globalThis.__which + '.ts');
+  console.log('dynvar-ts: ' + m2.sq(7));
+  const { createRequire } = await import('node:module');
+  const reqRel = createRequire(import.meta.url);
+  console.log('dynvar-rel: ' + reqRel('./data.cjs'));
+});
+EOF
+cat > "$DIR/dynvar/mod-a.cjs" <<'EOF'
+module.exports = { add: (a, b) => a + b };
+EOF
+cat > "$DIR/dynvar/mod-b.ts" <<'EOF'
+export const sq = (x: number): number => x * x;
+EOF
+cat > "$DIR/dynvar/data.cjs" <<'EOF'
+module.exports = 'from-disk';
+EOF
+if ! $ALUKA build --compile --outfile "$DIR/dynvar.exe" "$DIR/dynvar/main.ts" >"$DIR/build7b.log" 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL  build dynamic import variable"
+  sed 's/^/       /' "$DIR/build7b.log" | head -5
+else
+  check "dynamic import variable + createRequire from disk" "dynvar-cjs: 5
+dynvar-ts: 49
+dynvar-rel: from-disk" "$("$DIR/dynvar.exe" 2>&1)"
+fi
+
+# 8) T2-B4 未嵌入模块：动态 import 变量形式（构建期无法静态收集）在运行期
+#    按 manifest.RootDir 回退文件系统现场解析；文件不存在时报清晰错误
+#    （含候选绝对路径 "cannot resolve ..."）。旧产物（无 RootDir）保持
+#    "cannot load external module" 文案；静态 require 不存在的文件在
+#    构建期即失败（正确把关）。
 cat > "$DIR/external.ts" <<'EOF'
 const name = './not-embedded.ts';
 import(name).then(() => console.log('unexpected'), (e) => console.log('ERR: ' + e.message));
@@ -146,7 +184,7 @@ if ! $ALUKA build --compile --outfile "$DIR/external.exe" "$DIR/external.ts" >"$
 else
   out="$("$DIR/external.exe" 2>&1)"
   case "$out" in
-    *"cannot load external module"*) echo "PASS  unembedded module errors clearly"; PASS=$((PASS + 1)) ;;
+    *"cannot resolve"*|*"cannot load external module"*) echo "PASS  unembedded module errors clearly"; PASS=$((PASS + 1)) ;;
     *) echo "FAIL  unembedded module errors clearly"; echo "       got: $out"; FAIL=$((FAIL + 1)) ;;
   esac
 fi

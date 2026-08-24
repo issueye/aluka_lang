@@ -12,6 +12,7 @@ func (importMetaEmbeddedResolver) ResolveEmbedded(string, string) (string, bool)
 func (importMetaEmbeddedResolver) ModuleTypeOf(string) string                    { return "" }
 func (importMetaEmbeddedResolver) LoadModule(string) (*bytecode.Module, error)   { return nil, nil }
 func (importMetaEmbeddedResolver) LoadJSON(string) ([]byte, bool)                { return nil, false }
+func (importMetaEmbeddedResolver) RootDir() string                               { return "" }
 
 func TestCompiledImportMetaURLUsesBunBinaryMarker(t *testing.T) {
 	loader := &Loader{embedded: importMetaEmbeddedResolver{}}

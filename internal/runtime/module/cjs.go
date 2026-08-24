@@ -15,8 +15,10 @@ func (l *Loader) loadCJS(absPath string) (engine.Value, error) {
 // WrapCJSSource 将模块源码包装为带模块作用域参数的函数表达式
 // （构建产物模式复用，产物在执行前已包装）。
 // 包装为常量前缀/后缀，保证字节码缓存的键（源文件 mtime/size）稳定。
+// 参数与 ESM 包装对齐：__importMeta（import.meta lower 目标）在 CJS 中
+// 同样可用（Bun 兼容语义；Node 会在 parse 期拒绝 import.meta）。
 func WrapCJSSource(src string) string {
-	const prefix = "(function(require, module, exports, __filename, __dirname, __import) {\n"
+	const prefix = "(function(require, module, exports, __filename, __dirname, __import, __importMeta) {\n"
 	const suffix = "\n});\n"
 	return prefix + src + suffix
 }

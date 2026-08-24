@@ -98,7 +98,12 @@ type Manifest struct {
 	PayloadVersion uint32      `json:"payloadVersion"`
 	FormatVersion  uint32      `json:"formatVersion"` // 字节码格式版本（运行时校验）
 	Entry          string      `json:"entry"`         // 入口模块路径
-	Modules        []EntryInfo `json:"modules"`
+	// RootDir 是入口文件所在目录（构建机绝对路径）。运行时对未嵌入的
+	// 非静态动态导入（import(变量)）按 RootDir 回退文件系统现场加载
+	// 未预编译模块（T2-B4 扩展，docs/jiti-dynamic-import-plan.md M1）。
+	// 旧产物无此字段时保持原有「仅绝对路径可回退」语义。
+	RootDir string `json:"rootDir,omitempty"`
+	Modules []EntryInfo `json:"modules"`
 	// Resolutions 是构建期解析映射：父模块路径 → specifier → 解析后的模块
 	// 路径（构建机绝对路径）。产物运行时不做文件系统解析，直接查映射加载
 	// 嵌入的预编译模块（M2，docs/build-compile-plan.md §5.3）。
@@ -141,12 +146,15 @@ func PackWithWebAssets(entryPath string, modules []*EntryData, resolutions map[s
 	return PackWithOptions(entryPath, modules, resolutions, assets, PackOptions{WebAssets: webAssets})
 }
 
-// PackOptions 是 GUI 产物（aluka build --gui）的附加打包项。
+// PackOptions 是打包可选项（GUI 资源与运行时磁盘回退基准）。
 type PackOptions struct {
 	// WebAssets 前端静态资源：相对路径 → 原始字节（aluka://app/ 虚拟协议）。
 	WebAssets map[string][]byte
 	// Icon 应用图标（.ico 文件原始字节），应用于窗口/任务栏/托盘。
 	Icon []byte
+	// RootDir 入口文件所在目录（构建机绝对路径）：写入 manifest，供产物
+	// 运行时的非静态动态导入回退文件系统（未嵌入模块现场加载）。
+	RootDir string
 }
 
 // PackWithOptions 打包 payload 并附带 GUI 选项（内嵌资源/图标）。
@@ -195,6 +203,7 @@ func PackWithOptions(entryPath string, modules []*EntryData, resolutions map[str
 		PayloadVersion: PayloadVersion,
 		FormatVersion:  bytecode.FormatVersion,
 		Entry:          entryPath,
+		RootDir:        opts.RootDir,
 		Modules:        entries,
 		Resolutions:    resolutions,
 		Assets:         assetStrings,

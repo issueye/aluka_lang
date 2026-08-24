@@ -28,6 +28,12 @@ func NewEmbedded(manifest *Manifest, data []byte) *Embedded {
 	}
 }
 
+// RootDir 返回入口文件所在目录（构建机绝对路径）。空串表示旧产物
+// （无 rootDir 字段）：运行时保持仅绝对路径可回退文件系统。
+func (e *Embedded) RootDir() string {
+	return e.manifest.RootDir
+}
+
 // ResolveEmbedded 按构建期解析映射解析 specifier。
 // parentPath 是发起解析的模块路径（产物模式下为构建时记录的模块路径）。
 // 未命中（构建期未静态解析到，或动态拼装）返回 false。

@@ -59,7 +59,10 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 			parentPath = href
 		}
 		parentPath = modmodule.NormalizeModulePath(parentPath)
-		if parentPath != "" {
+		// 产物模式下 import.meta.url 是 bun://~BUN/<虚拟key> 虚拟 URL，
+		// 不能 filepath.Abs（会拼进 cwd 破坏相对解析）；其余文件名照常
+		// 转绝对路径。虚拟父路径由 loader 按 manifest.RootDir 回退磁盘。
+		if parentPath != "" && !strings.HasPrefix(parentPath, "bun:") {
 			if abs, err := filepath.Abs(parentPath); err == nil {
 				parentPath = abs
 			}
