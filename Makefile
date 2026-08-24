@@ -6,7 +6,7 @@ VERSION ?= 0.2.0-dev
 BINARY  ?= aluka
 MODULE  := github.com/aluka-lang/aluka
 PKG     := ./cmd/aluka
-LDFLAGS := -X main.version=$(VERSION)
+LDFLAGS := -s -w -X main.version=$(VERSION)
 CGO     := CGO_ENABLED=0
 # 根目录 ./... 不会进入带 go.mod 的子目录；按 workspace 模块逐个测。
 WORKPKGS := $(shell go list -f '{{.Dir}}/...' -m)
