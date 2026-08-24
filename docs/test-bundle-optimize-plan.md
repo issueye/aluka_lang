@@ -1,6 +1,6 @@
 # 【测试器 / 打包器 / 优化】开发计划
 
-> 项目代号：`aluka` ｜ 文档版本：v1.4 ｜ 日期：2026-08-06
+> 项目代号：`aluka` ｜ 文档版本：v1.5 ｜ 日期：2026-08-24
 > 前置：Phase 6 测试器（M5 已收官）、Phase 7 打包器（B2 已收官）、Phase 8 优化（部分基础已落地）
 >
 > **完成状态（2026-08-06）**：T1、T2、O1、O2 四个里程碑**全部完成**并提交
@@ -131,6 +131,12 @@ aluka 的核心运行时能力（Node 22 兼容 M1-M5、打包 B2 payload 自附
 - 动态 import 常量折叠（`import('./dyn' + '-lib.js')`）；不可解析 → 构建期警告（非致命），产物运行时报错。
 - 验证：tests/conformance/build/run.sh 扩至 19 项（12 旧 + 7 新）；shake/minify Go 单测（未用模块剪除/副作用保留/CJS 导出保留/re-export 剪枝/折叠/DCE/行为一致）。
 
+**T2 补充记录（2026-08-24，commit 090ae6b）**：动态 import 目标导出级裁剪修复（深水区）。
+- 原实现仅靠 Resolutions 兜底对动态 import 目标逐个标记导出：与静态 import 混用同一模块时被 `handled` 短路，目标自身其余导出被裁剪（`import { a }` + `await import('./m')` 后 `ns.b` 运行期为 undefined）；且兜底不标 `"*"`，目标为 `export *` barrel 时链断裂、深层模块被剪。
+- 修复：`internal/bundler/shake` 的 `analyze` 用 `ast.Walk` 收集 `__import('spec')` 调用（识别规则与 `graph.collectDeps` 的 `__import` 分支一致——字面量直取、非字面量常量折叠后取）；BFS 中对动态 import 目标按 `import *` 语义保守保留（keepMod + 标记 `"*"` 与全部导出并置 handled）。命名空间在运行时全量可观察，动态属性访问无法静态分析。
+- 回归：新增 3 个 Go 单测（静态/动态混用、export * barrel 链、可折叠 specifier），修复前红/修复后绿；bundler 全模块测试 + build/webbuild conformance 全绿。
+- 遗留跟踪（见 §7）：`require` 非字面量参数不做常量折叠、`new URL('./x', import.meta.url)` 不进依赖图、web target 非字面量 `require` 无构建期拦截。
+
 ### 5.3 O1：优化基座（P0-P1）
 
 | ID | 任务 | 说明 | 状态 |
@@ -192,6 +198,9 @@ T1/T2 与 O1/O2 无交叉依赖，可双线并行
 | 字节码产物体积（无压缩） | minify 作用于字节码常量池中的源码字符串与标识符名 |
 | 并发测试（T1-A8）的共享状态隔离 | 每用例独立 VM（参考 runTestFile 模式），跨文件天然隔离 |
 | superinstruction 增大编译器复杂度 | 仅在 O1 基准证明热点后实施；收益不达标则记录并跳过 |
+| `require` 非字面量参数不做常量折叠（`require('./a' + '/b')` / `require(pathVar)` 不进依赖图 → web 产物缺模块、无构建期警告） | 对齐 `__import` 分支补 `FoldConst`；无法折叠时对齐 unresolved 警告（T2-B4 同类处理） |
+| `new URL('./x', import.meta.url)` 不进依赖图（web 产物缺资产且不报错） | 后续支持静态解析并加入图（对齐 esbuild） |
+| web target 非字面量 `require` 无构建期拦截（浏览器产物会留必炸调用；webemit 对 `UnresolvedDynamic` 已直接报错，require 无对应检查） | 补构建期错误/警告，对齐 `UnresolvedDynamic` 语义 |
 
 ## 8. 验收策略
 
@@ -225,3 +234,4 @@ T1/T2 与 O1/O2 无交叉依赖，可双线并行
 | v1.2 | 2026-08-06 | **T2 完成**：tree-shaking（导入使用分析 + 模块/导出/re-export 剪除）、minify（DCE/未用声明/常量折叠）、--outdir 多入口、动态 import 常量折叠 + 不可解析警告；build 验收 19/19 |
 | v1.3 | 2026-08-06 | **O1 完成**：--profile（pprof cpu/heap）、基准矩阵（9 项）、写入 IC（O1-C3）、方法调用 IC（O1-C4，含 `(pc, shape, key)` 缓存键修复）、覆盖率开关局部化（O1-C5）、--ic-stats；go test 全绿 + node22 15/15 + build 19/19 |
 | v1.4 | 2026-08-06 | **O2 完成**：OpGetPropLocal superinstruction（O2-D1）、Decode 内联 + getProperty IC 前置快速路径（O2-D2，PropAccess -19%）、字符串/GC 优化评估结论（O2-D3/D4 记录不实施）；node22 15/15 + build 19/19 |
+| v1.5 | 2026-08-24 | **T2 补充**：动态 import 目标保守保留全部导出（namespace 全量可观察语义，修复静态/动态混用误裁与 export * 链断裂，commit 090ae6b）；风险表新增 require 非字面量折叠 / new URL / web 非字面量 require 三个跟踪项 |
