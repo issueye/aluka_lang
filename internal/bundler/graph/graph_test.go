@@ -229,6 +229,53 @@ func TestBuildDynamicDependency(t *testing.T) {
 	}
 }
 
+func TestBuildRequireFoldedSpecifier(t *testing.T) {
+	// require 非字面量但可常量折叠（字符串拼接）：与 __import 分支对齐，
+	// 折叠后解析进依赖图（此前静默漏图 → web 产物缺模块且无警告）。
+	dir := newTestEnv(t, map[string]string{
+		"main.js": "const m = require('./li' + 'b.js');\nconsole.log(m.v);",
+		"lib.js":  "exports.v = 42;",
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.UnresolvedDynamic) != 0 {
+		t.Fatalf("unresolved = %v, want none", res.UnresolvedDynamic)
+	}
+	table := res.Resolutions["main.js"]
+	if table == nil || table["./lib.js"] != "lib.js" {
+		t.Fatalf("folded require not resolved: %v", table)
+	}
+	if _, ok := res.SourceUnits["lib.js"]; !ok {
+		t.Fatalf("lib.js not in graph: %v", keysOf(res.SourceUnits))
+	}
+}
+
+func TestBuildRequireNonConstantUnresolved(t *testing.T) {
+	// require(pathVar)：无法静态解析 → 记入 UnresolvedDynamic（web 构建
+	// 期报错、--compile 警告 + 运行期按 RootDir 回退），不再是静默漏图。
+	dir := newTestEnv(t, map[string]string{
+		"main.js": "const name = './lib.js';\nconst m = require(name);\nconsole.log(m.v);",
+		"lib.js":  "exports.v = 42;",
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "main.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.UnresolvedDynamic) != 1 || res.UnresolvedDynamic[0] != "main.js" {
+		t.Fatalf("unresolved = %v, want [main.js]", res.UnresolvedDynamic)
+	}
+}
+
 // TestBuildVueSFC：.vue 单文件组件在图构建期编译为 JS 模块；编译产物
 // import 的 'vue' 运行时 helper 经 node_modules 正常解析（Vite 式架构：
 // 编译器不内嵌运行时）。

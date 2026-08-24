@@ -441,7 +441,19 @@ func collectDeps(prog *ast.Program, key string, unresolved *[]string) []Dep {
 				case "require":
 					if lit, ok := arg.(*ast.StringLit); ok {
 						deps = append(deps, Dep{Spec: lit.Value, ImportCtx: false})
+						break
 					}
+					// 非字面量尝试常量折叠（对齐 __import 分支）。无法
+					// 静态解析的 require 记入 unresolved：web target 构建期
+					// 报错、--compile 警告 + 运行期按 RootDir 回退文件系统；
+					// 产物保留原调用（external 加载）。
+					if v, ok := astutil.FoldConst(arg); ok {
+						if s, isStr := v.(string); isStr {
+							deps = append(deps, Dep{Spec: s, ImportCtx: false})
+							break
+						}
+					}
+					*unresolved = append(*unresolved, key)
 				case "__import": // 动态 import() 经 parser lower 的形式
 					if lit, ok := arg.(*ast.StringLit); ok {
 						deps = append(deps, Dep{Spec: lit.Value, ImportCtx: true, Dynamic: true})
