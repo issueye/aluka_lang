@@ -31,13 +31,14 @@ type Result struct {
 
 // moduleInfo 是单个模块的静态分析结果。
 type moduleInfo struct {
-	key        string
-	prog       *ast.Program    // ESM 模块 AST；CJS 为 nil
-	exports    map[string]bool // 本地导出名（含 default）
-	imports    []importInfo
-	reExports  []*ast.ExportDecl
-	sideEffect bool            // 顶层副作用
-	deps       map[string]bool // 依赖模块 key（Resolutions 指向）
+	key            string
+	prog           *ast.Program // ESM 模块 AST；CJS 为 nil
+	exports        map[string]bool
+	dynamicImports []string // 动态 import 目标（parser lower 的 __import('spec')）
+	imports        []importInfo
+	reExports      []*ast.ExportDecl
+	sideEffect     bool            // 顶层副作用
+	deps           map[string]bool // 依赖模块 key（Resolutions 指向）
 }
 
 // importInfo 是一条 import 语句的静态信息。
@@ -240,7 +241,24 @@ func ShakeOpts(gr *graph.Result, entry string, opts Options) (*Result, error) {
 				}
 			}
 		}
-		// 兜底：require()/动态 import 的依赖不在 ImportDecl/ExportDecl 分析
+		// 动态 import（await import('m')）：返回的 namespace 在运行时全量
+		// 可观察——属性访问无法静态分析（与 import * 语义一致），目标保留
+		// 并标记全部导出；"*" 标记同时打通目标自身的 export * 链。
+		for _, spec := range info.dynamicImports {
+			t := resolveTarget(gr, key, spec)
+			if t == "" {
+				continue
+			}
+			handled[t] = true
+			keepMod(t)
+			markUsed(t, "*")
+			if tin := infos[t]; tin != nil && tin.prog != nil {
+				for name := range tin.exports {
+					markUsed(t, name)
+				}
+			}
+		}
+		// 兜底：require() 的依赖不在 ImportDecl/ExportDecl 分析
 		// 内（使用不可静态分析）→ 目标保留并全导出传播。
 		for dep := range info.deps {
 			if handled[dep] {
@@ -325,6 +343,30 @@ func analyze(key string, prog *ast.Program, gr *graph.Result) *moduleInfo {
 			}
 		}
 	}
+	// 动态 import：parser 把 import('spec') lower 为 __import('spec') 调用，
+	// 可能出现在任意表达式深度；识别规则与 graph.collectDeps 的 __import
+	// 分支一致（字面量直接取，非字面量尝试常量折叠）。
+	ast.Walk(prog, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Arguments) == 0 {
+			return true
+		}
+		id, ok := call.Callee.(*ast.Identifier)
+		if !ok || id.Name != "__import" {
+			return true
+		}
+		arg := call.Arguments[0]
+		if lit, ok := arg.(*ast.StringLit); ok {
+			info.dynamicImports = append(info.dynamicImports, lit.Value)
+			return true
+		}
+		if v, ok := astutil.FoldConst(arg); ok {
+			if s, isStr := v.(string); isStr {
+				info.dynamicImports = append(info.dynamicImports, s)
+			}
+		}
+		return true
+	})
 	return info
 }
 

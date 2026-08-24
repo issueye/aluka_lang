@@ -193,14 +193,104 @@ func TestShakeMarksShakenSourceUnit(t *testing.T) {
 	}
 }
 
+func TestShakeDynamicImportKeepsAllExports(t *testing.T) {
+	// 静态 import 只引用了 a；同模块又被动态 import——返回的 namespace
+	// 在运行时全量可观察（ns.b 这类动态属性访问无法静态分析），
+	// b 的导出不得被导出级裁剪（曾因 handled 短路兜底而漏保留）。
+	gr := buildFixture(t, map[string]string{
+		"main.js": "import { a } from './lib.js';\nconst ns = await import('./lib.js');\nconsole.log(a, ns.b);\n",
+		"lib.js":  "export const a = 'A';\nexport const b = 'B';\n",
+	}, "main.js")
+	res, err := Shake(gr, gr.Entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Kept["lib.js"] {
+		t.Fatal("dynamic import target removed")
+	}
+	exported := exportedNames(gr.SourceUnits["lib.js"])
+	for _, name := range []string{"a", "b"} {
+		if !exported[name] {
+			t.Errorf("export %q pruned despite dynamic import", name)
+		}
+	}
+}
+
+func TestShakeDynamicImportThroughStarBarrel(t *testing.T) {
+	// 动态 import 目标为 export * barrel：namespace 全量可观察，需要
+	// "*" 标记沿 export * 链传播（"*" 缺失时链会断裂、深层模块被剪）。
+	gr := buildFixture(t, map[string]string{
+		"main.js":   "const ns = await import('./barrel.js');\nconsole.log(ns.a);\n",
+		"barrel.js": "export * from './a.js';\nexport * from './b.js';\n",
+		"a.js":      "export const a = 'A';\n",
+		"b.js":      "export const b = 'B';\n",
+	}, "main.js")
+	res, err := Shake(gr, gr.Entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := res.Kept
+	for _, name := range []string{"main.js", "barrel.js", "a.js", "b.js"} {
+		if !set[name] {
+			t.Errorf("dynamic import chain removed %s: %v", name, set)
+		}
+	}
+}
+
+func TestShakeDynamicImportFoldedSpecifier(t *testing.T) {
+	// 非字面量但可常量折叠（字符串拼接）：graph.collectDeps 折叠后仍
+	// 解析进 Resolutions，静态/动态混用时同样必须保守保留全部导出。
+	gr := buildFixture(t, map[string]string{
+		"main.js": "import { a } from './lib.js';\nconst ns = await import('./li' + 'b.js');\nconsole.log(a, ns.b);\n",
+		"lib.js":  "export const a = 'A';\nexport const b = 'B';\n",
+	}, "main.js")
+	res, err := Shake(gr, gr.Entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Kept["lib.js"] {
+		t.Fatal("folded dynamic import target removed")
+	}
+	exported := exportedNames(gr.SourceUnits["lib.js"])
+	for _, name := range []string{"a", "b"} {
+		if !exported[name] {
+			t.Errorf("export %q pruned despite folded dynamic import", name)
+		}
+	}
+}
+
+// exportedNames 提取剪枝后仍公开导出的名字（含 default）。
+func exportedNames(unit *module.SourceUnit) map[string]bool {
+	names := map[string]bool{}
+	if unit == nil || unit.Program == nil {
+		return names
+	}
+	for _, stmt := range unit.Program.Body {
+		switch n := stmt.(type) {
+		case *ast.ExportDecl:
+			if n.Declaration != nil {
+				for _, name := range ast.DeclNames(n.Declaration) {
+					names[name] = true
+				}
+			}
+			for _, spec := range n.Specifiers {
+				names[spec.Exported] = true
+			}
+		case *ast.ExportDefaultDecl:
+			names["default"] = true
+		}
+	}
+	return names
+}
+
 func TestShakeFiltersUnusedNamedReExportSpecifiers(t *testing.T) {
 	// Vue runtime-core 一类：`export { used, unused } from './dep'` 只要
 	// 有一个名字被用就会整句保留；原生 ESM 链接要求未使用的名字也从
 	// 目标模块导出，否则出现 TrackOpTypes 这类 "does not provide export"。
 	gr := buildFixture(t, map[string]string{
-		"main.js":        "import { used } from './core.js';\nconsole.log(used);\n",
-		"core.js":        "export { used, unused } from './reactivity.js';\n",
-		"reactivity.js":  "export const used = 1;\nexport const unused = 2;\n",
+		"main.js":       "import { used } from './core.js';\nconsole.log(used);\n",
+		"core.js":       "export { used, unused } from './reactivity.js';\n",
+		"reactivity.js": "export const used = 1;\nexport const unused = 2;\n",
 	}, "main.js")
 	res, err := Shake(gr, gr.Entry)
 	if err != nil {
