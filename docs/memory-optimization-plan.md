@@ -84,8 +84,10 @@ dist/cli.js (入口)
 
 #### R5 【P2】payload 未压缩
 
-`--compile` payload 常量池字符串未共享/未压缩（aluka ME-8 已规划未实施，
-`docs/perf-memory-optimize-plan.md:87`）。反序列化时峰值内存 ≈ payload 大小。
+`--compile` payload 常量池字符串未共享/未压缩（~~aluka ME-8 已规划未实施~~ →
+**已闭环**：PayloadVersion v3 zlib 压缩已落地，39MB→3.2MB（-91.8%），见
+`docs/performance-and-functionality-evaluation.md` 与 README `--analyze/--max-payload`；
+2026-08-25 gap-closure-plan D4 回填）。反序列化时峰值内存 ≈ 压缩后 payload 大小。
 
 ### 2.2 运行时内存增长根因（300MB → 500MB）
 

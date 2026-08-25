@@ -31,8 +31,8 @@ isBigInt 3.4%、convT64 2.5%（cum 17.7%）、doCall 2.5%（cum 13.5%）。
 |--------|----------------------|--------------|------|
 | M-P0 | 保持 -52%（O-5 已达成） | callOverhead ≤191x | ✅ |
 | M-P1 | **累计 -75%**（合计 ~3070ms） | 调用类 ≤60x | 🚧 |
-| M-P2 | **累计 -85%** | 调用类 ≤30x，综合 ≤60x | ⬜ |
-| M-P3 | 调用类对 node <10x（架构级） | — | ⬜ |
+| M-P2 | **累计 -85%** | 调用类 ≤30x，综合 ≤60x | ✅（JIT 达成 ~12x / mixed 2.2x，见 README 性能状态；2026-08-25 gap-closure-plan D5 回填） |
+| M-P3 | 调用类对 node <10x（架构级） | — | ◐ JIT Native 已大幅收窄；NaN-boxing 等架构级项见 ADR number-representation-stages |
 
 ## 3. 任务分解
 

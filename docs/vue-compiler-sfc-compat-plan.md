@@ -1,6 +1,6 @@
 # Vue 官方 compiler-sfc 兼容与引擎加固计划
 
-> 状态：分析定稿，待评审排期。
+> 状态：~~分析定稿，待评审排期~~ → **已合入 main 并完成 M0-M5**（见 vue-compiler-sfc-dev-plan/merge-notes；2026-08-25 gap-closure-plan D6 回填）。
 > 关联：`docs/static-build-plan.md`（web bundle / SFC 子集）、`docs/pi-compat-plan.md`（真实世界兼容）。
 > 前置实证：2026-08-16 探针实测（见 §1）。
 

@@ -82,7 +82,7 @@ CGO_ENABLED=0 go test ./internal/engine/jit/... ./internal/engine/interpreter
 ### 一致性测试（conformance，需先构建 `./bin/aluka`）
 
 ```bash
-ALUKA=./bin/aluka bash tests/conformance/node/run.sh       # Node.js 官方测试子集
+ALUKA=./bin/aluka bash tests/conformance/node/run.sh       # Node.js 官方测试子集（11/11）
 ALUKA=./bin/aluka bash tests/conformance/build/run.sh      # build --compile 产物（23/23）
 ALUKA=./bin/aluka bash tests/conformance/webbuild/run.sh   # React/TSX/chunk/ESM-CJS-UMD（11/11）
 ALUKA=./bin/aluka bash tests/conformance/vue-sfc/run.sh    # Node/Aluka compiler-sfc 探针对拍（1/1）
@@ -164,6 +164,7 @@ docs/adr/                  架构决策记录（ADR）
   - `JITDIFF_NIGHTLY=1` —— 10 万用例 JIT 差分（仅 scheduled/manual 触发）
 - **JIT 差分（jitdiff）**：新增/修改 JIT opcode、快路径或 guard 时，必须保证 `internal/engine/interpreter/jitdiff/` 三 tier（off/quick/auto）零失配（Tier 0 唯一 oracle）；新能力补对应 Kind + 固定用例。
 - **JIT fuzz**：`jit/fuzz_test.go` 等 5 个 Go fuzz target 覆盖 verifier/trace compiler/deopt resume/native lowering/artifact replay；改动 IR/trace/deopt 恢复后建议 `go test -fuzz` 片段回归。
+- **词法行终止符规范化**：字符串/模板字面量中的裸 CRLF/CR 必须规范化为 LF（ES TV/TRV 语义，lexer readTemplate/readEscape）；破坏此语义会使 CRLF 行尾的 vendored 包（如 compiler-sfc）生成代码混入 （vue-sfc conformance 对拍红灯）。改 lexer 后跑 `internal/engine/lexer` + vue-sfc conformance。
 - **正则差分与预算**：改 `internal/engine/regex/` 或 RegExp/String 调用路径时，必须跑 `CGO_ENABLED=0 go test ./internal/engine/regex ./internal/engine/interpreter -count=1`。JavaScript 可见索引统一为 UTF-16；legacy 模式按 code unit、`u` 模式按 code point。预算耗尽必须传播 `ErrBacktrackLimit`/RangeError，禁止折叠为“无匹配”。compiler-sfc corpus 由 `tools/extract-regex-corpus.mjs` AST 提取，`testdata/node_oracle.jsonl` 是 Node 22 裁判语料。
 - **Web/Vue conformance**：改 graph、resolver、printer、Vue backend 或 web emit 时，构建 `./bin/aluka` 后至少跑 `tests/conformance/webbuild/run.sh` 与 `tests/conformance/vue-sfc/run.sh`；影响共享 graph/shake/minify 时同时跑 `tests/conformance/build/run.sh`。
 - **test262 回归**：每个 ES 新特性尽量配 test262 子集回归（`tests/conformance/test262`）。

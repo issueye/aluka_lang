@@ -73,7 +73,7 @@ Bun 是 2023 年发布的现代 JavaScript/TypeScript 运行时，基于 JavaScr
 |----|------|------|
 | C1 | **纯 Go，禁用 CGO** | 所有代码 `//go:build !cgo`，构建命令带 `CGO_ENABLED=0` |
 | C2 | **核心组件自研** | JS 引擎 / 模块系统 / 事件循环 / TS 转译器 / Promise 队列 / JS 正则引擎 全部自研 |
-| C3 | **暂不支持 JSX** | TS 转译仅做类型剥离 + enum/namespace 转换，不解析 JSX/TSX 语法 |
+| C3 | **JSX/TSX 源码级支持**（2026-08 更新） | Phase 1D 起由自研 parser/compiler 源码级 lowering 支持 JSX/TSX（此前的「暂不支持」约束已失效，见 docs/gap-closure-plan.md H5）；Vue SFC 见 AGENTS 约束 3 |
 | C4 | **不引入第三方 JS 引擎** | 不使用 goja / v8go / quickjs-go / modernc.org/quickjs 等 |
 | C5 | **跨平台** | linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64 |
 | C6 | **单二进制** | 静态编译，无外部 .so/.dll/.dylib 依赖 |

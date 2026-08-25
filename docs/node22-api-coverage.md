@@ -37,7 +37,7 @@
 | `https` | L2 | https | 12 | 42% | https.Server#close、https.Server#[Symbol.asyncDispose]、https.Server#closeAllConnections、https.Server#closeIdleConnections、https.Server#listen |
 | `inspector` | L2 | inspector | 18 | 50% | dataReceived、dataSent、requestWillBeSent、responseReceived、loadingFinished |
 | `inspector/promises` | L2 | inspector | 7 | 71% | inspector.Session#event:inspectorNotification、inspector.Session#event:<inspector-protocol-method>` |
-| `module` | L2 | modules:_`node:module`_api | 17 | 82% | module.SourceMap#findEntry、module.SourceMap#findOrigin、module.SourceMap#return |
+| `module` | L2 | modules:_`node:module`_api | 17 | 82% | module.SourceMap#findEntry、module.SourceMap#findOrigin、module.SourceMap#return（注：2026-08-25 jiti M3 落地 `Module.register`+resolve/load hooks、`Module.prototype._compile`、`require.extensions`、`require.cache` 真实化，node22 差分 probe/hooks 0 diff；`registerHooks` 仍为 stub） |
 | `net` | L2 | net | 65 | 12% | getDefaultAutoSelectFamily、setDefaultAutoSelectFamily、getDefaultAutoSelectFamilyAttemptTimeout、setDefaultAutoSelectFamilyAttemptTimeout、net.BlockList#addAddress |
 | `os` | L3 | os | 20 | 100% | - |
 | `path` | L3 | path | 12 | 100% | - |

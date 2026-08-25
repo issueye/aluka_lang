@@ -137,6 +137,9 @@ $ aluka -e "console.log(process.platform, process.arch)"
 win32 x64
 
 $ aluka -e "console.log([1, 2, 3].map(x => x * 2))"
+
+# -e 模式支持 require 与动态 import()（基于 cwd 解析，Node [eval] 语义）
+$ aluka -e "console.log(require('os').platform())"
 [ 2, 4, 6 ]
 
 # 2. 源码级 JSX / TSX 即时执行（无需 Babel / Webpack / Vite）
@@ -299,7 +302,7 @@ ALUKA=./bin/aluka bash tests/conformance/install/run.sh
 # express-demo 真实环境验证（HTTP 全链路：中间件/路由/body 解析/500 并发，6/6）
 ALUKA=./bin/aluka bash tests/conformance/express/run.sh
 
-# build --compile conformance（可执行产物 + shake/minify/analyze，23/23）
+# build --compile conformance（可执行产物 + shake/minify/analyze，24/24）
 ALUKA=./bin/aluka bash tests/conformance/build/run.sh
 
 # 浏览器 bundle conformance（React/TSX/chunk/ESM/CJS/UMD/cache，11/11）

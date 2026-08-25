@@ -135,9 +135,12 @@ function install(proto, methods) {
 | `for (const k in ...)` **头**变量 | a,b,c | **c,c,c** ❌ |
 | `for (let k of ...)` **头**变量 | 1,2,3 | 1,2,3 ✓ |
 
-结论：**for-of 路径正确**（有 per-iteration 机制）；**classic for / for-in /
+结论：**for-of 路径正确**（有 per-iteration 机制）；~~**classic for / for-in /
 while 的循环体块级 `let/const` 没有按迭代新绑定**，闭包共享同一 upvalue 槽；
-`for...in` 头变量同样缺失（与 for-of 头变量对比）。
+`for...in` 头变量同样缺失（与 for-of 头变量对比）~~
+**→ 已修复**（2026-08-25 gap-closure-plan D3 实测：for-let / for-in-const /
+while-let 三组闭包捕获与 Node 22 输出逐字节一致，本报告 §3.4 所述 zod v4
+阻塞场景已消除）。
 
 ### 3.3 根因
 

@@ -113,7 +113,8 @@
 - ~~**P8 `-e` 模式 require 注入**~~（defect-fixes-plan P1-6）：**✅ 2026-08-25 完成**——execute() 注入基于 cwd（[eval] 虚拟模块语义）的 require 与动态 import()，内置模块与 process.getBuiltinModule 同步可用。
 - **P9 Node22 差分 7 存量失败归因**（compat-boundary-closure-plan:308）+ M10 门禁逐项。
 - **P10 工具链**：T1-A8 `--test-concurrency`、AST 对拍临时文件清理（G4）、`--compile` sourcemap。
-- ~~**T1 vue-sfc conformance 存量失败归因**~~：**✅ 2026-08-25 修复**——根因：lexer 模板字面量未按 ES 规范把裸行终止符序列（CRLF/CR）规范化为 LF（TV/TRV），vendored compiler-sfc（CRLF 行尾 dist）生成代码混入 （16 字节漂移）。修复：`readTemplate` cooked/raw 双规范化 + `readEscape` 行续整体删除 CRLF；`FormatVersion` 29→30（字符串常量内容变化，旧缓存失效）。vue-sfc conformance PASS=1/0 FAIL；node conformance 11/11（顺带修复 run.sh 相对 ALUKA 路径在 cd 后失效的 harness 存量 bug）。
+- ~~**T1 vue-sfc conformance 存量失败归因**~~：**✅ 2026-08-25 修复**——根因：lexer 模板字面量未按 ES 规范把裸行终止符序列（CRLF/CR）规范化为 LF（TV/TRV），vendored compiler-sfc（CRLF 行尾 dist）生成代码混入 
+（16 字节漂移）。修复：`readTemplate` cooked/raw 双规范化 + `readEscape` 行续整体删除 CRLF；`FormatVersion` 29→30（字符串常量内容变化，旧缓存失效）。vue-sfc conformance PASS=1/0 FAIL；node conformance 11/11（顺带修复 run.sh 相对 ALUKA 路径在 cd 后失效的 harness 存量 bug）。
 
 ## 5. 执行记录
 
@@ -128,6 +129,7 @@
 | 2026-08-25 | T1 修复（评审跟进） | ✅ lexer 行终止符规范化（CRLF→LF）+ FormatVersion 30 + node conformance harness 修复；vue-sfc 1/1、node 11/11、全套 conformance 绿 |
 | 2026-08-25 | 函数 length 面 | ✅ NewFunctionLen/NewNativeMethodLen 变体；Module._compile=3、register=1、createRequire=1 与 Node 一致（hooks 探针覆盖防回归） |
 | 2026-08-25 | P8 `-e` require 注入 | ✅ execute() 注入基于 cwd 的 loader：require/import()/内置模块/process.getBuiltinModule 可用；require('./rel') 与动态 import 与 Node 输出一致 |
+| 2026-08-25 | 文档全面同步 | ✅ §2.3 全部漂移回填完成：D3（bundle-report 循环绑定已修）、D4（memory ME-8 已闭环）、D5（perf M-P2/P3）、D6（vue-compat 已合入）、H5（requirements JSX 过期说法）；README conformance 数字（build 24/24、webbuild 13/13）与 -e require 示例；AGENTS 增词法行终止符规范约束 + node conformance 11/11；node22-api-coverage module 行（jiti M3 注记） |
 
 ## 6. 风险与边界
 
