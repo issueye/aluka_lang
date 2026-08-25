@@ -12,7 +12,7 @@ ALUKA="${ALUKA:-go run ../../../cmd/aluka}"
 NODE="${NODE:-node}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RESULT_DIR="$SCRIPT_DIR/results"
-PROBES=(modules globals classes events protos)
+PROBES=(modules globals classes events protos hooks)
 
 mkdir -p "$RESULT_DIR"
 

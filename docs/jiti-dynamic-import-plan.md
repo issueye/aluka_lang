@@ -229,8 +229,24 @@ data: URL），CJS 编译唯一手段是 `vm.runInThisContext`。
 1. ~~全局 `eval(src[, filename])`~~：**已实施（2026-08-25，gap-closure-plan P1-5）**——
    `interpreter/builtins.go` setupGlobalFuncs 注册，转发 `Context.Eval`；行为：非字符串
    参数原样返回、字符串在全局作用域求值（间接 eval 语义，看不到调用方局部变量，已在
-   gap-closure-plan §6 标注）。剩余三项（`Module._compile`/`require.extensions`/
-   `require.cache`）继续按 M3 排期。
+   gap-closure-plan §6 标注）。
+2. ~~`Module.prototype._compile(code, filename)`~~：**已实施（2026-08-25）**——
+   `Loader.CompileModuleSource`（cjs.go）：WrapCJSSource → vm.Compile → InvokeFn，
+   不参与 require 缓存；module.exports 重赋值生效；Node 语义返回 undefined。
+3. ~~`require.extensions` 钩子~~：**已实施**——requireCtx 加载前查共享
+   `require.extensions[ext]`（与默认 .js/.json/.node loader 值比对识别自定义，
+   JS 侧赋值即生效）；自定义加载器收到 Module 实例（含真实 `_compile`）。
+4. ~~`require.cache` 生效~~：**已实施**——所有 require 共享同一 cache 对象；
+   requireCtx 命中 JS 侧条目（以 .exports 为准）优先于内部缓存；用户删除条目
+   即强制重载（内部缓存同步失效）；RunPrecompiled 预填同步写 JS 缓存（循环依赖
+   一致）。
+5. ~~`node:module.register` + loader hooks 链~~：**已实施（2026-08-25）**——
+   `Loader.RegisterHook`（loader_hooks.go）：resolve/load/initialize 三钩子 +
+   nextResolve/nextLoad 链（头部插入、后注册优先）；resolve 可短路 file:/data:，
+   load 可覆盖 source+format（commonjs/module/json）；ESM 命名空间导出按活绑定
+   getter 求值。jiti/register 全链路实测通过：`import 'jiti/register'` 后
+   `await import('./x.ts')` 与 Node 22 输出逐字节一致（Transform → wrap → 
+   export default module.exports）。node22 差分新增 probe/hooks.cjs：0 diff。
 2. `Module.prototype._compile(code, filename)`：Loader 暴露 CJS 源码编译入口
    （复用 `cjs.go:18-22` WrapCJSSource → `vm.Compile` → `RunPrecompiled`），
    `builtin/module.go:133-135` 由 stub 改真实实现。
@@ -238,8 +254,11 @@ data: URL），CJS 编译唯一手段是 `vm.runInThisContext`。
    （JS 函数调用），loader.go:451 空对象改为共享真实对象。
 4. `require.cache` 生效：requireCtx 缓存命中前查 `require.cache[resolvedPath]`（loader.go:450）。
 
-- **退出条件**：四项均有 node22 差分用例并零失配；`make test` 通过。
-- 备注：jiti 已确认不依赖上述四项；若人力紧张可整体后移至下一迭代。
+- **退出条件**：四项均有 node22 差分用例并零失配；`make test` 通过。✅ 2026-08-25
+  达成：hooks 探针 0 diff、全 workspace 35 包全绿、build 24/24 + webbuild 13/13
+  conformance；jiti/register 与 jiti core 动态执行全场景与 Node 22 对拍一致。
+- 备注：~~jiti 已确认不依赖上述四项~~——具名依赖 `node:module.register`（register
+  入口 + resolve/load hooks），已随本次实施闭环。
 
 ### M4 探索项（本期不承诺）
 

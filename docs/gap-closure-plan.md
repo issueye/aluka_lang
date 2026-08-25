@@ -104,7 +104,12 @@
 
 - **P5 全局成员二批**：`Intl.DisplayNames`/`Locale`/`supportedValuesOf`（Intl 命名空间可枚举性 + null 原型 + toStringTag 一并收口）。
 - **P6 架构级成员**：`SharedArrayBuffer`+`Atomics`（内存模型语义）、`WeakRef`（GC 集成）、`WebAssembly`（引擎级）、`Iterator`（ES2024 迭代器 helpers）、`Symbol.prototype`（boxing + toString/description 方法族）。
-- **P7 jiti 生态**：`Module._compile`/`require.extensions`/`require.cache` 真实化（jiti-dynamic-import-plan M3 剩余项）。
+- ~~**P7 jiti 生态**~~：**✅ 2026-08-25 完成（jiti M3 全部四项 + node:module.register
+  hooks 链）**——`Module._compile`（CompileModuleSource）、`require.extensions`
+  （自定义加载器，JS 侧赋值即生效）、`require.cache`（共享对象、注入/删除重载，
+  与内部缓存同步）、`module.register` + resolve/load/initialize hooks 链
+  （loader_hooks.go；jiti/register 全链路与 Node 22 逐字节一致）。node22 差分新增
+  probe/hooks.cjs（0 diff）；遗留：`registerHooks`（Node 22.15+ API）仍为方法面 stub。
 - **P8 `-e` 模式 require 注入**（defect-fixes-plan P1-6）：注入基于 cwd 的 Loader（`makeRequireFunc` 已具备）。
 - **P9 Node22 差分 7 存量失败归因**（compat-boundary-closure-plan:308）+ M10 门禁逐项。
 - **P10 工具链**：T1-A8 `--test-concurrency`、AST 对拍临时文件清理（G4）、`--compile` sourcemap。
@@ -119,6 +124,7 @@
 | 2026-08-25 | P2-1 ~ P2-3 | ✅ console L1（profile/profileEnd/timeStamp/Console），globals 全绿 |
 | 2026-08-25 | P3-1 ~ P3-3 | ✅ unresolved 结构化诊断 + new URL 资产进图与改写；build 24/24、webbuild 13/13 conformance |
 | 2026-08-25 | P4-1 ~ P4-2 | ✅ GUI 核查（大部落地，notify/clipboard 遗缺）+ 文档回填 |
+| 2026-08-25 | P7 jiti 全支持 | ✅ register + hooks 链 / _compile / require.extensions / require.cache 真实化；jiti/register 与 Node 逐字节一致；hooks 探针 0 diff；35 包全绿 |
 
 ## 6. 风险与边界
 
