@@ -12,6 +12,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/bytecode"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/ipc"
 )
 
@@ -67,18 +68,46 @@ type Loader struct {
 
 	// entryPath 记录入口文件绝对路径（用于 import.meta.main 判定）。
 	entryPath string
+
+	// hooks 是 node:module.register 注册的 loader 钩子链（后注册在前）。
+	hooks []*registerHook
+
+	// requireCacheObj / requireExtensionsObj 是 Node 语义的 require.cache
+	// 与 require.extensions（所有 require 函数共享同一对象）。
+	requireCacheObj      engine.Object
+	requireExtensionsObj engine.Object
+	// defaultExtLoaders 记录 require.extensions 的默认加载器函数值：
+	// JS 侧覆盖/新增扩展名后与之比对，识别用户自定义加载器。
+	defaultExtLoaders map[string]engine.Value
 }
 
 // NewLoader creates a module loader bound to the given context.
 func NewLoader(ctx engine.Context) *Loader {
-	return &Loader{
-		ctx:            ctx,
-		resolver:       NewResolver(),
-		cache:          make(map[string]engine.Value),
-		builtins:       make(map[string]engine.Value),
-		builtinFns:     make(map[string]func(engine.Context) (engine.Value, error)),
-		virtualModules: make(map[string]engine.Value),
+	l := &Loader{
+		ctx:               ctx,
+		resolver:          NewResolver(),
+		cache:             make(map[string]engine.Value),
+		builtins:          make(map[string]engine.Value),
+		builtinFns:        make(map[string]func(engine.Context) (engine.Value, error)),
+		virtualModules:    make(map[string]engine.Value),
+		defaultExtLoaders: make(map[string]engine.Value),
 	}
+	// require.cache / require.extensions：Node 语义的进程级共享对象。
+	l.requireCacheObj = engine.NewObject()
+	exts := engine.NewObject()
+	const errMsg = "default loader functions are not directly callable"
+	addDefault := func(ext string) {
+		fn := engine.NewFunction(ext, func(args []engine.Value) (engine.Value, error) {
+			return engine.Undefined(), fmt.Errorf("%w: %s", engine.ErrTypeError, errMsg)
+		})
+		l.defaultExtLoaders[ext] = fn
+		_ = exts.Set(ext, fn)
+	}
+	addDefault(".js")
+	addDefault(".json")
+	addDefault(".node")
+	l.requireExtensionsObj = exts
+	return l
 }
 
 // SetEntryPath 设置入口模块路径（支持文件路径或虚拟路径）。
@@ -318,46 +347,227 @@ func (l *Loader) requireCtx(specifier, parentPath string, importCtx bool) (engin
 		}
 	}
 
-	var resolved string
+	// loader hooks（node:module.register）：解析阶段先经 resolve 钩子链。
+	// 钩子短路返回的 url 为 file:// 或 data:；其余场景回退默认解析。
+	var absPath string
+	useHookedPath := false
+	if len(l.hooks) > 0 {
+		if url, handled, err := l.callResolveHooks(specifier, parentPath); err != nil {
+			return engine.Undefined(), err
+		} else if handled {
+			if strings.HasPrefix(url, "data:") {
+				if !importCtx {
+					return engine.Undefined(), fmt.Errorf("module: cannot require data: URL %q", url)
+				}
+				return l.loadDataSource(url)
+			}
+			absPath = NormalizeModulePath(url)
+			if absPath == "" || !filepath.IsAbs(absPath) {
+				return engine.Undefined(), fmt.Errorf("module: resolve hook returned non-file URL %q", url)
+			}
+			useHookedPath = true
+		}
+	}
+	if !useHookedPath {
+		var resolved string
+		var err error
+		if importCtx {
+			resolved, err = l.resolver.ResolveImport(specifier, parentPath)
+		} else {
+			resolved, err = l.resolver.Resolve(specifier, parentPath)
+		}
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		absPath, err = filepath.Abs(resolved)
+		if err != nil {
+			return engine.Undefined(), fmt.Errorf("module: cannot resolve path: %w", err)
+		}
+	}
+
+	// require.cache（Node 语义）：JS 侧缓存优先于内部缓存；条目可为用户
+	// 注入的自定义对象（以其 .exports 为准），删除条目即强制重载。
+	if v, ok := l.requireCacheLookup(absPath); ok {
+		l.mu.Lock()
+		l.cache[absPath] = v
+		l.mu.Unlock()
+		return v, nil
+	}
+
+	l.mu.Lock()
+	cached, cachedOK := l.cache[absPath]
+	l.mu.Unlock()
+	if cachedOK {
+		// Node 语义：require.cache 与内部缓存合一——用户在 JS 侧删除
+		// require.cache[path] 即强制重载（内部缓存同步失效）。
+		// 循环依赖预填等场景两个缓存都已写入（RunPrecompiled 同步），
+		// 因此仅当 JS 侧条目缺失时判定为「曾删除」。
+		if l.requireCacheHas(absPath) {
+			return cached, nil
+		}
+		l.mu.Lock()
+		delete(l.cache, absPath)
+		l.mu.Unlock()
+	}
+
+	// require.extensions（Node 语义）：用户注册的自定义扩展名加载器
+	// 优先于内建分类加载。
+	if l.customExtLoader(absPath) {
+		exports, err := l.callExtensionLoader(absPath)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		l.mu.Lock()
+		l.cache[absPath] = exports
+		l.mu.Unlock()
+		l.requireCacheStore(absPath, exports)
+		return exports, nil
+	}
+
+	// loader hooks：读取/转译阶段经 load 钩子链（jiti 等 TS 转译主路径）。
+	if len(l.hooks) > 0 {
+		if source, format, handled, err := l.callLoadHooks(absPath); err != nil {
+			return engine.Undefined(), err
+		} else if handled {
+			exports, err := l.runUnitFromSource(absPath, source, format)
+			if err != nil {
+				return engine.Undefined(), err
+			}
+			l.requireCacheStore(absPath, exports)
+			return exports, nil
+		}
+	}
+
+	var exports engine.Value
 	var err error
-	if importCtx {
-		resolved, err = l.resolver.ResolveImport(specifier, parentPath)
+	if DetectSourceKind(absPath) == SourceJSON {
+		exports, err = l.loadJSON(absPath)
+	} else if l.resolver.SourceModuleKind(absPath) == ModuleESM {
+		exports, err = l.loadESM(absPath)
 	} else {
-		resolved, err = l.resolver.Resolve(specifier, parentPath)
+		exports, err = l.loadCJS(absPath)
 	}
 	if err != nil {
 		return engine.Undefined(), err
 	}
+	l.requireCacheStore(absPath, exports)
+	return exports, nil
+}
 
-	absPath, err := filepath.Abs(resolved)
-	if err != nil {
-		return engine.Undefined(), fmt.Errorf("module: cannot resolve path: %w", err)
+// requireCacheHas 判断共享 require.cache 是否存在该模块键。
+func (l *Loader) requireCacheHas(absPath string) bool {
+	if l.requireCacheObj == nil {
+		return false
 	}
+	v, err := l.requireCacheObj.Get(absPath)
+	return err == nil && !v.IsUndefined()
+}
 
-	l.mu.Lock()
-	if cached, ok := l.cache[absPath]; ok {
-		l.mu.Unlock()
-		return cached, nil
+// requireCacheLookup 查询共享 require.cache（Node 语义）：命中返回条目的
+// .exports（用户注入的自定义对象同样适用）。
+func (l *Loader) requireCacheLookup(absPath string) (engine.Value, bool) {
+	if l.requireCacheObj == nil {
+		return engine.Undefined(), false
 	}
-	l.mu.Unlock()
+	v, err := l.requireCacheObj.Get(absPath)
+	if err != nil || v.IsUndefined() {
+		return engine.Undefined(), false
+	}
+	// Node 语义：缓存条目存在即命中——返回其 .exports（用户注入的
+	// 自定义条目同样适用；无 exports 属性返回 undefined）。
+	if o, ok := v.AsObject(); ok {
+		if ex, err := o.Get("exports"); err == nil && !ex.IsUndefined() {
+			return ex, true
+		}
+	}
+	return engine.Undefined(), true
+}
 
-	if DetectSourceKind(absPath) == SourceJSON {
-		return l.loadJSON(absPath)
+// requireCacheStore 把模块写入共享 require.cache（Module 风格条目：
+// exports/id/filename/loaded）。
+func (l *Loader) requireCacheStore(absPath string, exports engine.Value) {
+	if l.requireCacheObj == nil {
+		return
 	}
-	if l.resolver.SourceModuleKind(absPath) == ModuleESM {
-		return l.loadESM(absPath)
+	entry := engine.NewObject()
+	_ = entry.Set("exports", exports)
+	_ = entry.Set("id", engine.Str(absPath))
+	_ = entry.Set("filename", engine.Str(absPath))
+	_ = entry.Set("loaded", engine.Boolean(true))
+	_ = l.requireCacheObj.Set(absPath, entry)
+}
+
+// customExtLoader 判断 absPath 的扩展名是否注册了用户自定义加载器：
+// require.extensions 上的函数与默认 loader 函数值不同即视为自定义
+// （JS 侧赋值/删除立即可感知，无需 Go 侧注册表）。
+func (l *Loader) customExtLoader(absPath string) bool {
+	ext := strings.ToLower(filepath.Ext(absPath))
+	if fnVal, err := l.requireExtensionsObj.Get(ext); err == nil && fnVal.IsFunction() {
+		if def, ok := l.defaultExtLoaders[ext]; !ok || def != fnVal {
+			return true
+		}
 	}
-	return l.loadCJS(absPath)
+	return false
+}
+
+// callExtensionLoader 调用 require.extensions[ext](module, filename) 用户
+// 加载器（Node 语义：module._compile 通常在其中被调用），返回 module.exports。
+func (l *Loader) callExtensionLoader(absPath string) (engine.Value, error) {
+	ext := strings.ToLower(filepath.Ext(absPath))
+	fnVal, err := l.requireExtensionsObj.Get(ext)
+	if err != nil || !fnVal.IsFunction() {
+		return engine.Undefined(), fmt.Errorf("module: extension loader %q not found", ext)
+	}
+	exports := l.newExports()
+	moduleObj := engine.NewObject()
+	_ = moduleObj.Set("exports", exports)
+	_ = moduleObj.Set("id", engine.Str(absPath))
+	_ = moduleObj.Set("filename", engine.Str(absPath))
+	_ = moduleObj.Set("loaded", engine.Boolean(false))
+	_ = moduleObj.Set("path", engine.Str(filepath.Dir(absPath)))
+	_ = moduleObj.Set("require", l.makeRequireFunc(absPath))
+	// 自定义加载器通常经 module._compile(code, filename) 编译转译产物
+	//（jiti v1 语义）——把真实实现挂到模块实例上。
+	_ = moduleObj.Set("_compile", engine.NewFunction("_compile", func(args []engine.Value) (engine.Value, error) {
+		code := ""
+		if len(args) > 0 {
+			code = args[0].String()
+		}
+		filename := absPath
+		if len(args) > 1 {
+			filename = args[1].String()
+		}
+		if _, err := l.CompileModuleSource(code, filename, moduleObj); err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.Undefined(), nil
+	}))
+	if _, err := interpreter.CallWithThis(fnVal, moduleObj, []engine.Value{moduleObj, engine.Str(absPath)}); err != nil {
+		return engine.Undefined(), err
+	}
+	if v, err := moduleObj.Get("exports"); err == nil && !v.IsUndefined() {
+		return v, nil
+	}
+	return exports, nil
 }
 
 // loadJSON loads a .json file by parsing it and returning the resulting value.
 func (l *Loader) loadJSON(absPath string) (engine.Value, error) {
 	l.mu.Lock()
-	if cached, ok := l.cache[absPath]; ok {
-		l.mu.Unlock()
-		return cached, nil
-	}
+	cached, cachedOK := l.cache[absPath]
 	l.mu.Unlock()
+	if cachedOK {
+		// Node 语义：require.cache 与内部缓存合一——用户在 JS 侧删除
+		// require.cache[path] 即强制重载（内部缓存同步失效）。
+		// 循环依赖预填等场景两个缓存都已写入（RunPrecompiled 同步），
+		// 因此仅当 JS 侧条目缺失时判定为「曾删除」。
+		if l.requireCacheHas(absPath) {
+			return cached, nil
+		}
+		l.mu.Lock()
+		delete(l.cache, absPath)
+		l.mu.Unlock()
+	}
 
 	data, err := os.ReadFile(absPath)
 	if err != nil {
@@ -490,8 +700,10 @@ func (l *Loader) makeRequireFunc(modulePath string) engine.Function {
 	}
 	if requireObj, ok := requireFn.AsObject(); ok {
 		_ = requireObj.Set("resolve", resolveFn)
-		_ = requireObj.Set("cache", engine.NewObject())
-		_ = requireObj.Set("extensions", engine.NewObject())
+		// require.cache / require.extensions：进程级共享对象（Node 语义，
+		// 所有 require 函数可见同一实例）。
+		_ = requireObj.Set("cache", l.requireCacheObj)
+		_ = requireObj.Set("extensions", l.requireExtensionsObj)
 		_ = requireObj.Set("main", engine.Undefined())
 	}
 	return requireFn

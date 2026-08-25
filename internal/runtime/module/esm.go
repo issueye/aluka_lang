@@ -43,10 +43,12 @@ func (l *Loader) RunPrecompiled(path string, mod *bytecode.Module, isESM bool) (
 	_ = moduleObj.Set("loaded", engine.Boolean(false))
 	_ = moduleObj.Set("path", engine.Str(filepath.Dir(path)))
 
-	// Pre-populate cache for circular dependencies.
+	// Pre-populate cache for circular dependencies（require.cache 同步，
+	// 保证循环依赖中的 require 命中与 JS 侧 cache 一致）。
 	l.mu.Lock()
 	l.cache[path] = exports
 	l.mu.Unlock()
+	l.requireCacheStore(path, exports)
 
 	wrapper, evalErr := vm.RunModule(mod)
 	if evalErr != nil {
@@ -132,6 +134,7 @@ func (l *Loader) RunPrecompiled(path string, mod *bytecode.Module, isESM bool) (
 	l.mu.Lock()
 	l.cache[path] = finalExports
 	l.mu.Unlock()
+	l.requireCacheStore(path, finalExports)
 
 	return finalExports, nil
 }

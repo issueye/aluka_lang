@@ -67,8 +67,9 @@ func checkUnsupportedTS(src, path string) error {
 		if !atBoundary {
 			continue
 		}
-		// 后随 标识符 + "{"：声明形态（排除对象字面量键 `{ enum: ... }`）。
-		if i+2 < len(toks) && toks[i+1].Type != lexer.TokenEOF && toks[i+2].Value == "{" {
+		// 后随 标识符 + "{"：声明形态（排除对象字面量键 `{ enum: ... }`、
+		// 赋值形态 `const module = {`、`module.exports` 成员访问）。
+		if i+2 < len(toks) && toks[i+1].Type == lexer.TokenIdent && toks[i+2].Value == "{" {
 			return fmt.Errorf("SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]: %s (line %d)", msg, toks[i].Line)
 		}
 	}

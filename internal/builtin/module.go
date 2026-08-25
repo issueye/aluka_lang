@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	modmodule "github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
@@ -107,7 +108,7 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 
 	// 诊断与编译缓存方法面（API 面，纯 Go 运行时无真实实现）。
 	for _, name := range []string{
-		"syncBuiltinESMExports", "register", "registerHooks", "runMain",
+		"syncBuiltinESMExports", "registerHooks", "runMain",
 		"enableCompileCache", "flushCompileCache", "findPackageJSON",
 		"setSourceMapsSupport", "stripTypeScriptTypes", "findSourceMap",
 	} {
@@ -115,6 +116,23 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 			return engine.Undefined(), nil
 		}))
 	}
+	// Module.register(specifier, parentURL[, options])：注册 loader hooks
+	//（resolve/load/initialize 链，Node 22 语义）。jiti/register 等
+	// 运行时转译器的集成入口。
+	_ = m.Set("register", engine.NewFunction("register", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("%w: register requires a specifier", engine.ErrTypeError)
+		}
+		spec := args[0].String()
+		parentURL := ""
+		if len(args) > 1 {
+			parentURL = args[1].String()
+		}
+		if err := loader.RegisterHook(spec, parentURL); err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.Undefined(), nil
+	}))
 	_ = m.Set("getSourceMapsSupport", engine.NewFunction("getSourceMapsSupport", func(args []engine.Value) (engine.Value, error) {
 		return engine.Boolean(false), nil
 	}))
@@ -133,7 +151,25 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 	_ = moduleProto.Set("load", engine.NewFunction("load", func(args []engine.Value) (engine.Value, error) {
 		return engine.Undefined(), nil
 	}))
-	_ = moduleProto.Set("_compile", engine.NewFunction("_compile", func(args []engine.Value) (engine.Value, error) {
+	// Module.prototype._compile(code, filename)：在 module 实例上编译并
+	// 执行 CJS 源码（Node 语义；require.extensions 自定义加载器与
+	// 工具链的核心入口）。this 必须是 Module 实例（含 exports）。
+	_ = moduleProto.Set("_compile", interpreter.NewNativeMethod("_compile", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), fmt.Errorf("%w: _compile requires source code", engine.ErrTypeError)
+		}
+		modObj, ok := this.AsObject()
+		if !ok {
+			return engine.Undefined(), fmt.Errorf("%w: _compile must be called on a Module instance", engine.ErrTypeError)
+		}
+		filename := ""
+		if len(args) > 1 {
+			filename = args[1].String()
+		}
+		// Node 语义：_compile 不返回 exports（值经 module.exports 生效）。
+		if _, err := loader.CompileModuleSource(args[0].String(), filename, modObj); err != nil {
+			return engine.Undefined(), err
+		}
 		return engine.Undefined(), nil
 	}))
 	_ = moduleProto.Set("isPreloading", engine.NewFunction("isPreloading", func(args []engine.Value) (engine.Value, error) {

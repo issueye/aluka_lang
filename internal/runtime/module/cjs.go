@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // loadCJS loads and executes a CommonJS module.
@@ -160,4 +161,47 @@ func (l *Loader) restoreGlobals(s savedGlobals) {
 	} else {
 		g.Delete("__importMeta")
 	}
+}
+
+// CompileModuleSource 在给定 module 实例上编译并执行 CJS 源码
+//（Module.prototype._compile 实现：require.extensions 自定义加载器与
+// 工具链的核心入口）。不参与 require 缓存；module.exports 重赋值生效。
+func (l *Loader) CompileModuleSource(code, filename string, moduleObj engine.Object) (engine.Value, error) {
+	vm, ok := l.ctx.(*interpreter.VM)
+	if !ok {
+		return engine.Undefined(), fmt.Errorf("module: _compile requires the bytecode VM engine")
+	}
+	if filename == "" {
+		filename = "<anonymous>"
+	}
+	exportsV, err := moduleObj.Get("exports")
+	if err != nil || exportsV.IsUndefined() {
+		exportsV = l.newExports()
+		_ = moduleObj.Set("exports", exportsV)
+	}
+	wrapped := WrapCJSSource(code)
+	mod, err := vm.Compile(wrapped, filename)
+	if err != nil {
+		return engine.Undefined(), fmt.Errorf("module: _compile error in %q: %w", filename, err)
+	}
+	wrapper, err := vm.RunModule(mod)
+	if err != nil {
+		return engine.Undefined(), fmt.Errorf("module: _compile error in %q: %w", filename, err)
+	}
+	requireFn := l.makeRequireFunc(filename)
+	importFn := l.makeImportFunc(filename)
+	args := []engine.Value{
+		requireFn, moduleObj, exportsV,
+		engine.Str(filename), engine.Str(filepath.Dir(filename)),
+		importFn, l.makeImportMetaFunc(filename),
+	}
+	if _, err := vm.InvokeFn(wrapper, exportsV, args); err != nil {
+		return engine.Undefined(), fmt.Errorf("module: _compile error in %q: %w", filename, err)
+	}
+	vm.DrainMicrotasks()
+	// module.exports 可能被重赋值（Node：_compile 后以 module.exports 为准）。
+	if v, err := moduleObj.Get("exports"); err == nil && !v.IsUndefined() {
+		exportsV = v
+	}
+	return exportsV, nil
 }
