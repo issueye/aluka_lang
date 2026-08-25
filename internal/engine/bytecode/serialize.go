@@ -74,7 +74,7 @@ import (
 // v28 → v29：for-in 脱糖改为 OpEnumKeys（原型链可枚举键，替代全局
 //
 //	Object.keys 调用序列）。旧缓存的 for-in 循环不含原型链语义，必须失效。
-const FormatVersion = 29
+const FormatVersion = 30 // 30: lexer 模板字面量行终止符规范化（CRLF/CR→LF），字符串常量内容变化
 
 // Magic header 用于快速识别缓存文件。
 var cacheMagic = []byte("ALUKABC1")

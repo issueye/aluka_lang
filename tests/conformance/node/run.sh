@@ -5,8 +5,19 @@
 # 默认用 go run ./cmd/aluka。
 set -u
 
-cd "$(dirname "$0")"
 ALUKA="${ALUKA:-go run ../../../cmd/aluka}"
+
+# 相对路径的 ALUKA 必须在 cd 之前转绝对（与 run-probe.sh 一致）。
+case "$ALUKA" in
+  /* | [A-Za-z]:/*) ;;
+  *)
+    if [ -f "$ALUKA" ] || [ -d "$ALUKA" ]; then
+      ALUKA="$(cd "$(dirname "$ALUKA")" && pwd)/$(basename "$ALUKA")"
+    fi
+    ;;
+esac
+
+cd "$(dirname "$0")"
 
 pass=0
 fail=0

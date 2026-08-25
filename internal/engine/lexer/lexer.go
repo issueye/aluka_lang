@@ -458,6 +458,12 @@ func (l *Lexer) readEscape() (string, error) {
 		return string(rune(n)), nil
 	case '\n':
 		return "", nil // 行续
+	case '\r':
+		// 行续（CRLF 源文件）：LineContinuation 的行终止符序列整体删除。
+		if l.pos < len(l.src) && l.src[l.pos] == '\n' {
+			l.advance()
+		}
+		return "", nil
 	}
 	return string(ch), nil
 }
@@ -497,6 +503,19 @@ func (l *Lexer) readTemplate(startLine, startCol int) (Token, error) {
 			raw.WriteByte('}')
 			for l.pos < end {
 				l.advance()
+			}
+			continue
+		}
+		// ES 规范（TV/TRV）：模板字面量中的裸行终止符序列 <CR><LF> 与
+		// <CR> 均规范化为 <LF>——源文件为 CRLF 行尾时不把 \r 带进字符串
+		// 值与 raw（V8 同语义；缺失会导致 vendored CRLF 包在生成代码时
+		// 混入 CR，见 vue-sfc conformance T1 归因）。
+		if l.src[l.pos] == '\r' {
+			b.WriteByte('\n')
+			raw.WriteByte('\n')
+			l.advance()
+			if l.pos < len(l.src) && l.src[l.pos] == '\n' {
+				l.advance() // CRLF 整体消费
 			}
 			continue
 		}

@@ -185,3 +185,57 @@ func TestLexTokens(t *testing.T) {
 		t.Errorf("got %d tokens, want 8", len(tokens))
 	}
 }
+
+// === 模板字面量行终止符规范化（ES TV/TRV：CRLF、CR → LF；vue-sfc T1）===
+
+func TestTemplateLiteralLineTerminatorNormalization(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string // 含真实 \r\n / \r 字节
+		want string
+	}{
+		{"CRLF 规范化为 LF", "a\r\nb", "a\nb"},
+		{"孤立 CR 规范化为 LF", "a\rb", "a\nb"},
+		{"CRLF+CRLF", "\r\n\r\n", "\n\n"},
+		{"混合行尾", "x\r\ny\rz\nw", "x\ny\nz\nw"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lx := New("`" + tc.src + "`")
+			tok, err := lx.Next()
+			if err != nil {
+				t.Fatalf("Next: %v", err)
+			}
+			if tok.Type != TokenTemplate {
+				t.Fatalf("token type = %v, want template", tok.Type)
+			}
+			if tok.Value != tc.want {
+				t.Errorf("cooked = %q, want %q", tok.Value, tc.want)
+			}
+			if tok.Raw != tc.want {
+				t.Errorf("raw = %q, want %q（TRV 同样规范化）", tok.Raw, tc.want)
+			}
+		})
+	}
+}
+
+func TestStringLineContinuationCRLF(t *testing.T) {
+	// 行续（LineContinuation）：\ + 行终止符序列整体删除——CRLF 源文件
+	// 下反斜杠后跟 CR+LF 不得残留 （运行时字节构造，避免源码转义歧义）。
+	lx := New("\"" + "a" + string([]byte{0x5C, 0x0D, 0x0A}) + "b" + "\"")
+	tok, err := lx.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if tok.Value != "ab" {
+		t.Errorf("value = %q, want ab（行续删除 CRLF）", tok.Value)
+	}
+	lx2 := New("'" + "x" + string([]byte{0x5C, 0x0D}) + "y'")
+	tok2, err := lx2.Next()
+	if err != nil {
+		t.Fatalf("Next2: %v", err)
+	}
+	if tok2.Value != "xy" {
+		t.Errorf("value2 = %q, want xy（孤立 CR 行续）", tok2.Value)
+	}
+}
