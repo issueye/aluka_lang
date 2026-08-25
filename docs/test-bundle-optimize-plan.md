@@ -136,6 +136,7 @@ aluka 的核心运行时能力（Node 22 兼容 M1-M5、打包 B2 payload 自附
 - 修复：`internal/bundler/shake` 的 `analyze` 用 `ast.Walk` 收集 `__import('spec')` 调用（识别规则与 `graph.collectDeps` 的 `__import` 分支一致——字面量直取、非字面量常量折叠后取）；BFS 中对动态 import 目标按 `import *` 语义保守保留（keepMod + 标记 `"*"` 与全部导出并置 handled）。命名空间在运行时全量可观察，动态属性访问无法静态分析。
 - 回归：新增 3 个 Go 单测（静态/动态混用、export * barrel 链、可折叠 specifier），修复前红/修复后绿；bundler 全模块测试 + build/webbuild conformance 全绿。
 - 遗留跟踪（见 §7）：`require` 非字面量参数不做常量折叠、`new URL('./x', import.meta.url)` 不进依赖图、web target 非字面量 `require` 无构建期拦截。
+- **跟踪项闭环（2026-08-25，commit 本节 gap-closure-plan P3）**：① require 非字面量常量折叠（a81f328）+ unresolved 结构化记录（`UnresolvedDep{Source, Spec, RequireCtx}`，webemit/--compile 按语境报错/警告，specifier 诊断文本落地 jiti G6）；② `new URL(rel, import.meta.url)` 进依赖图（图构建期读资产、按入口目录换算产物路径，printer RewriteURL 改写为相对 chunk 的产物路径，web 资产随产物输出——对齐 esbuild）；③ web 非字面量 require 构建期拦截随 ① 一并闭环。回归：graph/webemit 新增 4+4 组单测；build 24/24、webbuild 13/13 conformance 全绿。
 
 ### 5.3 O1：优化基座（P0-P1）
 

@@ -21,7 +21,7 @@
 | `buffer` | L2 | buffer | 83 | 6% | atob、btoa、resolveObjectURL、Blob、Blob#arrayBuffer |
 | `child_process` | L2 | child_process | 21 | 33% | ChildProcess、ChildProcess#disconnect、ChildProcess#kill、ChildProcess#[Symbol.dispose]、ChildProcess#ref |
 | `cluster` | L2 | cluster | 22 | 23% | exit、listening、message、online、setup |
-| `console` | L1 | console | 23 | 0% | profile、profileEnd、timeStamp、Console、Console#assert |
+| `console` | L1 | console | 23 | 100%（2026-08-25 gap-closure-plan P2 补齐） | profile/profileEnd/timeStamp 为 no-op、Console 构造器（{stdout,stderr}/位置参数、stderr 回退 stdout、stdout 缺失抛 TypeError、instanceof 链）、Console.prototype.assert |
 | `constants` | L1 | os | 0 | - | - |
 | `crypto` | L2 | crypto | 110 | 26% | createDiffieHellman、createDiffieHellmanGroup、createECDH、diffieHellman、generateKey |
 | `dgram` | L2 | dgram | 32 | 6% | dgram.Socket#addMembership、dgram.Socket#addSourceSpecificMembership、dgram.Socket#address、dgram.Socket#bind、dgram.Socket#close |

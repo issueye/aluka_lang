@@ -257,7 +257,7 @@ delete 行为差（自有属性模型）：`delete crypto.randomUUID` / `delete 
 
 - ~~**可枚举性（B4 部分）**~~：已修——Math/JSON/Reflect 成员、globalThis 的 ES 内建属性不可枚举；globalThis 可枚举集合 = Node 的 15 个（插入顺序仍有差，遗留）。
 - **toStringTag（遗留）**：console/process/globalThis 之外的残留——console/process 按计划保持不动；Intl 无 tag。
-- **成员缺失（遗留）**：`Math.hypot`、`JSON.isRawJSON/rawJSON`、`Intl.DisplayNames/Locale/supportedValuesOf`、`Atomics`、`WebAssembly`、`Iterator`、`WeakRef`、`SharedArrayBuffer`、`eval`/`escape`/`unescape`、`AggregateError`/`EvalError`/`URIError`、`ReadableStreamBYOBRequest` 构造器。
+- ~~**成员缺失（部分已修，2026-08-25 gap-closure-plan P1）**~~：`Math.hypot`、`JSON.isRawJSON/rawJSON`、`eval`/`escape`/`unescape`、`AggregateError`/`EvalError`/`URIError` 已补齐（含 `new TypeError() instanceof Error` 原型链修复与内置 prototype 链到 %Object.prototype%）；`Intl.DisplayNames/Locale/supportedValuesOf`、`Atomics`、`WebAssembly`、`Iterator`、`WeakRef`、`SharedArrayBuffer`、`ReadableStreamBYOBRequest` 仍为遗留（见 gap-closure-plan §4 P5/P6）。
 - ~~**globalThis 自有 `hasOwnProperty` 键**~~：已修（误注册移除，经原型链解析）；`Aluka`/`Bun`/`URLPattern`/`gc` 为已知超集（Bun 兼容，保留）。
 - **console/process**：按计划保持不动（Node 中本就是自有属性模型；`process` 的 `on/off/emit` 在 Node 挂 `EventEmitter` 原型链，属已知偏差，不在 B 内迁移）。
 - **globalThis 原型链（遗留）**：Node 为 `globalThis → (V8 单键中间对象) → Object.prototype`，aluka 直连 Object.prototype；中间层为 V8 global proxy 细节，不追。

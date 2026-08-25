@@ -148,7 +148,7 @@ data: URL），CJS 编译唯一手段是 `vm.runInThisContext`。
 | G2 | `bun://~BUN/` 虚拟父无法参与相对解析（createRequire 场景） | loader.go:618 | NormalizeModulePath / 回退前剥离前缀映射到 RootDir（M1） |
 | G3 | data: URL 动态导入不支持（jiti ESM 主路径之一） | loader.go requireCtx 前端 | 识别 `data:text/javascript;base64,` 就地编译执行（M1/M2） |
 | G4 | babel.cjs 懒加载相对 require 在产物内不可达 | jiti lib/jiti.mjs lazyTransform | 随 M1 的 RootDir 回退自然可达；或 agent 侧显式加载（M2 方案 b1/b2） |
-| G5 | 全局 `eval` 缺失、`Module._compile`/`require.extensions`/`require.cache` stub | builtins.go、module.go、loader.go:450-451 | M3（jiti 不依赖，生态兼容项） |
+| G5 | 全局 `eval`（已补，2026-08-25）、`Module._compile`/`require.extensions`/`require.cache` stub | builtins.go、module.go、loader.go:450-451 | M3（jiti 不依赖，生态兼容项） |
 | G6 | `UnresolvedDynamic` 只记模块 key 不记 specifier，构建期信息不足 | graph.go:450-458 | 记录 specifier 供诊断/后续静态化（M1 附带 / M4 探索） |
 
 ---
@@ -226,8 +226,11 @@ data: URL），CJS 编译唯一手段是 `vm.runInThisContext`。
 
 按优先级（每项独立成 commit，配 node22 差分）：
 
-1. 全局 `eval(src[, filename])`：`interpreter/builtins.go` setupGlobalFuncs 注册，转发
-   `Context.Eval`（engine.go:24-25 已存在，vm.go:295 / interpreter.go:140）。
+1. ~~全局 `eval(src[, filename])`~~：**已实施（2026-08-25，gap-closure-plan P1-5）**——
+   `interpreter/builtins.go` setupGlobalFuncs 注册，转发 `Context.Eval`；行为：非字符串
+   参数原样返回、字符串在全局作用域求值（间接 eval 语义，看不到调用方局部变量，已在
+   gap-closure-plan §6 标注）。剩余三项（`Module._compile`/`require.extensions`/
+   `require.cache`）继续按 M3 排期。
 2. `Module.prototype._compile(code, filename)`：Loader 暴露 CJS 源码编译入口
    （复用 `cjs.go:18-22` WrapCJSSource → `vm.Compile` → `RunPrecompiled`），
    `builtin/module.go:133-135` 由 stub 改真实实现。

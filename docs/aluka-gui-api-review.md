@@ -110,12 +110,13 @@
 | :--- | :--- | :--- | :--- |
 | `IsMaximized` / `IsFullscreen` / `GetTitle` | 无对应查询 | 对齐前端：同步返回或统一 Promise | ✅ 已补：`isMaximized` / `isFullscreen` / `getTitle` 同步返回 |
 | `SetResizable`（NativeWindow） | 无 `setResizable`；创建时 `resizable` 可读 | 补运行时 API | ✅ 已补：`setResizable` + 创建选项 `resizable:false` 生效（去 THICKFRAME） |
-| `SetHTML` | 无 `setHTML` | 与 `navigate` 成对暴露 | ⏳ 未做（Go 侧已有 `SetHTML`） |
-| `toggleMaximize`（仅前端） | 主进程无 | 补一层薄封装即可 | ⏳ 未做（可先用 `isMaximized` + `maximize/unmaximize` 组合） |
-| `UnregisterRPCMethod` | 无 `unregisterRPC` | 热重载 / 插件场景需要 | ⚠️ 半完成：Go 侧 `UnregisterRPCMethod` 已加，JS `app.unregisterRPC` 未暴露 |
-| `app.Windows` / `GetWindowByID` | 未暴露 | 多窗口管理刚需 | ⏳ 未做 |
-| `events.off`（前端有） | 主进程 `on` 无取消 / 无返回 disposer | 易泄漏；Go `On` 已开始返回取消函数（WIP），JS 应对齐 | ⚠️ 半完成：Go 侧 `On` 返回 disposer + `Off` 已加，JS 侧 `win.off` 未暴露 |
-| `shell` 仅路径类 | 无 `openExternal(url)` | 打开浏览器/mailto 是桌面标配 | ⏳ 未做 |
+| `SetHTML` | 无 `setHTML` | 与 `navigate` 成对暴露 | ✅ Phase B（8818fcb）已落地 `win.setHTML`（需真实窗口实例；状态回填见 gap-closure-plan D7） |
+| `toggleMaximize`（仅前端） | 主进程无 | 补一层薄封装即可 | ✅ Phase B 已落地 `win.toggleMaximize`（gap-closure-plan D7） |
+| `UnregisterRPCMethod` | 无 `unregisterRPC` | 热重载 / 插件场景需要 | ✅ Phase B 已落地：`Aluka.gui.app.unregisterRPC`（aluka_gui.go:117；gap-closure-plan D7） |
+| `app.Windows` / `GetWindowByID` | 未暴露 | 多窗口管理刚需 | ✅ 已落地：`app.getWindows` / `app.getWindowById`（gap-closure-plan D7） |
+| `events.off`（前端有） | 主进程 `on` 无取消 / 无返回 disposer | 易泄漏；Go `On` 已开始返回取消函数（WIP），JS 应对齐 | ✅ Phase C（801d3f1）已落地：`on` 返回 disposer + `win.off(event)` 定向注销（aluka_gui.go:836；gap-closure-plan D7） |
+| `shell` 仅路径类 | 无 `openExternal(url)` | 打开浏览器/mailto 是桌面标配 | ✅ 已落地：`Aluka.gui.shell.openExternal(url)`（aluka_gui.go:220；gap-closure-plan D7） |
+| —— 仍未做（P2 级，维持登记） | 通知 / 剪贴板 | 见 §3.3 | ⏳ `notify` / `clipboard` 仍缺失（gap-closure-plan §4 P-后续） |
 
 ### 3.3 P2 — 产品完整度（对照 Electron / Tauri 的「常用子集」）
 
