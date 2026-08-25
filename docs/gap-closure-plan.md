@@ -110,10 +110,10 @@
   与内部缓存同步）、`module.register` + resolve/load/initialize hooks 链
   （loader_hooks.go；jiti/register 全链路与 Node 22 逐字节一致）。node22 差分新增
   probe/hooks.cjs（0 diff）；遗留：`registerHooks`（Node 22.15+ API）仍为方法面 stub。
-- **P8 `-e` 模式 require 注入**（defect-fixes-plan P1-6）：注入基于 cwd 的 Loader（`makeRequireFunc` 已具备）。
+- ~~**P8 `-e` 模式 require 注入**~~（defect-fixes-plan P1-6）：**✅ 2026-08-25 完成**——execute() 注入基于 cwd（[eval] 虚拟模块语义）的 require 与动态 import()，内置模块与 process.getBuiltinModule 同步可用。
 - **P9 Node22 差分 7 存量失败归因**（compat-boundary-closure-plan:308）+ M10 门禁逐项。
 - **P10 工具链**：T1-A8 `--test-concurrency`、AST 对拍临时文件清理（G4）、`--compile` sourcemap。
-- **T1（新登记）vue-sfc conformance 存量失败归因**：HEAD 干净构建同样 FAIL（probe fnv=80404d9f len=887 vs node bdabb9d8 len=871），compiler-sfc 探针输出 16 字节差异待归因（vendored fixture 版本/探针字段漂移），修复需同步 merge-notes 的 regex corpus 与 oracle。
+- ~~**T1 vue-sfc conformance 存量失败归因**~~：**✅ 2026-08-25 修复**——根因：lexer 模板字面量未按 ES 规范把裸行终止符序列（CRLF/CR）规范化为 LF（TV/TRV），vendored compiler-sfc（CRLF 行尾 dist）生成代码混入 （16 字节漂移）。修复：`readTemplate` cooked/raw 双规范化 + `readEscape` 行续整体删除 CRLF；`FormatVersion` 29→30（字符串常量内容变化，旧缓存失效）。vue-sfc conformance PASS=1/0 FAIL；node conformance 11/11（顺带修复 run.sh 相对 ALUKA 路径在 cd 后失效的 harness 存量 bug）。
 
 ## 5. 执行记录
 
@@ -125,6 +125,9 @@
 | 2026-08-25 | P3-1 ~ P3-3 | ✅ unresolved 结构化诊断 + new URL 资产进图与改写；build 24/24、webbuild 13/13 conformance |
 | 2026-08-25 | P4-1 ~ P4-2 | ✅ GUI 核查（大部落地，notify/clipboard 遗缺）+ 文档回填 |
 | 2026-08-25 | P7 jiti 全支持 | ✅ register + hooks 链 / _compile / require.extensions / require.cache 真实化；jiti/register 与 Node 逐字节一致；hooks 探针 0 diff；35 包全绿 |
+| 2026-08-25 | T1 修复（评审跟进） | ✅ lexer 行终止符规范化（CRLF→LF）+ FormatVersion 30 + node conformance harness 修复；vue-sfc 1/1、node 11/11、全套 conformance 绿 |
+| 2026-08-25 | 函数 length 面 | ✅ NewFunctionLen/NewNativeMethodLen 变体；Module._compile=3、register=1、createRequire=1 与 Node 一致（hooks 探针覆盖防回归） |
+| 2026-08-25 | P8 `-e` require 注入 | ✅ execute() 注入基于 cwd 的 loader：require/import()/内置模块/process.getBuiltinModule 可用；require('./rel') 与动态 import 与 Node 输出一致 |
 
 ## 6. 风险与边界
 

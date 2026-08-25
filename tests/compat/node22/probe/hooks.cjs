@@ -21,6 +21,9 @@ const out = {};
     answer: m.exports.answer,
     double: m.exports.double(21),
     typeofCompile: typeof m._compile,
+    lengthCompile: m._compile.length,
+    lengthRegister: register.length,
+    lengthCreateRequire: createRequire.length,
   };
 }
 

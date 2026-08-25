@@ -1279,6 +1279,12 @@ type functionValue struct {
 
 // NewFunction 创建函数对象。
 func NewFunction(name string, fn Func) Function {
+	return NewFunctionLen(name, 0, fn)
+}
+
+// NewFunctionLen 创建带显式 length（形参数量）的函数对象——Node 兼容面
+// 需要 length 与真实 API 对齐（如 module.register.length === 1）。
+func NewFunctionLen(name string, length int, fn Func) Function {
 	f := &functionValue{
 		fn:   fn,
 		name: name,
@@ -1286,7 +1292,7 @@ func NewFunction(name string, fn Func) Function {
 	f.shape = rootShape
 	register(&f.objectValue)
 	_ = f.Set("name", Str(name))
-	_ = f.Set("length", IntValue(0)) // 形参数量，Phase 0 固定 0
+	_ = f.Set("length", IntValue(length))
 	// ES 语义：普通函数都有 .prototype 属性（一个对象，constructor 指向自身）。
 	// engine.NewFunction 常用于原生模块构造器（如 stream.Transform），npm 包常
 	// 访问 <Ctor>.prototype（iconv-lite 的 Object.create(Transform.prototype)）。

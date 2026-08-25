@@ -48,7 +48,7 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 
 	// createRequire(filename | fileURL) → require 函数。
 	// Node 允许传入本机路径或 file:// URL（含 URL 对象的 href）。
-	_ = m.Set("createRequire", engine.NewFunction("createRequire", func(args []engine.Value) (engine.Value, error) {
+	_ = m.Set("createRequire", engine.NewFunctionLen("createRequire", 1, func(args []engine.Value) (engine.Value, error) {
 		parentPath := ""
 		if len(args) > 0 {
 			href, isURL := createRequireFilename(args[0])
@@ -119,7 +119,7 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 	// Module.register(specifier, parentURL[, options])：注册 loader hooks
 	//（resolve/load/initialize 链，Node 22 语义）。jiti/register 等
 	// 运行时转译器的集成入口。
-	_ = m.Set("register", engine.NewFunction("register", func(args []engine.Value) (engine.Value, error) {
+	_ = m.Set("register", engine.NewFunctionLen("register", 1, func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Undefined(), fmt.Errorf("%w: register requires a specifier", engine.ErrTypeError)
 		}
@@ -154,7 +154,7 @@ func NewModule(ctx engine.Context, loader *modmodule.Loader) (engine.Value, erro
 	// Module.prototype._compile(code, filename)：在 module 实例上编译并
 	// 执行 CJS 源码（Node 语义；require.extensions 自定义加载器与
 	// 工具链的核心入口）。this 必须是 Module 实例（含 exports）。
-	_ = moduleProto.Set("_compile", interpreter.NewNativeMethod("_compile", func(this engine.Value, args []engine.Value) (engine.Value, error) {
+	_ = moduleProto.Set("_compile", interpreter.NewNativeMethodLen("_compile", 3, func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
 			return engine.Undefined(), fmt.Errorf("%w: _compile requires source code", engine.ErrTypeError)
 		}

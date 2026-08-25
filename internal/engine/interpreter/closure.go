@@ -149,13 +149,19 @@ type NativeMethod struct {
 
 // NewNativeMethod creates a built-in method that receives `this`.
 func NewNativeMethod(name string, fn func(this engine.Value, args []engine.Value) (engine.Value, error)) *NativeMethod {
+	return NewNativeMethodLen(name, 1, fn)
+}
+
+// NewNativeMethodLen 创建带显式 length 的原生方法（Node 兼容面需要对齐
+// 真实 API 的形参数量，如 Module.prototype._compile.length === 3）。
+func NewNativeMethodLen(name string, length int, fn func(this engine.Value, args []engine.Value) (engine.Value, error)) *NativeMethod {
 	m := &NativeMethod{
 		obj:  engine.NewObject(),
 		fn:   fn,
 		name: name,
 	}
 	_ = m.obj.Set("name", engine.Str(name))
-	_ = m.obj.Set("length", engine.IntValue(1))
+	_ = m.obj.Set("length", engine.IntValue(length))
 	return m
 }
 

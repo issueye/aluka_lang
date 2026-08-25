@@ -1190,6 +1190,19 @@ func execute(code string, filename string, vm bool) error {
 	// 全部全局注册完成后收口可枚举性（对齐 Node 22：仅 web 类全局可枚举）。
 	globals.SweepGlobalEnumerability(ctx)
 
+	// P1-6（defect-fixes-plan）：-e 模式注入基于 cwd 的 require / 动态
+	// import() 与内置模块（Node 的 [eval] 同语义——相对 process.cwd() 解析）。
+	loader := modmodule.NewLoader(ctx)
+	loader.SetNoCache(noCacheFlag)
+	builtin.RegisterAll(loader)
+	_ = builtin.InstallGetBuiltinModule(ctx, loader)
+	// Node 语义：[eval] 虚拟模块位于 cwd 下——require/import 的解析基准
+	// 是 cwd 目录（MakeRequireFunc 按父模块文件取 Dir，故以虚拟文件名传入）。
+	cwd, _ := os.Getwd()
+	evalParent := filepath.Join(cwd, "[eval]")
+	_ = ctx.Global().Set("require", loader.MakeRequireFunc(evalParent))
+	_ = ctx.Global().Set("__import", loader.MakeImportFunc(evalParent))
+
 	// 启动期注册阶段产生大量中间分配，执行前归还一次 OS 内存（同 runModule）。
 	engine.FreeOSMemory()
 

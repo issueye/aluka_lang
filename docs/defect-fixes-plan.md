@@ -225,6 +225,7 @@
 - **判定**：Node `-e` 本身是 CJS 上下文，`require` 可用；顶层 await 仅在 ESM 可用。属兼容性缺口而非错误
 - **修复方案**：`-e` 模式注入 `require`（基于 cwd 的模块加载器）；顶层 await 支持列入 Phase 6 优化（需 ESM 语义改造）
 - **验收**：`aluka -e "require('os').platform()"` 可用
+- **状态**：✅ 2026-08-25 已修复（gap-closure-plan P8）——execute() 注入基于 cwd（`[eval]` 虚拟模块语义）的 require、动态 import()（`__import`）与内置模块（含 `process.getBuiltinModule`）；实测 `require('os').platform()`、`require('./rel.js')`、`import('./rel.js')` 与 Node 输出一致。顶层 await 仍列入后续。
 
 ---
 
