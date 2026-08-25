@@ -19,6 +19,8 @@ import (
 //     toJSON/valueOf/toUTCString/toDateString/toTimeString
 func (interp *Interpreter) setupDate() {
 	dateProto := engine.NewObject()
+	// Date.prototype → Object.prototype（instance 可访问 Object.prototype 方法）。
+	engine.SetProto(dateProto, interp.objectProto)
 
 	// --- Date 构造器 ---
 	ctor := interp.makeFunc("Date", func(args []engine.Value) (engine.Value, error) {

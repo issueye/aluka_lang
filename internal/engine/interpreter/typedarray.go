@@ -26,6 +26,7 @@ import (
 func (interp *Interpreter) setupTypedArrays() {
 	// ArrayBuffer
 	abProto := engine.NewObject()
+	engine.SetProto(abProto, interp.objectProto)
 	_ = abProto.Set("slice", interp.nativeMethod("slice", func(this engine.Value, args []engine.Value) (engine.Value, error) {
 		b, ok := engine.AsArrayBuffer(this)
 		if !ok {
@@ -60,6 +61,7 @@ func (interp *Interpreter) setupTypedArrays() {
 
 	// DataView
 	dvProto := engine.NewObject()
+	engine.SetProto(dvProto, interp.objectProto)
 	_ = dvProto.Set("getInt8", interp.dvGetIntFn(1, true))
 	_ = dvProto.Set("getUint8", interp.dvGetIntFn(1, false))
 	_ = dvProto.Set("getInt16", interp.dvGetIntFn(2, true))
@@ -122,6 +124,7 @@ func (interp *Interpreter) setupTypedArrays() {
 func (interp *Interpreter) setupTypedArrayCtor(kind engine.TypedArrayKind) {
 	name := kind.Name()
 	proto := engine.NewObject()
+	engine.SetProto(proto, interp.objectProto)
 	_ = proto.Set("BYTES_PER_ELEMENT", engine.IntValue(kind.BytesPerElement()))
 	interp.setupTypedArrayProto(proto, kind)
 

@@ -80,10 +80,26 @@ func (interp *Interpreter) setupMathExt(m engine.Object) {
 		return engine.IntValue(bits.LeadingZeros32(uint32(n))), nil
 	}))
 
+	// --- 多参数函数 ----------------------------------------------------------
+	// hypot(...) 平方和开方（ES 21.3.2.18）：支持任意参数，任一为 NaN 返回
+	// NaN（先于 Infinity 检查），全 0 返回 +0。jsToNumber 保证 ToNumber
+	// 语义（hypot(3, "4") === 5）。
+	_ = m.Set("hypot", interp.makeFunc("hypot", func(args []engine.Value) (engine.Value, error) {
+		var sum float64
+		for _, a := range args {
+			f := jsToNumber(a)
+			if math.IsNaN(f) {
+				return engine.Number(math.NaN()), nil
+			}
+			sum = math.Hypot(sum, f)
+		}
+		return engine.Number(sum), nil
+	}))
+
 	// --- 缺失常量 ------------------------------------------------------------
-	_ = m.Set("LOG2E", engine.Number(1 / math.Ln2))   // log2(e) = 1/ln(2)
+	_ = m.Set("LOG2E", engine.Number(1/math.Ln2))     // log2(e) = 1/ln(2)
 	_ = m.Set("LOG10E", engine.Number(math.Log10E))   // log10(e)
-	_ = m.Set("SQRT1_2", engine.Number(1 / math.Sqrt2)) // 1/√2 = √2/2
+	_ = m.Set("SQRT1_2", engine.Number(1/math.Sqrt2)) // 1/√2 = √2/2
 }
 
 // mathSign 实现 Math.sign：负数返回 -1，正数返回 1，0 返回 ±0，NaN 返回 NaN。

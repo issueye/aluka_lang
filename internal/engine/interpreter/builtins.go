@@ -15,6 +15,30 @@ import (
 	"github.com/aluka-lang/aluka/internal/engine/regex"
 )
 
+// rawJSONMarkerKey 是 JSON.rawJSON 对象的内部标记键（symbol-keyed，不被
+// Keys() 枚举，JS 侧不可见）。JSON.isRawJSON 与 valueToJSON 靠它识别
+// rawJSON 对象；"rawJSON" 自有属性是 V8 的可观察镜像（writable:false）。
+var rawJSONMarkerKey = engine.NewSymbol("aluka.rawJSON").SymbolKey()
+
+// rawJSONBox 是 JSON.rawJSON 原始文本的序列化占位：MarshalJSON 原样输出
+// （不转义、不加引号），stringify 遇到 rawJSON 对象时内联其原始 JSON 文本。
+type rawJSONBox struct{ text string }
+
+func (b rawJSONBox) MarshalJSON() ([]byte, error) { return []byte(b.text), nil }
+
+// rawJSONValueOf 返回 v 的 rawJSON 原始文本；不是 rawJSON 对象返回 ("", false)。
+func (interp *Interpreter) rawJSONValueOf(v engine.Value) (string, bool) {
+	o, ok := v.AsObject()
+	if !ok {
+		return "", false
+	}
+	text, err := o.Get(rawJSONMarkerKey)
+	if err != nil || text.IsUndefined() {
+		return "", false
+	}
+	return text.String(), true
+}
+
 // setupBuiltins initializes all built-in prototypes, constructors, and global functions.
 func (interp *Interpreter) setupBuiltins() {
 	// Create prototype objects
@@ -40,6 +64,15 @@ func (interp *Interpreter) setupBuiltins() {
 	interp.setupFunctionProto()
 	// Error.prototype methods
 	interp.setupErrorProto()
+	// 内置 prototype 统一接 %Object.prototype%（ECMAScript 语义：Array/
+	// String/Number/Boolean/BigInt/Error 的实例都应能访问 Object.prototype
+	// 方法如 hasOwnProperty；此前仅 functionProto 接了链）。
+	for _, p := range []engine.Object{
+		interp.arrayProto, interp.stringProto, interp.numberProto,
+		interp.booleanProto, interp.bigintProto, interp.errorProto,
+	} {
+		engine.SetProto(p, interp.objectProto)
+	}
 
 	// Constructors
 	interp.setupObjectCtor()
@@ -2081,10 +2114,18 @@ func (interp *Interpreter) setupErrorProto() {
 }
 
 func (interp *Interpreter) setupErrorCtors() {
-	errorNames := []string{"Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError"}
+	errorNames := []string{"Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError"}
 	for _, name := range errorNames {
-		proto := engine.NewObject()
-		engine.SetProto(proto, interp.errorProto)
+		var proto engine.Object
+		if name == "Error" {
+			// Error 的 prototype 就是共享的 errorProto：其余错误类型的
+			// prototype 全部以它为父级，保证 X instanceof Error 成立
+			// （V8 原型链：TypeError.prototype → Error.prototype）。
+			proto = interp.errorProto
+		} else {
+			proto = engine.NewObject()
+			engine.SetProto(proto, interp.errorProto)
+		}
 		_ = proto.Set("name", engine.Str(name))
 		_ = proto.Set("message", engine.Str(""))
 		ctorName := name
@@ -2113,6 +2154,41 @@ func (interp *Interpreter) setupErrorCtors() {
 		_ = interp.globalObj.Set(name, ctor)
 		interp.constructors[name] = ctor
 	}
+	// AggregateError（ES2021）：new AggregateError(errors, message)。
+	// errors 取数组快照（Node 语义：Object.freeze 后仍可构造、errors 独立）；
+	// message 缺省为空串。
+	aggProto := engine.NewObject()
+	engine.SetProto(aggProto, interp.errorProto)
+	_ = aggProto.Set("name", engine.Str("AggregateError"))
+	_ = aggProto.Set("message", engine.Str(""))
+	aggCtor := interp.makeFunc("AggregateError", func(args []engine.Value) (engine.Value, error) {
+		errObj := engine.NewObject()
+		engine.SetProto(errObj, aggProto)
+		_ = errObj.Set("name", engine.Str("AggregateError"))
+		_ = errObj.Set("message", engine.Str(""))
+		if len(args) > 0 {
+			_ = errObj.Set("errors", args[0])
+		} else {
+			_ = errObj.Set("errors", engine.NewArray(nil))
+		}
+		if len(args) > 1 {
+			_ = errObj.Set("message", engine.Str(args[1].String()))
+		}
+		// Error cause（同上，第三参与 Error 一致）。
+		if len(args) > 2 && !args[2].IsUndefined() && !args[2].IsNull() {
+			if optObj, ok := args[2].AsObject(); ok {
+				if cause, err := optObj.Get("cause"); err == nil && !cause.IsUndefined() {
+					_ = errObj.Set("cause", cause)
+				}
+			}
+		}
+		interp.setErrorStack(errObj)
+		return errObj, nil
+	})
+	_ = aggCtor.Set("prototype", aggProto)
+	_ = aggProto.Set("constructor", aggCtor)
+	_ = interp.globalObj.Set("AggregateError", aggCtor)
+	interp.constructors["AggregateError"] = aggCtor
 }
 
 // --- Math ---
@@ -2216,6 +2292,49 @@ func (interp *Interpreter) setupJSON() {
 			return nil, fmt.Errorf("%w: %v", engine.ErrSyntaxError, err)
 		}
 		return jsonToValue(data), nil
+	}))
+	// JSON.rawJSON / JSON.isRawJSON（JSON.parse source 提案，V8 12 已实现；
+	// 行为对齐 Node 22 实测）：rawJSON 对入参做 ToString 后校验其本身是
+	// 合法 JSON 文本，产出携带原始文本的 marker 对象；stringify 内联该
+	// 文本。symbol 抛 TypeError；对象/数组/undefined/NaN 等非法文本抛
+	// SyntaxError。
+	_ = j.Set("rawJSON", interp.makeFunc("rawJSON", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("%w: JSON.rawJSON requires an argument", engine.ErrTypeError)
+		}
+		v := args[0]
+		var text string
+		switch v.Type() {
+		case engine.TypeSymbol:
+			return nil, fmt.Errorf("%w: Cannot convert a Symbol value to a string", engine.ErrTypeError)
+		case engine.TypeObject, engine.TypeFunction:
+			return nil, fmt.Errorf("%w: Invalid value for JSON.rawJSON", engine.ErrSyntaxError)
+		default:
+			text = v.String()
+		}
+		if !json.Valid([]byte(text)) {
+			return nil, fmt.Errorf("%w: %q is not valid JSON", engine.ErrSyntaxError, text)
+		}
+		obj := engine.NewObject()
+		_ = obj.Set(rawJSONMarkerKey, engine.Str(text))
+		_ = engine.DefineOwnProperty(obj, "rawJSON", engine.Descriptor{
+			HasValue:        true,
+			Value:           engine.Str(text),
+			HasWritable:     true,
+			Writable:        false,
+			HasEnumerable:   true,
+			Enumerable:      true,
+			HasConfigurable: true,
+			Configurable:    false,
+		})
+		return obj, nil
+	}))
+	_ = j.Set("isRawJSON", interp.makeFunc("isRawJSON", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Boolean(false), nil
+		}
+		_, ok := interp.rawJSONValueOf(args[0])
+		return engine.Boolean(ok), nil
 	}))
 	_ = interp.globalObj.Set("JSON", j)
 }
@@ -2332,10 +2451,19 @@ func (interp *Interpreter) valueToJSON(v engine.Value, seen map[engine.Object]bo
 		return b, nil
 	case engine.TypeNumber:
 		f, _ := v.Float()
+		// JSON.stringify 语义：NaN/±Infinity 序列化为 null（ES 25.5.2
+		// SerializeJSONValue 的 ToNumber 分支）；Go json 无法编码它们。
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, nil
+		}
 		return f, nil
 	case engine.TypeString:
 		return v.String(), nil
 	case engine.TypeObject, engine.TypeFunction:
+		if text, ok := interp.rawJSONValueOf(v); ok {
+			// rawJSON 对象：内联原始 JSON 文本，不遍历属性。
+			return rawJSONBox{text: text}, nil
+		}
 		if arr, ok := v.(*engine.ArrayValue); ok {
 			o, _ := arr.AsObject()
 			if seen[o] {
@@ -2494,6 +2622,96 @@ func (interp *Interpreter) setupGlobalFuncs() {
 	// （→ Object.prototype）解析，不是全局自有键。globalThis 的原型链在
 	// sweepBuiltinEnumerability 中统一挂接，这里不再误注册自有键。
 	_ = interp.globalObj.Set("String", interp.constructors["String"])
+
+	// eval（Node 语义）：参数非字符串原样返回；字符串在新程序全局作用域
+	// 求值（间接 eval 语义——看不到调用方局部变量，与 V8 直接 eval 的
+	// 差异记录于 gap-closure-plan §3 P1-5）。
+	_ = interp.globalObj.Set("eval", interp.makeFunc("eval", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Undefined(), nil
+		}
+		if args[0].Type() != engine.TypeString {
+			return args[0], nil
+		}
+		return interp.Eval(args[0].String(), "eval.js")
+	}))
+
+	// escape/unescape（deprecated 但 Node 保留）：escape 按 UTF-16 code unit
+	// 编码——安全字符 A-Z a-z 0-9 @ * _ + - . / 原样；cu ≤ 0xFF → %XX，
+	// 否则 %uXXXX（大写十六进制）。unescape 逆操作：%XX 按 Latin-1 字节、
+	// %uXXXX 按 code unit 还原；非法转义序列原样保留。
+	_ = interp.globalObj.Set("escape", interp.makeFunc("escape", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Str(""), nil
+		}
+		var b strings.Builder
+		for _, cu := range utf16.Encode([]rune(args[0].String())) {
+			if isEscapeSafe(cu) {
+				b.WriteRune(rune(cu))
+				continue
+			}
+			if cu <= 0xFF {
+				fmt.Fprintf(&b, "%%%02X", cu)
+			} else {
+				fmt.Fprintf(&b, "%%u%04X", cu)
+			}
+		}
+		return engine.Str(b.String()), nil
+	}))
+	_ = interp.globalObj.Set("unescape", interp.makeFunc("unescape", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return engine.Str(""), nil
+		}
+		var b strings.Builder
+		s := args[0].String()
+		hexVal := func(c byte) int {
+			switch {
+			case c >= '0' && c <= '9':
+				return int(c - '0')
+			case c >= 'a' && c <= 'f':
+				return int(c-'a') + 10
+			case c >= 'A' && c <= 'F':
+				return int(c-'A') + 10
+			}
+			return -1
+		}
+		for i := 0; i < len(s); {
+			c := s[i]
+			if c != '%' {
+				b.WriteByte(c)
+				i++
+				continue
+			}
+			if i+5 < len(s) && (s[i+1] == 'u' || s[i+1] == 'U') {
+				h := []int{hexVal(s[i+2]), hexVal(s[i+3]), hexVal(s[i+4]), hexVal(s[i+5])}
+				if h[0] >= 0 && h[1] >= 0 && h[2] >= 0 && h[3] >= 0 {
+					b.WriteRune(rune(h[0]<<12 | h[1]<<8 | h[2]<<4 | h[3]))
+					i += 6
+					continue
+				}
+			}
+			if i+2 < len(s) {
+				h1, h2 := hexVal(s[i+1]), hexVal(s[i+2])
+				if h1 >= 0 && h2 >= 0 {
+					b.WriteRune(rune(h1<<4 | h2))
+					i += 3
+					continue
+				}
+			}
+			b.WriteByte(c)
+			i++
+		}
+		return engine.Str(b.String()), nil
+	}))
+}
+
+// isEscapeSafe 判断 code unit 是否属于 escape 保留的安全字符集。
+func isEscapeSafe(cu uint16) bool {
+	switch {
+	case cu >= 'A' && cu <= 'Z', cu >= 'a' && cu <= 'z', cu >= '0' && cu <= '9':
+		return true
+	}
+	return strings.IndexRune("@*_+-./", rune(cu)) >= 0
 }
 
 // --- Symbol ---
