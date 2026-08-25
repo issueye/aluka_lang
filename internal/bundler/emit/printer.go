@@ -28,6 +28,9 @@ type PrintOptions struct {
 	Defines        map[string]string
 	RewriteImport  func(spec string) (next string, keep bool)
 	RewriteDynamic func(spec string) string
+	// RewriteURL 把 new URL(<相对路径>, import.meta.url) 的字面量 specifier
+	// 改写成产物相对路径（对齐 esbuild；返回 "" 保留原样）。
+	RewriteURL func(spec string) string
 }
 
 // PrintOpts 按选项打印 Program。
@@ -37,6 +40,7 @@ func PrintOpts(prog *ast.Program, opts PrintOptions) string {
 		defines:        opts.Defines,
 		rewriteImport:  opts.RewriteImport,
 		rewriteDynamic: opts.RewriteDynamic,
+		rewriteURL:     opts.RewriteURL,
 	}
 	for _, stmt := range prog.Body {
 		p.stmt(stmt)
@@ -56,6 +60,8 @@ type printer struct {
 	rewriteImport func(spec string) (next string, keep bool)
 	// rewriteDynamic 把动态 import() 的字面量 specifier 改写成产物路径。
 	rewriteDynamic func(spec string) string
+	// rewriteURL 把 new URL(rel, import.meta.url) 的 specifier 改写成产物路径。
+	rewriteURL func(spec string) string
 }
 
 func (p *printer) w(s string) { p.sb.WriteString(s) }
@@ -325,6 +331,21 @@ func (p *printer) exprInner(e ast.Expression) {
 		p.w(")")
 
 	case *ast.NewExpr:
+		// new URL(<相对路径>, import.meta.url) 的 specifier 改写成产物路径
+		// （对齐 esbuild 的 URL 资产进图）。仅当第二参为 import.meta.url
+		// 形式时改写——其余 base 无法在构建期确定。
+		if id, ok := t.Callee.(*ast.Identifier); ok && id.Name == "URL" && len(t.Arguments) == 2 {
+			if lit, ok := t.Arguments[0].(*ast.StringLit); ok && p.rewriteURL != nil {
+				if next := p.rewriteURL(lit.Value); next != "" {
+					p.w("new URL(")
+					p.string(next)
+					p.w(",")
+					p.expr(t.Arguments[1], precLowest)
+					p.w(")")
+					return
+				}
+			}
+		}
 		p.w("new ")
 		p.expr(t.Callee, precCallMember)
 		p.w("(")

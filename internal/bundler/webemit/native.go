@@ -18,12 +18,19 @@ func emitNative(gr *graph.Result, kept map[string]bool, jsFileName, baseName str
 		Assets:    gr.Assets,
 		Defines:   opts.Defines,
 		AssetsDir: opts.AssetsDir,
+		URLAssets: gr.URLAssets,
 	})
 	if err != nil {
 		return empty, err
 	}
 
 	assets := native.Files
+	// new URL 静态资产（图构建期读入 gr.Assets 的产物相对路径）随产物输出。
+	for k, v := range gr.Assets {
+		if _, exists := assets[k]; !exists {
+			assets[k] = v
+		}
+	}
 	if opts.Sourcemap && native.EntryFile != "" {
 		mapFileName := native.EntryFile + ".map"
 		smJSON, err := emit.GenerateSimpleSourceMap(filepath.Base(native.EntryFile), moduleSources)

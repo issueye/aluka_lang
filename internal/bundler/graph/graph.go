@@ -62,11 +62,31 @@ type Result struct {
 	Builtins []BuiltinDep
 	// DynamicDeps 是字面量动态 import() 的已解析边。
 	DynamicDeps []DynamicDep
-	// UnresolvedDynamic 无法静态解析的动态 import 所在模块。
-	UnresolvedDynamic []string
+	// UnresolvedDynamic 无法静态解析（无法折叠为字面量）的动态 import() /
+	// require() 调用清单：Source 为所在模块 key，Spec 为原始 specifier 的
+	// 诊断文本，RequireCtx 区分 require 语境。web target 对两者均构建期
+	// 报错；--compile 警告 + 运行期按 RootDir 回退文件系统加载。
+	UnresolvedDynamic []UnresolvedDep
+	// URLAssets 记录 new URL(<相对路径>, import.meta.url) 静态引用：
+	// 模块 key → 原始 spec → 产物相对路径（web bundle 打印期改写 + 资产
+	// 随产物输出，对齐 esbuild）。物理文件已读入 Assets[产物相对路径]。
+	URLAssets map[string]map[string]string
 	// WatchFiles 是本次图中真实存在的源文件（含 Vue src 外部块），供 --watch。
 	WatchFiles []string
 	plugins    plugin.Host
+}
+
+// UnresolvedDep 是一条无法静态解析的 require()/动态 import() 调用记录。
+type UnresolvedDep struct {
+	Source     string // 所在模块 key
+	Spec       string // 原始 specifier 表达式的诊断文本
+	RequireCtx bool   // true = require 语境；false = import 语境
+}
+
+// URLRef 是一条 new URL(<相对路径>, import.meta.url) 静态引用。
+type URLRef struct {
+	ModuleKey string // 所在模块 key
+	Spec      string // 原始相对 specifier
 }
 
 // buildConfig 收集 Build 的可选配置。
@@ -118,6 +138,7 @@ func Build(vm *interpreter.VM, resolver *module.Resolver, entry string, opts ...
 		Resolutions: make(map[string]map[string]string),
 		SourceUnits: make(SourceUnitByPath),
 		Assets:      make(map[string][]byte),
+		URLAssets:   make(map[string]map[string]string),
 		WatchFiles:  make([]string, 0),
 	}
 	r.plugins = cfg.plugins
@@ -333,24 +354,50 @@ func (r *Result) finishWalk(vm *interpreter.VM, resolver *module.Resolver, fsPat
 	if r.Entry == "" {
 		r.Entry = key
 	}
-	deps := collectDeps(unit.Program, key, &r.UnresolvedDynamic)
+	var urlRefs []URLRef
+	deps := collectDeps(unit.Program, key, &r.UnresolvedDynamic, &urlRefs)
 	for _, dep := range deps {
 		if isBuiltinSpecifier(dep.Spec) {
 			r.Builtins = append(r.Builtins, BuiltinDep{Spec: dep.Spec, Source: key})
 		}
 	}
 
-	// 反射遍历可能重复收集同一调用节点——去重。
+	// 反射遍历可能重复收集同一调用节点——按 (Source, RequireCtx, Spec) 去重。
 	if len(r.UnresolvedDynamic) > 0 {
-		seen := make(map[string]bool)
+		seen := make(map[UnresolvedDep]bool)
 		uniq := r.UnresolvedDynamic[:0]
-		for _, k := range r.UnresolvedDynamic {
-			if !seen[k] {
-				seen[k] = true
-				uniq = append(uniq, k)
+		for _, d := range r.UnresolvedDynamic {
+			if !seen[d] {
+				seen[d] = true
+				uniq = append(uniq, d)
 			}
 		}
 		r.UnresolvedDynamic = uniq
+	}
+
+	// new URL(<相对路径>, import.meta.url) 静态资产：解析物理文件，按
+	// 入口目录换算产物相对路径，读入 Assets；打印期把原始 spec 改写为
+	// 该产物路径。读不到文件/越出入口目录/目标是 css 模块时静默跳过
+	// （保留原样，运行期按其真实语义解析）。
+	for _, ref := range urlRefs {
+		if strings.HasSuffix(ref.Spec, ".css") {
+			continue
+		}
+		target := filepath.Join(filepath.Dir(fsPath), filepath.FromSlash(ref.Spec))
+		rel, err := filepath.Rel(entryDir, target)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue // 越出入口目录（会逃出产物目录），不处理
+		}
+		data, err := os.ReadFile(target)
+		if err != nil {
+			continue // 文件缺失/不可读：保留原调用
+		}
+		emitted := filepath.ToSlash(rel)
+		r.Assets[emitted] = data
+		if r.URLAssets[key] == nil {
+			r.URLAssets[key] = make(map[string]string)
+		}
+		r.URLAssets[key][ref.Spec] = emitted
 	}
 
 	// 记录本模块的解析映射并递归。
@@ -422,7 +469,7 @@ func (r *Result) finishWalk(vm *interpreter.VM, resolver *module.Resolver, fsPat
 // 等）；无法折叠的记入 unresolved（模块 key）。
 //
 // 基于统一遍历 ast.Walk（internal/engine/ast/walk.go），取代原先的反射遍历。
-func collectDeps(prog *ast.Program, key string, unresolved *[]string) []Dep {
+func collectDeps(prog *ast.Program, key string, unresolved *[]UnresolvedDep, urlRefs *[]URLRef) []Dep {
 	var deps []Dep
 	ast.Walk(prog, func(n ast.Node) bool {
 		switch node := n.(type) {
@@ -433,6 +480,12 @@ func collectDeps(prog *ast.Program, key string, unresolved *[]string) []Dep {
 		case *ast.ExportDecl:
 			if node.Source != "" {
 				deps = append(deps, Dep{Spec: node.Source, ImportCtx: true})
+			}
+		case *ast.NewExpr:
+			if id, ok := node.Callee.(*ast.Identifier); ok && id.Name == "URL" && len(node.Arguments) == 2 {
+				if lit, ok := node.Arguments[0].(*ast.StringLit); ok && isRelativeSpec(lit.Value) && isImportMetaURL(node.Arguments[1]) {
+					*urlRefs = append(*urlRefs, URLRef{ModuleKey: key, Spec: lit.Value})
+				}
 			}
 		case *ast.CallExpr:
 			if id, ok := node.Callee.(*ast.Identifier); ok && len(node.Arguments) > 0 {
@@ -453,7 +506,9 @@ func collectDeps(prog *ast.Program, key string, unresolved *[]string) []Dep {
 							break
 						}
 					}
-					*unresolved = append(*unresolved, key)
+					*unresolved = append(*unresolved, UnresolvedDep{
+						Source: key, Spec: astutil.ExprText(arg), RequireCtx: true,
+					})
 				case "__import": // 动态 import() 经 parser lower 的形式
 					if lit, ok := arg.(*ast.StringLit); ok {
 						deps = append(deps, Dep{Spec: lit.Value, ImportCtx: true, Dynamic: true})
@@ -467,7 +522,9 @@ func collectDeps(prog *ast.Program, key string, unresolved *[]string) []Dep {
 						}
 					}
 					// 无法静态解析：构建期警告，产物运行时报错。
-					*unresolved = append(*unresolved, key)
+					*unresolved = append(*unresolved, UnresolvedDep{
+						Source: key, Spec: astutil.ExprText(arg),
+					})
 				}
 			}
 		}
@@ -493,4 +550,30 @@ func isBareSpecifier(spec string) bool {
 		return false // Windows 盘符（如 C:\...）。
 	}
 	return true
+}
+
+// isRelativeSpec 判断 specifier 是否为相对路径（./ ../）。
+func isRelativeSpec(spec string) bool {
+	return strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../")
+}
+
+// isImportMetaURL 判断表达式是否为 import.meta.url 形态
+// （MemberExpr{MemberExpr{import, meta}, url}）。
+func isImportMetaURL(e ast.Expression) bool {
+	// import.meta 经 parser lower 为 __importMeta() 调用，因此形态为
+	// MemberExpr{CallExpr{__importMeta}, url, 非计算}。
+	m, ok := e.(*ast.MemberExpr)
+	if !ok || m.Computed {
+		return false
+	}
+	prop, ok := m.Property.(*ast.Identifier)
+	if !ok || prop.Name != "url" {
+		return false
+	}
+	call, ok := m.Object.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	id, ok := call.Callee.(*ast.Identifier)
+	return ok && id.Name == "__importMeta" && len(call.Arguments) == 0
 }

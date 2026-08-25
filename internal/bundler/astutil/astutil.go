@@ -3,6 +3,7 @@
 package astutil
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -321,4 +322,82 @@ func typeofFold(v interface{}) string {
 		return "object"
 	}
 	return "unknown"
+}
+
+// ExprText 输出表达式的诊断文本（用于 unresolved 依赖的构建期报错/警告）。
+// 覆盖常见表达式形态；无法还原的节点回退为 "<expr>@L<行>C<列>"。
+func ExprText(e ast.Expression) string {
+	if e == nil {
+		return "<nil>"
+	}
+	switch n := e.(type) {
+	case *ast.Identifier:
+		return n.Name
+	case *ast.StringLit:
+		return `'` + n.Value + `'`
+	case *ast.NumberLit:
+		return n.Raw
+	case *ast.BigIntLit:
+		return n.Text + "n"
+	case *ast.BoolLit:
+		if n.Value {
+			return "true"
+		}
+		return "false"
+	case *ast.NullLit:
+		return "null"
+	case *ast.UndefinedLit:
+		return "undefined"
+	case *ast.ThisExpr:
+		return "this"
+	case *ast.TemplateLit:
+		var b strings.Builder
+		for i, q := range n.Quasis {
+			b.WriteString(q)
+			if i < len(n.Expressions) {
+				b.WriteString("${")
+				b.WriteString(ExprText(n.Expressions[i]))
+				b.WriteString("}")
+			}
+		}
+		return "`" + b.String() + "`"
+	case *ast.UnaryExpr:
+		return n.Op + ExprText(n.Arg)
+	case *ast.BinaryExpr:
+		return ExprText(n.Left) + " " + n.Op + " " + ExprText(n.Right)
+	case *ast.LogicalExpr:
+		return ExprText(n.Left) + " " + n.Op + " " + ExprText(n.Right)
+	case *ast.ConditionalExpr:
+		return ExprText(n.Test) + " ? " + ExprText(n.Consequent) + " : " + ExprText(n.Alternate)
+	case *ast.MemberExpr:
+		if n.Computed {
+			return ExprText(n.Object) + "[" + ExprText(n.Property) + "]"
+		}
+		if id, ok := n.Property.(*ast.Identifier); ok {
+			return ExprText(n.Object) + "." + id.Name
+		}
+		return ExprText(n.Object) + "." + ExprText(n.Property)
+	case *ast.CallExpr:
+		var b strings.Builder
+		b.WriteString(ExprText(n.Callee))
+		b.WriteString("(")
+		for i, a := range n.Arguments {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(ExprText(a))
+		}
+		b.WriteString(")")
+		return b.String()
+	case *ast.NewExpr:
+		if id, ok := n.Callee.(*ast.Identifier); ok {
+			return "new " + id.Name
+		}
+		return "new " + ExprText(n.Callee)
+	case *ast.ArrayLit:
+		return "[...]"
+	case *ast.ObjectLit:
+		return "{...}"
+	}
+	return fmt.Sprintf("<expr>@L%dC%d", e.Pos().Line, e.Pos().Col)
 }

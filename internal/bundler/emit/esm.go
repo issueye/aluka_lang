@@ -27,6 +27,8 @@ type nativeGraph struct {
 	files     map[string]string
 	used      map[string]bool
 	visiting  map[string]bool
+	// urlAssets 模块 key → 原始 spec → 产物相对路径（new URL 资产改写）。
+	urlAssets map[string]map[string]string
 }
 
 func isCSSID(id string) bool {
@@ -51,6 +53,7 @@ func BuildNativeESM(b Bundle) (NativeESM, error) {
 		files:     make(map[string]string),
 		used:      make(map[string]bool),
 		visiting:  make(map[string]bool),
+		urlAssets: b.URLAssets,
 	}
 	for _, m := range b.Modules {
 		if m.IsTLA {
@@ -294,6 +297,7 @@ func (g *nativeGraph) printESM(m Module, file string) (string, error) {
 		defines:        g.defines,
 		rewriteImport:  g.rewriteImport(m, file),
 		rewriteDynamic: g.rewriteDynamic(m, file),
+		rewriteURL:     g.rewriteURL(m, file),
 	}
 
 	cjsAlias := map[string]string{}
@@ -511,7 +515,7 @@ func (g *nativeGraph) printCJS(m Module, file string) (string, error) {
 	}
 	b.WriteString("throw new Error(\"Cannot resolve module '\"+s+\"'\");}")
 	if m.Prog != nil {
-		p := &printer{sb: &b, defines: g.defines, rewriteDynamic: g.rewriteDynamic(m, file)}
+		p := &printer{sb: &b, defines: g.defines, rewriteDynamic: g.rewriteDynamic(m, file), rewriteURL: g.rewriteURL(m, file)}
 		for _, stmt := range m.Prog.Body {
 			p.stmt(stmt)
 			p.w(";")
@@ -537,4 +541,20 @@ func isJSIdent(s string) bool {
 		}
 	}
 	return true
+}
+
+// rewriteURL 返回 new URL specifier 改写 hook：把图构建期记录的 URL 资产
+// 原始 spec 改写成相对当前产物文件的路径（从该文件位置看资产的位置）。
+func (g *nativeGraph) rewriteURL(m Module, file string) func(string) string {
+	perModule, ok := g.urlAssets[m.ID]
+	if !ok {
+		return nil
+	}
+	return func(spec string) string {
+		emitted, ok := perModule[spec]
+		if !ok || emitted == "" {
+			return ""
+		}
+		return relativeModuleSpecifier(file, emitted)
+	}
 }

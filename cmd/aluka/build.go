@@ -362,11 +362,19 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 		fatalErr("aluka build: " + err.Error())
 	}
 
-	// T2-B4：无法静态解析的动态 import 构建期警告。产物运行时会按
+	// T2-B4：无法静态解析的动态 import/require 构建期警告。产物运行时会按
 	// manifest.RootDir 回退文件系统现场加载（需要产物旁有源文件树）；
 	// 找不到文件时动态 import 以 rejected Promise 报错。
-	for _, key := range graphResult.UnresolvedDynamic {
-		fmt.Fprintf(os.Stderr, "aluka build: warning: %s: dynamic import with non-constant specifier cannot be precompiled; it will be loaded from disk at runtime (requires the source tree next to the executable)\n", key)
+	for _, d := range graphResult.UnresolvedDynamic {
+		kind := "dynamic import"
+		if d.RequireCtx {
+			kind = "non-literal require"
+		}
+		spec := ""
+		if d.Spec != "" {
+			spec = " (" + d.Spec + ")"
+		}
+		fmt.Fprintf(os.Stderr, "aluka build: warning: %s: %s with non-constant specifier%s cannot be precompiled; it will be loaded from disk at runtime (requires the source tree next to the executable)\n", d.Source, kind, spec)
 	}
 
 	// 优化管线：tree-shake → minify 在共享 SourceUnit AST 上顺序执行，最后
@@ -554,7 +562,7 @@ func buildOne(vm *interpreter.VM, resolver *module.Resolver, entry string, opts 
 			Output:            out,
 			RootDir:           graphResult.RootDir,
 			Resolutions:       graphResult.Resolutions,
-			UnresolvedDynamic: graphResult.UnresolvedDynamic,
+			UnresolvedDynamic: unresolvedKeys(graphResult.UnresolvedDynamic),
 			Assets:            assets,
 			Raw:               rawStage,
 			Shaken:            shakenStage,
@@ -918,4 +926,14 @@ func syncWebOptions(dst *buildOptions, src project.Options) {
 	dst.vueCompiler = src.VueCompiler
 	dst.aliases = src.Aliases
 	dst.userDefines = src.Defines
+}
+
+// unresolvedKeys 提取 graph 的 unresolved 清单中所在模块 key 列表
+// （analyze.Report 只需路径级诊断）。
+func unresolvedKeys(deps []graph.UnresolvedDep) []string {
+	keys := make([]string, 0, len(deps))
+	for _, d := range deps {
+		keys = append(keys, d.Source)
+	}
+	return keys
 }

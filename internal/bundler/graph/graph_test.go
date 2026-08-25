@@ -271,8 +271,15 @@ func TestBuildRequireNonConstantUnresolved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.UnresolvedDynamic) != 1 || res.UnresolvedDynamic[0] != "main.js" {
-		t.Fatalf("unresolved = %v, want [main.js]", res.UnresolvedDynamic)
+	if len(res.UnresolvedDynamic) != 1 {
+		t.Fatalf("unresolved = %v, want 1 条", res.UnresolvedDynamic)
+	}
+	d := res.UnresolvedDynamic[0]
+	if d.Source != "main.js" || !d.RequireCtx {
+		t.Fatalf("unresolved[0] = %+v, want {Source: main.js, RequireCtx: true}", d)
+	}
+	if d.Spec == "" || d.Spec == "<nil>" {
+		t.Fatalf("unresolved[0].Spec = %q, want 诊断文本（如 name）", d.Spec)
 	}
 }
 
@@ -529,5 +536,81 @@ func TestBuildPluginTransformCSS(t *testing.T) {
 	}
 	if !strings.Contains(string(css), "/*p*/") {
 		t.Fatalf("css transform missing: %s", css)
+	}
+}
+
+// TestBuildNewURLAsset 验证 new URL(<相对路径>, import.meta.url) 静态引用
+// 进依赖图：物理文件读入 Assets（按入口目录换算的产物相对路径）、
+// URLAssets 记录 模块 key → 原始 spec → 产物路径。
+func TestBuildNewURLAsset(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"src/index.js":      "import { img } from './pages/page.js';\nconst pic = new URL('./pages/pic.png', import.meta.url).href;\nconsole.log(img, pic);",
+		"src/pages/page.js": "export const img = new URL('../logo.png', import.meta.url).href;",
+		"src/logo.png":      "PNG-LOGO",
+		"src/pages/pic.png": "PNG-PIC",
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "src", "index.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.URLAssets) != 2 {
+		t.Fatalf("URLAssets = %v, want 2 个模块", res.URLAssets)
+	}
+	entry := res.URLAssets["index.js"]
+	if entry == nil || entry["./pages/pic.png"] != "pages/pic.png" {
+		t.Fatalf("URLAssets[index.js] = %v, want {./pages/pic.png: pages/pic.png}", entry)
+	}
+	page := res.URLAssets["pages/page.js"]
+	if page == nil || page["../logo.png"] != "logo.png" {
+		t.Fatalf("URLAssets[pages/page.js] = %v, want {../logo.png: logo.png}", page)
+	}
+	if string(res.Assets["pages/pic.png"]) != "PNG-PIC" || string(res.Assets["logo.png"]) != "PNG-LOGO" {
+		t.Fatalf("Assets 内容不符: %q %q", res.Assets["pages/pic.png"], res.Assets["logo.png"])
+	}
+}
+
+// TestBuildNewURLAssetOutsideEntry 越出入口目录的引用不处理（保留原样）。
+func TestBuildNewURLAssetOutsideEntry(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"src/index.js": "const u = new URL('../outside.png', import.meta.url).href;\nconsole.log(u);",
+		"outside.png":  "PNG-OUT",
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "src", "index.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// '../outside.png' 相对 src/index.js 指向入口目录之外：跳过不记录。
+	if len(res.URLAssets) != 0 {
+		t.Fatalf("URLAssets = %v, want 空（越出入口目录）", res.URLAssets)
+	}
+	if _, ok := res.Assets["outside.png"]; ok {
+		t.Fatalf("Assets 不应包含越界资产")
+	}
+}
+
+// TestBuildNewURLBareSpecNotCollected 裸模块名/绝对路径/非 import.meta 基址不收集。
+func TestBuildNewURLBareSpecNotCollected(t *testing.T) {
+	dir := newTestEnv(t, map[string]string{
+		"src/index.js": "const a = new URL('/abs.png', import.meta.url).href;\nconst b = new URL('assets/x.png', import.meta.url).href;\nconst c = new URL('./ok.png', 'https://x/').href;\nconsole.log(a, b, c);",
+		"src/ok.png":   "PNG-OK",
+	})
+	vm, err := interpreter.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Build(vm, module.NewResolver(), filepath.Join(dir, "src", "index.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.URLAssets) != 0 {
+		t.Fatalf("URLAssets = %v, want 空", res.URLAssets)
 	}
 }

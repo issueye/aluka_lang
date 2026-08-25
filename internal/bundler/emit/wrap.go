@@ -255,13 +255,15 @@ func patternIdentifiers(pat ast.Pattern) []string {
 
 // Bundle 输入：入口、全部模块与静态资源。
 type Bundle struct {
-	EntryID string
-	Modules []Module
-	Assets  map[string][]byte
-	Format  string            // esm（默认）、cjs、umd
-	Global  string            // UMD global name
+	EntryID   string
+	Modules   []Module
+	Assets    map[string][]byte
+	Format    string            // esm（默认）、cjs、umd
+	Global    string            // UMD global name
 	Defines   map[string]string // 构建期常量：标识符或点分成员链 → JS 表达式
 	AssetsDir string            // hashed 文件子目录，空则 assets
+	// URLAssets 模块 key → 原始 spec → 产物相对路径（new URL 资产改写）。
+	URLAssets map[string]map[string]string
 }
 
 // Build 拼接最终产物（ESM/CJS/UMD）。

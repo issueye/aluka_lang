@@ -40,7 +40,16 @@ func Emit(gr *graph.Result, opts Options) (Result, error) {
 		return empty, fmt.Errorf("webemit: nil graph")
 	}
 	if len(gr.UnresolvedDynamic) > 0 {
-		return empty, fmt.Errorf("web target requires a string literal for dynamic import() (source %s)", gr.UnresolvedDynamic[0])
+		d := gr.UnresolvedDynamic[0]
+		kind := "dynamic import()"
+		if d.RequireCtx {
+			kind = "non-literal require()"
+		}
+		spec := ""
+		if d.Spec != "" {
+			spec = fmt.Sprintf(" (%s)", d.Spec)
+		}
+		return empty, fmt.Errorf("web target requires a string literal for %s%s (source %s)", kind, spec, d.Source)
 	}
 
 	kept := make(map[string]bool, len(gr.SourceUnits))
