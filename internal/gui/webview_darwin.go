@@ -546,6 +546,22 @@ func (w *darwinWindow) ExecuteScript(js string) {
 	objcCall(w.webView, sel("evaluateJavaScript:completionHandler:"), nsString(js), 0, 0, 0)
 }
 
+// EvaluateScript darwin 暂不支持结果回调（objc completionHandler 桥接未接线），
+// 退化执行脚本并回 null 结果。
+func (w *darwinWindow) EvaluateScript(js string, cb func(result string, err error)) {
+	w.ExecuteScript(js)
+	if cb != nil {
+		cb("null", nil)
+	}
+}
+
+// CapturePreviewPNG darwin 暂不支持（WKWebView 快照接口未接线）。
+func (w *darwinWindow) CapturePreviewPNG(cb func(data []byte, err error)) {
+	if cb != nil {
+		cb(nil, fmt.Errorf("gui: CapturePreview not supported on darwin"))
+	}
+}
+
 func (w *darwinWindow) OpenDevTools() {
 	if w.webView == 0 {
 		return

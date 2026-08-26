@@ -25,6 +25,12 @@ type NativeWindow interface {
 	Navigate(url string)
 	SetHTML(html string)
 	ExecuteScript(js string)
+	// EvaluateScript 在渲染进程执行 JavaScript 并回调结果：
+	// result 为脚本返回值的 JSON 序列化字符串（脚本返回 Promise 时等待其 settle）；
+	// err 非 nil 表示脚本执行失败（语法错误 / 抛异常）。
+	EvaluateScript(js string, cb func(result string, err error))
+	// CapturePreviewPNG 捕获页面渲染为 PNG，回调返回图片字节（err 非 nil 表示失败）。
+	CapturePreviewPNG(cb func(data []byte, err error))
 	OpenDevTools()
 }
 

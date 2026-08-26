@@ -1,12 +1,55 @@
 package globals
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"sync/atomic"
+	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/gui"
 )
+
+// evalCounter 页面 evaluate 请求自增 ID（与窗口 ID 拼成唯一事件名）。
+var evalCounter uint64
+
+// evalWrapperScript 构造在页面上下文执行的 evaluate 包装脚本：
+// 执行用户表达式（支持 Promise），结果经 window.aluka.events.emit 回传。
+// 用户表达式经 new Function 动态编译：语法错误可被捕获并快速 fail（而非整体脚本不执行）。
+func evalWrapperScript(js string, evalID string) string {
+	exprJSON, _ := json.Marshal(js)
+	return `(function() {
+  var __id = ` + strconv.Quote(evalID) + `;
+  var __send = function(payload) {
+    try {
+      if (window.aluka && window.aluka.events && window.aluka.events.emit) {
+        window.aluka.events.emit(__id, payload);
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  };
+  var __fail = function(err) {
+    __send({ ok: false, error: String(err && err.message || err) });
+  };
+  try {
+    var __fn = new Function('return (' + ` + string(exprJSON) + ` + ')');
+    var __r = __fn();
+    if (__r && typeof __r.then === 'function') {
+      __r.then(
+        function(v) { __send({ ok: true, result: v }); },
+        function(e) { __fail(e); }
+      );
+    } else {
+      __send({ ok: true, result: __r });
+    }
+  } catch (e) {
+    __fail(e);
+  }
+})();`
+}
 
 // alukaRegisterGUI 注册 Aluka.gui 桌面运行时 API。
 func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
@@ -813,6 +856,141 @@ func wrapWindowInstance(ctx engine.Context, win *gui.Window) engine.Value {
 			win.ExecuteScript(args[0].String())
 		}
 		return engine.Undefined(), nil
+	}))
+
+	// evaluate(js) → Promise<value>：在页面执行 JS 并返回结果。
+	//
+	// 实现基于事件桥（ExecuteScript completion handler 在该运行时栈不可靠）：
+	// 1. 生成唯一 evalId，注册一次性窗口事件监听
+	// 2. executeScript 注入包装脚本，页面执行用户表达式后经
+	//    window.aluka.events.emit(evalId, {ok, result|error}) 回传
+	// 3. 监听器经 ctx.PostTask 回引擎线程 resolve/reject
+	//
+	// 表达式支持：表达式 / 函数调用 / async（Promise 自动 await）。
+	// 结果须可 JSON 序列化（undefined/函数/循环引用会退化为 null）。
+	_ = obj.Set("evaluate", engine.NewFunction("evaluate", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("window.evaluate requires script")
+		}
+		js := args[0].String()
+		evalID := fmt.Sprintf("aluka_eval_%d_%d", win.ID(), atomic.AddUint64(&evalCounter, 1))
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 2 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+			reject := execArgs[1]
+
+			release := ctx.AddRef()
+			settled := int32(0)
+			var dispose func()
+			dispose = win.On(evalID, func(data interface{}) {
+				if !atomic.CompareAndSwapInt32(&settled, 0, 1) {
+					return
+				}
+				dispose()
+				ctx.PostTask(func() {
+					defer release()
+					payload, _ := data.(map[string]interface{})
+					if payload == nil {
+						if rf, ok := resolve.AsFunction(); ok {
+							_, _ = rf.Call([]engine.Value{engine.Null()})
+						}
+						ctx.FlushMicrotasks()
+						return
+					}
+					if okFlag, _ := payload["ok"].(bool); okFlag {
+						if rf, ok := resolve.AsFunction(); ok {
+							_, _ = rf.Call([]engine.Value{jsonToEngine(payload["result"])})
+						}
+					} else {
+						if rf, ok := reject.AsFunction(); ok {
+							errObj := engine.NewObject()
+							_ = errObj.Set("message", engine.Str(fmt.Sprintf("%v", payload["error"])))
+							_, _ = rf.Call([]engine.Value{errObj})
+						}
+					}
+					ctx.FlushMicrotasks()
+				})
+			})
+			// 超时兜底（页面无 window.aluka / postMessage 被禁时避免永久挂起）
+			time.AfterFunc(120*time.Second, func() {
+				if !atomic.CompareAndSwapInt32(&settled, 0, 1) {
+					return
+				}
+				dispose()
+				ctx.PostTask(func() {
+					defer release()
+					if rf, ok := reject.AsFunction(); ok {
+						errObj := engine.NewObject()
+						_ = errObj.Set("message", engine.Str("window.evaluate timeout (120s)"))
+						_, _ = rf.Call([]engine.Value{errObj})
+					}
+					ctx.FlushMicrotasks()
+				})
+			})
+			// 注入执行脚本（页面上下文，window.aluka 由桥脚本注入所有文档）
+			win.ExecuteScript(evalWrapperScript(js, evalID))
+			return engine.Undefined(), nil
+		})
+		return newPromise(ctx, executor)
+	}))
+
+	// capturePreview() → Promise<{data: base64, mimeType, bytes}>：捕获页面渲染为 PNG。
+	_ = obj.Set("capturePreview", engine.NewFunction("capturePreview", func(args []engine.Value) (engine.Value, error) {
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 2 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+			reject := execArgs[1]
+
+			release := ctx.AddRef()
+			settled := int32(0)
+			win.CapturePreviewPNG(func(data []byte, err error) {
+				if !atomic.CompareAndSwapInt32(&settled, 0, 1) {
+					return
+				}
+				ctx.PostTask(func() {
+					defer release()
+					if err != nil {
+						if rf, ok := reject.AsFunction(); ok {
+							errObj := engine.NewObject()
+							_ = errObj.Set("message", engine.Str(err.Error()))
+							_, _ = rf.Call([]engine.Value{errObj})
+						}
+						ctx.FlushMicrotasks()
+						return
+					}
+					if rf, ok := resolve.AsFunction(); ok {
+						res := map[string]interface{}{
+							"data":     base64.StdEncoding.EncodeToString(data),
+							"mimeType": "image/png",
+							"bytes":    float64(len(data)),
+						}
+						_, _ = rf.Call([]engine.Value{jsonToEngine(res)})
+					}
+					ctx.FlushMicrotasks()
+				})
+			})
+			// 超时兜底（webview 异常 / 回调丢失时避免永久挂起）
+			time.AfterFunc(60*time.Second, func() {
+				if !atomic.CompareAndSwapInt32(&settled, 0, 1) {
+					return
+				}
+				ctx.PostTask(func() {
+					defer release()
+					if rf, ok := reject.AsFunction(); ok {
+						errObj := engine.NewObject()
+						_ = errObj.Set("message", engine.Str("window.capturePreview timeout (60s)"))
+						_, _ = rf.Call([]engine.Value{errObj})
+					}
+					ctx.FlushMicrotasks()
+				})
+			})
+			return engine.Undefined(), nil
+		})
+		return newPromise(ctx, executor)
 	}))
 
 	_ = obj.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {

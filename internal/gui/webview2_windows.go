@@ -337,6 +337,7 @@ const (
 	wv2SettingsPutDevTools      = 12
 	wv2AddScriptToExecute       = 27
 	wv2ExecuteScript            = 29
+	wv2CapturePreview           = 30 // 官方 IDL：ExecuteScript(23)→CapturePreview(24)→Reload(25)；本栈 ExecuteScript=29、Reload=31
 	wv2Reload                   = 31
 	wv2AddWebMessageReceived    = 34
 	wv2AddProcessFailed         = 25

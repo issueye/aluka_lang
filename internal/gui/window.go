@@ -337,6 +337,25 @@ func (w *Window) ExecuteScript(js string) {
 	}
 }
 
+// EvaluateScript 在渲染进程 WebView 中执行 JavaScript 并回调结果。
+// result 为脚本返回值的 JSON 序列化字符串；脚本返回 Promise 时等待其 settle。
+func (w *Window) EvaluateScript(js string, cb func(result string, err error)) {
+	if w.native != nil {
+		w.native.EvaluateScript(js, cb)
+	} else if cb != nil {
+		cb("", fmt.Errorf("gui: window has no webview"))
+	}
+}
+
+// CapturePreviewPNG 捕获页面渲染为 PNG，回调返回图片字节。
+func (w *Window) CapturePreviewPNG(cb func(data []byte, err error)) {
+	if w.native != nil {
+		w.native.CapturePreviewPNG(cb)
+	} else if cb != nil {
+		cb(nil, fmt.Errorf("gui: window has no webview"))
+	}
+}
+
 // OpenDevTools 打开开发者工具。
 func (w *Window) OpenDevTools() {
 	if w.native != nil {

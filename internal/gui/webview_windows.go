@@ -996,6 +996,72 @@ func (w *windowsWindow) ExecuteScript(js string) {
 	}
 }
 
+// EvaluateScript 在渲染进程执行 JavaScript 并回调结果。
+//
+// result 为脚本返回值的 JSON 序列化字符串（LPWSTR，调用方无需释放——本函数已释放）；
+// 脚本返回 Promise 时 WebView2 会等待其 settle 后再回调：
+//   - resolve → resultObjectAsJson 为 resolve 值的 JSON 序列化
+//   - reject  → errorCode 为失败码（脚本抛异常亦同）
+//
+// 注意：comHandler 一旦移交给 WebView2 即由 Go 侧 liveHandlers 常驻持有（防止被 GC），
+// 每次调用会保留一个轻量回调对象；为控制泄漏，invoke 内会释放对 cb 的引用。
+func (w *windowsWindow) EvaluateScript(js string, cb func(result string, err error)) {
+	if cb == nil {
+		w.ExecuteScript(js)
+		return
+	}
+	w.wvMu.RLock()
+	ready := w.wvReady
+	w.wvMu.RUnlock()
+	if !ready {
+		cb("", fmt.Errorf("gui: webview not ready"))
+		return
+	}
+	GetApp().PostAction(func() {
+		w.wvMu.RLock()
+		webview := w.wvWebview
+		w.wvMu.RUnlock()
+		if webview == 0 {
+			cb("", fmt.Errorf("gui: webview not ready"))
+			return
+		}
+		var cbRef func(result string, err error)
+		cbRef = cb
+		handler := newComHandler(func(errorCode, resultPtr uintptr) uintptr {
+			// 先转存并清空闭包引用，避免长生命周期 handler 拖住调用方上下文
+			done := cbRef
+			cbRef = nil
+			if done == nil {
+				return 0
+			}
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "[aluka:gui] EvaluateScript invoke panic: %v\n", r)
+				}
+			}()
+			result := ""
+			if resultPtr != 0 {
+				result = utf16PtrToString(resultPtr)
+				procCoTaskMemFree.Call(resultPtr)
+			}
+			var err error
+			if int32(errorCode) < 0 {
+				err = fmt.Errorf("gui: script execution failed: 0x%08X", uint32(errorCode))
+			}
+			done(result, err)
+			return 0
+		})
+		buf := newUTF16Buf(js)
+		if _, err := comCall(webview, wv2ExecuteScript, buf.ptr(), handler); err != nil {
+			// ExecuteScript 调用即失败：handler 不会被调用，主动回调避免挂起
+			cbRef = nil
+			cb("", err)
+			return
+		}
+		runtime.KeepAlive(buf)
+	})
+}
+
 // OpenDevTools 打开 WebView2 开发者工具窗口。
 func (w *windowsWindow) OpenDevTools() {
 	w.wvMu.RLock()
@@ -1007,4 +1073,85 @@ func (w *windowsWindow) OpenDevTools() {
 	GetApp().PostAction(func() {
 		_, _ = comCall(webview, wv2OpenDevTools)
 	})
+}
+
+// CapturePreviewPNG 捕获当前页面渲染为 PNG，回调返回图片字节。
+// 经 ICoreWebView2::CapturePreview(format=PNG, IStream, handler) 写入内存流，
+// 完成回调中读取流数据（IStream::Seek/Read vtable 调用）。
+func (w *windowsWindow) CapturePreviewPNG(cb func(data []byte, err error)) {
+	if cb == nil {
+		return
+	}
+	w.wvMu.RLock()
+	ready := w.wvReady
+	w.wvMu.RUnlock()
+	if !ready {
+		cb(nil, fmt.Errorf("gui: webview not ready"))
+		return
+	}
+	GetApp().PostAction(func() {
+		w.wvMu.RLock()
+		webview := w.wvWebview
+		w.wvMu.RUnlock()
+		if webview == 0 {
+			cb(nil, fmt.Errorf("gui: webview not ready"))
+			return
+		}
+		stream, _, _ := procSHCreateMemStream.Call(0, 0)
+		if stream == 0 {
+			cb(nil, fmt.Errorf("gui: SHCreateMemStream failed"))
+			return
+		}
+		var cbRef func(data []byte, err error)
+		cbRef = cb
+		handler := newComHandler(func(errorCode, _ uintptr) uintptr {
+			done := cbRef
+			cbRef = nil
+			if done == nil {
+				return 0
+			}
+			data := readMemStream(stream)
+			// 释放我们持有的 IStream 引用（SHCreateMemStream 初始引用计数 1）
+			_, _ = comCall(stream, 2 /* IUnknown::Release */)
+			var err error
+			if int32(errorCode) < 0 {
+				err = fmt.Errorf("gui: capture preview failed: 0x%08X", uint32(errorCode))
+			}
+			done(data, err)
+			return 0
+		})
+		// ICoreWebView2::CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG=0, stream, handler)
+		if _, err := comCall(webview, wv2CapturePreview, 0, stream, handler); err != nil {
+			cbRef = nil
+			_, _ = comCall(stream, 2)
+			cb(nil, err)
+			return
+		}
+		runtime.KeepAlive(stream)
+	})
+}
+
+// readMemStream 从 SHCreateMemStream 创建的内存流读取全部数据。
+// IStream vtable：Read=3（IUnknown 0/1/2 之后），Seek=5；Seek 到开头后循环 Read。
+func readMemStream(stream uintptr) []byte {
+	if stream == 0 {
+		return nil
+	}
+	// IStream::Seek(0, STREAM_SEEK_SET=0, NULL)
+	if _, err := comCall(stream, 5, 0, 0, 0); err != nil {
+		return nil
+	}
+	var out []byte
+	buf := make([]byte, 64*1024)
+	for {
+		var read uint32
+		if _, err := comCall(stream, 3, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), uintptr(unsafe.Pointer(&read))); err != nil {
+			break
+		}
+		if read == 0 {
+			break
+		}
+		out = append(out, buf[:read]...)
+	}
+	return out
 }
