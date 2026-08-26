@@ -80,6 +80,8 @@ const (
 	wmUser             = 0x0400
 	wmCustomTask       = wmUser + 101
 
+	swpNoSize     = 0x0001
+	swpNoMove     = 0x0002
 	swpNoZOrder   = 0x0004
 	swpShowWindow = 0x0040
 	hwndTopMost   = ^uintptr(0) // -1
@@ -448,6 +450,7 @@ func globalWndProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uint
 
 	if msg == wmSize && ok {
 		// 窗口尺寸变化时同步 WebView 渲染层边界（本回调即 UI 线程）
+		w.syncScreenRect()
 		w.wvUpdateBounds()
 		width, height := w.parent.GetSize()
 		w.emitWindowEvent("resize", map[string]interface{}{
@@ -457,6 +460,7 @@ func globalWndProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uint
 	}
 
 	if msg == wmMove && ok {
+		w.syncScreenRect()
 		x, y := w.parent.GetPosition()
 		w.emitWindowEvent("move", map[string]interface{}{"x": x, "y": y})
 	}
@@ -710,7 +714,9 @@ func (w *windowsWindow) SetTitle(title string) {
 func (w *windowsWindow) SetSize(width, height int) {
 	w.width = width
 	w.height = height
-	procSetWindowPos.Call(uintptr(w.hwnd), 0, uintptr(w.x), uintptr(w.y), uintptr(w.width), uintptr(w.height), swpNoZOrder)
+	// SWP_NOMOVE：仅改尺寸。x/y 缓存在系统拖动后可能滞后，
+	// 携带旧坐标会把窗口瞬移回创建时位置（表现为拖拽开始时闪跳）。
+	procSetWindowPos.Call(uintptr(w.hwnd), 0, 0, 0, uintptr(w.width), uintptr(w.height), swpNoZOrder|swpNoMove)
 }
 
 func (w *windowsWindow) GetSize() (int, int) {
@@ -722,13 +728,25 @@ func (w *windowsWindow) GetSize() (int, int) {
 func (w *windowsWindow) SetPosition(x, y int) {
 	w.x = x
 	w.y = y
-	procSetWindowPos.Call(uintptr(w.hwnd), 0, uintptr(w.x), uintptr(w.y), uintptr(w.width), uintptr(w.height), swpNoZOrder)
+	// SWP_NOSIZE：仅改位置，避免用过期的 width/height 意外还原窗口尺寸。
+	procSetWindowPos.Call(uintptr(w.hwnd), 0, uintptr(w.x), uintptr(w.y), 0, 0, swpNoZOrder|swpNoSize)
 }
 
 func (w *windowsWindow) GetPosition() (int, int) {
 	var r rect
 	procGetWindowRect.Call(uintptr(w.hwnd), uintptr(unsafe.Pointer(&r)))
 	return int(r.Left), int(r.Top)
+}
+
+// syncScreenRect 以实时 GetWindowRect 回写缓存的几何字段。
+// 系统级拖动 / 边缘缩放（StartDragMove / StartResize）只产生 WM_MOVE / WM_SIZE，
+// 不会经过 SetPosition / SetSize，缓存若不回写会一直停留在创建时的值。
+// 本回调与窗口动作（PostAction）同在 UI 线程执行，无并发写风险。
+func (w *windowsWindow) syncScreenRect() {
+	var r rect
+	procGetWindowRect.Call(uintptr(w.hwnd), uintptr(unsafe.Pointer(&r)))
+	w.x, w.y = int(r.Left), int(r.Top)
+	w.width, w.height = int(r.Right-r.Left), int(r.Bottom-r.Top)
 }
 
 func (w *windowsWindow) SetMinSize(width, height int) {
@@ -748,11 +766,8 @@ func (w *windowsWindow) SetResizable(resizable bool) {
 	}
 	procSetWindowLongW.Call(uintptr(w.hwnd), gwlStyle, style)
 	const swpFrameChanged = 0x0020
-	const swpNoZOrderLocal = 0x0004
-	const swpNoMoveLocal = 0x0002
-	const swpNoSizeLocal = 0x0001
 	procSetWindowPos.Call(uintptr(w.hwnd), 0, 0, 0, 0, 0,
-		swpFrameChanged|swpNoZOrderLocal|swpNoMoveLocal|swpNoSizeLocal)
+		swpFrameChanged|swpNoZOrder|swpNoMove|swpNoSize)
 }
 
 func (w *windowsWindow) SetOpacity(opacity float64) {

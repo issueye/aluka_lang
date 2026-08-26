@@ -94,6 +94,48 @@ func TestGUIWindowManagement(t *testing.T) {
 	}
 }
 
+// 回归：系统级移动（用户拖动标题栏）后 SetSize 不得把窗口拉回旧位置。
+// 旧实现 SetSize 携带缓存 x/y 调 SetWindowPos，而缓存未经 WM_MOVE 回写，
+// 表现为右下角拖拽缩放开始时窗口闪跳回创建时位置。
+func TestSetSizeKeepsLiveWindowPosition(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("win32 specific")
+	}
+
+	win, err := NewWindow(WindowOptions{
+		Title:  "Test SetSize Position",
+		Width:  500,
+		Height: 400,
+		Hidden: true,
+	})
+	if err != nil {
+		t.Fatalf("NewWindow failed: %v", err)
+	}
+	defer win.Close()
+
+	nw, ok := win.native.(*windowsWindow)
+	if !ok {
+		t.Fatalf("unexpected native window type %T", win.native)
+	}
+
+	// 绕过 SetPosition 直改窗口位置，模拟系统级拖动（SWP_NOSIZE|SWP_NOZORDER）
+	procSetWindowPos.Call(uintptr(nw.hwnd), 0, 320, 240, 0, 0, 0x0001|0x0004)
+
+	x, y := win.GetPosition()
+	if x != 320 || y != 240 {
+		t.Fatalf("pre-move position = (%d,%d), want (320,240)", x, y)
+	}
+
+	win.SetSize(640, 480)
+
+	if x2, y2 := win.GetPosition(); x2 != x || y2 != y {
+		t.Fatalf("SetSize moved window: (%d,%d) -> (%d,%d)", x, y, x2, y2)
+	}
+	if w, h := win.GetSize(); w != 640 || h != 480 {
+		t.Fatalf("SetSize size = %dx%d, want 640x480", w, h)
+	}
+}
+
 func TestGUIWindowTryCloseIntercept(t *testing.T) {
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
 		t.Skip("native GUI windows are not supported on this platform")
