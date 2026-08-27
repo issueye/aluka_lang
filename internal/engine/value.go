@@ -769,7 +769,7 @@ func GetOwnSlot(val Value, key string) (Value, bool) {
 		if key == "length" {
 			return IntValue(len(a.elems)), true
 		}
-		if idx, isIndex := arrayIndex(key); isIndex && idx < len(a.elems) && a.present[idx] {
+		if idx, isIndex := arrayIndex(key); isIndex && idx < len(a.elems) && a.isPresent(idx) {
 			return a.elems[idx], true
 		}
 		return a.objectValue.getSlot(key)
@@ -886,8 +886,16 @@ type ArrayValue struct {
 	// 省去每个数组一次独立 malloc。经 ArrayValue 指针访问时选择器
 	// 自动取址，既有 a.objectValue.xxx 调用点无需改动。
 	objectValue
-	elems   []Value
-	present []bool // false 表示 hole；值为 undefined 的自有属性仍为 true
+	elems []Value
+	// present 为 nil 表示全部元素 present（无洞，绝大多数数组的稳态）；
+	// 非 nil 时 false 表示 hole；值为 undefined 的自有属性仍为 true。
+	// 首个洞出现时经 materializePresent 物化。
+	present []bool
+	// lengthWritable 承载 length 的 writable 标志（Enumerable=false、
+	// Configurable=false 为数组固有语义，无需存储）；length 不再占用
+	// attrs map——此前每个数组为 {length} 单条目 eager 建 map，多付
+	// ~260B/2 allocs，是数组分配贵于普通对象 3 倍的主因。
+	lengthWritable bool
 	// smallElems 是小数组（≤4 元素）的内嵌元素后备：字面量 [a, b] 类
 	// 高频短生命周期数组省去独立 elems 分配；更大数组走独立堆数组。
 	smallElems [4]Value
@@ -895,8 +903,9 @@ type ArrayValue struct {
 
 // NewArray 创建数组对象。elems 长度 ≤4 时拷贝进内嵌后备（调用方可让
 // 传入切片留在栈上避免逃逸）；更长时直接接管传入切片（零拷贝）。
+// 新建数组无洞：present 保持 nil（全 present 的紧凑表示）。
 func NewArray(elems []Value) *ArrayValue {
-	a := &ArrayValue{}
+	a := &ArrayValue{lengthWritable: true}
 	a.shape = rootShape
 	if len(elems) <= len(a.smallElems) {
 		copy(a.smallElems[:], elems)
@@ -904,16 +913,9 @@ func NewArray(elems []Value) *ArrayValue {
 	} else {
 		a.elems = elems
 	}
-	a.present = make([]bool, len(elems))
-	for i := range a.present {
-		a.present[i] = true
-	}
 	register(&a.objectValue)
 	// 同步 length 属性
 	a.setSlot("length", IntValue(len(elems)))
-	a.attrs = map[string]PropAttrs{
-		"length": {Writable: true, Enumerable: false, Configurable: false},
-	}
 	return a
 }
 
@@ -922,12 +924,41 @@ func NewArrayHoles(n int) *ArrayValue {
 	if n < 0 {
 		n = 0
 	}
-	a := NewArray(make([]Value, n))
-	for i := range a.present {
-		a.present[i] = false
+	a := &ArrayValue{lengthWritable: true}
+	a.shape = rootShape
+	a.elems = make([]Value, n)
+	for i := range a.elems {
 		a.elems[i] = Undefined()
 	}
+	a.present = make([]bool, n) // 零值即全 hole
+	register(&a.objectValue)
+	a.setSlot("length", IntValue(n))
 	return a
+}
+
+// isPresent reports whether index idx holds an own property.
+func (a *ArrayValue) isPresent(idx int) bool {
+	return a.present == nil || a.present[idx]
+}
+
+// materializePresent 把 nil（全 present）物化为显位图，供写入 hole 或
+// 收缩/扩张跨越洞语义前调用。
+func (a *ArrayValue) materializePresent() {
+	if a.present == nil {
+		a.present = make([]bool, len(a.elems))
+		for i := range a.present {
+			a.present[i] = true
+		}
+	}
+}
+
+// attrOf 覆写嵌入 objectValue 的实现：length 的固有标志（仅 writable
+// 可翻转）由 lengthWritable 字段承载，不进 attrs map。
+func (a *ArrayValue) attrOf(key string) PropAttrs {
+	if key == "length" {
+		return PropAttrs{Writable: a.lengthWritable}
+	}
+	return a.objectValue.attrOf(key)
 }
 
 func (a *ArrayValue) Type() ValueType { return TypeObject }
@@ -963,7 +994,7 @@ func (a *ArrayValue) Get(key string) (Value, error) {
 	}
 	// 尝试解析为索引
 	if idx, ok := arrayIndex(key); ok && idx < len(a.elems) {
-		if a.present[idx] {
+		if a.isPresent(idx) {
 			return a.elems[idx], nil
 		}
 		if a.proto != nil {
@@ -987,15 +1018,18 @@ func (a *ArrayValue) Set(key string, value Value) error {
 		n := int(f)
 		if n < len(a.elems) {
 			for i := n; i < len(a.elems); i++ {
-				if a.present[i] {
+				if a.isPresent(i) {
 					if attrs, ok := a.attrs[strconv.Itoa(i)]; ok && !attrs.Configurable {
 						return fmt.Errorf("%w: cannot delete array index %d", ErrTypeError, i)
 					}
 				}
 			}
 			a.elems = a.elems[:n]
-			a.present = a.present[:n]
+			if a.present != nil {
+				a.present = a.present[:n]
+			}
 		} else {
+			a.materializePresent()
 			for i := len(a.elems); i < n; i++ {
 				a.elems = append(a.elems, Undefined())
 				a.present = append(a.present, false)
@@ -1012,12 +1046,17 @@ func (a *ArrayValue) Set(key string, value Value) error {
 		} else if a.nonExtensible || !a.attrOf("length").Writable {
 			return nil
 		}
-		for len(a.elems) <= idx {
-			a.elems = append(a.elems, Undefined())
-			a.present = append(a.present, false)
+		if len(a.elems) <= idx {
+			a.materializePresent()
+			for len(a.elems) <= idx {
+				a.elems = append(a.elems, Undefined())
+				a.present = append(a.present, false)
+			}
 		}
 		a.elems[idx] = value
-		a.present[idx] = true
+		if a.present != nil {
+			a.present[idx] = true
+		}
 		a.objectValue.setSlot("length", IntValue(len(a.elems)))
 		return nil
 	}
@@ -1027,7 +1066,7 @@ func (a *ArrayValue) Set(key string, value Value) error {
 func (a *ArrayValue) Keys() []string {
 	out := make([]string, 0, len(a.elems))
 	for i := range a.elems {
-		if !a.present[i] {
+		if !a.isPresent(i) {
 			continue
 		}
 		key := strconv.Itoa(i)
@@ -1036,12 +1075,16 @@ func (a *ArrayValue) Keys() []string {
 		}
 	}
 	// 合并对象自有属性（负索引/非规范键，如 jsdiff 的 bestPath[-1]）。
-	// objectValue.Keys() 会过滤不可枚举的 length，seen 保持其余属性去重。
+	// length 是数组固有非枚举属性，不再经 attrs map 过滤，这里显式排除；
+	// seen 保持其余属性去重。
 	seen := make(map[string]bool, len(out))
 	for _, k := range out {
 		seen[k] = true
 	}
 	for _, k := range a.objectValue.Keys() {
+		if k == "length" {
+			continue
+		}
 		if !seen[k] {
 			seen[k] = true
 			out = append(out, k)
@@ -1057,12 +1100,13 @@ func (a *ArrayValue) Delete(key string) bool {
 		return false
 	}
 	if idx, ok := arrayIndex(key); ok && idx < len(a.elems) {
-		if !a.present[idx] {
+		if !a.isPresent(idx) {
 			return true
 		}
 		if attrs, constrained := a.attrs[key]; constrained && !attrs.Configurable {
 			return false
 		}
+		a.materializePresent()
 		a.elems[idx] = Undefined()
 		a.present[idx] = false
 		delete(a.attrs, key)
@@ -1101,7 +1145,7 @@ func (a *ArrayValue) CanAppend(count int) bool {
 // have own property attributes (Object.defineProperty). push 快路径仅在无
 // 自定义描述符时才能 Append；否则必须走 Set 以遵守 writable/accessor。
 func (a *ArrayValue) HasTrailingIndexAttrs(count int) bool {
-	if count <= 0 || a.attrs == nil || len(a.attrs) <= 1 {
+	if count <= 0 || len(a.attrs) == 0 {
 		return false
 	}
 	start := len(a.elems)
@@ -1124,7 +1168,7 @@ func (a *ArrayValue) CanWriteRange(start, count int) bool {
 		return false
 	}
 	for i := start; i < start+count && i < len(a.elems); i++ {
-		if a.present[i] {
+		if a.isPresent(i) {
 			d, _ := OwnPropertyDescriptor(a, strconv.Itoa(i))
 			if d.HasGet || !d.Writable {
 				return false
@@ -1142,7 +1186,7 @@ func (a *ArrayValue) IsFullyWritable() bool {
 		return false
 	}
 	for i := range a.elems {
-		if !a.present[i] {
+		if !a.isPresent(i) {
 			if a.nonExtensible {
 				return false
 			}
@@ -1159,7 +1203,9 @@ func (a *ArrayValue) IsFullyWritable() bool {
 // Append appends a value to the array and updates the length property.
 func (a *ArrayValue) Append(v Value) {
 	a.elems = append(a.elems, v)
-	a.present = append(a.present, true)
+	if a.present != nil {
+		a.present = append(a.present, true)
+	}
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
@@ -1181,9 +1227,11 @@ func (a *ArrayValue) AppendValues(vs []Value) {
 	}
 	a.elems = a.elems[:oldLen+n]
 	copy(a.elems[oldLen:], vs)
-	a.present = append(a.present, make([]bool, n)...)
-	for i := 0; i < n; i++ {
-		a.present[oldLen+i] = true
+	if a.present != nil {
+		a.present = append(a.present, make([]bool, n)...)
+		for i := 0; i < n; i++ {
+			a.present[oldLen+i] = true
+		}
 	}
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
@@ -1202,11 +1250,16 @@ func (a *ArrayValue) SetIndex(idx int, value Value) {
 		return
 	}
 	for len(a.elems) <= idx {
+		if a.present == nil {
+			a.materializePresent()
+		}
 		a.elems = append(a.elems, Undefined())
 		a.present = append(a.present, false)
 	}
 	a.elems[idx] = value
-	a.present[idx] = true
+	if a.present != nil {
+		a.present[idx] = true
+	}
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
@@ -1224,10 +1277,14 @@ func (a *ArrayValue) AppendNumberRange(start float64, count int) {
 		a.elems = grown
 	}
 	a.elems = a.elems[:oldLen+count]
-	a.present = append(a.present, make([]bool, count)...)
+	if a.present != nil {
+		a.present = append(a.present, make([]bool, count)...)
+	}
 	for i := 0; i < count; i++ {
 		a.elems[oldLen+i] = newNumber(start + float64(i))
-		a.present[oldLen+i] = true
+		if a.present != nil {
+			a.present[oldLen+i] = true
+		}
 	}
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
@@ -1249,6 +1306,7 @@ func (a *ArrayValue) WriteNumberRange(start int, valueStart float64, count int) 
 	oldLen := len(a.elems)
 	end := start + count
 	if end > oldLen {
+		a.materializePresent()
 		if cap(a.elems)-oldLen < end-oldLen {
 			grown := make([]Value, oldLen, end)
 			copy(grown, a.elems)
@@ -1262,7 +1320,9 @@ func (a *ArrayValue) WriteNumberRange(start int, valueStart float64, count int) 
 	}
 	for i := 0; i < count; i++ {
 		a.elems[start+i] = newNumber(valueStart + float64(i))
-		a.present[start+i] = true
+		if a.present != nil {
+			a.present[start+i] = true
+		}
 	}
 	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
@@ -1430,6 +1490,11 @@ func unwrapObjectValue(obj Object) *objectValue {
 
 // AttrsOf 返回对象自有属性的生效标志（无法解析存储时恒为默认）。
 func AttrsOf(obj Object, key string) PropAttrs {
+	// 数组优先：length 标志由 lengthWritable 承载，不在嵌入 objectValue
+	// 的 attrs map 中，必须经 ArrayValue.attrOf 覆写读取。
+	if a, ok := obj.(*ArrayValue); ok {
+		return a.attrOf(key)
+	}
 	if ov := unwrapObjectValue(obj); ov != nil {
 		return ov.attrOf(key)
 	}
@@ -1448,7 +1513,7 @@ func AllOwnKeys(obj Object) []string {
 	if a, ok := obj.(*ArrayValue); ok {
 		out := make([]string, 0, len(a.elems)+len(a.shape.names))
 		for i := range a.elems {
-			if a.present[i] {
+			if a.isPresent(i) {
 				out = append(out, strconv.Itoa(i))
 			}
 		}
@@ -1769,18 +1834,24 @@ func defineArrayOwnProperty(a *ArrayValue, key string, d Descriptor) error {
 		} else if !exists {
 			newValue = Undefined()
 		}
-		for len(a.elems) <= idx {
-			a.elems = append(a.elems, Undefined())
-			a.present = append(a.present, false)
+		if len(a.elems) <= idx {
+			a.materializePresent()
+			for len(a.elems) <= idx {
+				a.elems = append(a.elems, Undefined())
+				a.present = append(a.present, false)
+			}
 		}
 		a.elems[idx] = newValue
-		a.present[idx] = true
-		if a.attrs == nil {
-			a.attrs = make(map[string]PropAttrs)
+		if a.present != nil {
+			a.present[idx] = true
 		}
+		// attrs 收敛：全默认仅移除条目；length 不在 map 中，索引约束才物化 map。
 		if eff == defaultPropAttrs {
 			delete(a.attrs, key)
 		} else {
+			if a.attrs == nil {
+				a.attrs = make(map[string]PropAttrs)
+			}
 			a.attrs[key] = eff
 		}
 		a.objectValue.setSlot("length", IntValue(len(a.elems)))
@@ -1805,15 +1876,18 @@ func defineArrayOwnProperty(a *ArrayValue, key string, d Descriptor) error {
 		}
 		if n < len(a.elems) {
 			for i := len(a.elems) - 1; i >= n; i-- {
-				if a.present[i] {
+				if a.isPresent(i) {
 					if attrs, ok := a.attrs[strconv.Itoa(i)]; ok && !attrs.Configurable {
 						return defineRejected("Cannot delete non-configurable array index %d", i)
 					}
 				}
 			}
 			a.elems = a.elems[:n]
-			a.present = a.present[:n]
+			if a.present != nil {
+				a.present = a.present[:n]
+			}
 		} else {
+			a.materializePresent()
 			for len(a.elems) < n {
 				a.elems = append(a.elems, Undefined())
 				a.present = append(a.present, false)
@@ -1822,12 +1896,8 @@ func defineArrayOwnProperty(a *ArrayValue, key string, d Descriptor) error {
 		a.objectValue.setSlot("length", IntValue(n))
 	}
 	if d.HasWritable {
-		cur.Writable = d.Writable
+		a.lengthWritable = d.Writable
 	}
-	if a.attrs == nil {
-		a.attrs = make(map[string]PropAttrs)
-	}
-	a.attrs["length"] = cur
 	return nil
 }
 
