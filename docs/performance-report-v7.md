@@ -1,6 +1,6 @@
 # aluka 性能评估报告（v7）
 
-> 日期：2026-08-27 ｜ 当前：commit 2e3d474（main）
+> 日期：2026-08-27 ｜ 当前：commit 2e3d474（main）｜ §10 复测：commit 3c35766
 > 对照：docs/performance-report-v6.md（v6，2026-08-15，commit 42a7025）
 > 方法：jitbench 三档 off/quick/auto × 5 轮轮转（`tests/benchmark/perf-compare.js` +
 > `mixed.js`，结果归档 `bench/results/jit-20260827-windows-amd64.json`）；
@@ -23,6 +23,9 @@
 - **内存回归信号**：200K 短生命周期对象负载下 aluka RSS 129.7MB vs Node 81.7MB
   （+59%，heapUsed 101.2 vs 34.9MB）——与 v6 §7"稳态 RSS 持平"的口径不同（本轮为
   mem-probe 峰值增长路径），但趋势值得排查，指向对象表示密度与回收节奏。
+
+> **§1–§8 为修复前基线**（commit 2e3d474）。其后落地的 `ArrayValue` 表示优化
+> （commit 3c35766）已复测并修订了本文对 gcPressure 的归因——**见 §10**。
 
 ## 2. 测试环境
 
@@ -89,7 +92,8 @@
    trace 候选的 guard/deopt 成本，确认是"白编译"还是回退惩罚。
 2. **gcPressure 0.90x**：循环含 NEW_OBJECT/NEW_ARRAY，JIT 直接拒绝编译
    （v6 §10 勘误已确认），余下差异为分配主导负载下的噪声 + 少量候选探测开销。
-   真正的解法在 GC/分配路径而非 JIT。
+   真正的解法在 GC/分配路径而非 JIT。（**复测更新**：表示优化后 auto/off 翻正为
+   0.99x，残余 17.8x 的主因重新定位到 Tier 0 创建/索引路径，见 §10.5。）
 3. **arrayMap 三档持平**：Tier 0 的 map 原生快路径已达标，JIT 未对回调主体
    迭代器加速；closureCall 已达 Node 1.12x，可向 map/filter/reduce 循环体延伸特化。
 4. **off tier 基线偏低**：propAccess-3M 在 off 下 426.5ms（≈142ns/次读）。
@@ -164,7 +168,8 @@
 
 1. **GC 与分配路径（收益最大）**：gcPressure 既慢 25x 又贡献总差距的 68%，
    负载态内存 +59% 与之同源。推进分代/增量标记，并明确 `perf/nan-boxing`
-   （Stage 1-2.5）合入 main 的时间点；
+   （Stage 1-2.5）合入 main 的时间点；（**复测更新**：数组表示部分已落地，见 §10；
+   残余 17.8x 的主嫌改为 Tier 0 值创建与索引存取路径，见 §10.6。）
 2. **strConcat JIT 负收益审计**：小而确定的异常（0.80x、MAD 2.9%），
    `--jit-stats` 定位后修复或显式拒绝该 trace 候选；
 3. **高阶回调特化延伸**：closureCall 路线（Node 1.12x）已验证，向
@@ -187,3 +192,125 @@ CGO_ENABLED=0 GOWORK=off go test ./bench -bench . -benchmem -count=1
 for i in 1 2 3 4 5; do node tests/benchmark/perf-compare.js; done
 node tests/benchmark/mem-probe.js
 ```
+
+## 10. 修复后复测：ArrayValue 表示优化（commit 3c35766）
+
+针对 §5.2/§8.1 定位的数组建模成本，`internal/engine/value.go` 落地三处表示改动：
+`length` 的 writable 由 `ArrayValue.lengthWritable` 布尔位承载（不再为 `{length}`
+单条目 eager 建 attrs map，也不占 slots）；`present` 洞位图延迟物化（dense 稳态
+`present==nil`）；索引属性 flags 改惰性 map。仅值层，未 bump `FormatVersion`。
+
+### 10.1 方法学与三个测量陷阱
+
+基线用 `git worktree add .worktrees/prefix HEAD` 单独构建修复前二进制，测毕移除，
+工作树不受影响。所有 A/B 均为**顺序均衡配对**（奇数轮 pre→post、偶数轮 post→pre），
+各 6 次取中位。三个必须避开的坑：
+
+1. **产物过期**：`bin/aluka.exe` 若未随源码重建，测的是旧实现——本轮曾因此一度
+   得出"数组案无改善"的错误结论（121.2 vs 121.1MB 的假象）。复测前必须重建。
+2. **`perf-compare.js` 的 `timeIt` 无 warmup**：单案相对 MAD 达 2%–54%（methodCall
+   甚至出现 0.00 样本）。因此**只有超出噪声带的案可作判据**；无数组参与的案
+   （propSet/closureCall/methodCall…）±20% 漂移既不是收益也不是回归。
+3. **Node 的标量替换**：不逃逸的对象/数组字面量会被 V8 整体消除（`[]`×500K 仅需
+   3.1ms），直测数字假快到失真。成本归因必须用环形 sink（`R[i&1023] = …`）强制
+   逃逸，并同时跑**无数组对照组**扣除机器噪声。
+
+### 10.2 同口径耗时（auto 直跑，配对中位，ms）
+
+| 用例 | Node | 修复前 | 修复后 | 后/Node | Δ |
+|------|-----:|------:|-------:|--------:|---:|
+| fib25 | 1.87 | 1.65 | **1.25** | **0.67x（反超）** | -24.2% |
+| closureCall-1M | 6.15 | 8.50 | 9.52 | 1.55x | +12.0% † |
+| fib30 | 5.49 | 9.11 | 9.32 | 1.70x | +2.3% † |
+| callOverhead-1M | 1.76 | 3.65 | 3.35 | 1.90x | -8.2% † |
+| methodCall-1M | 1.81 | 3.00 | 3.65 | 2.02x | +21.7% † |
+| propSet-3M | 2.76 | 5.98 | 6.49 | 2.35x | +8.5% † |
+| propAccess-3M | 2.97 | 7.46 | 7.34 | 2.47x | -1.6% † |
+| arrayMap-100x10K | 7.85 | 16.74 | **14.38** | 1.83x | -14.1% |
+| arrayPush-1M | 13.02 | 45.65 | 46.25 | 3.55x | +1.3% † |
+| strConcat-100K | 10.18 | 38.70 | 39.61 | 3.89x | +2.4% † |
+| gcPressure-500K | 12.23 | 282.55 | **217.80** | **17.8x** | **-22.9%** |
+| **合计（11 项）** | **66.1** | **423.0** | **359.0** | **5.4x** | **-15.1%** |
+
+† = 不含数组分配，Δ 落在该案 MAD 带内，不作收益/回归判据。对 Node 合计差距
+**6.7x → 5.4x**（§3 口径为轮转档，此处为配对直跑，两者不可直接互比）。
+
+### 10.3 gcPressure 三档与盲区复核（jitbench 轮转，ms）
+
+| 档 | 修复前 | 修复后 | Δ |
+|----|-------:|-------:|--:|
+| off | 277.5 | 232.5 | -16.2% |
+| quick | 279.7 | 250.3 | -10.5% |
+| auto | 307.0 | **235.7** | **-23.2%** |
+| **auto/off** | **0.90x ⚠** | **0.99x** | **JIT 负收益消除** |
+
+`mixed.js` auto 276.7→274.9（持平）；**strConcat auto/off 0.80x→0.76x，盲区未变**，
+与本修复无关（该路径无数组参与），§5.1 仍待办。注：复测轮整体离散度高于上午轮
+（methodCall auto MAD 60%），故此处只取比值结论。
+
+### 10.4 内存与表示成本（配对复现，200K 驻留）
+
+| 指标 | 修复前 | 修复后 | Δ | Node |
+|------|-------:|-------:|--:|-----:|
+| `[i]` 数组 heapUsed | 121.3MB | **68.7MB** | **-43%** | 16.3MB |
+| `[i]` 数组 RSS | 133.0MB | **80.3MB** | **-40%** | 50.6MB |
+| `{x:i}` 对象 heapUsed（对照） | 40.4MB | 40.4MB | 0% | 11.7MB |
+| 字符串 / 装箱数字（对照） | 20.5 / 9.6MB | 20.6 / 9.6MB | 0% | 13.5 / 5.8MB |
+| `NewArray(1)` | 520B / 4 allocs | **263B / 1 alloc** | -49% / -75% | — |
+| mem-probe `after-200K-array` | 67.9MB | 67.5MB | 0%（该stage无逐元素数组） | 24.0MB |
+| mem-probe 末态 heapUsed | 101.2MB | 86.4MB | -15% | 35.4MB |
+| mem-probe 末态 RSS | 129.7MB | 112.9MB | -13%（样本 109.2–120.9，修复前为单样本） | 82.0MB |
+
+§7.2 的"负载态内存快于 Node"两项中，**数组主导的那一项已解决一半**（121→69MB，
+距 Node 仍 4.2x）；纯对象驻留 40.4 vs 11.7MB（3.5x）与数字/字符串两项未受本修复影响。
+
+### 10.5 成本归因（强制逃逸环形 sink，500K 次，配对）
+
+| 变体 | Node | 修复前 | 修复后 | Δ |
+|------|-----:|-------:|-------:|--:|
+| `[]` 空数组字面量 | 5.6 | 368.4 | **280.3** | **-23.9%** |
+| `[i]` | 8.4 | 367.4 | 293.5 | -20.1% |
+| `[i, i+1]` | 7.1 | 388.0 | 316.8 | -18.4% |
+| `[]` + `push`×2 | 14.4 | 662.1 | 561.7 | -15.2% |
+| `{x, y:{z}, arr:[…]}` | 15.2 | 504.4 | 433.9 | -14.0% |
+| `{x:i}`（对照组，无数组） | 5.5 | 276.0 | 271.7 | -1.6% |
+| `{x,y,z}`（对照组，无数组） | 6.8 | 296.2 | 282.6 | -4.6% |
+| 增长到 1000 的 push（每元素） | 15.8ns | 18.8ns | 19.6ns | 1.2x of Node |
+
+数组案 -14%~-24% 全部远超对照组 -1.6%~-4.6% 的噪声带 → 收益真实且**局限于数组路径**。
+
+### 10.6 归因修订与优先级
+
+- §5.2/§8.1 的方向正确但**量级判断偏乐观**：数组表示确是 gcPressure 的真实成本项
+  （-23%），却只解释差距的一小段，修复后仍 **17.8x**。
+- **新的主嫌**：纯对象字面量路径完全未受影响（`{x:i}` 迭代含 sink 存/读约 543ns
+  vs Node 约 11ns，49x），而含 NEW_OBJECT/NEW_ARRAY 的循环被 JIT 直接拒绝编译，
+  于是全部落在 **Tier 0 的值创建 + 索引 set/get** 上。后续优先级第 1 项据此改写为：
+  Tier 0 对象/数组字面量创建与索引存取路径（bump-pointer 式分配、字面量批量
+  store 融合），或让 JIT 接受含分配的循环 / 提供 native 分配快路径。
+- **独立小项**：增长型 push 单元素已 1.2x 接近 Node，但 `arrayPush-1M` 仍 3.6x
+  → 大数组 realloc + memcpy 与旧 buffer 回收是另一条路径；strConcat 0.76x 沿用 §5.1。
+- **门禁**：engine 模块全测通过、`TestArray*` 9/9（新增 `array_repr_test.go`）；
+  conformance node 11/11、build 24/24、webbuild 13/13、vue-sfc 1/1。
+
+### 10.7 复现（§10 专用）
+
+```bash
+# 修复前基线二进制（测毕 git worktree remove --force .worktrees/prefix）
+git worktree add .worktrees/prefix HEAD
+(cd .worktrees/prefix && CGO_ENABLED=0 go build -o bin/aluka-prefix.exe ./cmd/aluka)
+
+CGO_ENABLED=0 go build -o bin/aluka.exe ./cmd/aluka   # 必须重建，见 §10.1-1
+
+# 顺序均衡配对：奇数轮 pre→post，偶数轮 post→pre，各 6 次取中位
+for i in 1 2 3 4 5 6; do .worktrees/prefix/bin/aluka-prefix.exe tests/benchmark/perf-compare.js; \
+  ./bin/aluka.exe tests/benchmark/perf-compare.js; node tests/benchmark/perf-compare.js; done
+
+# 驻留分阶段（K ∈ obj|arr|str|num）与强制逃逸归因
+./bin/aluka.exe stage.js 200000 arr
+./bin/aluka.exe escape.js 500000
+```
+
+探针脚本未入库（本机临时件）：`stage.js` 按类驻留 200K 数据并报 heapUsed/RSS，
+`escape.js` 用 `R[i&1023]=…` 环形 sink 强制逃逸并含无数组对照组。若需长期回归，
+建议把二者收进 `tests/benchmark/` 并挂进 conformance 之外的性能守门脚本。
