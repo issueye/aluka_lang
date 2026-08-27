@@ -99,13 +99,50 @@ export interface WindowHandle {
   setHTML(html: string): void;
   openDevTools(): void;
   executeScript(js: string): void;
+  /** 在页面上下文中执行 JavaScript 并异步返回求值结果（支持 Promise）。 */
+  evaluate<T = unknown>(js: string): Promise<T>;
+  /** 捕获当前页面渲染内容为 PNG（返回 base64 数据及元信息）。 */
+  capturePreview(): Promise<{ data: string; mimeType: string; bytes: number }>;
   /** 窗口菜单栏（平台支持时生效）。 */
   setMenu(items: MenuItem[]): void;
-  on(event: string, handler: (data?: unknown) => void): void;
-  off(event: string): void;
+  /** 订阅窗口事件，返回取消订阅函数（disposer）。 */
+  on(event: string, handler: (data?: unknown) => void): () => void;
+  /** 注销窗口事件（传 handler 时仅注销该具体处理函数，不传时注销该事件下所有监听）。 */
+  off(event: string, handler?: (data?: unknown) => void): void;
   emit(event: string, data?: unknown): void;
   /** 关闭前拦截：回调返回 true 或 close(true) 才真正关闭。 */
   onCloseRequested(cb: () => boolean): void;
+}
+
+/** 屏幕矩形区域。 */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** 显示器信息。 */
+export interface DisplayInfo {
+  id: string;
+  bounds: Rect;
+  workArea: Rect;
+  scaleFactor: number;
+  isPrimary: boolean;
+}
+
+/** 运行时平台 GUI 特性检测。 */
+export interface Capabilities {
+  platform: "windows" | "darwin" | "linux" | "unsupported" | string;
+  webview: boolean;
+  dialog: boolean;
+  evaluate: boolean;
+  capturePreview: boolean;
+  tray: boolean;
+  globalShortcut: boolean;
+  menu: boolean;
+  clipboard: boolean;
+  screen: boolean;
 }
 
 /** 原生菜单项。 */
@@ -161,9 +198,12 @@ export interface TrayHandle {
   on(event: string, handler: (data?: unknown) => void): void;
 }
 
+export const capabilities: Capabilities;
+
 export const app: {
   /** 返回取消订阅函数（disposer）。 */
   on(event: "ready" | "before-quit" | "quit", handler: (data?: unknown) => void): () => void;
+  off(event: string, handler?: (data?: unknown) => void): void;
   run(): void;
   quit(): void;
   registerRPC(name: string, handler: (params: unknown) => unknown | Promise<unknown>): void;
@@ -179,6 +219,16 @@ export const dialog: {
   showMessageBox(opts?: DialogOptions): Promise<number>;
   showOpenDialog(opts?: DialogOptions): Promise<string[]>;
   showSaveDialog(opts?: DialogOptions): Promise<string | null>;
+};
+
+export const clipboard: {
+  readText(): Promise<string>;
+  writeText(text: string): Promise<{ ok: boolean; error?: string }>;
+};
+
+export const screen: {
+  getPrimaryDisplay(): Promise<DisplayInfo>;
+  getAllDisplays(): Promise<DisplayInfo[]>;
 };
 
 export const shell: {

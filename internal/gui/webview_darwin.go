@@ -573,6 +573,10 @@ func (w *darwinWindow) OpenDevTools() {
 	objcCall(w.webView, inspector, 0, 0, 0, 0)
 }
 
+func (w *darwinWindow) SetMenu(menu *Menu) {
+	// macOS 窗口通常使用应用级 NSApp.mainMenu，窗口级菜单栏暂作安全 no-op
+}
+
 func (w *darwinWindow) StartDragMove() {
 	if w.nsWin == 0 {
 		return

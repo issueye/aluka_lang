@@ -57,6 +57,9 @@ var (
 	procSetWindowLongW             = user32.NewProc("SetWindowLongW")
 	procSendMessageW               = user32.NewProc("SendMessageW")
 	procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
+	procCreateMenu                 = user32.NewProc("CreateMenu")
+	procSetMenu                    = user32.NewProc("SetMenu")
+	procDrawMenuBar                = user32.NewProc("DrawMenuBar")
 )
 
 const (
@@ -436,6 +439,11 @@ type windowsWindow struct {
 	wvPendingURL     string
 	wvPendingHTML    string
 	wvPendingScripts []string
+
+	// 原生窗口菜单栏
+	menuMu   sync.Mutex
+	hMenu    uintptr
+	menuCmds map[uint32]*MenuItem
 }
 
 // minMaxInfo 对应 Win32 MINMAXINFO（5 个 POINT）。
@@ -481,6 +489,20 @@ func globalWndProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uint
 	}
 
 	switch msg {
+	case wmCommand:
+		if ok && w != nil {
+			itemID := uint32(wParam & 0xFFFF)
+			w.menuMu.Lock()
+			var item *MenuItem
+			if w.menuCmds != nil {
+				item = w.menuCmds[itemID]
+			}
+			w.menuMu.Unlock()
+			if item != nil && item.Click != nil {
+				go item.Click()
+			}
+		}
+		return 0
 	case wmGetMinMaxInfo:
 		if ok {
 			mmi := (*minMaxInfo)(unsafe.Pointer(lParam)) //nolint:govet // Win32 回调指针
@@ -500,6 +522,7 @@ func globalWndProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uint
 	case wmClose:
 		if ok && w.parent != nil {
 			if w.parent.IsClosed() {
+				w.destroyWindowMenu()
 				w.wvCloseController()
 				procDestroyWindow.Call(uintptr(hwnd))
 				return 0
@@ -1155,3 +1178,90 @@ func readMemStream(stream uintptr) []byte {
 	}
 	return out
 }
+
+func (w *windowsWindow) destroyWindowMenu() {
+	w.menuMu.Lock()
+	defer w.menuMu.Unlock()
+	if w.hMenu != 0 {
+		procSetMenu.Call(uintptr(w.hwnd), 0)
+		procDestroyMenu.Call(w.hMenu)
+		w.hMenu = 0
+		w.menuCmds = nil
+	}
+}
+
+// SetMenu 挂载或更新窗口原生菜单栏。
+func (w *windowsWindow) SetMenu(menu *Menu) {
+	GetApp().PostAction(func() {
+		w.menuMu.Lock()
+		defer w.menuMu.Unlock()
+
+		if w.hMenu != 0 {
+			procSetMenu.Call(uintptr(w.hwnd), 0)
+			procDestroyMenu.Call(w.hMenu)
+			w.hMenu = 0
+			w.menuCmds = nil
+		}
+
+		if menu == nil || len(menu.Items) == 0 {
+			procDrawMenuBar.Call(uintptr(w.hwnd))
+			return
+		}
+
+		hMenu, _, _ := procCreateMenu.Call()
+		if hMenu == 0 {
+			return
+		}
+
+		w.menuCmds = make(map[uint32]*MenuItem)
+		var nextCmdID uint32 = 0x2000
+
+		buildWindowMenuBar(hMenu, menu.Items, w.menuCmds, &nextCmdID)
+
+		procSetMenu.Call(uintptr(w.hwnd), hMenu)
+		procDrawMenuBar.Call(uintptr(w.hwnd))
+		w.hMenu = hMenu
+	})
+}
+
+// buildWindowMenuBar 递归构建顶级菜单栏与下拉子菜单。
+func buildWindowMenuBar(hMenu uintptr, items []MenuItem, cmdMap map[uint32]*MenuItem, nextID *uint32) {
+	for i := range items {
+		item := &items[i]
+		var flags uintptr
+
+		switch item.Type {
+		case "separator":
+			flags = mfSeparator
+			procAppendMenuW.Call(hMenu, flags, 0, 0)
+			continue
+		default:
+			flags = mfString
+			if item.Disabled {
+				flags |= mfGrayed
+			}
+			if item.Checked {
+				flags |= mfChecked
+			}
+			if len(item.Submenu) > 0 {
+				sub, _, _ := procCreatePopupMenu.Call()
+				buildWindowMenuBar(sub, item.Submenu, cmdMap, nextID)
+				p, _ := syscall.UTF16PtrFromString(item.Label)
+				procAppendMenuW.Call(hMenu, flags|mfPopup, sub, uintptr(unsafe.Pointer(p)))
+				continue
+			}
+		}
+
+		cmdID := uintptr(*nextID)
+		cmdMap[*nextID] = item
+		*nextID++
+
+		label := item.Label
+		if item.Shortcut != "" {
+			label += "\t" + item.Shortcut
+		}
+		p, _ := syscall.UTF16PtrFromString(label)
+		procAppendMenuW.Call(hMenu, flags, cmdID, uintptr(unsafe.Pointer(p)))
+	}
+}
+

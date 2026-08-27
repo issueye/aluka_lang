@@ -173,3 +173,51 @@ func TestGUIWindowTryCloseIntercept(t *testing.T) {
 		t.Fatal("window should be closed")
 	}
 }
+
+func TestWindowSetMenu(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("win32 specific")
+	}
+	win, err := NewWindow(WindowOptions{
+		Title:  "Menu Test Window",
+		Width:  400,
+		Height: 300,
+		Hidden: true,
+	})
+	if err != nil {
+		t.Fatalf("NewWindow: %v", err)
+	}
+	defer win.Close()
+
+	clicked := false
+	menu := &Menu{
+		Items: []MenuItem{
+			{
+				Label: "File",
+				Submenu: []MenuItem{
+					{
+						Label: "New",
+						Click: func() {
+							clicked = true
+						},
+					},
+					{Type: "separator"},
+					{Label: "Exit"},
+				},
+			},
+			{
+				Label: "Help",
+				Submenu: []MenuItem{
+					{Label: "About"},
+				},
+			},
+		},
+	}
+
+	win.SetMenu(menu)
+
+	// 清空菜单
+	win.SetMenu(nil)
+	_ = clicked
+}
+

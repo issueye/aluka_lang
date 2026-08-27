@@ -9,6 +9,16 @@
 
 ## 更新记录
 
+### 2026-08-27 — Phase C 落地（桌面生态子集全面补齐）
+
+- ✅ **Windows 原生窗口菜单栏**：`windowsWindow.SetMenu` 实装，Win32 `CreateMenu`/`CreatePopupMenu`/`AppendMenuW` 动态挂载，`globalWndProc` 拦截 `WM_COMMAND` 路由触发 `MenuItem.Click`。
+- ✅ **事件注销精确匹配**：`app.off(event, handler?)` 与 `win.off(event, handler?)` 支持精确传入 handler 注销单一监听，未传时注销该事件下全部监听；`win.on` 返回 disposer 函数。
+- ✅ **平台能力检测**：新增 `Aluka.gui.capabilities`，提供跨平台特性检测（平台类型、WebView、对话框、evaluate、capturePreview、菜单、托盘、剪贴板、屏幕信息）。
+- ✅ **纯 Go 剪贴板模块**：新增 `Aluka.gui.clipboard`（`readText` / `writeText`），无 CGO 依赖。
+- ✅ **屏幕信息查询模块**：新增 `Aluka.gui.screen`（`getPrimaryDisplay` / `getAllDisplays`），支持多显示器 bounds、workArea、scaleFactor。
+- ✅ **页面求值与截图**：`win.evaluate(js)`（支持 Promise 自动 await）与 `win.capturePreview()`（Base64 PNG）。
+- ✅ **官方类型声明同步**：`types/aluka-gui.d.ts` 完整补充对应类型。
+
 ### 2026-08-22 — Phase C 起步（窗口事件增强）
 
 - ✅ **窗口级事件增强**：`globalWndProc` 为 `WM_SIZE`/`WM_MOVE`/`WM_SETFOCUS`/`WM_KILLFOCUS` 派发 `resize`/`move`/`focus`/`blur` 事件，带几何/布尔载荷；`win.on` 即可监听（Go 侧 + 前端广播）。

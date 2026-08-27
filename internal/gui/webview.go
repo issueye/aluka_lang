@@ -32,6 +32,7 @@ type NativeWindow interface {
 	// CapturePreviewPNG 捕获页面渲染为 PNG，回调返回图片字节（err 非 nil 表示失败）。
 	CapturePreviewPNG(cb func(data []byte, err error))
 	OpenDevTools()
+	SetMenu(menu *Menu)
 }
 
 // NativeApp 定义操作系统级应用生命周期抽象。

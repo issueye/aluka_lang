@@ -285,8 +285,8 @@ func (w *Window) SetOverlayIcon(iconPath string) {
 
 // SetMenu 将原生菜单栏挂载到窗口（平台支持时生效；菜单项点击回调运行在 Go 侧）。
 func (w *Window) SetMenu(menu *Menu) {
-	if t, ok := w.native.(interface{ SetMenu(menu *Menu) }); ok {
-		t.SetMenu(menu)
+	if w.native != nil {
+		w.native.SetMenu(menu)
 	}
 }
 

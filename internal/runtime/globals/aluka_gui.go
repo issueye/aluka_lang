@@ -12,6 +12,12 @@ import (
 	"github.com/aluka-lang/aluka/internal/gui"
 )
 
+// guiListener 记录 JS 回调函数及其底层 Go 取消订阅函数。
+type guiListener struct {
+	fn      engine.Function
+	dispose func()
+}
+
 // evalCounter 页面 evaluate 请求自增 ID（与窗口 ID 拼成唯一事件名）。
 var evalCounter uint64
 
@@ -51,6 +57,17 @@ func evalWrapperScript(js string, evalID string) string {
 })();`
 }
 
+// structToEngine 将 Go 结构体通过 JSON 中转转换为 engine.Value。
+func structToEngine(v interface{}) engine.Value {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return engine.Undefined()
+	}
+	var raw interface{}
+	_ = json.Unmarshal(b, &raw)
+	return jsonToEngine(raw)
+}
+
 // alukaRegisterGUI 注册 Aluka.gui 桌面运行时 API。
 func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 	guiObj := engine.NewObject()
@@ -58,6 +75,7 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 	// 1. app 对象
 	appObj := engine.NewObject()
 	app := gui.GetApp()
+	var appDisposers = map[string][]guiListener{}
 
 	// app.on(event, handler) → 返回取消订阅函数
 	_ = appObj.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
@@ -78,11 +96,47 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 				ctx.FlushMicrotasks()
 			})
 		})
+		appDisposers[evt] = append(appDisposers[evt], guiListener{fn: fn, dispose: dispose})
 		// 返回取消订阅函数（disposer）供 JS 调用。
 		return engine.NewFunction("dispose", func(callArgs []engine.Value) (engine.Value, error) {
 			dispose()
 			return engine.Undefined(), nil
 		}), nil
+	}))
+
+	// app.off(event, [handler])
+	_ = appObj.Set("off", engine.NewFunction("off", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("app.off requires event name")
+		}
+		evt := args[0].String()
+		if len(args) >= 2 && !args[1].IsUndefined() && !args[1].IsNull() {
+			if targetFn, ok := args[1].AsFunction(); ok {
+				var remaining []guiListener
+				for _, item := range appDisposers[evt] {
+					if item.fn == targetFn {
+						if item.dispose != nil {
+							item.dispose()
+						}
+					} else {
+						remaining = append(remaining, item)
+					}
+				}
+				if len(remaining) > 0 {
+					appDisposers[evt] = remaining
+				} else {
+					delete(appDisposers, evt)
+				}
+				return engine.Undefined(), nil
+			}
+		}
+		for _, d := range appDisposers[evt] {
+			if d.dispose != nil {
+				d.dispose()
+			}
+		}
+		delete(appDisposers, evt)
+		return engine.Undefined(), nil
 	}))
 
 	// app.quit()
@@ -341,6 +395,154 @@ func alukaRegisterGUI(ctx engine.Context, aluka engine.Object) {
 		}
 		return engine.Undefined(), nil
 	}))
+
+	// 7. capabilities 平台特性支持检测
+	caps := gui.GetCapabilities()
+	capsObj := engine.NewObject()
+	_ = capsObj.Set("platform", engine.Str(caps.Platform))
+	_ = capsObj.Set("webview", engine.Boolean(caps.WebView))
+	_ = capsObj.Set("dialog", engine.Boolean(caps.Dialog))
+	_ = capsObj.Set("evaluate", engine.Boolean(caps.Evaluate))
+	_ = capsObj.Set("capturePreview", engine.Boolean(caps.CapturePreview))
+	_ = capsObj.Set("tray", engine.Boolean(caps.Tray))
+	_ = capsObj.Set("globalShortcut", engine.Boolean(caps.GlobalShortcut))
+	_ = capsObj.Set("menu", engine.Boolean(caps.Menu))
+	_ = capsObj.Set("clipboard", engine.Boolean(caps.Clipboard))
+	_ = capsObj.Set("screen", engine.Boolean(caps.Screen))
+	_ = guiObj.Set("capabilities", capsObj)
+
+	// 8. clipboard 系统剪贴板 (Promise 异步非阻塞)
+	clipboardObj := engine.NewObject()
+	_ = clipboardObj.Set("readText", engine.NewFunction("readText", func(args []engine.Value) (engine.Value, error) {
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 2 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+			reject := execArgs[1]
+
+			release := ctx.AddRef()
+			go func() {
+				text, err := gui.ClipboardReadText()
+				ctx.PostTask(func() {
+					defer release()
+					if err != nil {
+						if rf, ok := reject.AsFunction(); ok {
+							errObj := engine.NewObject()
+							_ = errObj.Set("message", engine.Str(err.Error()))
+							_, _ = rf.Call([]engine.Value{errObj})
+						}
+					} else {
+						if rf, ok := resolve.AsFunction(); ok {
+							_, _ = rf.Call([]engine.Value{engine.Str(text)})
+						}
+					}
+					ctx.FlushMicrotasks()
+				})
+			}()
+			return engine.Undefined(), nil
+		})
+		return newPromise(ctx, executor)
+	}))
+
+	_ = clipboardObj.Set("writeText", engine.NewFunction("writeText", func(args []engine.Value) (engine.Value, error) {
+		text := ""
+		if len(args) > 0 {
+			text = args[0].String()
+		}
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 1 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+
+			release := ctx.AddRef()
+			go func() {
+				err := gui.ClipboardWriteText(text)
+				ctx.PostTask(func() {
+					defer release()
+					res := map[string]interface{}{"ok": err == nil}
+					if err != nil {
+						res["error"] = err.Error()
+					}
+					if rf, ok := resolve.AsFunction(); ok {
+						_, _ = rf.Call([]engine.Value{jsonToEngine(res)})
+					}
+					ctx.FlushMicrotasks()
+				})
+			}()
+			return engine.Undefined(), nil
+		})
+		return newPromise(ctx, executor)
+	}))
+	_ = guiObj.Set("clipboard", clipboardObj)
+
+	// 9. screen 显示器几何与属性信息
+	screenObj := engine.NewObject()
+	_ = screenObj.Set("getPrimaryDisplay", engine.NewFunction("getPrimaryDisplay", func(args []engine.Value) (engine.Value, error) {
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 2 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+			reject := execArgs[1]
+
+			release := ctx.AddRef()
+			go func() {
+				d, err := gui.GetPrimaryDisplay()
+				ctx.PostTask(func() {
+					defer release()
+					if err != nil {
+						if rf, ok := reject.AsFunction(); ok {
+							errObj := engine.NewObject()
+							_ = errObj.Set("message", engine.Str(err.Error()))
+							_, _ = rf.Call([]engine.Value{errObj})
+						}
+					} else {
+						if rf, ok := resolve.AsFunction(); ok {
+							_, _ = rf.Call([]engine.Value{structToEngine(d)})
+						}
+					}
+					ctx.FlushMicrotasks()
+				})
+			}()
+			return engine.Undefined(), nil
+		})
+		return newPromise(ctx, executor)
+	}))
+
+	_ = screenObj.Set("getAllDisplays", engine.NewFunction("getAllDisplays", func(args []engine.Value) (engine.Value, error) {
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 2 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+			reject := execArgs[1]
+
+			release := ctx.AddRef()
+			go func() {
+				displays, err := gui.GetAllDisplays()
+				ctx.PostTask(func() {
+					defer release()
+					if err != nil {
+						if rf, ok := reject.AsFunction(); ok {
+							errObj := engine.NewObject()
+							_ = errObj.Set("message", engine.Str(err.Error()))
+							_, _ = rf.Call([]engine.Value{errObj})
+						}
+					} else {
+						if rf, ok := resolve.AsFunction(); ok {
+							_, _ = rf.Call([]engine.Value{structToEngine(displays)})
+						}
+					}
+					ctx.FlushMicrotasks()
+				})
+			}()
+			return engine.Undefined(), nil
+		})
+		return newPromise(ctx, executor)
+	}))
+	_ = guiObj.Set("screen", screenObj)
 
 	_ = aluka.Set("gui", guiObj)
 }
@@ -628,7 +830,7 @@ func parseMenuItems(ctx engine.Context, arr engine.Object) []gui.MenuItem {
 func wrapWindowInstance(ctx engine.Context, win *gui.Window) engine.Value {
 	obj := engine.NewObject()
 
-	var winDisposers = map[string][]func(){}
+	var winDisposers = map[string][]guiListener{}
 
 	_ = obj.Set("id", engine.Number(float64(win.ID())))
 
@@ -1011,22 +1213,45 @@ func wrapWindowInstance(ctx engine.Context, win *gui.Window) engine.Value {
 				ctx.FlushMicrotasks()
 			})
 		})
-		// 按事件名归档 disposer，供 off(event) 定向注销。
-		winDisposers[evt] = append(winDisposers[evt], dispose)
-		return engine.Undefined(), nil
+		// 按事件名归档 disposer，供 off(event, handler?) 定向注销。
+		winDisposers[evt] = append(winDisposers[evt], guiListener{fn: fn, dispose: dispose})
+		return engine.NewFunction("dispose", func(callArgs []engine.Value) (engine.Value, error) {
+			dispose()
+			return engine.Undefined(), nil
+		}), nil
 	}))
 
 	_ = obj.Set("off", engine.NewFunction("off", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 1 {
 			return nil, fmt.Errorf("window.off requires event name")
 		}
-		// 定向注销该事件名下的全部处理器；语义与回调身份由 Go 侧保证。
-		for _, d := range winDisposers[args[0].String()] {
-			if d != nil {
-				d()
+		evt := args[0].String()
+		if len(args) >= 2 && !args[1].IsUndefined() && !args[1].IsNull() {
+			if targetFn, ok := args[1].AsFunction(); ok {
+				var remaining []guiListener
+				for _, item := range winDisposers[evt] {
+					if item.fn == targetFn {
+						if item.dispose != nil {
+							item.dispose()
+						}
+					} else {
+						remaining = append(remaining, item)
+					}
+				}
+				if len(remaining) > 0 {
+					winDisposers[evt] = remaining
+				} else {
+					delete(winDisposers, evt)
+				}
+				return engine.Undefined(), nil
 			}
 		}
-		delete(winDisposers, args[0].String())
+		for _, d := range winDisposers[evt] {
+			if d.dispose != nil {
+				d.dispose()
+			}
+		}
+		delete(winDisposers, evt)
 		return engine.Undefined(), nil
 	}))
 
