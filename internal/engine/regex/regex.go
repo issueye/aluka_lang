@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"unicode/utf16"
@@ -265,29 +266,239 @@ func (c *Compiled) exec(s string, limit int) ([]int, error) {
 	return c.re.FindStringSubmatchIndex(s), nil
 }
 
+// Matches 是一次全部匹配的索引集合，附带语义正确的切片方法。
+// Raw 为原始串字节偏移；Mid 标记该边界是否落在代理对中间——此时被切开的
+// 单元按 UTF16Slice 语义以 U+FFFD 呈现。
+type Matches struct {
+	s   string
+	U16 [][]int  // UTF-16 code unit 索引（JS 可见值）
+	Raw [][]int  // 原始串字节偏移（O(1) 切片用）
+	Mid [][]bool // 各索引是否切在代理对中间
+}
+
+func (m *Matches) Len() int { return len(m.U16) }
+
+// Source 返回匹配的目标串。
+func (m *Matches) Source() string { return m.s }
+
+// Slice 返回匹配 i 的第 j 个捕获（j 为偶数的组起始下标，覆盖 [j, j+1)）。
+func (m *Matches) Slice(i, j int) string {
+	if m.U16[i][j] >= m.U16[i][j+1] {
+		return "" // 零宽捕获
+	}
+	var pre, post string
+	b0, b1 := m.Raw[i][j], m.Raw[i][j+1]
+	if m.Mid[i][j] {
+		pre = "\uFFFD"
+	}
+	if m.Mid[i][j+1] {
+		b1 -= 4 // 回退到星体码点起点，其首单元以 U+FFFD 呈现
+		post = "\uFFFD"
+	}
+	return pre + m.s[b0:b1] + post
+}
+
+// Between 返回 (i1,j1) 到 (i2,j2) 之间的子串（匹配间隙）。
+func (m *Matches) Between(i1, j1, i2, j2 int) string {
+	if m.U16[i1][j1] >= m.U16[i2][j2] {
+		return "" // 零宽间隙
+	}
+	var pre, post string
+	b0, b1 := m.Raw[i1][j1], m.Raw[i2][j2]
+	if m.Mid[i1][j1] {
+		pre = "\uFFFD"
+	}
+	if m.Mid[i2][j2] {
+		b1 -= 4
+		post = "\uFFFD"
+	}
+	return pre + m.s[b0:b1] + post
+}
+
+// Head 返回串首到 (i,j) 的子串。
+func (m *Matches) Head(i, j int) string {
+	if m.U16[i][j] == 0 {
+		return ""
+	}
+	b := m.Raw[i][j]
+	if m.Mid[i][j] {
+		b -= 4
+		return "\uFFFD" + m.s[:b]
+	}
+	return m.s[:b]
+}
+
+// Tail 返回 (i,j) 到串尾的子串。串尾恒为码点边界，无尾部孤元。
+func (m *Matches) Tail(i, j int) string {
+	if m.Raw[i][j] == len(m.s) {
+		return ""
+	}
+	if m.Mid[i][j] {
+		return "\uFFFD" + m.s[m.Raw[i][j]:]
+	}
+	return m.s[m.Raw[i][j]:]
+}
+
 // ExecAll 返回 s 中所有非重叠匹配的 UTF-16 索引（整体匹配 + 捕获组）。
-// 零宽匹配按 AdvanceStringIndex 推进：u/v 模式前进一个码点，传统模式前进
-// 一个 UTF-16 code unit。
 func (c *Compiled) ExecAll(s string) ([][]int, error) {
-	var matches [][]int
+	m, err := c.AllMatches(s)
+	if err != nil || m == nil {
+		return nil, err
+	}
+	return m.U16, nil
+}
+
+// AllMatches 返回 s 中全部非重叠匹配。零宽匹配按 AdvanceStringIndex 推进：
+// u/v 模式前进一个码点，传统模式前进一个 UTF-16 code unit。
+//
+// 性能关键：整串只在开头做一次 code-unit 编码，之后所有匹配在编码串上以
+// 字节偏移推进，索引按匹配顺序增量换算。不要退回「每个匹配都调 ExecAt」
+// 的写法——那会对整串反复编码并从 0 重数索引，复杂度 O(匹配数 × 串长)，
+// 大字符串 split/matchAll 会从毫秒级劣化到十秒级。
+func (c *Compiled) AllMatches(s string) (*Matches, error) {
+	matchInput := c.matchInput(s)
+	out := &Matches{s: s}
+	w := &utf16Walker{input: matchInput, raw: s, unicode: c.unicodeMode()}
 	search := 0
-	length := UTF16Index(s, len(s))
-	for search <= length {
-		m, err := c.ExecAt(s, search)
+	for search <= len(matchInput) {
+		m, err := c.execOneFrom(matchInput, search)
 		if err != nil {
 			return nil, err
 		}
 		if m == nil {
 			break
 		}
-		matches = append(matches, m)
-		if m[1] == m[0] {
-			search = AdvanceStringIndex(s, m[1], c.unicodeMode())
+		// execOneFrom 返回编码串字节索引；convert 之后即失效，推进须用字节值。
+		mStart, mEnd := m[0], m[1]
+		u16, raw, mid := w.convert(m)
+		out.U16 = append(out.U16, u16)
+		out.Raw = append(out.Raw, raw)
+		out.Mid = append(out.Mid, mid)
+		if mEnd == mStart {
+			// 零宽：按 AdvanceStringIndex 前进（编码串上一 rune = 一 code unit
+			// 或一码点，与传统/u 模式语义一致）。
+			search = nextRuneBoundary(matchInput, mEnd)
 		} else {
-			search = m[1]
+			search = mEnd
 		}
 	}
-	return matches, nil
+	return out, nil
+}
+
+// ExecSingle 返回首个匹配（含字节偏移与切分标记）。
+func (c *Compiled) ExecSingle(s string) (*Matches, bool, error) {
+	matchInput := c.matchInput(s)
+	w := &utf16Walker{input: matchInput, raw: s, unicode: c.unicodeMode()}
+	m, err := c.execOneFrom(matchInput, 0)
+	if err != nil || m == nil {
+		return nil, false, err
+	}
+	u16, raw, mid := w.convert(m)
+	return &Matches{s: s, U16: [][]int{u16}, Raw: [][]int{raw}, Mid: [][]bool{mid}}, true, nil
+}
+
+// execOneFrom 返回编码串上自字节偏移 search 起的第一个匹配。
+// 返回索引相对 matchInput 整串（字节）；无匹配返回 nil。
+func (c *Compiled) execOneFrom(matchInput string, search int) ([]int, error) {
+	if c.bt != nil {
+		m, aborted, _ := c.bt.execWithLimit(matchInput, search, btMaxSteps)
+		if aborted {
+			return nil, ErrBacktrackLimit
+		}
+		return m, nil
+	}
+	m := c.re.FindStringSubmatchIndex(matchInput[search:])
+	if m == nil {
+		return nil, nil
+	}
+	for i := range m {
+		if m[i] >= 0 {
+			m[i] += search
+		}
+	}
+	return m, nil
+}
+
+// utf16Walker 同步行扫描编码串与原始串，把编码串上的字节索引增量换算为
+// UTF-16 code unit 索引与原始串字节偏移。匹配非重叠且升序，游标只前进，
+// 全部匹配合计 O(len(matchInput))。
+type utf16Walker struct {
+	input      string // 编码串（u/v 模式下与 raw 相同）
+	raw        string
+	bytePos    int  // 已走过的编码串字节位置
+	rawBytePos int  // 已走过的原始串字节位置
+	units      int  // 已累计的 UTF-16 code unit 数
+	lastStepHi bool // 最后一步消费的是高代理令牌（边界切在代理对中间）
+	unicode    bool
+}
+
+// convert 换算一次匹配的索引：返回 UTF-16 索引、原始串字节偏移与代理对
+// 切分标记三份新切片（未参与组均为 -1 / false）。组索引可能因前瞻等结构
+// 非严格升序，先对参与索引升序定位，再按原位置回填。
+func (w *utf16Walker) convert(m []int) ([]int, []int, []bool) {
+	idxs := make([]int, 0, len(m))
+	for _, v := range m {
+		if v >= 0 {
+			idxs = append(idxs, v)
+		}
+	}
+	sort.Ints(idxs)
+	units := make(map[int]int, len(idxs))
+	bytes := make(map[int]int, len(idxs))
+	mids := make(map[int]bool, len(idxs))
+	for _, idx := range idxs {
+		w.advanceTo(idx)
+		units[idx] = w.units
+		bytes[idx] = w.rawBytePos
+		mids[idx] = w.lastStepHi
+	}
+	u16 := make([]int, len(m))
+	raw := make([]int, len(m))
+	mid := make([]bool, len(m))
+	for i, v := range m {
+		if v < 0 {
+			u16[i], raw[i], mid[i] = -1, -1, false
+		} else {
+			u16[i], raw[i], mid[i] = units[v], bytes[v], mids[v]
+		}
+	}
+	return u16, raw, mid
+}
+
+// advanceTo 把游标推进到编码串字节位置 byteIdx：
+//   - u/v 模式：编码串即原串，逐码点前进，星体面值码点占 2 个 code unit；
+//   - 传统模式：编码串每个 rune 恰对应 1 个 code unit；代理对令牌化后
+//     「高+低」两个令牌 rune 共同对应原始串的一个星体面值码点。
+//
+// 若最后一步消费的是高代理令牌（lastStepHi），说明该边界切在代理对中间：
+// 原始串字节位置已越过整个码点，需由调用方以 U+FFFD 补偿被切开的单元。
+func (w *utf16Walker) advanceTo(byteIdx int) {
+	for w.bytePos < byteIdx {
+		r, size := utf8.DecodeRuneInString(w.input[w.bytePos:])
+		w.lastStepHi = false
+		if w.unicode {
+			w.rawBytePos += size
+			if r > 0xffff {
+				w.units += 2
+			} else {
+				w.units++
+			}
+		} else {
+			if r >= surrogateTokenBase {
+				if r < surrogateTokenBase+0x400 {
+					// 高代理令牌：消费原始串中对应的星体面值码点
+					_, rsize := utf8.DecodeRuneInString(w.raw[w.rawBytePos:])
+					w.rawBytePos += rsize
+					w.lastStepHi = true
+				}
+				// 低代理令牌：原始码点已随高代理令牌消费，不重复前进
+			} else {
+				w.rawBytePos += size
+			}
+			w.units++
+		}
+		w.bytePos += size
+	}
 }
 
 func (c *Compiled) unicodeMode() bool { return c.Flags.Unicode || c.Flags.UnicodeSets }
@@ -342,6 +553,11 @@ func encodePatternCodeUnits(pattern string) string {
 }
 
 func encodeStringCodeUnits(s string) string {
+	// 快路径：不含星体面值字符（绝大多数真实输入）时无需重编码，
+	// 避免大字符串每次匹配都整串分配复制。
+	if !strings.ContainsFunc(s, func(r rune) bool { return r > 0xffff }) {
+		return s
+	}
 	var b strings.Builder
 	for _, r := range s {
 		if r <= 0xffff {

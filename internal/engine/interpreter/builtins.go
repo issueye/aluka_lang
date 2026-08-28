@@ -12,7 +12,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/engine/regex"
 )
 
 // rawJSONMarkerKey 是 JSON.rawJSON 对象的内部标记键（symbol-keyed，不被
@@ -1522,16 +1521,16 @@ func (interp *Interpreter) setupStringProto() {
 			if !r.compiled.Flags.Global {
 				return r.execString(s)
 			}
-			matches, err := r.compiled.ExecAll(s)
+			mt, err := r.compiled.AllMatches(s)
 			if err != nil {
 				return engine.Undefined(), regexpExecError(err)
 			}
-			if len(matches) == 0 {
+			if mt.Len() == 0 {
 				return engine.Null(), nil
 			}
-			elems := make([]engine.Value, 0, len(matches))
-			for _, m := range matches {
-				elems = append(elems, engine.Str(regex.UTF16Slice(s, m[0], m[1])))
+			elems := make([]engine.Value, 0, mt.Len())
+			for i := 0; i < mt.Len(); i++ {
+				elems = append(elems, engine.Str(mt.Slice(i, 0)))
 
 			}
 			out := engine.NewArray(elems)
@@ -1572,13 +1571,13 @@ func (interp *Interpreter) setupStringProto() {
 		if !r.compiled.Flags.Global {
 			return engine.Undefined(), fmt.Errorf("%w: String.prototype.matchAll called with a non-global RegExp", engine.ErrTypeError)
 		}
-		matches, err := r.compiled.ExecAll(s)
+		mt, err := r.compiled.AllMatches(s)
 		if err != nil {
 			return engine.Undefined(), regexpExecError(err)
 		}
-		elems := make([]engine.Value, 0, len(matches))
-		for _, m := range matches {
-			v, err := r.execStringAt(s, m)
+		elems := make([]engine.Value, 0, mt.Len())
+		for i := 0; i < mt.Len(); i++ {
+			v, err := r.execStringAtMatch(mt, i)
 			if err != nil {
 				return nil, err
 			}

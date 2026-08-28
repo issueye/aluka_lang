@@ -155,6 +155,40 @@ func (r *RegexpValue) execStringAt(str string, m []int) (engine.Value, error) {
 	return result, nil
 }
 
+// execStringAtMatch 由 Matches 的第 i 个匹配构造 exec 结果数组。
+func (r *RegexpValue) execStringAtMatch(mt *regex.Matches, i int) (engine.Value, error) {
+	u := mt.U16[i]
+	elems := make([]engine.Value, 0, len(u)/2)
+	var groups map[string]engine.Value
+	for j := 0; j+1 < len(u); j += 2 {
+		var v engine.Value
+		if u[j] < 0 {
+			v = engine.Undefined()
+		} else {
+			v = engine.Str(mt.Slice(i, j))
+		}
+		elems = append(elems, v)
+		if j > 0 {
+			if name := r.compiled.GroupName(j / 2); name != "" {
+				if groups == nil {
+					groups = make(map[string]engine.Value)
+				}
+				groups[name] = v
+			}
+		}
+	}
+	result := engine.NewArray(elems)
+	engine.SetProto(result, r.interp.arrayProto)
+	_ = result.Set("index", engine.IntValue(u[0]))
+	_ = result.Set("input", engine.Str(mt.Source()))
+	if groups != nil {
+		_ = result.Set("groups", engine.NewObjectFrom(groups))
+	} else {
+		_ = result.Set("groups", engine.Undefined())
+	}
+	return result, nil
+}
+
 // testString 返回是否有匹配（与 exec 相同的 lastIndex 语义）。
 func (r *RegexpValue) testString(str string) (bool, error) {
 	_, ok, err := r.matchIndex(str)
@@ -314,16 +348,16 @@ func (interp *Interpreter) setupRegexp() {
 		if !r.compiled.Flags.Global {
 			return r.execString(str)
 		}
-		matches, execErr := r.compiled.ExecAll(str)
+		mt, execErr := r.compiled.AllMatches(str)
 		if execErr != nil {
 			return engine.Undefined(), regexpExecError(execErr)
 		}
-		if len(matches) == 0 {
+		if mt.Len() == 0 {
 			return engine.Null(), nil
 		}
-		elems := make([]engine.Value, 0, len(matches))
-		for _, m := range matches {
-			elems = append(elems, engine.Str(regex.UTF16Slice(str, m[0], m[1])))
+		elems := make([]engine.Value, 0, mt.Len())
+		for i := 0; i < mt.Len(); i++ {
+			elems = append(elems, engine.Str(mt.Slice(i, 0)))
 		}
 		out := engine.NewArray(elems)
 		engine.SetProto(out, r.interp.arrayProto)
@@ -410,44 +444,52 @@ func (interp *Interpreter) setupRegexp() {
 
 // regexpReplace 用正则 r 对 str 执行替换。replacement 可为替换串（含 $ 替换）
 // 或函数。global 为 true 时替换全部匹配。
+// 切片经 Matches 完成（O(len(str))）；offset 参数取 UTF-16 索引（JS 规范值）。
 func regexpReplace(interp *Interpreter, r *RegexpValue, str string, replacement engine.Value, global bool) (engine.Value, error) {
-	var matches [][]int
+	var mt *regex.Matches
 	if global {
 		var err error
-		matches, err = r.compiled.ExecAll(str)
+		mt, err = r.compiled.AllMatches(str)
 		if err != nil {
 			return engine.Undefined(), regexpExecError(err)
 		}
 	} else {
-		m, err := r.compiled.Exec(str)
+		var ok bool
+		var err error
+		mt, ok, err = r.compiled.ExecSingle(str)
 		if err != nil {
 			return engine.Undefined(), regexpExecError(err)
 		}
-		if m != nil {
-			matches = [][]int{m}
+		if !ok {
+			return engine.Str(str), nil
 		}
 	}
-	if len(matches) == 0 {
+	if mt.Len() == 0 {
 		return engine.Str(str), nil
 	}
 
 	// 函数替换：f(match, p1..pn, offset, string[, groups])。
 	if fn, err := asCallable(replacement); err == nil {
 		var b strings.Builder
-		last := 0
-		for _, m := range matches {
-			b.WriteString(regex.UTF16Slice(str, last, m[0]))
-			args := []engine.Value{engine.Str(regex.UTF16Slice(str, m[0], m[1]))}
-			// 捕获组从索引 2 起（m[0:2] 为整体匹配）。
-			for i := 2; i+1 < len(m); i += 2 {
-				if m[i] < 0 {
+		prev := -1
+		for i := 0; i < mt.Len(); i++ {
+			if i > 0 {
+				b.WriteString(mt.Between(prev, 1, i, 0))
+			} else {
+				b.WriteString(mt.Head(0, 0))
+			}
+			u := mt.U16[i]
+			args := []engine.Value{engine.Str(mt.Slice(i, 0))}
+			// 捕获组从索引 2 起（[0:2] 为整体匹配）。
+			for j := 2; j+1 < len(u); j += 2 {
+				if u[j] < 0 {
 					args = append(args, engine.Undefined())
 				} else {
-					args = append(args, engine.Str(regex.UTF16Slice(str, m[i], m[i+1])))
+					args = append(args, engine.Str(mt.Slice(i, j)))
 				}
 			}
-			args = append(args, engine.IntValue(m[0]), engine.Str(str))
-			if groups := namedGroups(r, str, m); groups != nil {
+			args = append(args, engine.IntValue(u[0]), engine.Str(str))
+			if groups := namedGroupsMatch(r, mt, i); groups != nil {
 				args = append(args, groups)
 			}
 			v, err := fn.callWith(engine.Undefined(), args)
@@ -455,56 +497,61 @@ func regexpReplace(interp *Interpreter, r *RegexpValue, str string, replacement 
 				return nil, err
 			}
 			b.WriteString(v.String())
-			last = m[1]
+			prev = i
 		}
-		b.WriteString(regex.UTF16Slice(str, last, regex.UTF16Index(str, len(str))))
+		b.WriteString(mt.Tail(prev, 1))
 		return engine.Str(b.String()), nil
 	}
 
 	// 字符串替换：支持 $$ $& $` $' $n $nn $<name>。
 	template := replacement.String()
 	var b strings.Builder
-	last := 0
-	for _, m := range matches {
-		b.WriteString(regex.UTF16Slice(str, last, m[0]))
-		b.WriteString(expandReplacement(template, str, m, r))
-		last = m[1]
+	prev := -1
+	for i := 0; i < mt.Len(); i++ {
+		if i > 0 {
+			b.WriteString(mt.Between(prev, 1, i, 0))
+		} else {
+			b.WriteString(mt.Head(0, 0))
+		}
+		b.WriteString(expandReplacementMatch(template, r, mt, i))
+		prev = i
 	}
-	b.WriteString(regex.UTF16Slice(str, last, regex.UTF16Index(str, len(str))))
+	b.WriteString(mt.Tail(prev, 1))
 	return engine.Str(b.String()), nil
 }
 
-// expandReplacement 展开替换串中的 $ 序列。
-func expandReplacement(template, str string, m []int, r *RegexpValue) string {
+// expandReplacementMatch 展开替换串中的 $ 序列（切片经 Matches，孤立代理
+// 单元以 U+FFFD 呈现）。
+func expandReplacementMatch(template string, r *RegexpValue, mt *regex.Matches, i int) string {
 	var b strings.Builder
-	for i := 0; i < len(template); i++ {
-		c := template[i]
-		if c != '$' || i+1 >= len(template) {
+	for k := 0; k < len(template); k++ {
+		c := template[k]
+		if c != '$' || k+1 >= len(template) {
 			b.WriteByte(c)
 			continue
 		}
-		n := template[i+1]
+		n := template[k+1]
 		switch {
 		case n == '$':
 			b.WriteByte('$')
-			i++
+			k++
 		case n == '&':
-			b.WriteString(regex.UTF16Slice(str, m[0], m[1]))
-			i++
+			b.WriteString(mt.Slice(i, 0))
+			k++
 		case n == '`':
-			b.WriteString(regex.UTF16Slice(str, 0, m[0]))
-			i++
+			b.WriteString(mt.Head(i, 0))
+			k++
 		case n == '\'':
-			b.WriteString(regex.UTF16Slice(str, m[1], regex.UTF16Index(str, len(str))))
-			i++
+			b.WriteString(mt.Tail(i, 1))
+			k++
 		case n == '<':
-			end := strings.IndexByte(template[i+2:], '>')
+			end := strings.IndexByte(template[k+2:], '>')
 			if end < 0 {
 				b.WriteString("$<")
-				i++
+				k++
 				continue
 			}
-			name := template[i+2 : i+2+end]
+			name := template[k+2 : k+2+end]
 			gi := -1
 			for g := 1; g <= r.compiled.NumGroups(); g++ {
 				if r.compiled.GroupName(g) == name {
@@ -512,26 +559,26 @@ func expandReplacement(template, str string, m []int, r *RegexpValue) string {
 					break
 				}
 			}
-			if gi >= 0 && m[gi] >= 0 {
-				b.WriteString(regex.UTF16Slice(str, m[gi], m[gi+1]))
+			if gi >= 0 && mt.U16[i][gi] >= 0 {
+				b.WriteString(mt.Slice(i, gi))
 			}
-			i += 2 + end
+			k += 2 + end
 		case n >= '0' && n <= '9':
-			j := i + 1
+			j := k + 1
 			num := 0
-			for j < len(template) && j-i <= 2 && template[j] >= '0' && template[j] <= '9' {
+			for j < len(template) && j-k <= 2 && template[j] >= '0' && template[j] <= '9' {
 				num = num*10 + int(template[j]-'0')
 				j++
 			}
 			if num >= 1 && num <= r.compiled.NumGroups() {
 				gi := 2 * num
-				if m[gi] >= 0 {
-					b.WriteString(regex.UTF16Slice(str, m[gi], m[gi+1]))
+				if mt.U16[i][gi] >= 0 {
+					b.WriteString(mt.Slice(i, gi))
 				}
-				i = j - 1
+				k = j - 1
 			} else {
-				b.WriteString(template[i:j])
-				i = j - 1
+				b.WriteString(template[k:j])
+				k = j - 1
 			}
 		default:
 			b.WriteByte('$')
@@ -540,8 +587,8 @@ func expandReplacement(template, str string, m []int, r *RegexpValue) string {
 	return b.String()
 }
 
-// namedGroups 提取命名捕获组对象；无命名组时返回 nil。
-func namedGroups(r *RegexpValue, str string, m []int) engine.Value {
+// namedGroupsMatch 提取命名捕获组对象（切片经 Matches）；无命名组时返回 nil。
+func namedGroupsMatch(r *RegexpValue, mt *regex.Matches, i int) engine.Value {
 	var groups map[string]engine.Value
 	for g := 1; g <= r.compiled.NumGroups(); g++ {
 		if name := r.compiled.GroupName(g); name != "" {
@@ -549,8 +596,8 @@ func namedGroups(r *RegexpValue, str string, m []int) engine.Value {
 				groups = make(map[string]engine.Value)
 			}
 			gi := 2 * g
-			if m[gi] >= 0 {
-				groups[name] = engine.Str(regex.UTF16Slice(str, m[gi], m[gi+1]))
+			if mt.U16[i][gi] >= 0 {
+				groups[name] = engine.Str(mt.Slice(i, gi))
 			} else {
 				groups[name] = engine.Undefined()
 			}
@@ -563,6 +610,7 @@ func namedGroups(r *RegexpValue, str string, m []int) engine.Value {
 }
 
 // regexpSplit 用正则 r 分割 str，捕获组并入结果。limit<0 表示无限制。
+// 切片经 Matches 完成，全部 O(len(str))。
 func regexpSplit(interp *Interpreter, r *RegexpValue, str string, limit int) (engine.Value, error) {
 	if limit == 0 {
 		return engine.NewArray(nil), nil
@@ -574,22 +622,32 @@ func regexpSplit(interp *Interpreter, r *RegexpValue, str string, limit int) (en
 		}
 		elems = append(elems, v)
 	}
-	matches, err := r.compiled.ExecAll(str)
+	mt, err := r.compiled.AllMatches(str)
 	if err != nil {
 		return engine.Undefined(), regexpExecError(err)
 	}
-	last := 0
-	for _, m := range matches {
-		push(engine.Str(regex.UTF16Slice(str, last, m[0])))
-		// 捕获组从索引 2 起（m[0:2] 为整体匹配）。
-		for i := 2; i+1 < len(m); i += 2 {
-			if m[i] >= 0 {
-				push(engine.Str(regex.UTF16Slice(str, m[i], m[i+1])))
+	if mt.Len() == 0 {
+		push(engine.Str(str))
+		out := engine.NewArray(elems)
+		engine.SetProto(out, interp.arrayProto)
+		return out, nil
+	}
+	push(engine.Str(mt.Head(0, 0)))
+	prev := 0
+	for i := 0; i < mt.Len(); i++ {
+		if i > 0 {
+			push(engine.Str(mt.Between(prev, 1, i, 0)))
+		}
+		// 捕获组从索引 2 起（[0:2] 为整体匹配）。
+		u := mt.U16[i]
+		for j := 2; j+1 < len(u); j += 2 {
+			if u[j] >= 0 {
+				push(engine.Str(mt.Slice(i, j)))
 			}
 		}
-		last = m[1]
+		prev = i
 	}
-	push(engine.Str(regex.UTF16Slice(str, last, regex.UTF16Index(str, len(str)))))
+	push(engine.Str(mt.Tail(prev, 1)))
 	out := engine.NewArray(elems)
 	engine.SetProto(out, interp.arrayProto)
 	return out, nil
