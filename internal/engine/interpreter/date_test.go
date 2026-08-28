@@ -41,6 +41,28 @@ func TestDateBasics(t *testing.T) {
 	}
 }
 
+// TestDateParseMillisecondZeros 回归：毫秒小数位全为 0 时 Date.parse 不得死循环。
+// 会话 JSONL 等真实数据里常见 ".000Z" 时间戳（历史 bug：Atoi 后按数值长度补零导致 0*10 死循环）。
+func TestDateParseMillisecondZeros(t *testing.T) {
+	cases := []struct {
+		src  string
+		want string
+	}{
+		{`Date.parse('2026-08-26T06:55:31.000Z')`, "1787727331000"},
+		{`Date.parse('2026-08-26T06:55:31.00Z')`, "1787727331000"},
+		{`Date.parse('2026-08-26T06:55:31.0Z')`, "1787727331000"},
+		{`Date.parse('2026-08-26T06:55:31.007Z')`, "1787727331007"},
+		{`Date.parse('2026-08-26T06:55:31.07Z')`, "1787727331070"},
+		{`Date.parse('2026-08-26T06:55:31.7Z')`, "1787727331700"},
+		{`Date.parse('1970-01-01T00:00:00.000Z')`, "0"},
+	}
+	for _, c := range cases {
+		if got := vmEvalStr(t, c.src); got != c.want {
+			t.Errorf("%s = %q, want %q", c.src, got, c.want)
+		}
+	}
+}
+
 // TestDateComponents 验证本地时间组件读取。
 func TestDateComponents(t *testing.T) {
 	// 2026-08-05T12:34:56.789 本地时间

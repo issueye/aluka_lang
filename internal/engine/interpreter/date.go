@@ -418,7 +418,9 @@ func parseDateString(s string) (float64, bool) {
 		ms := 0
 		if m[7] != "" {
 			ms, _ = strconv.Atoi(m[7])
-			for len(strconv.Itoa(ms)) < 3 {
+			// 按小数位补齐到毫秒（.7→700、.07→70、.007→7）；以位数判断，
+			// 不能用数值长度：Atoi("000")=0 会造成 0*10 死循环。
+			for i := len(m[7]); i < 3; i++ {
 				ms *= 10
 			}
 		}
