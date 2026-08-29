@@ -248,6 +248,7 @@ aluka_lang/
 │   ├── project/               # web 构建工作台（项目配置 / 插件会话 / HTML 入口 / 写盘）
 │   ├── monitor/               # --monitor 性能/内存/运行时指标（独立 module）
 │   └── pkgmanager/            # npm 兼容包管理器（semver/registry/resolver/...）
+├── pkg/aluka/                 # 嵌入式 Go API（NewRuntime/Eval/RunFile——Go 宿主嵌入 JS 运行时）
 │       ├── config/            # .npmrc 解析（registry + 鉴权）
 │       └── workspace/         # workspace 发现（glob 展开 + 本地包链接）
 ├── tests/conformance/         # 一致性测试（node/test262/npm/install/express/build/webbuild/vue-sfc/node22）
@@ -313,6 +314,25 @@ ALUKA=./bin/aluka bash tests/conformance/vue-sfc/run.sh
 
 # Node 22 差分 conformance（同一用例 aluka vs node22 双跑对比，18 个场景全绿）
 ALUKA=./bin/aluka bash tests/conformance/node22/run.sh
+```
+
+### 作为 Go 库嵌入
+
+`pkg/aluka` 提供面向 Go 宿主的公共 API（CLI 之外的第二种使用形态）：
+
+```go
+import "github.com/aluka-lang/aluka/pkg/aluka"
+
+rt, err := aluka.NewRuntime()
+if err != nil { panic(err) }
+defer rt.Close()
+
+v, err := rt.Eval("({ answer: 6 * 7 })", "embed.js")
+// v 可经 engine.Value 接口读取（AsObject/Float/...）
+
+if err := rt.RunFile("script.ts"); err != nil { // TS 源级转译执行
+    panic(err)
+}
 ```
 
 ## 设计原则

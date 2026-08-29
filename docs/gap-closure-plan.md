@@ -97,7 +97,7 @@
 
 | 项 | 内容 | 结论 |
 |---|---|---|
-| P4-1 GUI JS 面核查 | aluka-gui-api-review P1 半完成项 | **多数已在 Phase B/C 落地**（D7）：`Aluka.gui.app.unregisterRPC/getWindows/getWindowById`、`shell.openExternal`、`dialog` 均存在；`win.on/win.off` 在真实窗口实例上可用（Go 侧接线完毕）。**仍缺**：`notify`/`clipboard`（P2 级，维持登记） |
+| P4-1 GUI JS 面核查 | aluka-gui-api-review P1 半完成项 | **多数已在 Phase B/C 落地**（D7）：`Aluka.gui.app.unregisterRPC/getWindows/getWindowById`、`shell.openExternal`、`dialog` 均存在；`win.on/win.off` 在真实窗口实例上可用（Go 侧接线完毕）。**仍缺**：`notify`（2026-08-27 更新：clipboard/screen/菜单/capabilities/.d.ts 已由外部 Phase C 提交落地，见 §5 执行记录；唯 notify 未实现） |
 | P4-2 文档回填 | §2.3 D1-D9 四处漂移 | compat-boundary-closure-plan 成员清单、test-bundle-optimize-plan §7、node22-api-coverage L1、aluka-gui-api-review P1 状态同步修正（见提交） |
 
 ## 4. 后续阶段（登记不排期）
@@ -116,6 +116,8 @@
 - ~~**T1 vue-sfc conformance 存量失败归因**~~：**✅ 2026-08-25 修复**——根因：lexer 模板字面量未按 ES 规范把裸行终止符序列（CRLF/CR）规范化为 LF（TV/TRV），vendored compiler-sfc（CRLF 行尾 dist）生成代码混入 
 （16 字节漂移）。修复：`readTemplate` cooked/raw 双规范化 + `readEscape` 行续整体删除 CRLF；`FormatVersion` 29→30（字符串常量内容变化，旧缓存失效）。vue-sfc conformance PASS=1/0 FAIL；node conformance 11/11（顺带修复 run.sh 相对 ALUKA 路径在 cd 后失效的 harness 存量 bug）。
 
+- **T2（2026-08-27 新登记）aluka_orange 真实项目存量差异**：`~/.aluka/agent/extensions/` 用户扩展（tavily/todo）加载 warning——jiti 内部某分支把 path 模块对象传入解析器（错误 specifier 呈 inspect 形态）；基线二进制（a81f328）同现、Node 不现，不阻断主流程（agent CLI/LLM 回合/工具链/单文件产物全通过）。归因方向：jiti `createRequire` 路径上模块对象的字符串化语义。
+
 ## 5. 执行记录
 
 | 日期 | 项 | 结果 |
@@ -129,6 +131,7 @@
 | 2026-08-25 | T1 修复（评审跟进） | ✅ lexer 行终止符规范化（CRLF→LF）+ FormatVersion 30 + node conformance harness 修复；vue-sfc 1/1、node 11/11、全套 conformance 绿 |
 | 2026-08-25 | 函数 length 面 | ✅ NewFunctionLen/NewNativeMethodLen 变体；Module._compile=3、register=1、createRequire=1 与 Node 一致（hooks 探针覆盖防回归） |
 | 2026-08-25 | P8 `-e` require 注入 | ✅ execute() 注入基于 cwd 的 loader：require/import()/内置模块/process.getBuiltinModule 可用；require('./rel') 与动态 import 与 Node 输出一致 |
+| 2026-08-27 | 外部进展消化（main 拉取 d0d24cc） | 9 个外部提交消化多项登记项：GUI Phase C（`aa55a85` 等）落地 clipboard（readText/writeText）、screen（getPrimaryDisplay/getAllDisplays）、capabilities 检测、原生菜单、app.off/win.off 精确注销、官方 .d.ts 扩充（P4-1 遗缺仅剩 `notify`）；`392ab21` Date.parse `.000Z` 死循环修复（桌面启动挂死根因）；`d0d24cc` 正则全局匹配线性化；`3c35766` ArrayValue 表示优化（性能报告 v7）；`c2c0bb3` 新增 `pkg/aluka` 嵌入式 Go API（NewRuntime/Eval/RunFile，README/AGENTS 已同步）。最新代码实测：35 包全绿、vue-sfc 1/1、node 11/11 |
 | 2026-08-25 | 文档全面同步 | ✅ §2.3 全部漂移回填完成：D3（bundle-report 循环绑定已修）、D4（memory ME-8 已闭环）、D5（perf M-P2/P3）、D6（vue-compat 已合入）、H5（requirements JSX 过期说法）；README conformance 数字（build 24/24、webbuild 13/13）与 -e require 示例；AGENTS 增词法行终止符规范约束 + node conformance 11/11；node22-api-coverage module 行（jiti M3 注记） |
 
 ## 6. 风险与边界
