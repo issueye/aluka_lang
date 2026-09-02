@@ -60,33 +60,17 @@ var jsHeapGlobal = &jsHeap{objects: make(map[weak.Pointer[objectValue]]struct{})
 // STW + FreeOSMemory syscall 阻塞分配线程，在对话/交互场景造成可感知卡顿。
 // 改由后台 freeOSLoop goroutine 按空闲周期触发（见 startFreeOSLoop）。
 func register(obj *objectValue) {
-	alloc := allocCount.Add(1)
-	// 周期清扫弱引用 map（仅统计用，map 空时为 no-op）。扫描本身只遍历 map
-	// 条目，不触发 GC/FreeOS，开销低。
-	if alloc%gcSweepEvery == 0 {
+	allocCount.Add(1)
+	// 弱引用注册与清扫仅在监控启用时进行（liveCount 统计用）。
+	if metricsEnabled.Load() {
+		BumpAlloc()
 		jsHeapGlobal.mu.Lock()
-		if len(jsHeapGlobal.objects) > 0 {
+		jsHeapGlobal.objects[weak.Make(obj)] = struct{}{}
+		if len(jsHeapGlobal.objects)%gcSweepEvery == 0 {
 			jsHeapGlobal.sweepLocked()
 		}
 		jsHeapGlobal.mu.Unlock()
-		// 高分配压力下非阻塞通知后台 freeOS goroutine（try-send，缓冲 1 合并
-		// 冗余）。不阻塞分配热路径；goroutine 在下次调度点执行 GC+FreeOS。
-		// 仅在累积较多分配（每 freeOSAllocThreshold 次 sweep）时通知，避免
-		// 频繁发信号。
-		if alloc%freeOSAllocThreshold == 0 {
-			select {
-			case freeOSSig <- struct{}{}:
-			default:
-			}
-		}
 	}
-	// 弱引用注册仅在监控启用时进行（liveCount 统计用）。
-	if metricsEnabled.Load() {
-		jsHeapGlobal.mu.Lock()
-		jsHeapGlobal.objects[weak.Make(obj)] = struct{}{}
-		jsHeapGlobal.mu.Unlock()
-	}
-	BumpAlloc() // 监控计数器（gated）
 }
 
 // freeOSInterval 控制后台归还 OS 内存的周期。默认 2s：在对话/交互的间隙
@@ -96,10 +80,6 @@ func register(obj *objectValue) {
 //	>0 ：以秒为单位的周期（如 3 = 每 3 秒）
 //	<=0：禁用后台归还（RSS 将单调增长，但零延迟开销）
 var freeOSInterval = 2 * time.Second
-
-// freeOSSig 是 register→freeOSLoop 的非阻塞信号：达到分配阈值后 try-send，
-// goroutine 收到或定时器到期时执行 GC+FreeOS。缓冲 1 容许一次冗余触发合并。
-var freeOSSig = make(chan struct{}, 1)
 
 func init() {
 	if v := os.Getenv("ALUKA_FREEOS_INTERVAL"); v != "" {
@@ -118,11 +98,7 @@ func init() {
 
 // startFreeOSLoop 启动后台归还 OS 内存 goroutine。进程生命周期内只启一次
 // （sync.Once）。goroutine 在定时器到期时执行 runtime.GC()+debug.FreeOSMemory()
-// ——STW 发生在后台 goroutine 调度点，不阻塞 register 热路径。
-//
-// 分配阈值信号（freeOSSig）只执行 runtime.GC()：分配密集阶段 madvise
-// （FreeOSMemory 系统调用）是纯延迟开销且收益低（页很快又被分配复用），
-// RSS 上界仍由定时器路径兜底。
+// ——STW 发生在后台空闲 goroutine 调度点，不阻塞 register 热路径。
 func startFreeOSLoop() {
 	freeOSLoopOnce.Do(func() {
 		if freeOSInterval <= 0 {
@@ -131,14 +107,9 @@ func startFreeOSLoop() {
 		go func() {
 			ticker := time.NewTicker(freeOSInterval)
 			defer ticker.Stop()
-			for {
-				select {
-				case <-freeOSSig:
-					runtime.GC()
-				case <-ticker.C:
-					runtime.GC()
-					debug.FreeOSMemory()
-				}
+			for range ticker.C {
+				runtime.GC()
+				debug.FreeOSMemory()
 			}
 		}()
 	})

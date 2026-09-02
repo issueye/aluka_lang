@@ -30,21 +30,26 @@ type ArrayValue struct {
 	smallElems [4]Value
 }
 
+// arrayRootShape 是预先派生的数组标准 Shape（包含 length 属性）。
+// 避免每次创建数组时在 rootShape 上重复做 transition("length") 的锁竞争与 map 查找。
+var arrayRootShape = rootShape.transition("length")
+
 // NewArray 创建数组对象。elems 长度 ≤4 时拷贝进内嵌后备（调用方可让
 // 传入切片留在栈上避免逃逸）；更长时直接接管传入切片（零拷贝）。
 // 新建数组无洞：present 保持 nil（全 present 的紧凑表示）。
 func NewArray(elems []Value) *ArrayValue {
 	a := &ArrayValue{lengthWritable: true}
-	a.shape = rootShape
+	a.shape = arrayRootShape
+	a.slots = a.small[:1]
+	a.slots[0] = IntValue(len(elems))
 	if len(elems) <= len(a.smallElems) {
 		copy(a.smallElems[:], elems)
 		a.elems = a.smallElems[:len(elems)]
 	} else {
-		a.elems = elems
+		a.elems = make([]Value, len(elems))
+		copy(a.elems, elems)
 	}
 	register(&a.objectValue)
-	// 同步 length 属性
-	a.setSlot("length", IntValue(len(elems)))
 	return a
 }
 
@@ -54,14 +59,15 @@ func NewArrayHoles(n int) *ArrayValue {
 		n = 0
 	}
 	a := &ArrayValue{lengthWritable: true}
-	a.shape = rootShape
+	a.shape = arrayRootShape
+	a.slots = a.small[:1]
+	a.slots[0] = IntValue(n)
 	a.elems = make([]Value, n)
 	for i := range a.elems {
 		a.elems[i] = Undefined()
 	}
 	a.present = make([]bool, n) // 零值即全 hole
 	register(&a.objectValue)
-	a.setSlot("length", IntValue(n))
 	return a
 }
 

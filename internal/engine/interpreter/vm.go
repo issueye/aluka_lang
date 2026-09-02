@@ -859,19 +859,9 @@ func (v *VM) run() (engine.Value, error) {
 				v.push(obj)
 			case bytecode.OpNewArray:
 				n := int(operand)
-				// 小数组（≤4 元素）弹入 Go 栈缓冲再拷贝进内嵌后备：
-				// 调用 NewArray 时的栈数组不逃逸，热路径零独立分配
-				var smallBuf [4]engine.Value
-				var elems []engine.Value
-				if n <= len(smallBuf) {
-					elems = smallBuf[:n]
-				} else {
-					elems = make([]engine.Value, n)
-				}
-				for i := n - 1; i >= 0; i-- {
-					elems[i] = v.pop()
-				}
-				arr := engine.NewArray(elems)
+				start := len(v.stack) - n
+				arr := engine.NewArray(v.stack[start:])
+				v.stack = v.stack[:start]
 				engine.SetProto(arr, v.interp.arrayProto)
 				v.push(arr)
 			case bytecode.OpMakeRegexp:
