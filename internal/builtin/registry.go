@@ -6,6 +6,23 @@ package builtin
 import (
 	"fmt"
 
+	"github.com/aluka-lang/aluka/internal/builtin/nodeassert"
+	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
+	"github.com/aluka-lang/aluka/internal/builtin/nodecrypto"
+	"github.com/aluka-lang/aluka/internal/builtin/nodediag"
+	"github.com/aluka-lang/aluka/internal/builtin/nodeevents"
+	"github.com/aluka-lang/aluka/internal/builtin/nodefs"
+	"github.com/aluka-lang/aluka/internal/builtin/nodehttp"
+	"github.com/aluka-lang/aluka/internal/builtin/nodenet"
+	"github.com/aluka-lang/aluka/internal/builtin/nodeos"
+	"github.com/aluka-lang/aluka/internal/builtin/nodeproc"
+	"github.com/aluka-lang/aluka/internal/builtin/noderepl"
+	"github.com/aluka-lang/aluka/internal/builtin/nodesqlite"
+	"github.com/aluka-lang/aluka/internal/builtin/nodestream"
+	"github.com/aluka-lang/aluka/internal/builtin/nodetest"
+	"github.com/aluka-lang/aluka/internal/builtin/nodetimers"
+	"github.com/aluka-lang/aluka/internal/builtin/nodeutil"
+	"github.com/aluka-lang/aluka/internal/builtin/nodevm"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
@@ -14,32 +31,32 @@ import (
 // RegisterAll 将所有内置模块注册到 Loader。
 // 新增模块时在此添加一行 RegisterBuiltin 调用。
 func RegisterAll(loader *module.Loader) {
-	loader.RegisterBuiltin("path", NewPath)
-	loader.RegisterBuiltin("path/posix", NewPathPosix)
-	loader.RegisterBuiltin("path/win32", NewPathWin32)
-	loader.RegisterBuiltin("os", NewOS)
-	loader.RegisterBuiltin("url", NewURL)
-	loader.RegisterBuiltin("util", NewUtil)
-	loader.RegisterBuiltin("util/types", NewUtilTypes)
-	loader.RegisterBuiltin("events", NewEvents)
-	loader.RegisterBuiltin("diagnostics_channel", NewDiagnosticsChannel)
-	loader.RegisterBuiltin("async_hooks", NewAsyncHooks)
-	loader.RegisterBuiltin("fs", NewFS)
-	loader.RegisterBuiltin("assert", NewAssert)
-	loader.RegisterBuiltin("assert/strict", NewAssertStrict)
-	loader.RegisterBuiltin("constants", NewConstants)
-	loader.RegisterBuiltin("crypto", NewCrypto)
-	loader.RegisterBuiltin("stream", NewStream)
-	loader.RegisterBuiltin("stream/web", NewStreamWeb)
-	loader.RegisterBuiltin("stream/promises", NewStreamPromises)
-	loader.RegisterBuiltin("stream/consumers", NewStreamConsumers)
-	loader.RegisterBuiltin("querystring", NewQueryString)
-	loader.RegisterBuiltin("string_decoder", NewStringDecoder)
-	loader.RegisterBuiltin("http", NewHTTP)
-	loader.RegisterBuiltin("https", NewHTTPS)
-	loader.RegisterBuiltin("net", NewNet)
-	loader.RegisterBuiltin("tls", NewTLS)
-	loader.RegisterBuiltin("dns", NewDNS)
+	loader.RegisterBuiltin("path", nodeos.NewPath)
+	loader.RegisterBuiltin("path/posix", nodeos.NewPathPosix)
+	loader.RegisterBuiltin("path/win32", nodeos.NewPathWin32)
+	loader.RegisterBuiltin("os", nodeos.NewOS)
+	loader.RegisterBuiltin("url", nodeutil.NewURL)
+	loader.RegisterBuiltin("util", nodeutil.NewUtil)
+	loader.RegisterBuiltin("util/types", nodeutil.NewUtilTypes)
+	loader.RegisterBuiltin("events", nodeevents.NewEvents)
+	loader.RegisterBuiltin("diagnostics_channel", nodediag.NewDiagnosticsChannel)
+	loader.RegisterBuiltin("async_hooks", nodediag.NewAsyncHooks)
+	loader.RegisterBuiltin("fs", nodefs.NewFS)
+	loader.RegisterBuiltin("assert", nodeassert.NewAssert)
+	loader.RegisterBuiltin("assert/strict", nodeassert.NewAssertStrict)
+	loader.RegisterBuiltin("constants", nodeos.NewConstants)
+	loader.RegisterBuiltin("crypto", nodecrypto.NewCrypto)
+	loader.RegisterBuiltin("stream", nodestream.NewStream)
+	loader.RegisterBuiltin("stream/web", nodestream.NewStreamWeb)
+	loader.RegisterBuiltin("stream/promises", nodestream.NewStreamPromises)
+	loader.RegisterBuiltin("stream/consumers", nodestream.NewStreamConsumers)
+	loader.RegisterBuiltin("querystring", nodeutil.NewQueryString)
+	loader.RegisterBuiltin("string_decoder", nodestream.NewStringDecoder)
+	loader.RegisterBuiltin("http", nodehttp.NewHTTP)
+	loader.RegisterBuiltin("https", nodehttp.NewHTTPS)
+	loader.RegisterBuiltin("net", nodenet.NewNet)
+	loader.RegisterBuiltin("tls", nodenet.NewTLS)
+	loader.RegisterBuiltin("dns", nodenet.NewDNS)
 	loader.RegisterBuiltin("dns/promises", func(ctx engine.Context) (engine.Value, error) {
 		// Node 语义：require('node:dns/promises') === require('node:dns').promises
 		// （同一对象身份）。
@@ -54,48 +71,48 @@ func RegisterAll(loader *module.Loader) {
 		}
 		return engine.Undefined(), fmt.Errorf("dns/promises: dns.promises not found")
 	})
-	loader.RegisterBuiltin("zlib", NewZlib)
-	loader.RegisterBuiltin("perf_hooks", NewPerfHooks)
-	loader.RegisterBuiltin("timers", NewTimersModule)
-	loader.RegisterBuiltin("timers/promises", NewTimersPromises)
-	loader.RegisterBuiltin("v8", NewV8)
-	loader.RegisterBuiltin("vm", NewVMModule)
-	loader.RegisterBuiltin("inspector", NewInspector)
-	loader.RegisterBuiltin("inspector/promises", NewInspectorPromises)
-	loader.RegisterBuiltin("dgram", NewDgram)
-	loader.RegisterBuiltin("http2", NewHTTP2)
-	loader.RegisterBuiltin("cluster", NewCluster)
-	loader.RegisterBuiltin("trace_events", NewTraceEvents)
-	loader.RegisterBuiltin("readline", NewReadline)
-	loader.RegisterBuiltin("readline/promises", NewReadlinePromises)
-	loader.RegisterBuiltin("repl", NewReplModule)
-	loader.RegisterBuiltin("child_process", NewChildProcess)
+	loader.RegisterBuiltin("zlib", nodeutil.NewZlib)
+	loader.RegisterBuiltin("perf_hooks", nodediag.NewPerfHooks)
+	loader.RegisterBuiltin("timers", nodetimers.NewTimersModule)
+	loader.RegisterBuiltin("timers/promises", nodetimers.NewTimersPromises)
+	loader.RegisterBuiltin("v8", nodediag.NewV8)
+	loader.RegisterBuiltin("vm", nodevm.NewVMModule)
+	loader.RegisterBuiltin("inspector", nodediag.NewInspector)
+	loader.RegisterBuiltin("inspector/promises", nodediag.NewInspectorPromises)
+	loader.RegisterBuiltin("dgram", nodenet.NewDgram)
+	loader.RegisterBuiltin("http2", nodehttp.NewHTTP2)
+	loader.RegisterBuiltin("cluster", nodeproc.NewCluster)
+	loader.RegisterBuiltin("trace_events", nodediag.NewTraceEvents)
+	loader.RegisterBuiltin("readline", noderepl.NewReadline)
+	loader.RegisterBuiltin("readline/promises", noderepl.NewReadlinePromises)
+	loader.RegisterBuiltin("repl", noderepl.NewReplModule)
+	loader.RegisterBuiltin("child_process", nodeproc.NewChildProcess)
 	loader.RegisterBuiltin("worker_threads", NewWorkerThreads)
-	loader.RegisterBuiltin("fs/promises", NewFSPromises)
+	loader.RegisterBuiltin("fs/promises", nodefs.NewFSPromises)
 	// node:module 需要 loader（createRequire 基于 loader 的 require 链路）。
 	loader.RegisterBuiltin("module", func(ctx engine.Context) (engine.Value, error) {
-		return NewModule(ctx, loader)
+		return nodevm.NewModule(ctx, loader)
 	})
 	loader.RegisterBuiltin("buffer", globals.NewBufferModule)
-	loader.RegisterBuiltin("tty", NewTTY)
-	loader.RegisterBuiltin("sqlite", NewSQLite)
+	loader.RegisterBuiltin("tty", nodeos.NewTTY)
+	loader.RegisterBuiltin("sqlite", nodesqlite.NewSQLite)
 	// node:domain / node:punycode / node:wasi（M9：废弃/实验模块，含
 	// DEP0003 / DEP0040 废弃警告与 WASI 方法面）。
-	loader.RegisterBuiltin("domain", NewDomain)
-	loader.RegisterBuiltin("punycode", NewPunycode)
-	loader.RegisterBuiltin("wasi", NewWASI)
+	loader.RegisterBuiltin("domain", nodediag.NewDomain)
+	loader.RegisterBuiltin("punycode", nodeutil.NewPunycode)
+	loader.RegisterBuiltin("wasi", nodeutil.NewWASI)
 	// node:process —— 返回全局 process 对象（require('process') 语义，
 	// 与 Node 一致：裸名 process 解析为内置而非 node_modules 包）。
 	loader.RegisterBuiltin("process", NewProcessModule)
 	loader.RegisterBuiltin("console", NewConsoleModule)
-	loader.RegisterBuiltin("test", NewTest)
-	loader.RegisterBuiltin("test/reporters", NewTestReporters)
-	loader.RegisterBuiltin("markdown", NewMarkdownModule)
-	loader.RegisterBuiltin("aluka:markdown", NewMarkdownModule)
+	loader.RegisterBuiltin("test", nodetest.NewTest)
+	loader.RegisterBuiltin("test/reporters", nodetest.NewTestReporters)
+	loader.RegisterBuiltin("markdown", nodeutil.NewMarkdownModule)
+	loader.RegisterBuiltin("aluka:markdown", nodeutil.NewMarkdownModule)
 	// node:sys —— node:util 兼容别名（废弃，DEP0140）。与 util 同一对象身份。
 	loader.RegisterBuiltin("sys", func(ctx engine.Context) (engine.Value, error) {
 		// 仅首次加载打印一次废弃警告（Node 每次 require 发出，这里由缓存保证一次）。
-		emitDeprecation("sys", "The sys module is deprecated. Use util instead.")
+		nodebase.EmitDeprecation("sys", "The sys module is deprecated. Use util instead.")
 		return loader.GetBuiltin("util")
 	})
 }

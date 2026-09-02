@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aluka-lang/aluka/internal/builtin/nodediag"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
@@ -17,7 +18,7 @@ func TestV8HeapSnapshot(t *testing.T) {
 	}
 	defer ctx.Close()
 
-	v8Mod, err := NewV8(ctx)
+	v8Mod, err := nodediag.NewV8(ctx)
 	if err != nil {
 		t.Fatalf("NewV8: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestInspectorSession(t *testing.T) {
 	}
 	defer ctx.Close()
 
-	inspMod, err := NewInspector(ctx)
+	inspMod, err := nodediag.NewInspector(ctx)
 	if err != nil {
 		t.Fatalf("NewInspector: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aluka-lang/aluka/internal/builtin/nodeutil"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
@@ -25,7 +26,7 @@ This is a **bold** and *italic* paragraph with ` + "`inline code`" + ` and a [Li
 ---
 `
 
-	html := Render(md)
+	html := nodeutil.Render(md)
 
 	mustContain := []string{
 		"<h1>Hello World</h1>",
@@ -58,7 +59,7 @@ author: 'Aluka Team'
 # Main Content
 Hello from SSG!
 `
-	data, body := ParseFrontmatter(doc)
+	data, body := nodeutil.ParseFrontmatter(doc)
 	if data["title"] != "Getting Started" {
 		t.Errorf("title = %q, want 'Getting Started'", data["title"])
 	}
@@ -82,7 +83,7 @@ func TestMarkdownJSModule(t *testing.T) {
 	}
 	defer ctx.Close()
 
-	mod, err := NewMarkdownModule(ctx)
+	mod, err := nodeutil.NewMarkdownModule(ctx)
 	if err != nil {
 		t.Fatalf("NewMarkdownModule: %v", err)
 	}

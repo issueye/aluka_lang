@@ -3,6 +3,12 @@ package builtin
 import (
 	"testing"
 
+	"github.com/aluka-lang/aluka/internal/builtin/nodediag"
+	"github.com/aluka-lang/aluka/internal/builtin/nodeevents"
+	"github.com/aluka-lang/aluka/internal/builtin/nodeos"
+	"github.com/aluka-lang/aluka/internal/builtin/nodestream"
+	"github.com/aluka-lang/aluka/internal/builtin/nodeutil"
+	"github.com/aluka-lang/aluka/internal/builtin/nodevm"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
@@ -54,7 +60,7 @@ func getProp(t *testing.T, obj engine.Value, key string) engine.Value {
 
 func TestDiagnosticsChannelPublishAndUnsubscribe(t *testing.T) {
 	ctx := newCtx(t)
-	mod, err := NewDiagnosticsChannel(ctx)
+	mod, err := nodediag.NewDiagnosticsChannel(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +95,7 @@ func TestDiagnosticsChannelPublishAndUnsubscribe(t *testing.T) {
 
 func TestVMModuleSurface(t *testing.T) {
 	ctx := newCtx(t)
-	mod, err := NewVMModule(ctx)
+	mod, err := nodevm.NewVMModule(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +129,7 @@ func TestVMModuleSurface(t *testing.T) {
 
 func TestDiagnosticsTracingChannel(t *testing.T) {
 	ctx := newCtx(t)
-	mod, err := NewDiagnosticsChannel(ctx)
+	mod, err := nodediag.NewDiagnosticsChannel(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +171,7 @@ globalThis.__r = (legacy === modern) + ':' + legacy.F_OK + ':' + (typeof legacy.
 func TestUtilDebuglogEnabled(t *testing.T) {
 	t.Setenv("NODE_DEBUG", "http,undici*")
 	ctx := newCtx(t)
-	mod, err := NewUtil(ctx)
+	mod, err := nodeutil.NewUtil(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +188,7 @@ func TestUtilDebuglogEnabled(t *testing.T) {
 
 func TestUtilTypesArrayBufferPredicates(t *testing.T) {
 	ctx := newCtx(t)
-	types, err := NewUtilTypes(ctx)
+	types, err := nodeutil.NewUtilTypes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +212,7 @@ func TestUtilTypesArrayBufferPredicates(t *testing.T) {
 
 func TestEventsExportsEventEmitterConstructor(t *testing.T) {
 	ctx := newCtx(t)
-	mod, err := NewEvents(ctx)
+	mod, err := nodeevents.NewEvents(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +244,7 @@ func TestStreamWebExportsGlobalConstructors(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	mod, err := NewStreamWeb(ctx)
+	mod, err := nodestream.NewStreamWeb(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +260,7 @@ func TestStreamWebExportsGlobalConstructors(t *testing.T) {
 
 func TestPathJoin(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewPath(ctx)
+	m, _ := nodeos.NewPath(ctx)
 
 	// join
 	got := callMethod(t, m, "join", engine.Str("a"), engine.Str("b"), engine.Str("c"))
@@ -274,7 +280,7 @@ func TestPathJoin(t *testing.T) {
 
 func TestPathDirnameBasename(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewPath(ctx)
+	m, _ := nodeos.NewPath(ctx)
 
 	got := callMethod(t, m, "dirname", engine.Str("/foo/bar/baz.txt"))
 	if got.String() != "/foo/bar" && got.String() != `\foo\bar` {
@@ -295,7 +301,7 @@ func TestPathDirnameBasename(t *testing.T) {
 
 func TestPathExtname(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewPath(ctx)
+	m, _ := nodeos.NewPath(ctx)
 
 	cases := []struct {
 		input string
@@ -316,7 +322,7 @@ func TestPathExtname(t *testing.T) {
 
 func TestPathPosixWin32(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewPath(ctx)
+	m, _ := nodeos.NewPath(ctx)
 
 	posix := getProp(t, m, "posix")
 	win32 := getProp(t, m, "win32")
@@ -339,7 +345,7 @@ func TestPathPosixWin32(t *testing.T) {
 
 func TestPathParse(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewPath(ctx)
+	m, _ := nodeos.NewPath(ctx)
 	posix := getProp(t, m, "posix")
 
 	parsed := callMethod(t, posix, "parse", engine.Str("/foo/bar/file.txt"))
@@ -361,7 +367,7 @@ func TestPathParse(t *testing.T) {
 
 func TestOSPlatform(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewOS(ctx)
+	m, _ := nodeos.NewOS(ctx)
 
 	got := callMethod(t, m, "platform")
 	s := got.String()
@@ -377,7 +383,7 @@ func TestOSPlatform(t *testing.T) {
 
 func TestOSCPUs(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewOS(ctx)
+	m, _ := nodeos.NewOS(ctx)
 
 	cpus := callMethod(t, m, "cpus")
 	// cpus 返回数组，长度 > 0
@@ -394,7 +400,7 @@ func TestOSCPUs(t *testing.T) {
 
 func TestOSEOL(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewOS(ctx)
+	m, _ := nodeos.NewOS(ctx)
 
 	eol := getProp(t, m, "EOL")
 	if eol.String() != "\n" && eol.String() != "\r\n" {
@@ -406,7 +412,7 @@ func TestOSEOL(t *testing.T) {
 
 func TestURLParse(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewURL(ctx)
+	m, _ := nodeutil.NewURL(ctx)
 
 	parsed := callMethod(t, m, "parse", engine.Str("https://example.com:8080/path?q=1#hash"))
 	if getProp(t, parsed, "protocol").String() != "https:" {
@@ -428,7 +434,7 @@ func TestURLParse(t *testing.T) {
 
 func TestURLResolve(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewURL(ctx)
+	m, _ := nodeutil.NewURL(ctx)
 
 	got := callMethod(t, m, "resolve", engine.Str("/a/b/c"), engine.Str("../d"))
 	if got.String() != "/a/d" {
@@ -438,7 +444,7 @@ func TestURLResolve(t *testing.T) {
 
 func TestURLFileConversion(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewURL(ctx)
+	m, _ := nodeutil.NewURL(ctx)
 
 	// pathToFileURL + fileURLToPath 往返
 	got := callMethod(t, m, "pathToFileURL", engine.Str("/tmp/test.js"))
@@ -457,7 +463,7 @@ func TestURLFileConversion(t *testing.T) {
 
 func TestUtilFormat(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewUtil(ctx)
+	m, _ := nodeutil.NewUtil(ctx)
 
 	got := callMethod(t, m, "format", engine.Str("count: %d, name: %s"), engine.Number(42), engine.Str("test"))
 	if got.String() != "count: 42, name: test" {
@@ -473,7 +479,7 @@ func TestUtilFormat(t *testing.T) {
 
 func TestUtilInspect(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewUtil(ctx)
+	m, _ := nodeutil.NewUtil(ctx)
 
 	arr := engine.NewArray([]engine.Value{engine.IntValue(1), engine.IntValue(2), engine.IntValue(3)})
 	got := callMethod(t, m, "inspect", arr)
@@ -484,7 +490,7 @@ func TestUtilInspect(t *testing.T) {
 
 func TestUtilStripVTControlCharacters(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewUtil(ctx)
+	m, _ := nodeutil.NewUtil(ctx)
 
 	got := callMethod(t, m, "stripVTControlCharacters", engine.Str("\u001B[4mvalue\u001B[0m"))
 	if got.String() != "value" {
@@ -494,7 +500,7 @@ func TestUtilStripVTControlCharacters(t *testing.T) {
 
 func TestUtilTypes(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewUtil(ctx)
+	m, _ := nodeutil.NewUtil(ctx)
 
 	types := getProp(t, m, "types")
 
@@ -519,7 +525,7 @@ func TestUtilTypes(t *testing.T) {
 
 func TestUtilIsDeepStrictEqual(t *testing.T) {
 	ctx := newCtx(t)
-	m, _ := NewUtil(ctx)
+	m, _ := nodeutil.NewUtil(ctx)
 
 	got := callMethod(t, m, "isDeepStrictEqual", engine.Number(1), engine.Number(1))
 	if got.String() != "true" {

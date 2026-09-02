@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/builtin"
+	"github.com/aluka-lang/aluka/internal/builtin/nodetest"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/engine/jit"
@@ -421,11 +422,11 @@ func cmdTest(args []string) {
 	if err != nil {
 		fatalErr(err.Error())
 	}
-	builtin.TestNamePattern = o.namePattern
-	builtin.TestSkipPattern = o.skipPattern
-	builtin.TestOnly = o.only
-	builtin.TestProgrammaticRun = false
-	builtin.TestDefaultTimeout = time.Duration(o.timeoutMs) * time.Millisecond
+	nodetest.TestNamePattern = o.namePattern
+	nodetest.TestSkipPattern = o.skipPattern
+	nodetest.TestOnly = o.only
+	nodetest.TestProgrammaticRun = false
+	nodetest.TestDefaultTimeout = time.Duration(o.timeoutMs) * time.Millisecond
 	_ = o.concurrency // 接受 --test-concurrency（执行仍按注册顺序串行；见 knownDifference）
 	files := discoverTestFiles(paths)
 
@@ -493,9 +494,9 @@ func cmdTest(args []string) {
 // runTestFilesOnce 执行测试文件集合并输出报告（--watch 重跑复用）。
 // 返回 (passed, failed) 计数；reporter 输出始终走 os.Stdout。
 func runTestFilesOnce(files []string, reporter string, useStdout bool, coverage, updateSnaps, only bool, namePattern, skipPattern *regexp.Regexp) (int, int) {
-	builtin.TestNamePattern = namePattern
-	builtin.TestSkipPattern = skipPattern
-	builtin.TestOnly = only
+	nodetest.TestNamePattern = namePattern
+	nodetest.TestSkipPattern = skipPattern
+	nodetest.TestOnly = only
 	passed, failed, skipped, todo, cancelled := 0, 0, 0, 0, 0
 	fileCoverage := map[string]map[int]bool{}
 	var junitCases []junitCase
@@ -510,8 +511,8 @@ func runTestFilesOnce(files []string, reporter string, useStdout bool, coverage,
 		customReporter = cr
 	}
 	for _, f := range files {
-		builtin.SetSnapshotFile(f)
-		builtin.SetUpdateSnapshots(updateSnaps)
+		nodetest.SetSnapshotFile(f)
+		nodetest.SetUpdateSnapshots(updateSnaps)
 		results, cov, err := runTestFile(f, coverage)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", f, err)
@@ -619,7 +620,7 @@ func waitForFileChange(files []string, interval time.Duration) bool {
 
 // printDotChar 输出 dot 报告器单字符（Node dot 语义：pass/skip/todo → '.'，
 // fail → 'X'）。
-func printDotChar(r builtin.TestResult, status string) {
+func printDotChar(r nodetest.TestResult, status string) {
 	if status == "ok" {
 		fmt.Print(".")
 	} else {
@@ -772,7 +773,7 @@ func loadCustomReporter(path string) (*customReporterHandle, error) {
 }
 
 // Write 向报告器发送一个测试事件对象（Node 事件面：type/data）。
-func (c *customReporterHandle) Write(r builtin.TestResult, status string) {
+func (c *customReporterHandle) Write(r nodetest.TestResult, status string) {
 	if c == nil || c.writeFn == nil {
 		return
 	}
@@ -967,7 +968,7 @@ func findTestFilesIn(dir string) []string {
 
 // runTestFile 加载一个测试文件并执行其中注册的用例，返回结果列表。
 // coverage 非 nil 时启用行级覆盖率统计。
-func runTestFile(path string, enableCoverage bool) ([]builtin.TestResult, map[string]map[int]bool, error) {
+func runTestFile(path string, enableCoverage bool) ([]nodetest.TestResult, map[string]map[int]bool, error) {
 	var eng engine.Engine = interpreter.NewVMEngine()
 	defer eng.Shutdown()
 
@@ -984,7 +985,7 @@ func runTestFile(path string, enableCoverage bool) ([]builtin.TestResult, map[st
 	loader := modmodule.NewLoader(ctx)
 	builtin.RegisterAll(loader)
 	_ = builtin.InstallGetBuiltinModule(ctx, loader)
-	builtin.ResetTestRegistry()
+	nodetest.ResetTestRegistry()
 	// 覆盖率统计需覆盖文件加载阶段（顶层注册代码），故在 loader.Run 前启用。
 	if enableCoverage {
 		vm, _ := ctx.(*interpreter.VM)
@@ -1005,11 +1006,11 @@ func runTestFile(path string, enableCoverage bool) ([]builtin.TestResult, map[st
 	// 在无 pending 任务时置 loopDone，导致后续 PostTask 被丢弃（async
 	// 测试挂起）。若脚本已调用 t.run()（程序化运行），驱动事件循环以派发
 	// run() 的流事件，且不再重复执行用例。
-	if builtin.TestProgrammaticRun {
+	if nodetest.TestProgrammaticRun {
 		vm.RunLoop()
 		return nil, nil, nil
 	}
-	results := builtin.RunRegisteredTests(vm)
+	results := nodetest.RunRegisteredTests(vm)
 	return results, vm.CoverageLines(), nil
 }
 

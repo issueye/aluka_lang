@@ -3,13 +3,14 @@ package builtin
 import (
 	"testing"
 
+	"github.com/aluka-lang/aluka/internal/builtin/nodesqlite"
 	"github.com/aluka-lang/aluka/internal/engine"
 )
 
 // node:sqlite DatabaseSync 端到端：CRUD + 命名参数 + 事务 + bigint 读。
 func TestSQLiteDatabaseSync(t *testing.T) {
 	ctx := newCtx(t)
-	m, err := NewSQLite(ctx)
+	m, err := nodesqlite.NewSQLite(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

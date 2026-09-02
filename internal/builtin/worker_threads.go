@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
+	"github.com/aluka-lang/aluka/internal/builtin/nodeevents"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
@@ -175,7 +177,7 @@ func NewWorkerThreads(ctx engine.Context) (engine.Value, error) {
 
 // newWorkerInstance 创建 Worker 对象并启动 worker goroutine。
 func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value {
-	worker := newEmitterInstance().(engine.Object)
+	worker := nodeevents.NewEmitterInstance().(engine.Object)
 	filename := ""
 	if len(args) > 0 {
 		filename = args[0].String()
@@ -185,7 +187,7 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 	if len(args) > 1 && args[1].IsObject() {
 		if o, ok := args[1].AsObject(); ok {
 			if v, err := o.Get("workerData"); err == nil && !v.IsUndefined() {
-				if dj, err := valueToJSON(v, make(map[engine.Object]bool)); err == nil {
+				if dj, err := nodebase.ValueToJSON(v, make(map[engine.Object]bool)); err == nil {
 					workerDataJSON, _ = json.Marshal(dj)
 				}
 			}
@@ -212,7 +214,7 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 		if len(pa) > 0 {
 			msg = pa[0]
 		}
-		data, _ := json.Marshal(mustValueToJSON(msg))
+		data, _ := json.Marshal(nodebase.MustValueToJSON(msg))
 		if len(pa) > 1 {
 			detachTransferList(pa[1])
 		}
@@ -239,9 +241,9 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 		for {
 			select {
 			case msg := <-state.toMain:
-				mv := jsonToEngine(jsonDecode(msg))
+				mv := nodebase.JSONToEngine(jsonDecode(msg))
 				mainCtx.PostTask(func() {
-					emitEvent(worker, "message", mv)
+					nodebase.EmitEvent(worker, "message", mv)
 				})
 			case <-state.closed:
 				return
@@ -256,8 +258,8 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 		wctx, err := eng.NewContext()
 		if err != nil {
 			mainCtx.PostTask(func() {
-				emitEvent(worker, "error", engine.Str(err.Error()))
-				emitEvent(worker, "exit", engine.IntValue(1))
+				nodebase.EmitEvent(worker, "error", engine.Str(err.Error()))
+				nodebase.EmitEvent(worker, "exit", engine.IntValue(1))
 			})
 			return
 		}
@@ -271,7 +273,7 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 		// parentPort：worker 端消息端口。
 		// Node 语义：parentPort 默认不保持 worker 存活；添加 'message'/
 		// 'messageerror' 监听器后才 ref（worker 脚本只 postMessage 则自然退出）。
-		pp := newEmitterInstance().(engine.Object)
+		pp := nodeevents.NewEmitterInstance().(engine.Object)
 		_ = pp.Set("postMessage", engine.NewFunction("postMessage", func(pa []engine.Value) (engine.Value, error) {
 			var msg engine.Value
 			if len(pa) > 0 {
@@ -280,12 +282,12 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 			if len(pa) > 1 {
 				detachTransferList(pa[1])
 			}
-			data, _ := json.Marshal(mustValueToJSON(msg))
-			mv := jsonToEngine(jsonDecode(string(data)))
+			data, _ := json.Marshal(nodebase.MustValueToJSON(msg))
+			mv := nodebase.JSONToEngine(jsonDecode(string(data)))
 			// 直接 PostTask 到主线程：保证 'message' 先于后续 'exit' 投递
 			// （Node 语义：消息一定在退出事件之前送达）。
 			mainCtx.PostTask(func() {
-				emitEvent(worker, "message", mv)
+				nodebase.EmitEvent(worker, "message", mv)
 			})
 			return engine.Undefined(), nil
 		}))
@@ -353,7 +355,7 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 		_ = wctx.Global().Set("parentPort", pp)
 		_ = wctx.Global().Set("isMainThread", engine.Boolean(false))
 		if workerDataJSON != nil {
-			_ = wctx.Global().Set("workerData", jsonToEngine(jsonDecode(string(workerDataJSON))))
+			_ = wctx.Global().Set("workerData", nodebase.JSONToEngine(jsonDecode(string(workerDataJSON))))
 		}
 
 		// 主线程消息 → worker 端 parentPort 'message'。
@@ -361,9 +363,9 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 			for {
 				select {
 				case msg := <-state.toWorker:
-					mv := jsonToEngine(jsonDecode(msg))
+					mv := nodebase.JSONToEngine(jsonDecode(msg))
 					wctx.PostTask(func() {
-						emitEvent(pp, "message", mv)
+						nodebase.EmitEvent(pp, "message", mv)
 					})
 				case <-state.closed:
 					return
@@ -395,8 +397,8 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 		}
 		if runErr != nil {
 			mainCtx.PostTask(func() {
-				emitEvent(worker, "error", engine.Str(fmt.Sprintf("worker: %v", runErr)))
-				emitEvent(worker, "exit", engine.IntValue(1))
+				nodebase.EmitEvent(worker, "error", engine.Str(fmt.Sprintf("worker: %v", runErr)))
+				nodebase.EmitEvent(worker, "exit", engine.IntValue(1))
 			})
 			return
 		}
@@ -413,9 +415,9 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 		for {
 			select {
 			case msg := <-state.toMain:
-				mv := jsonToEngine(jsonDecode(msg))
+				mv := nodebase.JSONToEngine(jsonDecode(msg))
 				mainCtx.PostTask(func() {
-					emitEvent(worker, "message", mv)
+					nodebase.EmitEvent(worker, "message", mv)
 				})
 				continue
 			default:
@@ -424,7 +426,7 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 		}
 		// worker 事件循环结束 → 主线程 'exit'。
 		mainCtx.PostTask(func() {
-			emitEvent(worker, "exit", engine.IntValue(0))
+			nodebase.EmitEvent(worker, "exit", engine.IntValue(0))
 		})
 	}()
 
@@ -535,7 +537,7 @@ func portStateFor(port engine.Object) *msgPortState {
 // makeMessagePort 构造单端口对象（postMessage/close/ref/unref/start/hasRef）。
 // 通过 _peer 关联对端；无 _peer 的端口 postMessage 直接丢弃。
 func makeMessagePort(ctx engine.Context) engine.Object {
-	port := newEmitterInstance().(engine.Object)
+	port := nodeevents.NewEmitterInstance().(engine.Object)
 	st := portStateFor(port)
 
 	_ = port.Set("postMessage", engine.NewFunction("postMessage", func(pa []engine.Value) (engine.Value, error) {
@@ -548,7 +550,7 @@ func makeMessagePort(ctx engine.Context) engine.Object {
 		}
 		// JSON 序列化（跨 context 一致）。
 		var data []byte
-		if b, err := json.Marshal(mustValueToJSON(msg)); err == nil {
+		if b, err := json.Marshal(nodebase.MustValueToJSON(msg)); err == nil {
 			data = b
 		}
 		var peerV engine.Value
@@ -563,7 +565,7 @@ func makeMessagePort(ctx engine.Context) engine.Object {
 			return engine.Undefined(), nil
 		}
 		peerSt := portStateFor(peerObj)
-		peerSt.push(jsonToEngine(jsonDecode(string(data))))
+		peerSt.push(nodebase.JSONToEngine(jsonDecode(string(data))))
 		// 异步派发 'message'（有监听器时）。
 		deliverPortMessage(ctx, peerObj, peerSt)
 		return engine.Undefined(), nil
@@ -603,7 +605,7 @@ func deliverPortMessage(ctx engine.Context, port engine.Object, st *msgPortState
 					st.mu.Unlock()
 					ctx.PostTask(func() {
 						for _, m := range msgs {
-							emitEvent(port, "message", m)
+							nodebase.EmitEvent(port, "message", m)
 						}
 					})
 					return
@@ -640,8 +642,8 @@ func makeBroadcastChannel(ctx engine.Context, name string) engine.Object {
 		if len(pa) > 1 {
 			detachTransferList(pa[1])
 		}
-		data, _ := json.Marshal(mustValueToJSON(msg))
-		decoded := jsonToEngine(jsonDecode(string(data)))
+		data, _ := json.Marshal(nodebase.MustValueToJSON(msg))
+		decoded := nodebase.JSONToEngine(jsonDecode(string(data)))
 		broadcastRegistry.Lock()
 		var targets []*broadcastChannel
 		for _, c := range broadcastRegistry.channels[name] {
@@ -714,7 +716,7 @@ type threadWorkerInfo struct {
 }
 
 func (tw *threadWorkerInfo) post(v engine.Value) {
-	data, _ := json.Marshal(mustValueToJSON(v))
+	data, _ := json.Marshal(nodebase.MustValueToJSON(v))
 	select {
 	case tw.toChan <- string(data):
 	default:

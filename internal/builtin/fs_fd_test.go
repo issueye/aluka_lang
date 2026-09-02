@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/aluka-lang/aluka/internal/builtin/nodefs"
 	"github.com/aluka-lang/aluka/internal/engine"
 )
 
@@ -14,7 +15,7 @@ import (
 func TestFSOpenSyncKeepsDescriptorAlive(t *testing.T) {
 	t.Chdir(t.TempDir())
 	ctx := newCtx(t)
-	fs, err := NewFS(ctx)
+	fs, err := nodefs.NewFS(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
