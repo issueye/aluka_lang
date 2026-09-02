@@ -175,14 +175,3 @@ func alukaRegisterHash(ctx engine.Context, aluka engine.Value) {
 	}))
 	_ = ao.Set("hash", hashFn)
 }
-
-// argBytes 从参数取字节（Buffer 或字符串）。
-func argBytes(args []engine.Value, i int) []byte {
-	if len(args) <= i || args[i] == nil {
-		return nil
-	}
-	if b, ok := engine.AsBuffer(args[i]); ok {
-		return b
-	}
-	return []byte(args[i].String())
-}

@@ -1042,36 +1042,6 @@ func reportToJS(v interface{}) engine.Value {
 	}
 }
 
-// platformName 返回 Node.js 风格的平台名。
-func platformName() string {
-	switch runtime.GOOS {
-	case "linux":
-		return "linux"
-	case "darwin":
-		return "darwin"
-	case "windows":
-		return "win32"
-	case "freebsd":
-		return "freebsd"
-	default:
-		return runtime.GOOS
-	}
-}
-
-// archName 返回 Node.js 风格的架构名。
-func archName() string {
-	switch runtime.GOARCH {
-	case "amd64":
-		return "x64"
-	case "arm64":
-		return "arm64"
-	case "386":
-		return "ia32"
-	default:
-		return runtime.GOARCH
-	}
-}
-
 // stdinReadLoop 持续读取 os.Stdin 并把数据经 PostTask 投递到 JS 线程。
 // 由 resume() 与 on("data")（Node flowing 模式隐式 resume）共享启动。
 func stdinReadLoop(ctx engine.Context, stdin engine.Object, stdinMu *sync.Mutex, stdinPaused, stdinEnded *bool, stdinRelease *func(), stdinListeners map[string][]stdinListener, stdinEncoding *string) {

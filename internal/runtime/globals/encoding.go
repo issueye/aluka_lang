@@ -316,20 +316,6 @@ func newTextDecoder(args []engine.Value) engine.Value {
 	return dec
 }
 
-// bytesOf 从 Buffer / TypedArray / ArrayBuffer 提取底层字节。
-func bytesOf(v engine.Value) ([]byte, bool) {
-	if b, ok := engine.AsBuffer(v); ok {
-		return b, true
-	}
-	if b, ok := engine.AsArrayBuffer(v); ok {
-		return b, true
-	}
-	if t, ok := engine.AsTypedArray(v); ok {
-		return t.Bytes(), true
-	}
-	return nil, false
-}
-
 // stripBOM 按编码跳过前导 BOM。
 func stripBOM(data []byte, enc string) []byte {
 	if len(data) == 0 {

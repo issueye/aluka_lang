@@ -39,8 +39,8 @@ var bufferProto engine.Object
 var bufferU8Ctor engine.Value
 
 // NewBuffer 注册全局 Buffer 构造器。若引擎已注册 TypedArray 的 Uint8Array
-//（interpreter setupTypedArrays），则保留它并把 Buffer 作为其子类
-//（Buffer.prototype → Uint8Array.prototype，buf instanceof Uint8Array 成立）；
+// （interpreter setupTypedArrays），则保留它并把 Buffer 作为其子类
+// （Buffer.prototype → Uint8Array.prototype，buf instanceof Uint8Array 成立）；
 // 否则回退旧行为：Uint8Array 作为 Buffer 的别名。
 func NewBuffer(ctx engine.Context, cfg BufferConfig) error {
 	// 检测已注册的 TypedArray Uint8Array 构造器（有 BYTES_PER_ELEMENT 静态属性）。
@@ -1063,24 +1063,3 @@ func decodeBase64(s string) ([]byte, error) {
 }
 
 // --- 辅助 ------------------------------------------------------------------
-
-// argInt 安全取第 i 个整数参数（越界或非数字返回 def）。
-func argInt(args []engine.Value, i int, def int) int {
-	if i < len(args) {
-		if n, ok := args[i].Int(); ok {
-			return n
-		}
-	}
-	return def
-}
-
-// clampIdx 把索引限制在 [lo, hi] 范围。
-func clampIdx(idx, lo, hi int) int {
-	if idx < lo {
-		return lo
-	}
-	if idx > hi {
-		return hi
-	}
-	return idx
-}

@@ -43,6 +43,17 @@ var (
 	sqlErr  error
 )
 
+// ResetSQLSingleton 关闭并清空 SQL 连接单例，使调用方可切换 SQLITE_PATH /
+// DATABASE_URL 后重新建连。仅供测试使用（生产路径下连接随进程生命周期）。
+func ResetSQLSingleton() {
+	if sqlDB != nil {
+		_ = sqlDB.Close()
+	}
+	sqlOnce = sync.Once{}
+	sqlDB = nil
+	sqlErr = nil
+}
+
 // alukaRegisterSQL 注册 Aluka.SQL。
 func alukaRegisterSQL(ctx engine.Context, aluka engine.Value) {
 	ao, _ := aluka.AsObject()
