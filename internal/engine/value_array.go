@@ -154,7 +154,7 @@ func (a *ArrayValue) Set(key string, value Value) error {
 		if n < len(a.elems) {
 			for i := n; i < len(a.elems); i++ {
 				if a.isPresent(i) {
-					if attrs, ok := a.attrs[strconv.Itoa(i)]; ok && !attrs.Configurable {
+					if attrs, ok := a.getAttr(strconv.Itoa(i)); ok && !attrs.Configurable {
 						return fmt.Errorf("%w: cannot delete array index %d", ErrTypeError, i)
 					}
 				}
@@ -175,10 +175,10 @@ func (a *ArrayValue) Set(key string, value Value) error {
 	}
 	if idx, ok := arrayIndex(key); ok {
 		if idx < len(a.elems) {
-			if attrs, constrained := a.attrs[key]; constrained && !attrs.Writable {
+			if attrs, constrained := a.getAttr(key); constrained && !attrs.Writable {
 				return nil
 			}
-		} else if a.nonExtensible || !a.attrOf("length").Writable {
+		} else if a.isNonExtensible() || !a.attrOf("length").Writable {
 			return nil
 		}
 		if len(a.elems) <= idx {
@@ -205,7 +205,7 @@ func (a *ArrayValue) Keys() []string {
 			continue
 		}
 		key := strconv.Itoa(i)
-		if attrs, ok := a.attrs[key]; !ok || attrs.Enumerable {
+		if attrs, ok := a.getAttr(key); !ok || attrs.Enumerable {
 			out = append(out, key)
 		}
 	}
@@ -238,13 +238,13 @@ func (a *ArrayValue) Delete(key string) bool {
 		if !a.isPresent(idx) {
 			return true
 		}
-		if attrs, constrained := a.attrs[key]; constrained && !attrs.Configurable {
+		if attrs, constrained := a.getAttr(key); constrained && !attrs.Configurable {
 			return false
 		}
 		a.materializePresent()
 		a.elems[idx] = Undefined()
 		a.present[idx] = false
-		delete(a.attrs, key)
+		a.setAttr(key, defaultPropAttrs)
 		return true
 	}
 	return a.objectValue.Delete(key)
@@ -273,19 +273,19 @@ func (a *ArrayValue) CanAppend(count int) bool {
 	if count < 0 || uint64(len(a.elems))+uint64(count) > uint64(1)<<32-1 {
 		return false
 	}
-	return !a.nonExtensible && a.attrOf("length").Writable
+	return !a.isNonExtensible() && a.attrOf("length").Writable
 }
 
 // HasTrailingIndexAttrs reports whether any of the next count indices already
 // have own property attributes (Object.defineProperty). push 快路径仅在无
 // 自定义描述符时才能 Append；否则必须走 Set 以遵守 writable/accessor。
 func (a *ArrayValue) HasTrailingIndexAttrs(count int) bool {
-	if count <= 0 || len(a.attrs) == 0 {
+	if count <= 0 || a.ext == nil || len(a.ext.attrs) == 0 {
 		return false
 	}
 	start := len(a.elems)
 	end := start + count
-	for key := range a.attrs {
+	for key := range a.ext.attrs {
 		if key == "length" {
 			continue
 		}
@@ -308,7 +308,7 @@ func (a *ArrayValue) CanWriteRange(start, count int) bool {
 			if d.HasGet || !d.Writable {
 				return false
 			}
-		} else if a.nonExtensible {
+		} else if a.isNonExtensible() {
 			return false
 		}
 	}
@@ -322,7 +322,7 @@ func (a *ArrayValue) IsFullyWritable() bool {
 	}
 	for i := range a.elems {
 		if !a.isPresent(i) {
-			if a.nonExtensible {
+			if a.isNonExtensible() {
 				return false
 			}
 			continue
@@ -378,10 +378,10 @@ func (a *ArrayValue) AppendValues(vs []Value) {
 func (a *ArrayValue) SetIndex(idx int, value Value) {
 	key := strconv.Itoa(idx)
 	if idx < len(a.elems) {
-		if attrs, ok := a.attrs[key]; ok && !attrs.Writable {
+		if attrs, ok := a.getAttr(key); ok && !attrs.Writable {
 			return
 		}
-	} else if a.nonExtensible || !a.attrOf("length").Writable {
+	} else if a.isNonExtensible() || !a.attrOf("length").Writable {
 		return
 	}
 	for len(a.elems) <= idx {

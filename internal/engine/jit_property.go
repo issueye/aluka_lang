@@ -6,7 +6,7 @@ package engine
 // and failed guards remain unobservable.
 func OwnDataProperty(value Value, key string) (Value, bool) {
 	obj, isObject := value.(*objectValue)
-	if !isObject || obj.shape == nil || obj.deleted != nil && obj.deleted[key] {
+	if !isObject || obj.shape == nil || obj.isDeleted(key) {
 		return nil, false
 	}
 	idx, exists := obj.shape.lookup(key)
@@ -29,7 +29,7 @@ func OwnDataProperty(value Value, key string) (Value, bool) {
 // shape and slot before reusing a cached access.
 func NumericOwnProperty(value Value, key string) (number float64, shapeID uint64, slot int, ok bool) {
 	obj, isObject := value.(*objectValue)
-	if !isObject || obj.shape == nil || obj.deleted != nil && obj.deleted[key] {
+	if !isObject || obj.shape == nil || obj.isDeleted(key) {
 		return 0, 0, 0, false
 	}
 	idx, exists := obj.shape.lookup(key)
@@ -49,7 +49,7 @@ func NumericOwnProperty(value Value, key string) (number float64, shapeID uint64
 func GuardedSetNumericOwnProperty(value Value, key string, shapeID uint64, slot int, number float64) bool {
 	obj, isObject := value.(*objectValue)
 	if !isObject || obj.shape == nil || obj.shape.id != shapeID || slot < 0 || slot >= len(obj.slots) ||
-		obj.deleted != nil && obj.deleted[key] {
+		obj.isDeleted(key) {
 		return false
 	}
 	if currentSlot, exists := obj.shape.lookup(key); !exists || currentSlot != slot {
@@ -73,7 +73,7 @@ func GuardedSetNumericOwnProperty(value Value, key string, shapeID uint64, slot 
 func GuardedSetNumericOwnPropertySlot(value Value, key string, shapeID uint64, slot int, number float64) bool {
 	obj, isObject := value.(*objectValue)
 	if !isObject || obj.shape == nil || obj.shape.id != shapeID || slot < 0 || slot >= len(obj.slots) ||
-		obj.deleted != nil && obj.deleted[key] {
+		obj.isDeleted(key) {
 		return false
 	}
 	property := obj.slots[slot]

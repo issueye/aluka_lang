@@ -778,6 +778,9 @@ func stripAssignSuffix(op string) string {
 func (c *Compiler) assignTo(ref ast.Node) error {
 	switch r := ref.(type) {
 	case *ast.Identifier:
+		if c.cur().inlineCandidates != nil {
+			c.cur().inlineCandidates[r.Name] = -1
+		}
 		kind, idx := c.resolve(r.Name)
 		switch kind {
 		case "local":

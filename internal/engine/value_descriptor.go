@@ -85,7 +85,7 @@ func AllOwnKeys(obj Object) []string {
 			if name == "length" {
 				continue
 			}
-			if a.deleted != nil && a.deleted[name] {
+			if a.isDeleted(name) {
 				continue
 			}
 			out = append(out, name)
@@ -103,7 +103,7 @@ func AllOwnKeys(obj Object) []string {
 	}
 	out := make([]string, 0, len(ov.shape.names))
 	for _, name := range ov.shape.names {
-		if ov.deleted != nil && ov.deleted[name] {
+		if ov.isDeleted(name) {
 			continue
 		}
 		out = append(out, name)
@@ -238,7 +238,7 @@ func DefineOwnProperty(obj Object, key string, d Descriptor) error {
 	}
 
 	curVal, exists := ov.getSlot(key)
-	if !exists && ov.nonExtensible {
+	if !exists && ov.isNonExtensible() {
 		return defineRejected("Cannot define property %s, object is not extensible", key)
 	}
 	curIsAcc := exists && IsAccessorValue(curVal)
@@ -319,14 +319,7 @@ func DefineOwnProperty(obj Object, key string, d Descriptor) error {
 	}
 
 	// attrs 收敛：全默认则移除条目，保持热路径零开销。
-	if eff == defaultPropAttrs {
-		delete(ov.attrs, key)
-	} else {
-		if ov.attrs == nil {
-			ov.attrs = make(map[string]PropAttrs)
-		}
-		ov.attrs[key] = eff
-	}
+	ov.setAttr(key, eff)
 	return nil
 }
 
@@ -343,7 +336,7 @@ func defineArrayOwnProperty(a *ArrayValue, key string, d Descriptor) error {
 			return fmt.Errorf("%w: accessor must be a function or undefined", ErrTypeError)
 		}
 		value, exists := GetOwnSlot(a, key)
-		if !exists && (a.nonExtensible || idx >= len(a.elems) && !a.attrOf("length").Writable) {
+		if !exists && (a.isNonExtensible() || idx >= len(a.elems) && !a.attrOf("length").Writable) {
 			return defineRejected("Cannot define property %s", key)
 		}
 		cur := a.attrOf(key)
@@ -409,14 +402,7 @@ func defineArrayOwnProperty(a *ArrayValue, key string, d Descriptor) error {
 			a.present[idx] = true
 		}
 		// attrs 收敛：全默认仅移除条目；length 不在 map 中，索引约束才物化 map。
-		if eff == defaultPropAttrs {
-			delete(a.attrs, key)
-		} else {
-			if a.attrs == nil {
-				a.attrs = make(map[string]PropAttrs)
-			}
-			a.attrs[key] = eff
-		}
+		a.setAttr(key, eff)
 		a.objectValue.setSlot("length", IntValue(len(a.elems)))
 		return nil
 	}
@@ -440,7 +426,7 @@ func defineArrayOwnProperty(a *ArrayValue, key string, d Descriptor) error {
 		if n < len(a.elems) {
 			for i := len(a.elems) - 1; i >= n; i-- {
 				if a.isPresent(i) {
-					if attrs, ok := a.attrs[strconv.Itoa(i)]; ok && !attrs.Configurable {
+					if attrs, ok := a.getAttr(strconv.Itoa(i)); ok && !attrs.Configurable {
 						return defineRejected("Cannot delete non-configurable array index %d", i)
 					}
 				}
@@ -499,7 +485,7 @@ func IsExtensible(obj Object) bool {
 		}
 	}
 	if ov := unwrapObjectValue(obj); ov != nil {
-		return !ov.nonExtensible
+		return !ov.isNonExtensible()
 	}
 	return true
 }
@@ -512,7 +498,7 @@ func PreventExtensions(obj Object) bool {
 		}
 	}
 	if ov := unwrapObjectValue(obj); ov != nil {
-		ov.nonExtensible = true
+		ov.setNonExtensible()
 		return true
 	}
 	return false

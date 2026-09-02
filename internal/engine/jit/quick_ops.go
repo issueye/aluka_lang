@@ -54,6 +54,39 @@ func quickStringConcat(l, r quickValue, objects *[maxQuickSlots]engine.Value, co
 	return quickAlloc(objects, count, quickString, engine.ConcatStrings(objects[l.ref], objects[r.ref]))
 }
 
+// quickStringAnyConcat 支持 String 与任意原始类型（Number/Boolean/Undefined/Null/String）的快速拼接。
+func quickStringAnyConcat(str quickValue, other quickValue, strIsLeft bool, objects *[maxQuickSlots]engine.Value, count *int) (quickValue, bool) {
+	if str.kind != quickString || int(str.ref) >= maxQuickSlots || objects[str.ref] == nil {
+		return quickValue{}, false
+	}
+	var otherVal engine.Value
+	switch {
+	case other.isNumber():
+		otherVal = engine.Number(other.num)
+	case other.kind == quickBoolean:
+		otherVal = engine.Boolean(other.b)
+	case other.kind == quickUndefined:
+		otherVal = engine.Undefined()
+	case other.kind == quickNull:
+		otherVal = engine.Null()
+	case other.kind == quickString:
+		if int(other.ref) >= maxQuickSlots || objects[other.ref] == nil {
+			return quickValue{}, false
+		}
+		otherVal = objects[other.ref]
+	default:
+		return quickValue{}, false
+	}
+
+	var res engine.Value
+	if strIsLeft {
+		res = engine.ConcatStrings(objects[str.ref], otherVal)
+	} else {
+		res = engine.ConcatStrings(otherVal, objects[str.ref])
+	}
+	return quickAlloc(objects, count, quickString, res)
+}
+
 // quickStringCompare implements R3-4 same-type String relational comparison.
 // The order is exactly Tier 0's: compareValues uses
 // strings.Compare(l.String(), r.String()) on the flattened values, so this

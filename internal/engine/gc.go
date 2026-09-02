@@ -241,7 +241,7 @@ func markFromRoots(roots []Value) map[*objectValue]bool {
 
 		// 遍历 own 属性引用。
 		for i, name := range o.shape.names {
-			if o.deleted != nil && o.deleted[name] {
+			if o.isDeleted(name) {
 				continue
 			}
 			if i < len(o.slots) && o.slots[i] != nil {

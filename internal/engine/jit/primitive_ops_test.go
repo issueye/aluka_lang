@@ -49,6 +49,9 @@ func TestExecuteStringConcat(t *testing.T) {
 		{name: "both-empty", left: engine.Str(""), right: engine.Str(""), want: ""},
 		{name: "rope", left: engine.Str(strings.Repeat("a", 40)), right: engine.Str(strings.Repeat("b", 40)), want: rope},
 		{name: "chain", left: engine.Str("ab"), right: engine.Str("cd"), want: "abcd"},
+		{name: "string-number", left: engine.Str("a"), right: engine.Number(1), want: "a1"},
+		{name: "number-string", left: engine.Number(1), right: engine.Str("a"), want: "1a"},
+		{name: "string-undefined", left: engine.Str("a"), right: engine.Undefined(), want: "aundefined"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,15 +64,13 @@ func TestExecuteStringConcat(t *testing.T) {
 			}
 		})
 	}
-	// Mixed operands: String + Number concat requires Tier 0 coercion.
+	// Mixed operands: String + BigInt / String + Object concat requires Tier 0.
 	for _, tt := range []struct {
 		name        string
 		left, right engine.Value
 	}{
-		{name: "string-number", left: engine.Str("a"), right: engine.Number(1)},
-		{name: "number-string", left: engine.Number(1), right: engine.Str("a")},
 		{name: "string-bigint", left: engine.Str("a"), right: engine.BigIntFromInt(1)},
-		{name: "string-undefined", left: engine.Str("a"), right: engine.Undefined()},
+		{name: "string-object", left: engine.Str("a"), right: engine.NewObject()},
 	} {
 		t.Run("mixed-"+tt.name, func(t *testing.T) {
 			_, reason, err := executeBinary(t, bytecode.OpAdd, tt.left, tt.right)
@@ -548,7 +549,7 @@ func TestTraceBigIntArithmetic(t *testing.T) {
 	}
 }
 
-// TestTraceStringGuardFallsBack proves a mixed String+Number add inside a
+// TestTraceStringGuardFallsBack proves an unsupported mixed String+Object add inside a
 // trace aborts the whole slice (no partial commit) and returns GuardFailed.
 func TestTraceStringGuardFallsBack(t *testing.T) {
 	tmpl := concatLoopTemplate()
@@ -558,7 +559,7 @@ func TestTraceStringGuardFallsBack(t *testing.T) {
 	}
 	defer trace.Close()
 	locals := []engine.Value{
-		engine.Undefined(), engine.Str("a"), engine.Number(1), engine.Str(""), engine.Number(0), engine.Number(3),
+		engine.Undefined(), engine.Str("a"), engine.NewObject(), engine.Str(""), engine.Number(0), engine.Number(3),
 	}
 	_, reason, err := trace.ExecuteBudgetDetailed(locals, 0)
 	if err != nil || reason != GuardFailed {

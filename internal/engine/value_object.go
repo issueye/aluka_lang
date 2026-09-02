@@ -7,19 +7,21 @@ import (
 	"strings"
 )
 
+// objectExt 承载对象偏离默认行为的低频扩展状态（惰性分配）。
+// 绝大多数普通对象 ext 为 nil，使 objectValue 保持紧凑尺寸（104 字节）并减少内存分配与 GC 压力。
+type objectExt struct {
+	deleted       map[string]bool      // 对象级已删除属性（避免污染共享 Shape）
+	attrs         map[string]PropAttrs // defineProperty 约束的非默认属性特性
+	nonExtensible bool                 // [[Extensible]] 标志
+}
+
 // objectValue 是 JS Object 的实现：隐藏类（Shape）+ 槽位数组。
 // 同类对象共享 Shape，属性访问经 shape.index 映射 O(1)。
 type objectValue struct {
-	shape   *Shape
-	slots   []Value
-	deleted map[string]bool // 对象级已删除属性（避免污染共享 Shape）
-	proto   Object          // [[Prototype]]
-	// attrs 记录经 defineProperty 约束过、偏离默认标志的属性
-	// （writable/enumerable/configurable）。惰性分配：普通对象无此 map，
-	// 热路径（IC 直写/Keys）只多一次 nil 判断。
-	attrs map[string]PropAttrs
-	// nonExtensible models [[Extensible]] without penalizing the default case.
-	nonExtensible bool
+	shape *Shape
+	slots []Value
+	proto Object
+	ext   *objectExt // 惰性分配：99.9% 普通对象为 nil
 	// small 是小对象（≤4 属性）的内嵌槽位后备：slots 指向它即可省去
 	// 一次独立 slice 分配（字面量/短生命周期对象分配热路径的主力开销）。
 	// 超过 4 属性时 append 自动迁移到独立堆数组，语义与纯 slice 一致。
@@ -226,7 +228,7 @@ func (o *objectValue) String() string {
 	b.WriteString("{ ")
 	first := true
 	for i, name := range names {
-		if o.deleted[name] {
+		if o.isDeleted(name) {
 			continue
 		}
 		if !first {
@@ -259,9 +261,67 @@ func (o *objectValue) AsObject() (Object, bool) { return o, true }
 
 func (o *objectValue) AsFunction() (Function, bool) { return nil, false }
 
+func (o *objectValue) isDeleted(key string) bool {
+	return o.ext != nil && o.ext.deleted != nil && o.ext.deleted[key]
+}
+
+func (o *objectValue) isNonExtensible() bool {
+	return o.ext != nil && o.ext.nonExtensible
+}
+
+func (o *objectValue) setNonExtensible() {
+	o.ensureExt().nonExtensible = true
+}
+
+func (o *objectValue) ensureExt() *objectExt {
+	if o.ext == nil {
+		o.ext = &objectExt{}
+	}
+	return o.ext
+}
+
+func (o *objectValue) setDeleted(key string) {
+	ext := o.ensureExt()
+	if ext.deleted == nil {
+		ext.deleted = make(map[string]bool)
+	}
+	ext.deleted[key] = true
+	if ext.attrs != nil {
+		delete(ext.attrs, key)
+	}
+}
+
+func (o *objectValue) unmarkDeleted(key string) {
+	if o.ext != nil && o.ext.deleted != nil {
+		delete(o.ext.deleted, key)
+	}
+}
+
+func (o *objectValue) setAttr(key string, attrs PropAttrs) {
+	if attrs == defaultPropAttrs {
+		if o.ext != nil && o.ext.attrs != nil {
+			delete(o.ext.attrs, key)
+		}
+		return
+	}
+	ext := o.ensureExt()
+	if ext.attrs == nil {
+		ext.attrs = make(map[string]PropAttrs)
+	}
+	ext.attrs[key] = attrs
+}
+
+func (o *objectValue) getAttr(key string) (PropAttrs, bool) {
+	if o.ext == nil || o.ext.attrs == nil {
+		return defaultPropAttrs, false
+	}
+	a, ok := o.ext.attrs[key]
+	return a, ok
+}
+
 // getSlot 读取本对象 own 属性（含 deleted 检查）。
 func (o *objectValue) getSlot(key string) (Value, bool) {
-	if o.deleted != nil && o.deleted[key] {
+	if o.isDeleted(key) {
 		return Undefined(), false
 	}
 	idx, ok := o.shape.lookup(key)
@@ -304,10 +364,10 @@ func GetOwnSlot(val Value, key string) (Value, bool) {
 
 // setSlot 写入本对象 own 属性；不存在时经 Shape transition 添加。
 func (o *objectValue) setSlot(key string, value Value) {
-	if o.deleted != nil && o.deleted[key] {
+	if o.isDeleted(key) {
 		// 复用原槽位。
 		if idx, ok := o.shape.lookup(key); ok {
-			delete(o.deleted, key)
+			o.unmarkDeleted(key)
 			o.slots[idx] = value
 			return
 		}
@@ -346,10 +406,12 @@ func (o *objectValue) Get(key string) (Value, error) {
 func (o *objectValue) Set(key string, value Value) error {
 	// writable:false 拦截（sloppy 语义：静默忽略；严格模式 TypeError 待
 	// VM 严格性建模后接入）。IC 快路径（SetCached）有同款守卫。
-	if a, ok := o.attrs[key]; ok && !a.Writable {
-		return nil
+	if o.ext != nil && o.ext.attrs != nil {
+		if a, ok := o.ext.attrs[key]; ok && !a.Writable {
+			return nil
+		}
 	}
-	if _, exists := o.getSlot(key); !exists && o.nonExtensible {
+	if _, exists := o.getSlot(key); !exists && o.isNonExtensible() {
 		return nil
 	}
 	o.setSlot(key, value)
@@ -360,14 +422,16 @@ func (o *objectValue) Keys() []string {
 	names := o.shape.names
 	out := make([]string, 0, len(names))
 	for _, name := range names {
-		if o.deleted != nil && o.deleted[name] {
+		if o.isDeleted(name) {
 			continue
 		}
 		if IsSymbolKey(name) {
 			continue
 		}
-		if a, ok := o.attrs[name]; ok && !a.Enumerable {
-			continue
+		if o.ext != nil && o.ext.attrs != nil {
+			if a, ok := o.ext.attrs[name]; ok && !a.Enumerable {
+				continue
+			}
 		}
 		out = append(out, name)
 	}
@@ -380,21 +444,21 @@ func (o *objectValue) Delete(key string) bool {
 	if _, ok := o.getSlot(key); !ok {
 		return true // property doesn't exist — delete returns true
 	}
-	if a, ok := o.attrs[key]; ok && !a.Configurable {
-		return false
+	if o.ext != nil && o.ext.attrs != nil {
+		if a, ok := o.ext.attrs[key]; ok && !a.Configurable {
+			return false
+		}
 	}
-	if o.deleted == nil {
-		o.deleted = make(map[string]bool)
-	}
-	o.deleted[key] = true
-	delete(o.attrs, key)
+	o.setDeleted(key)
 	return true
 }
 
 // attrOf 返回属性当前生效标志（无约束条目时为默认全 true）。
 func (o *objectValue) attrOf(key string) PropAttrs {
-	if a, ok := o.attrs[key]; ok {
-		return a
+	if o.ext != nil && o.ext.attrs != nil {
+		if a, ok := o.ext.attrs[key]; ok {
+			return a
+		}
 	}
 	return defaultPropAttrs
 }

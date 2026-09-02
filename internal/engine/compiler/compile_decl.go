@@ -113,14 +113,16 @@ func (c *Compiler) compileFunction(name string, params []*ast.Identifier, patter
 	restoreControlFlow := c.isolateControlFlow()
 	defer restoreControlFlow()
 
-	// I-1：简单函数体判定（单表达式或单条 `return expr;`），供可内联标记。
+	// I-1：简单函数体判定（单表达式、空函数体或单条 `return [expr];`），供可内联标记。
 	simpleBody := false
 	switch b := body.(type) {
 	case ast.Expression:
 		simpleBody = true
 	case *ast.BlockStmt:
-		if len(b.Body) == 1 {
-			if rs, ok := b.Body[0].(*ast.ReturnStmt); ok && rs.Arg != nil {
+		if len(b.Body) == 0 {
+			simpleBody = true
+		} else if len(b.Body) == 1 {
+			if _, ok := b.Body[0].(*ast.ReturnStmt); ok {
 				simpleBody = true
 			}
 		}

@@ -17,8 +17,8 @@ func TestArrayDenseRepresentation(t *testing.T) {
 	if a.present != nil {
 		t.Fatalf("新建数组应稠密（present==nil），got %v", a.present)
 	}
-	if a.attrs != nil {
-		t.Fatalf("新建数组不应持有 attrs map，got %v", a.attrs)
+	if a.ext != nil && a.ext.attrs != nil {
+		t.Fatalf("新建数组不应持有 attrs map，got %v", a.ext.attrs)
 	}
 	if got := a.attrOf("length"); got != (PropAttrs{Writable: true}) {
 		t.Fatalf("attrOf(length) = %+v, want {W:true}", got)
@@ -123,8 +123,8 @@ func TestArrayLengthWritableFlip(t *testing.T) {
 	if err := DefineOwnProperty(a, "length", Descriptor{HasEnumerable: true, Enumerable: true}); err == nil {
 		t.Fatal("length enumerable:true 应被拒绝")
 	}
-	if a.attrs != nil {
-		t.Fatalf("length 标志翻转不应物化 attrs map，got %v", a.attrs)
+	if a.ext != nil && a.ext.attrs != nil {
+		t.Fatalf("length 标志翻转不应物化 attrs map，got %v", a.ext.attrs)
 	}
 }
 
@@ -133,7 +133,7 @@ func TestArrayIndexAttrsLazyMap(t *testing.T) {
 	if err := DefineOwnProperty(a, "0", Descriptor{HasWritable: true, Writable: false, HasValue: true, Value: IntValue(7), HasEnumerable: true, Enumerable: true, HasConfigurable: true, Configurable: true}); err != nil {
 		t.Fatal(err)
 	}
-	if a.attrs == nil {
+	if a.ext == nil || a.ext.attrs == nil {
 		t.Fatal("索引约束应物化 attrs map")
 	}
 	if err := a.Set("0", IntValue(9)); err != nil {
@@ -146,8 +146,8 @@ func TestArrayIndexAttrsLazyMap(t *testing.T) {
 	if err := DefineOwnProperty(a, "0", Descriptor{HasWritable: true, Writable: true, HasEnumerable: true, Enumerable: true, HasConfigurable: true, Configurable: true}); err != nil {
 		t.Fatal(err)
 	}
-	if len(a.attrs) != 0 {
-		t.Fatalf("默认标志应收敛移除条目，got %v", a.attrs)
+	if a.ext != nil && len(a.ext.attrs) != 0 {
+		t.Fatalf("默认标志应收敛移除条目，got %v", a.ext.attrs)
 	}
 	if err := a.Set("0", IntValue(9)); err != nil {
 		t.Fatal(err)
@@ -223,6 +223,6 @@ func TestArrayTrailingIndexAttrsGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !a.HasTrailingIndexAttrs(1) {
-		t.Fatalf("尾随索引残留自定义描述符时应回退 Set 路径, attrs=%v", a.attrs)
+		t.Fatalf("尾随索引残留自定义描述符时应回退 Set 路径, ext=%v", a.ext)
 	}
 }

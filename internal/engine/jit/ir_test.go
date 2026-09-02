@@ -311,7 +311,7 @@ func TestExecuteGuardFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]engine.Value{{engine.Str("1")}, nil} {
+	for _, args := range [][]engine.Value{{engine.NewObject()}, nil} {
 		_, reason, err := p.Execute(engine.Undefined(), args)
 		if err != nil || reason != GuardFailed {
 			t.Fatalf("reason=%v err=%v", reason, err)

@@ -153,7 +153,7 @@ func TestAdaptiveThresholdCoolDownRaisesThreshold(t *testing.T) {
 		fmt.Fprintf(&body, "for (let j = 0; j < 1000; j++) acc += f%d(1);\n", i)
 	}
 	for i := 0; i < 8; i++ {
-		fmt.Fprintf(&body, "acc += f%d(\"s\");\n", i)
+		fmt.Fprintf(&body, "acc += f%d({});\n", i)
 	}
 	body.WriteString("function g(n) { return n * 2; }\n")
 	body.WriteString("for (let i = 0; i < 1500; i++) acc += g(i);\n")

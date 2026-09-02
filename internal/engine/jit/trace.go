@@ -611,7 +611,34 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 				if in.Op != OpAdd {
 					return DeoptExit{}, GuardFailed, nil
 				}
+				if objectCount >= maxQuickSlots {
+					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), &objects, &objectCount)
+				}
 				result, ok := quickStringConcat(l, r, &objects, &objectCount)
+				if !ok {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				push(result)
+			case l.kind == quickString:
+				if in.Op != OpAdd {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				if objectCount >= maxQuickSlots {
+					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), &objects, &objectCount)
+				}
+				result, ok := quickStringAnyConcat(l, r, true, &objects, &objectCount)
+				if !ok {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				push(result)
+			case r.kind == quickString:
+				if in.Op != OpAdd {
+					return DeoptExit{}, GuardFailed, nil
+				}
+				if objectCount >= maxQuickSlots {
+					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), &objects, &objectCount)
+				}
+				result, ok := quickStringAnyConcat(r, l, false, &objects, &objectCount)
 				if !ok {
 					return DeoptExit{}, GuardFailed, nil
 				}
@@ -785,6 +812,9 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 					}
 					return DeoptExit{ID: -1, ResumePC: t.startPC}, Yielded, nil
 				}
+				if objectCount > 24 {
+					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), &objects, &objectCount)
+				}
 			}
 			ip = int(in.Operand)
 		case OpJumpTrue, OpJumpFalse:
@@ -849,4 +879,42 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 		}
 	}
 	return DeoptExit{}, Malformed, fmt.Errorf("jit: trace fell off program")
+}
+
+// compactTraceObjects 紧凑化回收 trace 循环中的非存活临时对象引用，
+// 保持常量池在前部，并重写当前活跃 locals 的 ref，避免在长循环中填满固定对象池。
+func compactTraceObjects(values []quickValue, stringConstsCount int, objects *[maxQuickSlots]engine.Value, objectCount *int) {
+	var newObjects [maxQuickSlots]engine.Value
+	newCount := stringConstsCount
+	for i := 0; i < stringConstsCount && i < maxQuickSlots; i++ {
+		newObjects[i] = objects[i]
+	}
+
+	for i := range values {
+		v := &values[i]
+		if v.kind == quickString || v.kind == quickObject || v.kind == quickBigInt || v.kind == quickSymbol {
+			oldRef := int(v.ref)
+			if oldRef < len(objects) && objects[oldRef] != nil {
+				if oldRef < stringConstsCount {
+					continue
+				}
+				found := -1
+				for j := stringConstsCount; j < newCount; j++ {
+					if newObjects[j] == objects[oldRef] {
+						found = j
+						break
+					}
+				}
+				if found >= 0 {
+					v.ref = uint8(found)
+				} else if newCount < maxQuickSlots {
+					newObjects[newCount] = objects[oldRef]
+					v.ref = uint8(newCount)
+					newCount++
+				}
+			}
+		}
+	}
+	*objects = newObjects
+	*objectCount = newCount
 }

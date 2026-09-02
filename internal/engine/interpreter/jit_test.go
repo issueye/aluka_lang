@@ -788,7 +788,7 @@ func TestQuickJITGuardFallsBackToInterpreter(t *testing.T) {
 		function add(a, b) { return a + b; }
 		add(1, 2);
 		globalThis.jitFallback = add("a", "b");
-		globalThis.jitMixed = add("a", 1);
+		globalThis.jitMixed = add("a", {});
 	`, "jit-guard.js")
 	if err != nil {
 		t.Fatal(err)
@@ -798,13 +798,11 @@ func TestQuickJITGuardFallsBackToInterpreter(t *testing.T) {
 		t.Fatalf("result=%v err=%v", got, err)
 	}
 	mixed, err := vm.Global().Get("jitMixed")
-	if err != nil || mixed.String() != "a1" {
+	if err != nil || mixed.String() != "a{}" {
 		t.Fatalf("mixed result=%v err=%v", mixed, err)
 	}
 	stats := vm.JITStats()
-	// R3-4: same-type String `+` now concatenates inside Quick (no guard
-	// failure for add("a","b")); a mixed String+Number operand still falls
-	// back to Tier 0 for the coercion, so exactly one guard failure remains.
+	// String + Number/Boolean 现在在 Quick 内执行；String + Object 仍回退到 Tier 0。
 	if stats.Compiled != 1 || stats.GuardFailures != 1 || stats.Executed < 2 {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}

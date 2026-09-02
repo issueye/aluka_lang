@@ -191,6 +191,18 @@ func (p *Program) executeQuick(thisVal quickValue, args *[8]quickValue, argCount
 					return quickValue{}, GuardFailed, nil
 				}
 				push(result)
+			case l.kind == quickString:
+				result, ok := quickStringAnyConcat(l, r, true, objects, objectCount)
+				if !ok {
+					return quickValue{}, GuardFailed, nil
+				}
+				push(result)
+			case r.kind == quickString:
+				result, ok := quickStringAnyConcat(r, l, false, objects, objectCount)
+				if !ok {
+					return quickValue{}, GuardFailed, nil
+				}
+				push(result)
 			case l.kind == quickBigInt && r.kind == quickBigInt:
 				// R3-5: same-type BigInt addition.
 				result, ok := quickBigIntArith(l, r, objects, objectCount, OpAdd)
@@ -199,8 +211,7 @@ func (p *Program) executeQuick(thisVal quickValue, args *[8]quickValue, argCount
 				}
 				push(result)
 			default:
-				// Mixed types (String+Number coercion, BigInt+Number TypeError,
-				// ...) fall back to Tier 0.
+				// Other mixed types (BigInt+Number TypeError, ...) fall back to Tier 0.
 				return quickValue{}, GuardFailed, nil
 			}
 		case OpSub, OpMul, OpDiv, OpMod:

@@ -173,7 +173,7 @@ func (c *ICache) GetCached(obj Value, key string) (Value, bool) {
 		c.getMiss++
 		return Undefined(), false
 	}
-	if ov.deleted != nil && ov.deleted[key] {
+	if ov.isDeleted(key) {
 		c.getMiss++
 		return Undefined(), false // 已删除，缓存失效
 	}
@@ -213,17 +213,15 @@ func (c *ICache) SetCached(obj Value, key string, val Value) bool {
 		c.setMiss++
 		return false
 	}
-	if ov.deleted != nil && ov.deleted[key] {
+	if ov.isDeleted(key) {
 		c.setMiss++
 		return false // 已删除，缓存失效（走完整路径恢复）
 	}
 	// writable:false 属性不可直写：回退完整路径（objectValue.Set 静默
 	// 拒绝）。attrs 惰性分配，普通对象此处仅一次 nil 判断。
-	if ov.attrs != nil {
-		if a, ok := ov.attrs[key]; ok && !a.Writable {
-			c.setMiss++
-			return false
-		}
+	if a, ok := ov.getAttr(key); ok && !a.Writable {
+		c.setMiss++
+		return false
 	}
 	// accessor 槽位不可直写：必须回退到 setProperty 的 FindAccessor 拦截
 	// 调 setter（IC 前置后 accessor 槽位会到达这里）。
@@ -231,7 +229,7 @@ func (c *ICache) SetCached(obj Value, key string, val Value) bool {
 		c.setMiss++
 		return false
 	}
-	if ov.nonExtensible {
+	if ov.isNonExtensible() {
 		// Existing properties remain writable; this guard documents that IC only
 		// ever writes an existing slot and cannot add a property.
 		if _, exists := ov.getSlot(key); !exists {
@@ -251,7 +249,7 @@ func (c *ICache) SetPut(obj Value, key string) {
 	if !ok {
 		return
 	}
-	if ov.deleted != nil && ov.deleted[key] {
+	if ov.isDeleted(key) {
 		return
 	}
 	if idx, ok := ov.shape.lookup(key); ok {
@@ -268,7 +266,7 @@ func (c *ICache) CallCached(pc int, obj Value, key string) (Value, bool) {
 		c.callMiss++
 		return Undefined(), false
 	}
-	if ov.deleted != nil && ov.deleted[key] {
+	if ov.isDeleted(key) {
 		c.callMiss++
 		return Undefined(), false // 已删除：槽位未置空，必须失效走完整解析
 	}
@@ -300,7 +298,7 @@ func (c *ICache) CallPut(pc int, obj Value, key string, fn Value) {
 	if _, isAcc := fn.(*AccessorValue); isAcc {
 		return // accessor 走拦截路径
 	}
-	if ov.deleted != nil && ov.deleted[key] {
+	if ov.isDeleted(key) {
 		return
 	}
 	idx, ok := ov.shape.lookup(key)
