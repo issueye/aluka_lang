@@ -28,9 +28,9 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodeevents"
 	"github.com/aluka-lang/aluka/internal/builtin/nodenet"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
 // NewHTTP 构造 node:http 模块的导出对象。
@@ -446,7 +446,7 @@ func (s *httpServerState) handleUpgradeRequest(w http.ResponseWriter, r *http.Re
 	socket, _ := nodenet.NewSocket(s.ctx, conn)
 	s.ctx.PostTask(func() {
 		req := newIncomingMessage(r, nil)
-		nodebase.EmitEvent(serverObj, event, req, socket, globals.NewBufferInstance(head))
+		nodebase.EmitEvent(serverObj, event, req, socket, gbuffer.NewBufferInstance(head))
 	})
 }
 
@@ -513,7 +513,7 @@ func newIncomingMessage(r *http.Request, body []byte) engine.Value {
 // Buffer 的 String() 返回内容，`body += chunk` 等字符串拼接路径行为不变。
 func emitIncomingData(msg engine.Value, body []byte) {
 	if len(body) > 0 {
-		nodebase.EmitEvent(msg, "data", globals.NewBufferInstance(body))
+		nodebase.EmitEvent(msg, "data", gbuffer.NewBufferInstance(body))
 	}
 	nodebase.EmitEvent(msg, "end")
 }

@@ -14,6 +14,9 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gproc"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gtimers"
 )
 
 // newUncaughtTestEnv 创建带 process/timers/console 的 VM 上下文。
@@ -25,13 +28,13 @@ func newUncaughtTestEnv(t *testing.T) engine.Context {
 		t.Fatalf("NewContext: %v", err)
 	}
 	t.Cleanup(func() { ctx.Close() })
-	if err := NewProcess(ctx, ProcessConfig{}); err != nil {
+	if err := gproc.NewProcess(ctx, gproc.ProcessConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewTimers(ctx, TimerConfig{}); err != nil {
+	if err := gtimers.NewTimers(ctx, gtimers.TimerConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewConsole(ctx, ConsoleConfig{}); err != nil {
+	if err := gconsole.NewConsole(ctx, gconsole.ConsoleConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())

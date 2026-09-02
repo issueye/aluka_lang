@@ -27,7 +27,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 	"golang.org/x/crypto/scrypt"
 )
 
@@ -65,7 +65,7 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 		if len(args) > 2 && !args[2].IsUndefined() && !args[2].IsNull() {
 			switch encoding := args[2].String(); encoding {
 			case "buffer":
-				return globals.NewBufferInstance(sum), nil
+				return gbuffer.NewBufferInstance(sum), nil
 			case "hex":
 				return engine.Str(hex.EncodeToString(sum)), nil
 			case "base64":
@@ -139,7 +139,7 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 		if err != nil {
 			return engine.Undefined(), err
 		}
-		return globals.NewBufferInstance(out), nil
+		return gbuffer.NewBufferInstance(out), nil
 	}))
 	_ = m.Set("pbkdf2", engine.NewFunction("pbkdf2", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 5 {
@@ -169,7 +169,7 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 								interpreter.ReportUncaught(nil, err)
 							}
 						} else {
-							if _, err := f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(out)}); err != nil {
+							if _, err := f.Call([]engine.Value{engine.Null(), gbuffer.NewBufferInstance(out)}); err != nil {
 								interpreter.ReportUncaught(nil, err)
 							}
 						}
@@ -190,7 +190,7 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 		if err != nil {
 			return engine.Undefined(), fmt.Errorf("scrypt: %w", err)
 		}
-		return globals.NewBufferInstance(dk), nil
+		return gbuffer.NewBufferInstance(dk), nil
 	}))
 	_ = m.Set("scrypt", engine.NewFunction("scrypt", func(args []engine.Value) (engine.Value, error) {
 		password, salt, keylen, N, r, p, err := parseScryptArgs(args)
@@ -217,7 +217,7 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 								interpreter.ReportUncaught(nil, err)
 							}
 						} else {
-							if _, err := f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(dk)}); err != nil {
+							if _, err := f.Call([]engine.Value{engine.Null(), gbuffer.NewBufferInstance(dk)}); err != nil {
 								interpreter.ReportUncaught(nil, err)
 							}
 						}
@@ -238,7 +238,7 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 		if _, err := rand.Read(buf); err != nil {
 			return engine.Undefined(), err
 		}
-		return globals.NewBufferInstance(buf), nil
+		return gbuffer.NewBufferInstance(buf), nil
 	}))
 
 	// --- randomInt([min,] max[, callback]) ---
@@ -392,7 +392,7 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 		if err != nil {
 			return engine.Undefined(), err
 		}
-		return globals.NewBufferInstance(out), nil
+		return gbuffer.NewBufferInstance(out), nil
 	}))
 	_ = m.Set("hkdf", engine.NewFunction("hkdf", func(args []engine.Value) (engine.Value, error) {
 		if len(args) < 6 {
@@ -425,7 +425,7 @@ func NewCrypto(ctx engine.Context) (engine.Value, error) {
 								interpreter.ReportUncaught(nil, err)
 							}
 						} else {
-							if _, err := f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(out)}); err != nil {
+							if _, err := f.Call([]engine.Value{engine.Null(), gbuffer.NewBufferInstance(out)}); err != nil {
 								interpreter.ReportUncaught(nil, err)
 							}
 						}

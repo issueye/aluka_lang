@@ -17,7 +17,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 )
 
 // digestHashID 把算法字符串映射到 crypto.Hash（RSA 签名用）。
@@ -86,7 +86,7 @@ func newSignVerifyObject(isVerify bool, algorithm string, h crypto.Hash) engine.
 			if err != nil {
 				return engine.Undefined(), err
 			}
-			return globals.NewBufferInstance(sig), nil
+			return gbuffer.NewBufferInstance(sig), nil
 		}))
 	}
 	return obj
@@ -147,7 +147,7 @@ func newDigestObject(h hash.Hash, algorithm string) engine.Value {
 		case "base64":
 			return engine.Str(base64Encode(sum)), nil
 		default:
-			return globals.NewBufferInstance(sum), nil
+			return gbuffer.NewBufferInstance(sum), nil
 		}
 	}))
 

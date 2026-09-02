@@ -19,9 +19,9 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/builtin/nodeevents"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
 // NewNet 构造 node:net 模块的导出对象。
@@ -647,7 +647,7 @@ func startNetReader(ctx engine.Context, socket engine.Value, state *netSocketSta
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
 			ctx.PostTask(func() {
-				nodebase.EmitEvent(socket, "data", globals.NewBufferInstance(chunk))
+				nodebase.EmitEvent(socket, "data", gbuffer.NewBufferInstance(chunk))
 			})
 		}
 		if err != nil {

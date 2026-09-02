@@ -20,7 +20,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 )
 
 // x509CertMap 实例对象 → 解析后的证书（checkIssued 取用）。
@@ -132,7 +132,7 @@ func x509CertToValue(cert *x509.Certificate, der []byte) engine.Value {
 	_ = obj.Set("fingerprint256", engine.Str(x509Fingerprint(der, sha256.New())))
 	_ = obj.Set("fingerprint512", engine.Str(x509Fingerprint(der, sha512.New())))
 	_ = obj.Set("ca", engine.Boolean(cert.IsCA))
-	_ = obj.Set("raw", globals.NewBufferInstance(der))
+	_ = obj.Set("raw", gbuffer.NewBufferInstance(der))
 	san := x509SANString(cert)
 	if san != "" {
 		_ = obj.Set("subjectAltName", engine.Str(san))
@@ -149,7 +149,7 @@ func x509CertToValue(cert *x509.Certificate, der []byte) engine.Value {
 	pk := engine.NewObject()
 	_ = pk.Set("type", engine.Str("public"))
 	_ = pk.Set("asymmetricKeyType", engine.Str("rsa"))
-	_ = pk.Set("raw", globals.NewBufferInstance(spki))
+	_ = pk.Set("raw", gbuffer.NewBufferInstance(spki))
 	_ = obj.Set("publicKey", pk)
 
 	// toString()：原始 PEM。
@@ -219,7 +219,7 @@ func x509CertToValue(cert *x509.Certificate, der []byte) engine.Value {
 			_ = lo.Set("bits", engine.IntValue(pub.N.BitLen()))
 			_ = lo.Set("exponent", engine.Str(fmt.Sprintf("0x%x", pub.E)))
 		}
-		_ = lo.Set("pubkey", globals.NewBufferInstance(spki))
+		_ = lo.Set("pubkey", gbuffer.NewBufferInstance(spki))
 		_ = lo.Set("valid_from", engine.Str(cert.NotBefore.Format("Jan _2 15:04:05 2006 MST")))
 		_ = lo.Set("valid_to", engine.Str(cert.NotAfter.Format("Jan _2 15:04:05 2006 MST")))
 		_ = lo.Set("fingerprint", engine.Str(x509Fingerprint(der, sha1.New())))
@@ -233,7 +233,7 @@ func x509CertToValue(cert *x509.Certificate, der []byte) engine.Value {
 			_ = lo.Set("ext_key_usage", engine.NewArray(vals))
 		}
 		_ = lo.Set("serialNumber", engine.Str(serial))
-		_ = lo.Set("raw", globals.NewBufferInstance(der))
+		_ = lo.Set("raw", gbuffer.NewBufferInstance(der))
 		return lo, nil
 	}))
 

@@ -20,9 +20,9 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodeglob"
 	"github.com/aluka-lang/aluka/internal/builtin/nodeos"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -76,7 +76,7 @@ func NewFS(ctx engine.Context) (engine.Value, error) {
 			return engine.Str(fmt.Sprintf("%x", data)), nil
 		}
 		// 无编码：返回 Buffer。
-		return globals.NewBufferInstance(data), nil
+		return gbuffer.NewBufferInstance(data), nil
 	}))
 
 	// --- 写 API ---
@@ -544,7 +544,7 @@ func addFSCallbacks(ctx engine.Context, m engine.Object) {
 			if encoding != "" {
 				return engine.Str(string(data)), nil
 			}
-			return globals.NewBufferInstance(data), nil
+			return gbuffer.NewBufferInstance(data), nil
 		}, cb)
 		return engine.Undefined(), nil
 	}))
@@ -1001,7 +1001,7 @@ func addFSStreamsAndWatch(ctx engine.Context, m engine.Object) {
 						if encoding != "" && encoding != "buffer" {
 							val = engine.Str(string(chunk))
 						} else {
-							val = globals.NewBufferInstance(chunk)
+							val = gbuffer.NewBufferInstance(chunk)
 						}
 						emitOn(stream, "data", val)
 					})

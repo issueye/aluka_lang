@@ -24,7 +24,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodeutil"
 	"github.com/aluka-lang/aluka/internal/builtin/nodevm"
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 	"github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
@@ -93,7 +93,7 @@ func RegisterAll(loader *module.Loader) {
 	loader.RegisterBuiltin("module", func(ctx engine.Context) (engine.Value, error) {
 		return nodevm.NewModule(ctx, loader)
 	})
-	loader.RegisterBuiltin("buffer", globals.NewBufferModule)
+	loader.RegisterBuiltin("buffer", gbuffer.NewBufferModule)
 	loader.RegisterBuiltin("tty", nodeos.NewTTY)
 	loader.RegisterBuiltin("sqlite", nodesqlite.NewSQLite)
 	// node:domain / node:punycode / node:wasi（M9：废弃/实验模块，含

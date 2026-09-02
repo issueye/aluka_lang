@@ -19,9 +19,9 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodeevents"
 	"github.com/aluka-lang/aluka/internal/builtin/nodenet"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
 // NewHTTP2 构造 node:http2 模块导出对象。
@@ -84,7 +84,7 @@ func NewHTTP2(ctx engine.Context) (engine.Value, error) {
 
 	// http2.getPackedSettings() / getUnpackedSettings：返回空 Buffer / 空对象（占位）。
 	_ = m.Set("getPackedSettings", engine.NewFunction("getPackedSettings", func(args []engine.Value) (engine.Value, error) {
-		return globals.NewBufferInstance(make([]byte, 0)), nil
+		return gbuffer.NewBufferInstance(make([]byte, 0)), nil
 	}))
 	_ = m.Set("getUnpackedSettings", engine.NewFunction("getUnpackedSettings", func(args []engine.Value) (engine.Value, error) {
 		return engine.NewObject(), nil
@@ -236,7 +236,7 @@ func newHTTP2ClientSession(ctx engine.Context, authority string, listener engine
 				hdrObj := headersToObj(resp.Header)
 				_ = stream.Set("headers", hdrObj)
 				nodebase.EmitEvent(stream, "response", hdrObj)
-				nodebase.EmitEvent(stream, "data", globals.NewBufferInstance(body))
+				nodebase.EmitEvent(stream, "data", gbuffer.NewBufferInstance(body))
 				nodebase.EmitEvent(stream, "end")
 				if cb.IsFunction() {
 					if f, ok := cb.AsFunction(); ok {

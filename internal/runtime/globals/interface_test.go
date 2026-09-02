@@ -5,6 +5,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbase"
 )
 
 // newInterfaceTestContext 创建裸 VM 上下文（仅引擎内建，不注册其余全局）。
@@ -33,7 +34,7 @@ func ifaceEval(t *testing.T, ctx engine.Context, code string) string {
 func TestRegisterInterfaceDescriptors(t *testing.T) {
 	ctx := newInterfaceTestContext(t)
 
-	_, proto, err := RegisterInterface(ctx, WebInterface{Name: "Widget", Tag: "Widget"})
+	_, proto, err := gbase.RegisterInterface(ctx, gbase.WebInterface{Name: "Widget", Tag: "Widget"})
 	if err != nil {
 		t.Fatalf("RegisterInterface: %v", err)
 	}
@@ -76,7 +77,7 @@ func TestRegisterInterfaceDescriptors(t *testing.T) {
 // TestRegisterInterfaceNoTag 无 tag 接口（如 Navigator）：toString 保持 [object Object]。
 func TestRegisterInterfaceNoTag(t *testing.T) {
 	ctx := newInterfaceTestContext(t)
-	_, proto, err := RegisterInterface(ctx, WebInterface{Name: "Gadget"})
+	_, proto, err := gbase.RegisterInterface(ctx, gbase.WebInterface{Name: "Gadget"})
 	if err != nil {
 		t.Fatalf("RegisterInterface: %v", err)
 	}
@@ -91,11 +92,11 @@ func TestRegisterInterfaceNoTag(t *testing.T) {
 // TestRegisterInterfaceBase 显式父原型（多级接口，如 Performance → EventTarget）。
 func TestRegisterInterfaceBase(t *testing.T) {
 	ctx := newInterfaceTestContext(t)
-	_, baseProto, err := RegisterInterface(ctx, WebInterface{Name: "Emitter", Tag: "EventTarget"})
+	_, baseProto, err := gbase.RegisterInterface(ctx, gbase.WebInterface{Name: "Emitter", Tag: "EventTarget"})
 	if err != nil {
 		t.Fatalf("RegisterInterface base: %v", err)
 	}
-	_, proto, err := RegisterInterface(ctx, WebInterface{Name: "Clock", Tag: "Performance", Base: baseProto})
+	_, proto, err := gbase.RegisterInterface(ctx, gbase.WebInterface{Name: "Clock", Tag: "Performance", Base: baseProto})
 	if err != nil {
 		t.Fatalf("RegisterInterface derived: %v", err)
 	}

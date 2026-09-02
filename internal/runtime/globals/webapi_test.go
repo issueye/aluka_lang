@@ -5,6 +5,8 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gevent"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gfetch"
 )
 
 // newWebAPITestContext 创建带 URL/Abort/Event 全局的 VM 测试上下文。
@@ -16,13 +18,13 @@ func newWebAPITestContext(t *testing.T) engine.Context {
 		t.Fatalf("NewContext: %v", err)
 	}
 	t.Cleanup(func() { ctx.Close() })
-	if err := NewURL(ctx, URLConfig{}); err != nil {
+	if err := gfetch.NewURL(ctx, gfetch.URLConfig{}); err != nil {
 		t.Fatalf("NewURL: %v", err)
 	}
-	if err := NewAbort(ctx, AbortConfig{}); err != nil {
+	if err := gevent.NewAbort(ctx, gevent.AbortConfig{}); err != nil {
 		t.Fatalf("NewAbort: %v", err)
 	}
-	if err := NewEvent(ctx, EventConfig{}); err != nil {
+	if err := gevent.NewEvent(ctx, gevent.EventConfig{}); err != nil {
 		t.Fatalf("NewEvent: %v", err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())
@@ -54,7 +56,7 @@ globalThis.__r = u.protocol + '|' + u.hostname + '|' + u.port + '|' + u.host + '
 
 func TestDOMExceptionAndSubclass(t *testing.T) {
 	ctx := newWebAPITestContext(t)
-	if err := NewDOMException(ctx, DOMExceptionConfig{}); err != nil {
+	if err := gevent.NewDOMException(ctx, gevent.DOMExceptionConfig{}); err != nil {
 		t.Fatalf("NewDOMException: %v", err)
 	}
 	got := webGet(t, ctx, `

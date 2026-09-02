@@ -6,7 +6,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gfetch"
 )
 
 // === node:module.register + loader hooks / _compile / extensions / cache ===
@@ -35,7 +35,7 @@ func newHooksEnv(t *testing.T) *testEnv {
 	env := newTestEnv(t, map[string]string{
 		"my-hooks.mjs": hooksFixture,
 	})
-	if err := globals.NewURL(env.loader.ctx, globals.URLConfig{}); err != nil {
+	if err := gfetch.NewURL(env.loader.ctx, gfetch.URLConfig{}); err != nil {
 		t.Fatalf("NewURL: %v", err)
 	}
 	return env

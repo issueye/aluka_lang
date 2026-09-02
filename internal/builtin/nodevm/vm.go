@@ -24,7 +24,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 )
 
 // vmContext 表示一个隔离的 vm 执行上下文。
@@ -274,7 +274,7 @@ func NewVMModule(ctx engine.Context) (engine.Value, error) {
 		if data == nil {
 			return engine.Undefined(), fmt.Errorf("vm.Script.createCachedData: not a Script instance")
 		}
-		return globals.NewBufferInstance([]byte(data.source)), nil
+		return gbuffer.NewBufferInstance([]byte(data.source)), nil
 	}))
 
 	scriptCtor := engine.NewFunction("Script", func(args []engine.Value) (engine.Value, error) {

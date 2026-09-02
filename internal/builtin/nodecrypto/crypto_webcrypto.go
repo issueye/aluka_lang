@@ -13,7 +13,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 )
 
 // webCryptoResolve 构造一个已 resolve 的 Promise。
@@ -182,7 +182,7 @@ func webCryptoEncrypt(ctx engine.Context) engine.Func {
 				return webCryptoReject(ctx, "encrypt: AES-GCM iv must be 12 bytes")
 			}
 			out := aead.Seal(nil, iv, data, aad)
-			return webCryptoResolve(ctx, globals.NewBufferInstance(out))
+			return webCryptoResolve(ctx, gbuffer.NewBufferInstance(out))
 		case "AES-CBC":
 			block, err := aes.NewCipher(keyData)
 			if err != nil {
@@ -194,7 +194,7 @@ func webCryptoEncrypt(ctx engine.Context) engine.Func {
 			padded := pad(data, block.BlockSize())
 			out := make([]byte, len(padded))
 			cipher.NewCBCEncrypter(block, iv).CryptBlocks(out, padded)
-			return webCryptoResolve(ctx, globals.NewBufferInstance(out))
+			return webCryptoResolve(ctx, gbuffer.NewBufferInstance(out))
 		case "AES-CTR":
 			block, err := aes.NewCipher(keyData)
 			if err != nil {
@@ -205,7 +205,7 @@ func webCryptoEncrypt(ctx engine.Context) engine.Func {
 			}
 			out := make([]byte, len(data))
 			cipher.NewCTR(block, iv).XORKeyStream(out, data)
-			return webCryptoResolve(ctx, globals.NewBufferInstance(out))
+			return webCryptoResolve(ctx, gbuffer.NewBufferInstance(out))
 		default:
 			return webCryptoReject(ctx, "encrypt: unsupported algorithm "+keyAlg)
 		}
@@ -250,7 +250,7 @@ func webCryptoDecrypt(ctx engine.Context) engine.Func {
 			if err != nil {
 				return webCryptoReject(ctx, "decrypt: authentication failed")
 			}
-			return webCryptoResolve(ctx, globals.NewBufferInstance(plain))
+			return webCryptoResolve(ctx, gbuffer.NewBufferInstance(plain))
 		case "AES-CBC":
 			block, err := aes.NewCipher(keyData)
 			if err != nil {
@@ -264,7 +264,7 @@ func webCryptoDecrypt(ctx engine.Context) engine.Func {
 			}
 			out := make([]byte, len(data))
 			cipher.NewCBCDecrypter(block, iv).CryptBlocks(out, data)
-			return webCryptoResolve(ctx, globals.NewBufferInstance(unpad(out, block.BlockSize())))
+			return webCryptoResolve(ctx, gbuffer.NewBufferInstance(unpad(out, block.BlockSize())))
 		case "AES-CTR":
 			block, err := aes.NewCipher(keyData)
 			if err != nil {
@@ -275,7 +275,7 @@ func webCryptoDecrypt(ctx engine.Context) engine.Func {
 			}
 			out := make([]byte, len(data))
 			cipher.NewCTR(block, iv).XORKeyStream(out, data)
-			return webCryptoResolve(ctx, globals.NewBufferInstance(out))
+			return webCryptoResolve(ctx, gbuffer.NewBufferInstance(out))
 		default:
 			return webCryptoReject(ctx, "decrypt: unsupported algorithm "+keyAlg)
 		}
@@ -303,7 +303,7 @@ func webCryptoSign(ctx engine.Context) engine.Func {
 		case "HMAC":
 			mac := hmac.New(sha256.New, keyData)
 			_, _ = mac.Write(data)
-			return webCryptoResolve(ctx, globals.NewBufferInstance(mac.Sum(nil)))
+			return webCryptoResolve(ctx, gbuffer.NewBufferInstance(mac.Sum(nil)))
 		default:
 			return webCryptoReject(ctx, "sign: unsupported algorithm "+keyAlg)
 		}
@@ -355,7 +355,7 @@ func webCryptoExportKey(ctx engine.Context) engine.Func {
 		}
 		switch format {
 		case "raw":
-			return webCryptoResolve(ctx, globals.NewBufferInstance(keyData))
+			return webCryptoResolve(ctx, gbuffer.NewBufferInstance(keyData))
 		default:
 			return webCryptoReject(ctx, "exportKey: unsupported format "+format)
 		}
@@ -415,13 +415,13 @@ func webCryptoDeriveBits(ctx engine.Context) engine.Func {
 			if err != nil {
 				return webCryptoReject(ctx, "deriveBits: "+err.Error())
 			}
-			return webCryptoResolve(ctx, globals.NewBufferInstance(out))
+			return webCryptoResolve(ctx, gbuffer.NewBufferInstance(out))
 		case "HKDF":
 			out, err := hkdfKey(digest, baseKey, salt, info, lengthBits/8)
 			if err != nil {
 				return webCryptoReject(ctx, "deriveBits: "+err.Error())
 			}
-			return webCryptoResolve(ctx, globals.NewBufferInstance(out))
+			return webCryptoResolve(ctx, gbuffer.NewBufferInstance(out))
 		default:
 			return webCryptoReject(ctx, "deriveBits: unsupported algorithm "+algName)
 		}

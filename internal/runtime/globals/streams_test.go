@@ -5,6 +5,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gstream"
 )
 
 // newStreamTestContext 创建带 Streams 全局的 VM 上下文。
@@ -16,7 +17,7 @@ func newStreamTestContext(t *testing.T) engine.Context {
 		t.Fatalf("NewContext: %v", err)
 	}
 	t.Cleanup(func() { ctx.Close() })
-	if err := NewStream(ctx, StreamConfig{}); err != nil {
+	if err := gstream.NewStream(ctx, gstream.StreamConfig{}); err != nil {
 		t.Fatalf("NewStream: %v", err)
 	}
 	return ctx

@@ -15,7 +15,11 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gcrypto"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gstream"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gtimers"
 	modmodule "github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
@@ -34,20 +38,20 @@ func newHTTPEnv(t *testing.T) *httpTestEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ctx.Close() })
-	if err := globals.NewTimers(ctx, globals.TimerConfig{}); err != nil {
+	if err := gtimers.NewTimers(ctx, gtimers.TimerConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := globals.NewBuffer(ctx, globals.BufferConfig{}); err != nil {
+	if err := gbuffer.NewBuffer(ctx, gbuffer.BufferConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := globals.NewWebCrypto(ctx, globals.WebCryptoConfig{}); err != nil {
+	if err := gcrypto.NewWebCrypto(ctx, gcrypto.WebCryptoConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	// Web ReadableStream（Readable.fromWeb 测试需要）。
-	if err := globals.NewStream(ctx, globals.StreamConfig{}); err != nil {
+	if err := gstream.NewStream(ctx, gstream.StreamConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
+	if err := gconsole.NewConsole(ctx, gconsole.ConsoleConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())

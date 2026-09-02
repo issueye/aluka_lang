@@ -18,7 +18,8 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gproc"
 )
 
 const replPrompt = "> "
@@ -41,11 +42,11 @@ func startREPL(vm bool) {
 	}
 	defer ctx.Close()
 
-	if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
+	if err := gconsole.NewConsole(ctx, gconsole.ConsoleConfig{}); err != nil {
 		fmt.Fprintln(os.Stderr, "aluka: cannot register console:", err)
 		osExit(1)
 	}
-	if err := globals.NewProcess(ctx, globals.ProcessConfig{}); err != nil {
+	if err := gproc.NewProcess(ctx, gproc.ProcessConfig{}); err != nil {
 		fmt.Fprintln(os.Stderr, "aluka: cannot register process:", err)
 		osExit(1)
 	}

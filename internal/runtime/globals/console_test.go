@@ -7,10 +7,11 @@ import (
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
 )
 
 // newTestContext 创建带 console 的测试上下文。
-func newTestContext(t *testing.T, cfg ConsoleConfig) (engine.Context, *bytes.Buffer, *bytes.Buffer) {
+func newTestContext(t *testing.T, cfg gconsole.ConsoleConfig) (engine.Context, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	eng := engine.NewStubEngine()
 	ctx, err := eng.NewContext()
@@ -30,7 +31,7 @@ func newTestContext(t *testing.T, cfg ConsoleConfig) (engine.Context, *bytes.Buf
 		fixed := time.Unix(0, 0)
 		cfg.Now = func() time.Time { return fixed }
 	}
-	if err := NewConsole(ctx, cfg); err != nil {
+	if err := gconsole.NewConsole(ctx, cfg); err != nil {
 		t.Fatalf("NewConsole: %v", err)
 	}
 	return ctx, out, errOut
@@ -38,7 +39,7 @@ func newTestContext(t *testing.T, cfg ConsoleConfig) (engine.Context, *bytes.Buf
 
 // TestConsoleLog 验证 log 输出。
 func TestConsoleLog(t *testing.T) {
-	ctx, out, _ := newTestContext(t, ConsoleConfig{})
+	ctx, out, _ := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, err := ctx.Eval(`console.log("hello", "world")`, "test.js")
@@ -53,7 +54,7 @@ func TestConsoleLog(t *testing.T) {
 
 // TestConsoleLogNumber 验证数字输出（如 1+1=2）。
 func TestConsoleLogNumber(t *testing.T) {
-	ctx, out, _ := newTestContext(t, ConsoleConfig{})
+	ctx, out, _ := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, err := ctx.Eval(`console.log(1 + 1)`, "test.js")
@@ -67,7 +68,7 @@ func TestConsoleLogNumber(t *testing.T) {
 
 // TestConsoleError 验证 error 输出到 stderr。
 func TestConsoleError(t *testing.T) {
-	ctx, _, errOut := newTestContext(t, ConsoleConfig{})
+	ctx, _, errOut := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, err := ctx.Eval(`console.error("oops")`, "test.js")
@@ -81,7 +82,7 @@ func TestConsoleError(t *testing.T) {
 
 // TestConsoleWarn 验证 warn 输出到 stderr。
 func TestConsoleWarn(t *testing.T) {
-	ctx, _, errOut := newTestContext(t, ConsoleConfig{})
+	ctx, _, errOut := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, _ = ctx.Eval(`console.warn("caution")`, "test.js")
@@ -92,7 +93,7 @@ func TestConsoleWarn(t *testing.T) {
 
 // TestConsoleInfo 验证 info 输出到 stdout。
 func TestConsoleInfo(t *testing.T) {
-	ctx, out, _ := newTestContext(t, ConsoleConfig{})
+	ctx, out, _ := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, _ = ctx.Eval(`console.info("info")`, "test.js")
@@ -103,7 +104,7 @@ func TestConsoleInfo(t *testing.T) {
 
 // TestConsoleAssert 验证 assert 行为：条件为 false 时打印。
 func TestConsoleAssert(t *testing.T) {
-	ctx, _, errOut := newTestContext(t, ConsoleConfig{})
+	ctx, _, errOut := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, _ = ctx.Eval(`console.assert(1 === 2, "should fail")`, "test.js")
@@ -118,7 +119,7 @@ func TestConsoleAssert(t *testing.T) {
 // TestConsoleTime 验证 time/timeEnd。
 func TestConsoleTime(t *testing.T) {
 	baseTime := time.Unix(0, 0)
-	ctx, out, _ := newTestContext(t, ConsoleConfig{
+	ctx, out, _ := newTestContext(t, gconsole.ConsoleConfig{
 		Now: func() time.Time {
 			// 每次 Now 调用都前进 1ms
 			baseTime = baseTime.Add(time.Millisecond)
@@ -136,7 +137,7 @@ func TestConsoleTime(t *testing.T) {
 
 // TestConsoleDirAndDebug 验证 dir/debug 与 log 行为一致。
 func TestConsoleDirAndDebug(t *testing.T) {
-	ctx, out, _ := newTestContext(t, ConsoleConfig{})
+	ctx, out, _ := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, _ = ctx.Eval(`console.dir("x"); console.debug("y")`, "test.js")

@@ -6,6 +6,8 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gencoding"
 )
 
 // newBufferTestContext 创建带 Buffer/Encoding 全局的 VM 测试上下文。
@@ -17,10 +19,10 @@ func newBufferTestContext(t *testing.T) engine.Context {
 		t.Fatalf("NewContext: %v", err)
 	}
 	t.Cleanup(func() { ctx.Close() })
-	if err := NewBuffer(ctx, BufferConfig{}); err != nil {
+	if err := gbuffer.NewBuffer(ctx, gbuffer.BufferConfig{}); err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	if err := NewEncoding(ctx, EncodingConfig{}); err != nil {
+	if err := gencoding.NewEncoding(ctx, gencoding.EncodingConfig{}); err != nil {
 		t.Fatalf("NewEncoding: %v", err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())

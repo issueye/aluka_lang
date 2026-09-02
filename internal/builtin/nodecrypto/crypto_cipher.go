@@ -10,7 +10,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 )
 
 // cipherState 是 Cipher/Decipher 的内部状态（累积数据 + 最终处理）。
@@ -97,21 +97,21 @@ func newCipherObject(ctx engine.Context, args []engine.Value, decrypt bool) (eng
 			}
 			state.buf = append(state.buf, data...)
 		}
-		return globals.NewBufferInstance(nil), nil
+		return gbuffer.NewBufferInstance(nil), nil
 	}))
 	_ = obj.Set("final", engine.NewFunction("final", func(uargs []engine.Value) (engine.Value, error) {
 		out, err := state.finalize()
 		if err != nil {
 			return engine.Undefined(), err
 		}
-		return globals.NewBufferInstance(out), nil
+		return gbuffer.NewBufferInstance(out), nil
 	}))
 	if state.mode == "gcm" {
 		_ = obj.Set("getAuthTag", engine.NewFunction("getAuthTag", func(uargs []engine.Value) (engine.Value, error) {
 			if len(state.authTag) == 0 {
 				return engine.Undefined(), fmt.Errorf("getAuthTag: no auth tag available (call final first)")
 			}
-			return globals.NewBufferInstance(state.authTag), nil
+			return gbuffer.NewBufferInstance(state.authTag), nil
 		}))
 		_ = obj.Set("setAuthTag", engine.NewFunction("setAuthTag", func(uargs []engine.Value) (engine.Value, error) {
 			if len(uargs) == 0 {

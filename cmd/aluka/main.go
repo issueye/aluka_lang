@@ -34,6 +34,17 @@ import (
 	"github.com/aluka-lang/aluka/internal/engine/parser"
 	"github.com/aluka-lang/aluka/internal/monitor"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbase"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gcrypto"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gencoding"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gevent"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gfetch"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gintl"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gproc"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gstream"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gtimers"
 	modmodule "github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
@@ -1016,77 +1027,77 @@ func runTestFile(path string, enableCoverage bool) ([]nodetest.TestResult, map[s
 
 // registerRuntimeGlobals 注册全局对象（runModule 与测试运行器共用）。
 func registerRuntimeGlobals(ctx engine.Context) error {
-	if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
+	if err := gconsole.NewConsole(ctx, gconsole.ConsoleConfig{}); err != nil {
 		return fmt.Errorf("register console: %w", err)
 	}
-	if err := globals.NewProcess(ctx, globals.ProcessConfig{}); err != nil {
+	if err := gproc.NewProcess(ctx, gproc.ProcessConfig{}); err != nil {
 		return fmt.Errorf("register process: %w", err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())
 	_ = ctx.Global().Set("global", ctx.Global())
-	if err := globals.NewPerformance(ctx, globals.PerformanceConfig{}); err != nil {
+	if err := gtimers.NewPerformance(ctx, gtimers.PerformanceConfig{}); err != nil {
 		return fmt.Errorf("register performance: %w", err)
 	}
-	if err := globals.NewTimers(ctx, globals.TimerConfig{}); err != nil {
+	if err := gtimers.NewTimers(ctx, gtimers.TimerConfig{}); err != nil {
 		return fmt.Errorf("register timers: %w", err)
 	}
-	if err := globals.NewBuffer(ctx, globals.BufferConfig{}); err != nil {
+	if err := gbuffer.NewBuffer(ctx, gbuffer.BufferConfig{}); err != nil {
 		return fmt.Errorf("register Buffer: %w", err)
 	}
-	if err := globals.NewEncoding(ctx, globals.EncodingConfig{}); err != nil {
+	if err := gencoding.NewEncoding(ctx, gencoding.EncodingConfig{}); err != nil {
 		return fmt.Errorf("register encoding: %w", err)
 	}
-	if err := globals.NewURL(ctx, globals.URLConfig{}); err != nil {
+	if err := gfetch.NewURL(ctx, gfetch.URLConfig{}); err != nil {
 		return fmt.Errorf("register URL: %w", err)
 	}
-	if err := globals.NewIntl(ctx, globals.IntlConfig{}); err != nil {
+	if err := gintl.NewIntl(ctx, gintl.IntlConfig{}); err != nil {
 		return err
 	}
-	if err := globals.NewAbort(ctx, globals.AbortConfig{}); err != nil {
+	if err := gevent.NewAbort(ctx, gevent.AbortConfig{}); err != nil {
 		return fmt.Errorf("register Abort: %w", err)
 	}
-	if err := globals.NewEvent(ctx, globals.EventConfig{}); err != nil {
+	if err := gevent.NewEvent(ctx, gevent.EventConfig{}); err != nil {
 		return fmt.Errorf("register Event: %w", err)
 	}
-	if err := globals.NewDOMException(ctx, globals.DOMExceptionConfig{}); err != nil {
+	if err := gevent.NewDOMException(ctx, gevent.DOMExceptionConfig{}); err != nil {
 		return fmt.Errorf("register DOMException: %w", err)
 	}
-	if err := globals.NewFetch(ctx, globals.FetchConfig{}); err != nil {
+	if err := gfetch.NewFetch(ctx, gfetch.FetchConfig{}); err != nil {
 		return fmt.Errorf("register fetch: %w", err)
 	}
-	if err := globals.NewBlob(ctx, globals.BlobConfig{}); err != nil {
+	if err := gstream.NewBlob(ctx, gstream.BlobConfig{}); err != nil {
 		return fmt.Errorf("register Blob: %w", err)
 	}
-	if err := globals.NewStream(ctx, globals.StreamConfig{}); err != nil {
+	if err := gstream.NewStream(ctx, gstream.StreamConfig{}); err != nil {
 		return fmt.Errorf("register Streams: %w", err)
 	}
-	if err := globals.NewWebCrypto(ctx, globals.WebCryptoConfig{}); err != nil {
+	if err := gcrypto.NewWebCrypto(ctx, gcrypto.WebCryptoConfig{}); err != nil {
 		return fmt.Errorf("register WebCrypto: %w", err)
 	}
-	if err := globals.NewURLPattern(ctx, globals.URLPatternConfig{}); err != nil {
+	if err := gfetch.NewURLPattern(ctx, gfetch.URLPatternConfig{}); err != nil {
 		return fmt.Errorf("register URLPattern: %w", err)
 	}
-	if err := globals.NewMessageChannel(ctx, globals.MessageConfig{}); err != nil {
+	if err := gevent.NewMessageChannel(ctx, gevent.MessageConfig{}); err != nil {
 		return fmt.Errorf("register MessageChannel: %w", err)
 	}
 	// N22-C4：navigator + BroadcastChannel。
-	if err := globals.NewNavigator(ctx, globals.NavigatorConfig{}); err != nil {
+	if err := gconsole.NewNavigator(ctx, gconsole.NavigatorConfig{}); err != nil {
 		return fmt.Errorf("register navigator: %w", err)
 	}
-	if err := globals.NewBroadcastChannel(ctx, globals.MessageConfig{}); err != nil {
+	if err := gconsole.NewBroadcastChannel(ctx, gevent.MessageConfig{}); err != nil {
 		return fmt.Errorf("register BroadcastChannel: %w", err)
 	}
-	if err := globals.NewWebSocket(ctx, globals.WebSocketConfig{}); err != nil {
+	if err := gfetch.NewWebSocket(ctx, gfetch.WebSocketConfig{}); err != nil {
 		return fmt.Errorf("register WebSocket: %w", err)
 	}
-	if err := globals.NewGC(ctx, globals.GCConfig{}); err != nil {
+	if err := gtimers.NewGC(ctx, gtimers.GCConfig{}); err != nil {
 		return fmt.Errorf("register gc: %w", err)
 	}
 	if err := globals.NewAluka(ctx, globals.AlukaConfig{}); err != nil {
 		return fmt.Errorf("register Aluka: %w", err)
 	}
 	// 全部全局注册完成后收口可枚举性（对齐 Node 22：仅 web 类全局可枚举）。
-	globals.SweepGlobalEnumerability(ctx)
+	gbase.SweepGlobalEnumerability(ctx)
 	return nil
 }
 
@@ -1107,89 +1118,89 @@ func execute(code string, filename string, vm bool) error {
 	defer ctx.Close()
 
 	// 注册全局对象
-	if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
+	if err := gconsole.NewConsole(ctx, gconsole.ConsoleConfig{}); err != nil {
 		return fmt.Errorf("register console: %w", err)
 	}
-	if err := globals.NewProcess(ctx, globals.ProcessConfig{}); err != nil {
+	if err := gproc.NewProcess(ctx, gproc.ProcessConfig{}); err != nil {
 		return fmt.Errorf("register process: %w", err)
 	}
 
 	// 注册 globalThis 引用
 	_ = ctx.Global().Set("globalThis", ctx.Global())
 	_ = ctx.Global().Set("global", ctx.Global())
-	if err := globals.NewPerformance(ctx, globals.PerformanceConfig{}); err != nil {
+	if err := gtimers.NewPerformance(ctx, gtimers.PerformanceConfig{}); err != nil {
 		return fmt.Errorf("register performance: %w", err)
 	}
 
 	// 注册定时器（事件循环基础设施，-e 模式同样需要）。
-	if err := globals.NewTimers(ctx, globals.TimerConfig{}); err != nil {
+	if err := gtimers.NewTimers(ctx, gtimers.TimerConfig{}); err != nil {
 		return fmt.Errorf("register timers: %w", err)
 	}
 
 	// 注册 Buffer 全局 + 文本编码 API（-e 模式同样需要）。
-	if err := globals.NewBuffer(ctx, globals.BufferConfig{}); err != nil {
+	if err := gbuffer.NewBuffer(ctx, gbuffer.BufferConfig{}); err != nil {
 		return fmt.Errorf("register Buffer: %w", err)
 	}
-	if err := globals.NewEncoding(ctx, globals.EncodingConfig{}); err != nil {
+	if err := gencoding.NewEncoding(ctx, gencoding.EncodingConfig{}); err != nil {
 		return fmt.Errorf("register encoding: %w", err)
 	}
 
 	// 注册 Web API 全局（-e 模式同样需要）。
-	if err := globals.NewURL(ctx, globals.URLConfig{}); err != nil {
+	if err := gfetch.NewURL(ctx, gfetch.URLConfig{}); err != nil {
 		return fmt.Errorf("register URL: %w", err)
 	}
-	if err := globals.NewIntl(ctx, globals.IntlConfig{}); err != nil {
+	if err := gintl.NewIntl(ctx, gintl.IntlConfig{}); err != nil {
 		return err
 	}
-	if err := globals.NewAbort(ctx, globals.AbortConfig{}); err != nil {
+	if err := gevent.NewAbort(ctx, gevent.AbortConfig{}); err != nil {
 		return fmt.Errorf("register Abort: %w", err)
 	}
-	if err := globals.NewEvent(ctx, globals.EventConfig{}); err != nil {
+	if err := gevent.NewEvent(ctx, gevent.EventConfig{}); err != nil {
 		return fmt.Errorf("register Event: %w", err)
 	}
-	if err := globals.NewDOMException(ctx, globals.DOMExceptionConfig{}); err != nil {
+	if err := gevent.NewDOMException(ctx, gevent.DOMExceptionConfig{}); err != nil {
 		return fmt.Errorf("register DOMException: %w", err)
 	}
 
 	// 注册 Web API 全局（-e 模式同样需要）。
-	if err := globals.NewFetch(ctx, globals.FetchConfig{}); err != nil {
+	if err := gfetch.NewFetch(ctx, gfetch.FetchConfig{}); err != nil {
 		return fmt.Errorf("register fetch: %w", err)
 	}
-	if err := globals.NewBlob(ctx, globals.BlobConfig{}); err != nil {
+	if err := gstream.NewBlob(ctx, gstream.BlobConfig{}); err != nil {
 		return fmt.Errorf("register Blob: %w", err)
 	}
-	if err := globals.NewStream(ctx, globals.StreamConfig{}); err != nil {
+	if err := gstream.NewStream(ctx, gstream.StreamConfig{}); err != nil {
 		return fmt.Errorf("register Streams: %w", err)
 	}
 
 	// 注册 Web API 全局（-e 模式同样需要）。
-	if err := globals.NewWebCrypto(ctx, globals.WebCryptoConfig{}); err != nil {
+	if err := gcrypto.NewWebCrypto(ctx, gcrypto.WebCryptoConfig{}); err != nil {
 		return fmt.Errorf("register WebCrypto: %w", err)
 	}
-	if err := globals.NewURLPattern(ctx, globals.URLPatternConfig{}); err != nil {
+	if err := gfetch.NewURLPattern(ctx, gfetch.URLPatternConfig{}); err != nil {
 		return fmt.Errorf("register URLPattern: %w", err)
 	}
-	if err := globals.NewMessageChannel(ctx, globals.MessageConfig{}); err != nil {
+	if err := gevent.NewMessageChannel(ctx, gevent.MessageConfig{}); err != nil {
 		return fmt.Errorf("register MessageChannel: %w", err)
 	}
 	// N22-C4：navigator + BroadcastChannel。
-	if err := globals.NewNavigator(ctx, globals.NavigatorConfig{}); err != nil {
+	if err := gconsole.NewNavigator(ctx, gconsole.NavigatorConfig{}); err != nil {
 		return fmt.Errorf("register navigator: %w", err)
 	}
-	if err := globals.NewBroadcastChannel(ctx, globals.MessageConfig{}); err != nil {
+	if err := gconsole.NewBroadcastChannel(ctx, gevent.MessageConfig{}); err != nil {
 		return fmt.Errorf("register BroadcastChannel: %w", err)
 	}
-	if err := globals.NewWebSocket(ctx, globals.WebSocketConfig{}); err != nil {
+	if err := gfetch.NewWebSocket(ctx, gfetch.WebSocketConfig{}); err != nil {
 		return fmt.Errorf("register WebSocket: %w", err)
 	}
-	if err := globals.NewGC(ctx, globals.GCConfig{}); err != nil {
+	if err := gtimers.NewGC(ctx, gtimers.GCConfig{}); err != nil {
 		return fmt.Errorf("register gc: %w", err)
 	}
 	if err := globals.NewAluka(ctx, globals.AlukaConfig{}); err != nil {
 		return fmt.Errorf("register Aluka: %w", err)
 	}
 	// 全部全局注册完成后收口可枚举性（对齐 Node 22：仅 web 类全局可枚举）。
-	globals.SweepGlobalEnumerability(ctx)
+	gbase.SweepGlobalEnumerability(ctx)
 
 	// P1-6（defect-fixes-plan）：-e 模式注入基于 cwd 的 require / 动态
 	// import() 与内置模块（Node 的 [eval] 同语义——相对 process.cwd() 解析）。

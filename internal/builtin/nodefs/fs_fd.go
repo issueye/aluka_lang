@@ -23,9 +23,9 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
 // fsFDRegistry keeps the *os.File that owns every descriptor returned by an
@@ -327,7 +327,7 @@ func addFSFD(ctx engine.Context, m engine.Object) {
 			if err != nil {
 				return 0, err
 			}
-			bufVal = globals.NewBufferInstance(data)
+			bufVal = gbuffer.NewBufferInstance(data)
 			return len(data), nil
 		}, bufVal, cb)
 		return engine.Undefined(), nil
@@ -998,7 +998,7 @@ func fsVArgs(args []engine.Value) ([][]byte, int64, error) {
 func valuesFromBytes(buffers [][]byte) []engine.Value {
 	out := make([]engine.Value, len(buffers))
 	for i, b := range buffers {
-		out[i] = globals.NewBufferInstance(b)
+		out[i] = gbuffer.NewBufferInstance(b)
 	}
 	return out
 }
@@ -1109,7 +1109,7 @@ func fsBlobFromData(ctx engine.Context, data []byte) (engine.Value, error) {
 		return engine.Undefined(), fmt.Errorf("Blob not available")
 	}
 	f, _ := ctor.AsFunction()
-	parts := engine.NewArray([]engine.Value{globals.NewBufferInstance(data)})
+	parts := engine.NewArray([]engine.Value{gbuffer.NewBufferInstance(data)})
 	return f.Call([]engine.Value{parts})
 }
 
@@ -1156,7 +1156,7 @@ func newFileHandle(ctx engine.Context, f *os.File) engine.Value {
 			if encoding != "" && encoding != "buffer" {
 				return engine.Str(string(data)), nil
 			}
-			return globals.NewBufferInstance(data), nil
+			return gbuffer.NewBufferInstance(data), nil
 		})
 	}))
 	_ = h.Set("writeFile", engine.NewFunction("writeFile", func(args []engine.Value) (engine.Value, error) {
@@ -1220,7 +1220,7 @@ func newFileHandle(ctx engine.Context, f *os.File) engine.Value {
 			}
 			rb := engine.NewObject()
 			_ = rb.Set("bytesRead", engine.IntValue(n))
-			_ = rb.Set("buffer", globals.NewBufferInstance(buf))
+			_ = rb.Set("buffer", gbuffer.NewBufferInstance(buf))
 			return rb, nil
 		})
 	}))
@@ -1241,7 +1241,7 @@ func newFileHandle(ctx engine.Context, f *os.File) engine.Value {
 			}
 			rb := engine.NewObject()
 			_ = rb.Set("bytesWritten", engine.IntValue(n))
-			_ = rb.Set("buffer", globals.NewBufferInstance(buf))
+			_ = rb.Set("buffer", gbuffer.NewBufferInstance(buf))
 			return rb, nil
 		})
 	}))

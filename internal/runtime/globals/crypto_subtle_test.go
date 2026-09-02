@@ -5,6 +5,9 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gcrypto"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gencoding"
 )
 
 func newSubtleTestContext(t *testing.T) engine.Context {
@@ -15,13 +18,13 @@ func newSubtleTestContext(t *testing.T) engine.Context {
 		t.Fatalf("NewContext: %v", err)
 	}
 	t.Cleanup(func() { ctx.Close() })
-	if err := NewBuffer(ctx, BufferConfig{}); err != nil {
+	if err := gbuffer.NewBuffer(ctx, gbuffer.BufferConfig{}); err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	if err := NewEncoding(ctx, EncodingConfig{}); err != nil {
+	if err := gencoding.NewEncoding(ctx, gencoding.EncodingConfig{}); err != nil {
 		t.Fatalf("NewEncoding: %v", err)
 	}
-	if err := NewWebCrypto(ctx, WebCryptoConfig{}); err != nil {
+	if err := gcrypto.NewWebCrypto(ctx, gcrypto.WebCryptoConfig{}); err != nil {
 		t.Fatalf("NewWebCrypto: %v", err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())

@@ -21,7 +21,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gtimers"
 )
 
 // perfObserver 是 PerformanceObserver 实例。
@@ -102,7 +102,7 @@ func (s *perfState) notifyObservers(ctx engine.Context, entryType string, entry 
 
 // NewPerfHooks 构造 node:perf_hooks 模块导出对象。
 func NewPerfHooks(ctx engine.Context) (engine.Value, error) {
-	perfVal, err := globals.EnsurePerformance(ctx)
+	perfVal, err := gtimers.EnsurePerformance(ctx)
 	if err != nil {
 		return engine.Undefined(), err
 	}

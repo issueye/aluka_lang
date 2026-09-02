@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
 )
 
 // 本文件验证字节码磁盘缓存（1C.14）的行为：写盘、命中、源文件变更失效、
@@ -111,7 +111,7 @@ func TestBytecodeCacheNoCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ctx.Close() })
-	if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
+	if err := gconsole.NewConsole(ctx, gconsole.ConsoleConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())
@@ -179,7 +179,7 @@ func newTestEnvRaw(t *testing.T, dir string) *testEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ctx.Close() })
-	if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
+	if err := gconsole.NewConsole(ctx, gconsole.ConsoleConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())

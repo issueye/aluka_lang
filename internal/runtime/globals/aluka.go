@@ -24,6 +24,11 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/galuka"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbase"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gcrypto"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gencoding"
 )
 
 // AlukaConfig 配置 Aluka 全局。
@@ -35,8 +40,8 @@ func NewAluka(ctx engine.Context, cfg AlukaConfig) error {
 
 	// --- 基本信息 ---
 	_ = aluka.Set("version", engine.Str("0.1.0-aluka"))
-	_ = aluka.Set("platform", engine.Str(platformName()))
-	_ = aluka.Set("arch", engine.Str(archName()))
+	_ = aluka.Set("platform", engine.Str(gbase.PlatformName()))
+	_ = aluka.Set("arch", engine.Str(gbase.ArchName()))
 	_ = aluka.Set("cwd", engine.NewFunction("cwd", func(args []engine.Value) (engine.Value, error) {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -61,7 +66,7 @@ func NewAluka(ctx engine.Context, cfg AlukaConfig) error {
 
 	// --- sleep / sleepSync ---
 	_ = aluka.Set("sleep", engine.NewFunction("sleep", func(args []engine.Value) (engine.Value, error) {
-		ms := argInt(args, 0, 0)
+		ms := gbase.ArgInt(args, 0, 0)
 		executor := engine.NewFunction("executor", func(ea []engine.Value) (engine.Value, error) {
 			if len(ea) == 0 {
 				return engine.Undefined(), nil
@@ -80,10 +85,10 @@ func NewAluka(ctx engine.Context, cfg AlukaConfig) error {
 			})
 			return engine.Undefined(), nil
 		})
-		return newPromise(ctx, executor)
+		return gbase.NewPromise(ctx, executor)
 	}))
 	_ = aluka.Set("sleepSync", engine.NewFunction("sleepSync", func(args []engine.Value) (engine.Value, error) {
-		ms := argInt(args, 0, 0)
+		ms := gbase.ArgInt(args, 0, 0)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		return engine.Undefined(), nil
 	}))
@@ -125,18 +130,18 @@ func NewAluka(ctx engine.Context, cfg AlukaConfig) error {
 	}))
 
 	// --- Phase 4 扩展 API ---
-	alukaRegisterShell(ctx, aluka)
-	alukaRegisterPassword(ctx, aluka)
-	alukaRegisterHash(ctx, aluka)
-	alukaRegisterCompress(ctx, aluka)
-	alukaRegisterUtil(ctx, aluka)
-	alukaRegisterEncoding(ctx, aluka)
-	alukaRegisterSpawn(ctx, aluka)
-	alukaRegisterSQL(ctx, aluka)
-	alukaRegisterRedis(ctx, aluka)
-	alukaRegisterS3(ctx, aluka)
-	alukaRegisterIPC(ctx, aluka)
-	alukaRegisterGUI(ctx, aluka)
+	galuka.RegisterShell(ctx, aluka)
+	gcrypto.RegisterAlukaPassword(ctx, aluka)
+	gcrypto.RegisterAlukaHash(ctx, aluka)
+	galuka.RegisterCompress(ctx, aluka)
+	galuka.RegisterUtil(ctx, aluka)
+	gencoding.RegisterAlukaEncoding(ctx, aluka)
+	galuka.RegisterSpawn(ctx, aluka)
+	galuka.RegisterSQL(ctx, aluka)
+	galuka.RegisterRedis(ctx, aluka)
+	galuka.RegisterS3(ctx, aluka)
+	galuka.RegisterIPC(ctx, aluka)
+	galuka.RegisterGUI(ctx, aluka)
 
 	if err := ctx.Global().Set("Aluka", aluka); err != nil {
 		return err
@@ -172,27 +177,27 @@ func newAlukaFile(ctx engine.Context, path string) engine.Value {
 	}), nil)
 	_ = file.Set("type", engine.Str(""))
 	_ = file.Set("text", engine.NewFunction("text", func(args []engine.Value) (engine.Value, error) {
-		return promiseResolveValue(ctx, engine.Str(string(readAll())))
+		return gbase.ResolveValue(ctx, engine.Str(string(readAll())))
 	}))
 	_ = file.Set("arrayBuffer", engine.NewFunction("arrayBuffer", func(args []engine.Value) (engine.Value, error) {
-		return promiseResolveValue(ctx, NewBufferInstance(readAll()))
+		return gbase.ResolveValue(ctx, gbuffer.NewBufferInstance(readAll()))
 	}))
 	_ = file.Set("json", engine.NewFunction("json", func(args []engine.Value) (engine.Value, error) {
 		jsonGlobal, err := ctx.Global().Get("JSON")
 		if err != nil {
-			return promiseRejectValue(ctx, "JSON not available")
+			return gbase.RejectValue(ctx, "JSON not available")
 		}
 		jo, _ := jsonGlobal.AsObject()
 		if parseFn, err := jo.Get("parse"); err == nil && parseFn.IsFunction() {
 			if f, ok := parseFn.AsFunction(); ok {
 				parsed, perr := f.Call([]engine.Value{engine.Str(string(readAll()))})
 				if perr != nil {
-					return promiseRejectValue(ctx, perr.Error())
+					return gbase.RejectValue(ctx, perr.Error())
 				}
-				return promiseResolveValue(ctx, parsed)
+				return gbase.ResolveValue(ctx, parsed)
 			}
 		}
-		return promiseRejectValue(ctx, "JSON.parse failed")
+		return gbase.RejectValue(ctx, "JSON.parse failed")
 	}))
 
 	// write(chunk)：写入文件（追加模式简化）。
@@ -277,7 +282,7 @@ func alukaServe(ctx engine.Context, args []engine.Value) (engine.Value, error) {
 			}
 			return engine.Undefined(), nil
 		})
-		return newPromise(ctx, executor)
+		return gbase.NewPromise(ctx, executor)
 	}))
 
 	return server, nil

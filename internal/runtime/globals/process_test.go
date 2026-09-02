@@ -5,6 +5,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gproc"
 )
 
 // TestProcessArgv 验证 process.argv 显式注入。
@@ -13,7 +14,7 @@ func TestProcessArgv(t *testing.T) {
 	ctx, _ := eng.NewContext()
 	defer ctx.Close()
 
-	err := NewProcess(ctx, ProcessConfig{
+	err := gproc.NewProcess(ctx, gproc.ProcessConfig{
 		Argv: []string{"aluka", "script.js", "arg1", "arg2"},
 		Env:  map[string]string{"FOO": "bar"},
 	})
@@ -44,7 +45,7 @@ func TestProcessStdinStreamShape(t *testing.T) {
 	ctx, _ := eng.NewContext()
 	defer ctx.Close()
 
-	_ = NewProcess(ctx, ProcessConfig{})
+	_ = gproc.NewProcess(ctx, gproc.ProcessConfig{})
 
 	processValue, err := ctx.Global().Get("process")
 	if err != nil {
@@ -120,7 +121,7 @@ func TestProcessOutputWriteCallbacks(t *testing.T) {
 	}
 	defer vm.Close()
 
-	if err := NewProcess(vm, ProcessConfig{}); err != nil {
+	if err := gproc.NewProcess(vm, gproc.ProcessConfig{}); err != nil {
 		t.Fatalf("NewProcess: %v", err)
 	}
 	_, err = vm.Eval(`
@@ -145,7 +146,7 @@ func TestProcessListenerAliases(t *testing.T) {
 	ctx, _ := eng.NewContext()
 	defer ctx.Close()
 
-	if err := NewProcess(ctx, ProcessConfig{}); err != nil {
+	if err := gproc.NewProcess(ctx, gproc.ProcessConfig{}); err != nil {
 		t.Fatalf("NewProcess: %v", err)
 	}
 	procValue, err := ctx.Global().Get("process")
@@ -196,7 +197,7 @@ func TestProcessEnv(t *testing.T) {
 	ctx, _ := eng.NewContext()
 	defer ctx.Close()
 
-	_ = NewProcess(ctx, ProcessConfig{
+	_ = gproc.NewProcess(ctx, gproc.ProcessConfig{
 		Env: map[string]string{"NODE_ENV": "test"},
 	})
 
@@ -215,7 +216,7 @@ func TestProcessPlatform(t *testing.T) {
 	ctx, _ := eng.NewContext()
 	defer ctx.Close()
 
-	_ = NewProcess(ctx, ProcessConfig{})
+	_ = gproc.NewProcess(ctx, gproc.ProcessConfig{})
 
 	v, _ := ctx.Eval(`process.platform`, "test.js")
 	s := v.String()
@@ -230,7 +231,7 @@ func TestProcessVersions(t *testing.T) {
 	ctx, _ := eng.NewContext()
 	defer ctx.Close()
 
-	_ = NewProcess(ctx, ProcessConfig{})
+	_ = gproc.NewProcess(ctx, gproc.ProcessConfig{})
 
 	v, _ := ctx.Eval(`process.versions.aluka`, "test.js")
 	if v.String() != "0.1.0" {
@@ -244,7 +245,7 @@ func TestProcessHrtime(t *testing.T) {
 	ctx, _ := eng.NewContext()
 	defer ctx.Close()
 
-	_ = NewProcess(ctx, ProcessConfig{})
+	_ = gproc.NewProcess(ctx, gproc.ProcessConfig{})
 
 	v, err := ctx.Eval(`process.hrtime()`, "test.js")
 	if err != nil {
@@ -265,7 +266,7 @@ func TestProcessMemoryUsage(t *testing.T) {
 	ctx, _ := eng.NewContext()
 	defer ctx.Close()
 
-	_ = NewProcess(ctx, ProcessConfig{})
+	_ = gproc.NewProcess(ctx, gproc.ProcessConfig{})
 
 	v, err := ctx.Eval(`process.memoryUsage().rss`, "test.js")
 	if err != nil {
@@ -283,7 +284,7 @@ func TestProcessNextTickPrecedesPromiseMicrotasks(t *testing.T) {
 	}
 	defer vm.Close()
 
-	if err := NewProcess(vm, ProcessConfig{}); err != nil {
+	if err := gproc.NewProcess(vm, gproc.ProcessConfig{}); err != nil {
 		t.Fatalf("NewProcess: %v", err)
 	}
 	_, err = vm.Eval(`
@@ -312,7 +313,7 @@ func TestProcessNextTickPassesArguments(t *testing.T) {
 	}
 	defer vm.Close()
 
-	if err := NewProcess(vm, ProcessConfig{}); err != nil {
+	if err := gproc.NewProcess(vm, gproc.ProcessConfig{}); err != nil {
 		t.Fatalf("NewProcess: %v", err)
 	}
 	_, err = vm.Eval(`

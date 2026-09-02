@@ -19,7 +19,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 
 	// 注册 SQLite 驱动（modernc.org/sqlite，纯 Go）。
 	_ "modernc.org/sqlite"
@@ -400,7 +400,7 @@ func sqliteDriverToValue(state *sqliteStmtState, v any) (engine.Value, error) {
 	case string:
 		return engine.Str(val), nil
 	case []byte:
-		return globals.NewBufferInstance(val), nil
+		return gbuffer.NewBufferInstance(val), nil
 	case bool:
 		return engine.Boolean(val), nil
 	case *big.Int:

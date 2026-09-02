@@ -3,11 +3,13 @@ package globals
 import (
 	"strings"
 	"testing"
+
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
 )
 
 // TestConsoleCount 验证 count/countReset。
 func TestConsoleCount(t *testing.T) {
-	ctx, out, _ := newTestContext(t, ConsoleConfig{})
+	ctx, out, _ := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, _ = ctx.Eval(`console.count("a"); console.count("a"); console.countReset("a"); console.count("a")`, "test.js")
@@ -23,7 +25,7 @@ func TestConsoleCount(t *testing.T) {
 
 // TestConsoleGroupIndent 验证 group 缩进。
 func TestConsoleGroupIndent(t *testing.T) {
-	ctx, out, _ := newTestContext(t, ConsoleConfig{})
+	ctx, out, _ := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, _ = ctx.Eval(`console.group("g"); console.log("inner"); console.groupEnd(); console.log("outer")`, "test.js")
@@ -38,7 +40,7 @@ func TestConsoleGroupIndent(t *testing.T) {
 
 // TestConsoleTable 验证 table 输出。
 func TestConsoleTable(t *testing.T) {
-	ctx, out, _ := newTestContext(t, ConsoleConfig{})
+	ctx, out, _ := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, _ = ctx.Eval(`console.table([1, 2])`, "test.js")
@@ -49,7 +51,7 @@ func TestConsoleTable(t *testing.T) {
 
 // TestConsoleTrace 验证 trace 输出到 stderr。
 func TestConsoleTrace(t *testing.T) {
-	ctx, _, errOut := newTestContext(t, ConsoleConfig{})
+	ctx, _, errOut := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, _ = ctx.Eval(`console.trace("here")`, "test.js")

@@ -5,6 +5,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gintl"
 )
 
 func newIntlTestContext(t *testing.T) engine.Context {
@@ -15,7 +16,7 @@ func newIntlTestContext(t *testing.T) engine.Context {
 		t.Fatalf("NewContext: %v", err)
 	}
 	t.Cleanup(func() { ctx.Close() })
-	if err := NewIntl(ctx, IntlConfig{}); err != nil {
+	if err := gintl.NewIntl(ctx, gintl.IntlConfig{}); err != nil {
 		t.Fatalf("NewIntl: %v", err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())

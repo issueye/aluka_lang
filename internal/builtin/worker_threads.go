@@ -21,7 +21,10 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodeevents"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gproc"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gtimers"
 	modmodule "github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
@@ -264,10 +267,10 @@ func newWorkerInstance(mainCtx engine.Context, args []engine.Value) engine.Value
 			return
 		}
 		defer wctx.Close()
-		_ = globals.NewConsole(wctx, globals.ConsoleConfig{})
-		_ = globals.NewProcess(wctx, globals.ProcessConfig{})
-		_ = globals.NewBuffer(wctx, globals.BufferConfig{})
-		_ = globals.NewTimers(wctx, globals.TimerConfig{})
+		_ = gconsole.NewConsole(wctx, gconsole.ConsoleConfig{})
+		_ = gproc.NewProcess(wctx, gproc.ProcessConfig{})
+		_ = gbuffer.NewBuffer(wctx, gbuffer.BufferConfig{})
+		_ = gtimers.NewTimers(wctx, gtimers.TimerConfig{})
 		_ = wctx.Global().Set("globalThis", wctx.Global())
 
 		// parentPort：worker 端消息端口。

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
 )
 
 // === 差距补齐 P2：console L1（gap-closure-plan §3 P2）====================
@@ -13,7 +14,7 @@ import (
 // TestConsoleProfileNoop 验证 profile/profileEnd/timeStamp 为静默 no-op
 // （Node 22 行为：存在但不输出、不抛错）。
 func TestConsoleProfileNoop(t *testing.T) {
-	ctx, out, errOut := newTestContext(t, ConsoleConfig{})
+	ctx, out, errOut := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	_, err := ctx.Eval(`
@@ -65,7 +66,7 @@ func fakeStreamObj(t *testing.T, buf *bytes.Buffer) engine.Object {
 //   - prototype 镜像方法 + 实例自有属性方法
 //   - 全局 console 的 [[Prototype]] 指向 Console.prototype（instanceof 依据）
 func TestConsoleCtor(t *testing.T) {
-	ctx, _, _ := newTestContext(t, ConsoleConfig{})
+	ctx, _, _ := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	consoleVal, err := ctx.Global().Get("console")
@@ -222,7 +223,7 @@ func TestConsoleCtor(t *testing.T) {
 
 // TestConsoleInstanceStateIsolated 验证多实例状态隔离（time 计时器互不干扰）。
 func TestConsoleInstanceStateIsolated(t *testing.T) {
-	ctx, _, _ := newTestContext(t, ConsoleConfig{})
+	ctx, _, _ := newTestContext(t, gconsole.ConsoleConfig{})
 	defer ctx.Close()
 
 	consoleVal, _ := ctx.Global().Get("console")

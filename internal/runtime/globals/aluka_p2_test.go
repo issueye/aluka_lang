@@ -13,10 +13,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aluka-lang/aluka/internal/runtime/globals/galuka"
 )
 
 // resetSQLOnceForTest 重置 SQL 单例（关闭旧连接），使每个测试可用独立的 SQLITE_PATH。
-func resetSQLOnceForTest() { ResetSQLSingleton() }
+func resetSQLOnceForTest() { galuka.ResetSQLSingleton() }
 
 // TestAlukaSQLSQLite 验证 SQLite 后端完整 CRUD（函数调用形式）。
 func TestAlukaSQLSQLite(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/ipc"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/galuka"
 )
 
 // TestAlukaIPCSync 测试同步阻塞 RPC 调用 (callSync)
@@ -85,7 +86,7 @@ func TestAlukaIPCAsyncAndConcurrent(t *testing.T) {
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())
 
-	pluginProxy, err := CreatePluginProxyModule(ctx, "tcp:"+srv.Addr().String())
+	pluginProxy, err := galuka.CreatePluginProxyModule(ctx, "tcp:"+srv.Addr().String())
 	if err != nil {
 		t.Fatalf("CreatePluginProxyModule: %v", err)
 	}

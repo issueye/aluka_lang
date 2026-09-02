@@ -16,7 +16,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodeevents"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 )
 
 // NewChildProcess 构造 node:child_process 模块导出对象。
@@ -173,7 +173,7 @@ func spawnChild(ctx engine.Context, args []engine.Value) engine.Value {
 				if n > 0 {
 					data := append([]byte(nil), buf[:n]...)
 					ctx.PostTask(func() {
-						nodebase.EmitEvent(stream, "data", globals.NewBufferInstance(data))
+						nodebase.EmitEvent(stream, "data", gbuffer.NewBufferInstance(data))
 					})
 				}
 				if rerr != nil {

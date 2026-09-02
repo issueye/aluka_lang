@@ -15,6 +15,12 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gcrypto"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gevent"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gfetch"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gstream"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gtimers"
 )
 
 // newFetchTestEnv 创建带 Web API 全局 + 事件循环的 VM 上下文。
@@ -26,31 +32,31 @@ func newFetchTestEnv(t *testing.T) engine.Context {
 		t.Fatalf("NewContext: %v", err)
 	}
 	t.Cleanup(func() { ctx.Close() })
-	if err := NewFetch(ctx, FetchConfig{}); err != nil {
+	if err := gfetch.NewFetch(ctx, gfetch.FetchConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewBuffer(ctx, BufferConfig{}); err != nil {
+	if err := gbuffer.NewBuffer(ctx, gbuffer.BufferConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewBlob(ctx, BlobConfig{}); err != nil {
+	if err := gstream.NewBlob(ctx, gstream.BlobConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewStream(ctx, StreamConfig{}); err != nil {
+	if err := gstream.NewStream(ctx, gstream.StreamConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewWebCrypto(ctx, WebCryptoConfig{}); err != nil {
+	if err := gcrypto.NewWebCrypto(ctx, gcrypto.WebCryptoConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewURLPattern(ctx, URLPatternConfig{}); err != nil {
+	if err := gfetch.NewURLPattern(ctx, gfetch.URLPatternConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewMessageChannel(ctx, MessageConfig{}); err != nil {
+	if err := gevent.NewMessageChannel(ctx, gevent.MessageConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewWebSocket(ctx, WebSocketConfig{}); err != nil {
+	if err := gfetch.NewWebSocket(ctx, gfetch.WebSocketConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewTimers(ctx, TimerConfig{}); err != nil {
+	if err := gtimers.NewTimers(ctx, gtimers.TimerConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())

@@ -14,7 +14,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 	"golang.org/x/crypto/hkdf"
 )
 
@@ -41,7 +41,7 @@ func newSecretKeyObject(key []byte) engine.Value {
 	_ = ko.Set("type", engine.Str("secret"))
 	_ = ko.Set("symmetricKeySize", engine.IntValue(len(key)))
 	_ = ko.Set("export", engine.NewFunction("export", func(args []engine.Value) (engine.Value, error) {
-		return globals.NewBufferInstance(key), nil
+		return gbuffer.NewBufferInstance(key), nil
 	}))
 	return ko
 }
@@ -53,7 +53,7 @@ func newAsymKeyObject(typeStr string, pemBytes []byte) engine.Value {
 	_ = ko.Set("asymmetricKeyType", engine.Str("rsa"))
 	_ = ko.Set("__alukaKeyPEM", engine.Str(string(pemBytes)))
 	_ = ko.Set("export", engine.NewFunction("export", func(args []engine.Value) (engine.Value, error) {
-		return globals.NewBufferInstance(pemBytes), nil
+		return gbuffer.NewBufferInstance(pemBytes), nil
 	}))
 	return ko
 }

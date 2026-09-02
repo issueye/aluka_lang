@@ -19,7 +19,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 )
 
 // NewURL 构造 node:url 模块的导出对象。
@@ -76,7 +76,7 @@ func NewURL(ctx engine.Context) (engine.Value, error) {
 
 	// fileURLToPathBuffer：node 22.23 新增，返回 Buffer 形式的路径。
 	_ = m.Set("fileURLToPathBuffer", engine.NewFunction("fileURLToPathBuffer", func(args []engine.Value) (engine.Value, error) {
-		return globals.NewBufferInstance([]byte(fileURLToPath(nodebase.StrArg(args, 0)))), nil
+		return gbuffer.NewBufferInstance([]byte(fileURLToPath(nodebase.StrArg(args, 0)))), nil
 	}))
 
 	_ = m.Set("pathToFileURL", engine.NewFunction("pathToFileURL", func(args []engine.Value) (engine.Value, error) {

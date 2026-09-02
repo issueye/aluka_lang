@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
 )
 
 // testEnv sets up a temporary directory with test files and returns a loader.
@@ -37,7 +37,7 @@ func newTestEnv(t *testing.T, files map[string]string) *testEnv {
 	}
 	t.Cleanup(func() { ctx.Close() })
 
-	if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
+	if err := gconsole.NewConsole(ctx, gconsole.ConsoleConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	_ = ctx.Global().Set("globalThis", ctx.Global())

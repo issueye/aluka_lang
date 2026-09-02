@@ -22,7 +22,7 @@ import (
 
 // UncaughtExceptionHandler 处理未捕获的 JS 回调异常。reason 是抛出/拒绝的
 // JS 值（Error 对象）。nil 时 ReportUncaught 回退到 stderr 打印。
-// 由 runtime/globals.NewProcess 注册为 process 'uncaughtException' 派发。
+// 由 runtime/gproc.NewProcess 注册为 process 'uncaughtException' 派发。
 var UncaughtExceptionHandler func(reason engine.Value)
 
 // ReportUncaught 报告一次未捕获的 JS 回调异常（Node uncaughtException 语义）。

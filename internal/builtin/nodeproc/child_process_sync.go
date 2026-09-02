@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 )
 
 // execError 带 code/status/killed 的 exec 错误（execFileSync/execSync 抛错）。
@@ -237,8 +237,8 @@ func runSyncCommand(cmd *exec.Cmd, optsVal engine.Value) (engine.Value, error) {
 		_ = result.Set("stdout", engine.Str(stdoutBuf.String()))
 		_ = result.Set("stderr", engine.Str(stderrBuf.String()))
 	} else {
-		_ = result.Set("stdout", globals.NewBufferInstance(stdoutBuf.Bytes()))
-		_ = result.Set("stderr", globals.NewBufferInstance(stderrBuf.Bytes()))
+		_ = result.Set("stdout", gbuffer.NewBufferInstance(stdoutBuf.Bytes()))
+		_ = result.Set("stderr", gbuffer.NewBufferInstance(stderrBuf.Bytes()))
 	}
 	if runErr != nil {
 		if atomic.LoadInt32(&timedOut) == 1 {

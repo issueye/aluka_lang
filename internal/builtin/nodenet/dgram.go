@@ -12,9 +12,9 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/builtin/nodeevents"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
 // NewDgram 构造 node:dgram 模块导出对象。
@@ -388,7 +388,7 @@ func dgramRecvLoop(ctx engine.Context, sock engine.Object, state *dgramSocketSta
 		// 复制有效数据，投递 'message' 事件。
 		data := make([]byte, n)
 		copy(data, buf[:n])
-		msg := globals.NewBufferInstance(data)
+		msg := gbuffer.NewBufferInstance(data)
 		rinfo := engine.NewObject()
 		_ = rinfo.Set("address", engine.Str(raddr.IP.String()))
 		_ = rinfo.Set("port", engine.IntValue(raddr.Port))

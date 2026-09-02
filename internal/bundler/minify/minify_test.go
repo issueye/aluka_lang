@@ -9,7 +9,7 @@ import (
 	"github.com/aluka-lang/aluka/internal/engine/ast"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/engine/parser"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
 )
 
 // captureStdout 捕获执行期间的 stdout（console.log 输出）。
@@ -47,7 +47,7 @@ func runSrc(t *testing.T, src string, minifyIt bool) string {
 			t.Fatalf("ctx: %v", err)
 		}
 		defer ctx.Close()
-		if err := globals.NewConsole(ctx, globals.ConsoleConfig{}); err != nil {
+		if err := gconsole.NewConsole(ctx, gconsole.ConsoleConfig{}); err != nil {
 			t.Fatalf("console: %v", err)
 		}
 		vm, ok := ctx.(*interpreter.VM)

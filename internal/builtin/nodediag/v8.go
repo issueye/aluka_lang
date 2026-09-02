@@ -14,7 +14,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/builtin/nodestream"
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 )
 
 // callJSONMethod 调用全局 JSON 上的方法（stringify/parse，保序）。
@@ -39,16 +39,16 @@ func NewV8(ctx engine.Context) (engine.Value, error) {
 	// serialize(value) → Buffer（用引擎 JSON.stringify 简化，保序）。
 	_ = m.Set("serialize", engine.NewFunction("serialize", func(args []engine.Value) (engine.Value, error) {
 		if len(args) == 0 {
-			return globals.NewBufferInstance(nil), nil
+			return gbuffer.NewBufferInstance(nil), nil
 		}
 		s, err := callJSONMethod(ctx, "stringify", args[:1])
 		if err != nil {
 			return engine.Undefined(), err
 		}
 		if s.IsUndefined() {
-			return globals.NewBufferInstance(nil), nil
+			return gbuffer.NewBufferInstance(nil), nil
 		}
-		return globals.NewBufferInstance([]byte(s.String())), nil
+		return gbuffer.NewBufferInstance([]byte(s.String())), nil
 	}))
 
 	// deserialize(buffer) → value。
@@ -221,7 +221,7 @@ func NewV8(ctx engine.Context) (engine.Value, error) {
 		}))
 	}
 	_ = serProto.Set("releaseBuffer", engine.NewFunction("releaseBuffer", func(args []engine.Value) (engine.Value, error) {
-		return globals.NewBufferInstance(nil), nil
+		return gbuffer.NewBufferInstance(nil), nil
 	}))
 	serCtor := engine.NewFunction("Serializer", func(args []engine.Value) (engine.Value, error) {
 		return newV8ValueInstance(serProto, "Serializer"), nil

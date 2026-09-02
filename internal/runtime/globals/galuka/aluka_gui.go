@@ -1,0 +1,1329 @@
+package galuka
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"sync/atomic"
+	"time"
+
+	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/gui"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbase"
+)
+
+// guiListener 记录 JS 回调函数及其底层 Go 取消订阅函数。
+type guiListener struct {
+	fn      engine.Function
+	dispose func()
+}
+
+// evalCounter 页面 evaluate 请求自增 ID（与窗口 ID 拼成唯一事件名）。
+var evalCounter uint64
+
+// evalWrapperScript 构造在页面上下文执行的 evaluate 包装脚本：
+// 执行用户表达式（支持 Promise），结果经 window.aluka.events.emit 回传。
+// 用户表达式经 new Function 动态编译：语法错误可被捕获并快速 fail（而非整体脚本不执行）。
+func evalWrapperScript(js string, evalID string) string {
+	exprJSON, _ := json.Marshal(js)
+	return `(function() {
+  var __id = ` + strconv.Quote(evalID) + `;
+  var __send = function(payload) {
+    try {
+      if (window.aluka && window.aluka.events && window.aluka.events.emit) {
+        window.aluka.events.emit(__id, payload);
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  };
+  var __fail = function(err) {
+    __send({ ok: false, error: String(err && err.message || err) });
+  };
+  try {
+    var __fn = new Function('return (' + ` + string(exprJSON) + ` + ')');
+    var __r = __fn();
+    if (__r && typeof __r.then === 'function') {
+      __r.then(
+        function(v) { __send({ ok: true, result: v }); },
+        function(e) { __fail(e); }
+      );
+    } else {
+      __send({ ok: true, result: __r });
+    }
+  } catch (e) {
+    __fail(e);
+  }
+})();`
+}
+
+// structToEngine 将 Go 结构体通过 JSON 中转转换为 engine.Value。
+func structToEngine(v interface{}) engine.Value {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return engine.Undefined()
+	}
+	var raw interface{}
+	_ = json.Unmarshal(b, &raw)
+	return gbase.JSONToEngine(raw)
+}
+
+// alukaRegisterGUI 注册 Aluka.gui 桌面运行时 API。
+func RegisterGUI(ctx engine.Context, aluka engine.Object) {
+	guiObj := engine.NewObject()
+
+	// 1. app 对象
+	appObj := engine.NewObject()
+	app := gui.GetApp()
+	var appDisposers = map[string][]guiListener{}
+
+	// app.on(event, handler) → 返回取消订阅函数
+	_ = appObj.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("app.on requires event and callback")
+		}
+		evt := args[0].String()
+		fn, ok := args[1].AsFunction()
+		if !ok {
+			return nil, fmt.Errorf("app.on handler must be a function")
+		}
+
+		dispose := app.On(evt, func(data interface{}) {
+			release := ctx.AddRef()
+			ctx.PostTask(func() {
+				defer release()
+				_, _ = fn.Call([]engine.Value{gbase.JSONToEngine(data)})
+				ctx.FlushMicrotasks()
+			})
+		})
+		appDisposers[evt] = append(appDisposers[evt], guiListener{fn: fn, dispose: dispose})
+		// 返回取消订阅函数（disposer）供 JS 调用。
+		return engine.NewFunction("dispose", func(callArgs []engine.Value) (engine.Value, error) {
+			dispose()
+			return engine.Undefined(), nil
+		}), nil
+	}))
+
+	// app.off(event, [handler])
+	_ = appObj.Set("off", engine.NewFunction("off", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("app.off requires event name")
+		}
+		evt := args[0].String()
+		if len(args) >= 2 && !args[1].IsUndefined() && !args[1].IsNull() {
+			if targetFn, ok := args[1].AsFunction(); ok {
+				var remaining []guiListener
+				for _, item := range appDisposers[evt] {
+					if item.fn == targetFn {
+						if item.dispose != nil {
+							item.dispose()
+						}
+					} else {
+						remaining = append(remaining, item)
+					}
+				}
+				if len(remaining) > 0 {
+					appDisposers[evt] = remaining
+				} else {
+					delete(appDisposers, evt)
+				}
+				return engine.Undefined(), nil
+			}
+		}
+		for _, d := range appDisposers[evt] {
+			if d.dispose != nil {
+				d.dispose()
+			}
+		}
+		delete(appDisposers, evt)
+		return engine.Undefined(), nil
+	}))
+
+	// app.quit()
+	_ = appObj.Set("quit", engine.NewFunction("quit", func(args []engine.Value) (engine.Value, error) {
+		app.Quit()
+		return engine.Undefined(), nil
+	}))
+
+	// 退出即终止进程：GUI 应用语义下 quit 后不应因残留定时器/任务而悬挂
+	// （宿主进程残留还会占用全局热键，导致下次启动 RegisterHotKey 失败）。
+	// 覆盖全部退出路径：app.quit()、托盘菜单、最后一个窗口关闭。
+	app.On("quit", func(data interface{}) {
+		if stopper, ok := ctx.(interface{ Stop() }); ok {
+			stopper.Stop()
+		}
+	})
+
+	// app.run()
+	// 持有 JS 上下文活跃句柄直到 GUI 循环退出：既保证 ready 事件的
+	// 回投任务不被事件循环空闲判定丢弃（竞态），又让应用退出后进程随之结束
+	_ = appObj.Set("run", engine.NewFunction("run", func(args []engine.Value) (engine.Value, error) {
+		release := ctx.AddRef()
+		go func() {
+			defer release()
+			_ = app.Run()
+		}()
+		return engine.Undefined(), nil
+	}))
+
+	// app.registerRPC(name, handler)
+	_ = appObj.Set("registerRPC", engine.NewFunction("registerRPC", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("app.registerRPC requires method name and handler")
+		}
+		name := args[0].String()
+		fn, ok := args[1].AsFunction()
+		if !ok {
+			return nil, fmt.Errorf("app.registerRPC handler must be a function")
+		}
+
+		gui.RegisterRPCMethod(name, func(paramsRaw json.RawMessage) (interface{}, error) {
+			resChan := make(chan struct {
+				val interface{}
+				err error
+			}, 1)
+
+			ctx.PostTask(func() {
+				var jsArg engine.Value = engine.Undefined()
+				if len(paramsRaw) > 0 {
+					var rawObj interface{}
+					_ = json.Unmarshal(paramsRaw, &rawObj)
+					jsArg = gbase.JSONToEngine(rawObj)
+				}
+				res, err := fn.Call([]engine.Value{jsArg})
+				if err != nil {
+					resChan <- struct {
+						val interface{}
+						err error
+					}{nil, err}
+				} else {
+					resChan <- struct {
+						val interface{}
+						err error
+					}{gbase.ValueToJSON(res), nil}
+				}
+				ctx.FlushMicrotasks()
+			})
+
+			r := <-resChan
+			return r.val, r.err
+		})
+		return engine.Undefined(), nil
+	}))
+
+	// app.unregisterRPC(name)
+	_ = appObj.Set("unregisterRPC", engine.NewFunction("unregisterRPC", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("app.unregisterRPC requires method name")
+		}
+		gui.UnregisterRPCMethod(args[0].String())
+		return engine.Undefined(), nil
+	}))
+
+	// app.getWindows() → 返回窗口句柄数组
+	_ = appObj.Set("getWindows", engine.NewFunction("getWindows", func(args []engine.Value) (engine.Value, error) {
+		wins := app.Windows()
+		arr := make([]engine.Value, 0, len(wins))
+		for _, w := range wins {
+			arr = append(arr, wrapWindowInstance(ctx, w))
+		}
+		return engine.NewArray(arr), nil
+	}))
+
+	// app.getWindowById(id) → 窗口句柄或 undefined
+	_ = appObj.Set("getWindowById", engine.NewFunction("getWindowById", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("app.getWindowById requires window id")
+		}
+		idf, ok := args[0].Float()
+		if !ok {
+			return engine.Undefined(), nil
+		}
+		w := app.GetWindowByID(uint64(idf))
+		if w == nil {
+			return engine.Undefined(), nil
+		}
+		return wrapWindowInstance(ctx, w), nil
+	}))
+
+	_ = guiObj.Set("app", appObj)
+
+	// 2. Window 构造函数 / 工厂函数
+	_ = guiObj.Set("createWindow", engine.NewFunction("createWindow", func(args []engine.Value) (engine.Value, error) {
+		var opts gui.WindowOptions
+		if len(args) > 0 {
+			if o, ok := args[0].AsObject(); ok {
+				opts = parseWindowOptions(o)
+			}
+		}
+
+		win, err := gui.NewWindow(opts)
+		if err != nil {
+			return nil, err
+		}
+
+		return wrapWindowInstance(ctx, win), nil
+	}))
+
+	// 3. dialog 原生弹窗 (支持 Promise 异步非阻塞)
+	dialogObj := engine.NewObject()
+
+	_ = dialogObj.Set("showMessageBox", engine.NewFunction("showMessageBox", func(args []engine.Value) (engine.Value, error) {
+		opts := gui.DialogOptions{Type: "info"}
+		if len(args) > 0 {
+			if o, ok := args[0].AsObject(); ok {
+				opts = parseDialogOptions(o, "info")
+			}
+		}
+		return newDialogPromise(ctx, app, opts, dialogResultMessage)
+	}))
+
+	_ = dialogObj.Set("showOpenDialog", engine.NewFunction("showOpenDialog", func(args []engine.Value) (engine.Value, error) {
+		opts := gui.DialogOptions{Type: "openFile"}
+		if len(args) > 0 {
+			if o, ok := args[0].AsObject(); ok {
+				opts = parseDialogOptions(o, "openFile")
+			}
+		}
+		return newDialogPromise(ctx, app, opts, dialogResultFiles)
+	}))
+
+	_ = dialogObj.Set("showSaveDialog", engine.NewFunction("showSaveDialog", func(args []engine.Value) (engine.Value, error) {
+		opts := gui.DialogOptions{Type: "saveFile"}
+		if len(args) > 0 {
+			if o, ok := args[0].AsObject(); ok {
+				opts = parseDialogOptions(o, "saveFile")
+			}
+		}
+		return newDialogPromise(ctx, app, opts, dialogResultSavePath)
+	}))
+
+	_ = guiObj.Set("dialog", dialogObj)
+
+	// 4. shell 系统文件/文件夹操作（打开 / 在文件管理器中显示），返回 Promise<{ok,error?}>
+	shellObj := engine.NewObject()
+	_ = shellObj.Set("openPath", engine.NewFunction("openPath", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("shell.openPath requires path")
+		}
+		return newShellPromise(ctx, gui.OpenPath, args[0].String())
+	}))
+	_ = shellObj.Set("showItemInFolder", engine.NewFunction("showItemInFolder", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("shell.showItemInFolder requires path")
+		}
+		return newShellPromise(ctx, gui.ShowItemInFolder, args[0].String())
+	}))
+	_ = shellObj.Set("openExternal", engine.NewFunction("openExternal", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("shell.openExternal requires url")
+		}
+		return newShellPromise(ctx, gui.OpenExternal, args[0].String())
+	}))
+	_ = guiObj.Set("shell", shellObj)
+
+	// 5. createTray 系统托盘
+	_ = guiObj.Set("createTray", engine.NewFunction("createTray", func(args []engine.Value) (engine.Value, error) {
+		var opts gui.TrayOptions
+		if len(args) > 0 {
+			if o, ok := args[0].AsObject(); ok {
+				if icon, err := o.Get("icon"); err == nil && icon != nil && !icon.IsUndefined() {
+					opts.Icon = icon.String()
+				}
+				if tip, err := o.Get("tooltip"); err == nil && tip != nil && !tip.IsUndefined() {
+					opts.Tooltip = tip.String()
+				}
+				if menuVal, err := o.Get("menu"); err == nil && menuVal != nil && menuVal.IsObject() {
+					if menuArr, ok := menuVal.AsObject(); ok {
+						opts.Menu = parseMenuItems(ctx, menuArr)
+					}
+				}
+			}
+		}
+		tray, err := gui.NewTray(opts)
+		if err != nil {
+			return nil, err
+		}
+		return wrapTrayInstance(ctx, tray), nil
+	}))
+
+	// 5. globalShortcut 全局快捷键
+	shortcutObj := engine.NewObject()
+	_ = shortcutObj.Set("register", engine.NewFunction("register", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("globalShortcut.register requires accelerator and callback")
+		}
+		accel := args[0].String()
+		fn, ok := args[1].AsFunction()
+		if !ok {
+			return nil, fmt.Errorf("globalShortcut.register callback must be a function")
+		}
+		if err := gui.GlobalShortcutRegister(accel, func() {
+			release := ctx.AddRef()
+			ctx.PostTask(func() {
+				defer release()
+				_, _ = fn.Call(nil)
+				ctx.FlushMicrotasks()
+			})
+		}); err != nil {
+			return nil, err
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = shortcutObj.Set("unregister", engine.NewFunction("unregister", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			gui.GlobalShortcutUnregister(args[0].String())
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = shortcutObj.Set("unregisterAll", engine.NewFunction("unregisterAll", func(args []engine.Value) (engine.Value, error) {
+		gui.GlobalShortcutUnregisterAll()
+		return engine.Undefined(), nil
+	}))
+	_ = guiObj.Set("globalShortcut", shortcutObj)
+
+	// 6. setAssetDir(dir)
+	// 打包产物模式（--web-dir 内嵌资源）下自动忽略：开发用相对路径
+	// 在用户机器上不存在，若覆盖虚拟协议会导致全部请求 404
+	_ = guiObj.Set("setAssetDir", engine.NewFunction("setAssetDir", func(args []engine.Value) (engine.Value, error) {
+		if gui.EmbeddedAssetsActive() {
+			return engine.Undefined(), nil
+		}
+		if len(args) > 0 {
+			dir := args[0].String()
+			gui.SetAssetProvider(&gui.LocalDirectoryAssetProvider{BaseDir: dir})
+		}
+		return engine.Undefined(), nil
+	}))
+
+	// 7. capabilities 平台特性支持检测
+	caps := gui.GetCapabilities()
+	capsObj := engine.NewObject()
+	_ = capsObj.Set("platform", engine.Str(caps.Platform))
+	_ = capsObj.Set("webview", engine.Boolean(caps.WebView))
+	_ = capsObj.Set("dialog", engine.Boolean(caps.Dialog))
+	_ = capsObj.Set("evaluate", engine.Boolean(caps.Evaluate))
+	_ = capsObj.Set("capturePreview", engine.Boolean(caps.CapturePreview))
+	_ = capsObj.Set("tray", engine.Boolean(caps.Tray))
+	_ = capsObj.Set("globalShortcut", engine.Boolean(caps.GlobalShortcut))
+	_ = capsObj.Set("menu", engine.Boolean(caps.Menu))
+	_ = capsObj.Set("clipboard", engine.Boolean(caps.Clipboard))
+	_ = capsObj.Set("screen", engine.Boolean(caps.Screen))
+	_ = guiObj.Set("capabilities", capsObj)
+
+	// 8. clipboard 系统剪贴板 (Promise 异步非阻塞)
+	clipboardObj := engine.NewObject()
+	_ = clipboardObj.Set("readText", engine.NewFunction("readText", func(args []engine.Value) (engine.Value, error) {
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 2 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+			reject := execArgs[1]
+
+			release := ctx.AddRef()
+			go func() {
+				text, err := gui.ClipboardReadText()
+				ctx.PostTask(func() {
+					defer release()
+					if err != nil {
+						if rf, ok := reject.AsFunction(); ok {
+							errObj := engine.NewObject()
+							_ = errObj.Set("message", engine.Str(err.Error()))
+							_, _ = rf.Call([]engine.Value{errObj})
+						}
+					} else {
+						if rf, ok := resolve.AsFunction(); ok {
+							_, _ = rf.Call([]engine.Value{engine.Str(text)})
+						}
+					}
+					ctx.FlushMicrotasks()
+				})
+			}()
+			return engine.Undefined(), nil
+		})
+		return gbase.NewPromise(ctx, executor)
+	}))
+
+	_ = clipboardObj.Set("writeText", engine.NewFunction("writeText", func(args []engine.Value) (engine.Value, error) {
+		text := ""
+		if len(args) > 0 {
+			text = args[0].String()
+		}
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 1 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+
+			release := ctx.AddRef()
+			go func() {
+				err := gui.ClipboardWriteText(text)
+				ctx.PostTask(func() {
+					defer release()
+					res := map[string]interface{}{"ok": err == nil}
+					if err != nil {
+						res["error"] = err.Error()
+					}
+					if rf, ok := resolve.AsFunction(); ok {
+						_, _ = rf.Call([]engine.Value{gbase.JSONToEngine(res)})
+					}
+					ctx.FlushMicrotasks()
+				})
+			}()
+			return engine.Undefined(), nil
+		})
+		return gbase.NewPromise(ctx, executor)
+	}))
+	_ = guiObj.Set("clipboard", clipboardObj)
+
+	// 9. screen 显示器几何与属性信息
+	screenObj := engine.NewObject()
+	_ = screenObj.Set("getPrimaryDisplay", engine.NewFunction("getPrimaryDisplay", func(args []engine.Value) (engine.Value, error) {
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 2 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+			reject := execArgs[1]
+
+			release := ctx.AddRef()
+			go func() {
+				d, err := gui.GetPrimaryDisplay()
+				ctx.PostTask(func() {
+					defer release()
+					if err != nil {
+						if rf, ok := reject.AsFunction(); ok {
+							errObj := engine.NewObject()
+							_ = errObj.Set("message", engine.Str(err.Error()))
+							_, _ = rf.Call([]engine.Value{errObj})
+						}
+					} else {
+						if rf, ok := resolve.AsFunction(); ok {
+							_, _ = rf.Call([]engine.Value{structToEngine(d)})
+						}
+					}
+					ctx.FlushMicrotasks()
+				})
+			}()
+			return engine.Undefined(), nil
+		})
+		return gbase.NewPromise(ctx, executor)
+	}))
+
+	_ = screenObj.Set("getAllDisplays", engine.NewFunction("getAllDisplays", func(args []engine.Value) (engine.Value, error) {
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 2 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+			reject := execArgs[1]
+
+			release := ctx.AddRef()
+			go func() {
+				displays, err := gui.GetAllDisplays()
+				ctx.PostTask(func() {
+					defer release()
+					if err != nil {
+						if rf, ok := reject.AsFunction(); ok {
+							errObj := engine.NewObject()
+							_ = errObj.Set("message", engine.Str(err.Error()))
+							_, _ = rf.Call([]engine.Value{errObj})
+						}
+					} else {
+						if rf, ok := resolve.AsFunction(); ok {
+							_, _ = rf.Call([]engine.Value{structToEngine(displays)})
+						}
+					}
+					ctx.FlushMicrotasks()
+				})
+			}()
+			return engine.Undefined(), nil
+		})
+		return gbase.NewPromise(ctx, executor)
+	}))
+	_ = guiObj.Set("screen", screenObj)
+
+	_ = aluka.Set("gui", guiObj)
+}
+
+// newShellPromise 在后台 goroutine 执行系统文件/文件夹操作，避免阻塞 JS 线程；
+// 结果统一以 {ok:boolean, error?:string} resolve（不 reject，调用侧无需 try/catch）。
+func newShellPromise(ctx engine.Context, op func(string) error, target string) (engine.Value, error) {
+	executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+		if len(execArgs) < 1 {
+			return engine.Undefined(), nil
+		}
+		resolve := execArgs[0]
+
+		release := ctx.AddRef()
+		go func() {
+			err := op(target)
+			ctx.PostTask(func() {
+				defer release()
+				res := map[string]interface{}{"ok": err == nil}
+				if err != nil {
+					res["error"] = err.Error()
+				}
+				if rf, ok := resolve.AsFunction(); ok {
+					_, _ = rf.Call([]engine.Value{gbase.JSONToEngine(res)})
+				}
+				ctx.FlushMicrotasks()
+			})
+		}()
+		return engine.Undefined(), nil
+	})
+	return gbase.NewPromise(ctx, executor)
+}
+
+type dialogResultKind int
+
+const (
+	dialogResultMessage dialogResultKind = iota
+	dialogResultFiles
+	dialogResultSavePath
+)
+
+func newDialogPromise(ctx engine.Context, app *gui.App, opts gui.DialogOptions, kind dialogResultKind) (engine.Value, error) {
+	opts = gui.NormalizeDialogOptions(opts)
+	executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+		if len(execArgs) < 2 {
+			return engine.Undefined(), nil
+		}
+		resolve := execArgs[0]
+		reject := execArgs[1]
+
+		release := ctx.AddRef()
+		go func() {
+			btnIndex, files, err := app.ShowDialog(opts)
+			ctx.PostTask(func() {
+				defer release()
+				if err != nil {
+					if rf, ok := reject.AsFunction(); ok {
+						errObj := engine.NewObject()
+						_ = errObj.Set("message", engine.Str(err.Error()))
+						_, _ = rf.Call([]engine.Value{errObj})
+					}
+					ctx.FlushMicrotasks()
+					return
+				}
+				if rf, ok := resolve.AsFunction(); ok {
+					switch kind {
+					case dialogResultFiles:
+						arr := make([]engine.Value, 0, len(files))
+						for _, f := range files {
+							arr = append(arr, engine.Str(f))
+						}
+						_, _ = rf.Call([]engine.Value{engine.NewArray(arr)})
+					case dialogResultSavePath:
+						if len(files) == 0 {
+							_, _ = rf.Call([]engine.Value{engine.Null()})
+						} else {
+							_, _ = rf.Call([]engine.Value{engine.Str(files[0])})
+						}
+					default:
+						_, _ = rf.Call([]engine.Value{engine.Number(float64(btnIndex))})
+					}
+				}
+				ctx.FlushMicrotasks()
+			})
+		}()
+		return engine.Undefined(), nil
+	})
+	return gbase.NewPromise(ctx, executor)
+}
+
+func parseDialogOptions(o engine.Object, defaultType string) gui.DialogOptions {
+	opts := gui.DialogOptions{Type: defaultType}
+	getStr := func(key string, dst *string) {
+		if v, err := o.Get(key); err == nil && v != nil && !v.IsUndefined() {
+			*dst = v.String()
+		}
+	}
+	getBool := func(key string, dst *bool) {
+		if v, err := o.Get(key); err == nil && v != nil && !v.IsUndefined() {
+			b, _ := v.Bool()
+			*dst = b
+		}
+	}
+	getInt := func(key string, dst *int) {
+		if v, err := o.Get(key); err == nil && v != nil {
+			if f, ok := v.Float(); ok {
+				*dst = int(f)
+			}
+		}
+	}
+	getStr("title", &opts.Title)
+	getStr("message", &opts.Message)
+	getStr("type", &opts.Type)
+	getStr("defaultPath", &opts.DefaultPath)
+	getBool("directory", &opts.Directory)
+	getBool("multiple", &opts.Multiple)
+	getInt("defaultId", &opts.DefaultID)
+	getInt("cancelId", &opts.CancelID)
+
+	if v, err := o.Get("buttons"); err == nil && v != nil && v.IsObject() {
+		if arr, ok := v.AsObject(); ok {
+			for _, k := range arr.Keys() {
+				if item, err := arr.Get(k); err == nil && item != nil {
+					opts.Buttons = append(opts.Buttons, item.String())
+				}
+			}
+		}
+	}
+	if v, err := o.Get("properties"); err == nil && v != nil && v.IsObject() {
+		if arr, ok := v.AsObject(); ok {
+			for _, k := range arr.Keys() {
+				if item, err := arr.Get(k); err == nil && item != nil {
+					opts.Properties = append(opts.Properties, item.String())
+				}
+			}
+		}
+	}
+	if v, err := o.Get("filters"); err == nil && v != nil && v.IsObject() {
+		if arr, ok := v.AsObject(); ok {
+			for _, k := range arr.Keys() {
+				item, err := arr.Get(k)
+				if err != nil || item == nil || !item.IsObject() {
+					continue
+				}
+				fo, ok := item.AsObject()
+				if !ok {
+					continue
+				}
+				var f gui.FileFilter
+				if n, err := fo.Get("name"); err == nil && n != nil {
+					f.Name = n.String()
+				}
+				if ex, err := fo.Get("extensions"); err == nil && ex != nil && ex.IsObject() {
+					if exArr, ok := ex.AsObject(); ok {
+						for _, ek := range exArr.Keys() {
+							if e, err := exArr.Get(ek); err == nil && e != nil {
+								f.Extensions = append(f.Extensions, e.String())
+							}
+						}
+					}
+				}
+				opts.Filters = append(opts.Filters, f)
+			}
+		}
+	}
+	return gui.NormalizeDialogOptions(opts)
+}
+
+func parseWindowOptions(o engine.Object) gui.WindowOptions {
+	var opts gui.WindowOptions
+	getStr := func(key string, dst *string) {
+		if v, err := o.Get(key); err == nil && v != nil && !v.IsUndefined() {
+			*dst = v.String()
+		}
+	}
+	getInt := func(key string, dst *int) {
+		if v, err := o.Get(key); err == nil && v != nil {
+			if f, ok := v.Float(); ok {
+				*dst = int(f)
+			}
+		}
+	}
+	getBoolPtr := func(key string, dst **bool) {
+		if v, err := o.Get(key); err == nil && v != nil && !v.IsUndefined() {
+			b, _ := v.Bool()
+			*dst = &b
+		}
+	}
+	getBool := func(key string, dst *bool) {
+		if v, err := o.Get(key); err == nil && v != nil && !v.IsUndefined() {
+			b, _ := v.Bool()
+			*dst = b
+		}
+	}
+
+	getStr("title", &opts.Title)
+	getStr("url", &opts.URL)
+	getStr("html", &opts.HTML)
+	getStr("backgroundEffect", &opts.BackgroundEffect)
+	getInt("width", &opts.Width)
+	getInt("height", &opts.Height)
+	getInt("x", &opts.X)
+	getInt("y", &opts.Y)
+	getInt("minWidth", &opts.MinWidth)
+	getInt("minHeight", &opts.MinHeight)
+	getInt("maxWidth", &opts.MaxWidth)
+	getInt("maxHeight", &opts.MaxHeight)
+	getBoolPtr("frame", &opts.Frame)
+	getBoolPtr("resizable", &opts.Resizable)
+	getBool("center", &opts.Center)
+	getBool("hidden", &opts.Hidden)
+	getBool("transparent", &opts.Transparent)
+	getBool("alwaysOnTop", &opts.AlwaysOnTop)
+	getBool("devTools", &opts.DevTools)
+	getBool("maximized", &opts.Maximized)
+	getBool("minimized", &opts.Minimized)
+	getStr("preloadScript", &opts.PreloadScript)
+	// 兼容设计稿字段名 preload
+	if opts.PreloadScript == "" {
+		getStr("preload", &opts.PreloadScript)
+	}
+	if v, err := o.Get("opacity"); err == nil && v != nil && !v.IsUndefined() {
+		if f, ok := v.Float(); ok {
+			opts.Opacity = f
+		}
+	}
+	return opts
+}
+
+// parseMenuItems 解析 JS 菜单模板（支持 click 回调与嵌套 submenu）。
+func parseMenuItems(ctx engine.Context, arr engine.Object) []gui.MenuItem {
+	keys := arr.Keys()
+	items := make([]gui.MenuItem, 0, len(keys))
+	for _, k := range keys {
+		v, err := arr.Get(k)
+		if err != nil || !v.IsObject() {
+			continue
+		}
+		o, ok := v.AsObject()
+		if !ok {
+			continue
+		}
+		var item gui.MenuItem
+		if t, err := o.Get("label"); err == nil && t != nil {
+			item.Label = t.String()
+		}
+		if t, err := o.Get("type"); err == nil && t != nil && !t.IsUndefined() {
+			item.Type = t.String()
+		}
+		if t, err := o.Get("id"); err == nil && t != nil && !t.IsUndefined() {
+			item.ID = t.String()
+		}
+		if t, err := o.Get("shortcut"); err == nil && t != nil && !t.IsUndefined() {
+			item.Shortcut = t.String()
+		}
+		if t, err := o.Get("checked"); err == nil && t != nil && !t.IsUndefined() {
+			item.Checked, _ = t.Bool()
+		}
+		if t, err := o.Get("disabled"); err == nil && t != nil && !t.IsUndefined() {
+			item.Disabled, _ = t.Bool()
+		}
+		if fn, err := o.Get("click"); err == nil && fn != nil && fn.IsFunction() {
+			callback, _ := fn.AsFunction()
+			item.Click = func() {
+				release := ctx.AddRef()
+				ctx.PostTask(func() {
+					defer release()
+					_, _ = callback.Call([]engine.Value{gbase.JSONToEngine(map[string]interface{}{
+						"label": item.Label, "id": item.ID,
+					})})
+					ctx.FlushMicrotasks()
+				})
+			}
+		}
+		if sub, err := o.Get("submenu"); err == nil && sub != nil && sub.IsObject() {
+			if subArr, ok := sub.AsObject(); ok {
+				item.Submenu = parseMenuItems(ctx, subArr)
+			}
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func wrapWindowInstance(ctx engine.Context, win *gui.Window) engine.Value {
+	obj := engine.NewObject()
+
+	var winDisposers = map[string][]guiListener{}
+
+	_ = obj.Set("id", engine.Number(float64(win.ID())))
+
+	_ = obj.Set("show", engine.NewFunction("show", func(args []engine.Value) (engine.Value, error) {
+		win.Show()
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("hide", engine.NewFunction("hide", func(args []engine.Value) (engine.Value, error) {
+		win.Hide()
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("close", engine.NewFunction("close", func(args []engine.Value) (engine.Value, error) {
+		force := false
+		if len(args) > 0 {
+			force, _ = args[0].Bool()
+		}
+		if force {
+			win.Close()
+		} else {
+			win.TryClose()
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("onCloseRequested", engine.NewFunction("onCloseRequested", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("window.onCloseRequested requires callback")
+		}
+		fn, ok := args[0].AsFunction()
+		if !ok {
+			return nil, fmt.Errorf("window.onCloseRequested callback must be a function")
+		}
+		// 立即返回 false 拦截原生关闭，避免 UI 线程同步等待 JS；
+		// 真正是否关闭由回调 return true 或 close(true) 决定。
+		win.OnCloseRequested(func() bool {
+			release := ctx.AddRef()
+			ctx.PostTask(func() {
+				defer release()
+				res, err := fn.Call(nil)
+				allow := false
+				if err == nil && res != nil && !res.IsUndefined() {
+					allow, _ = res.Bool()
+				}
+				if allow {
+					win.Close()
+				}
+				ctx.FlushMicrotasks()
+			})
+			return false
+		})
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("center", engine.NewFunction("center", func(args []engine.Value) (engine.Value, error) {
+		win.Center()
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("setTitle", engine.NewFunction("setTitle", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			win.SetTitle(args[0].String())
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("setSize", engine.NewFunction("setSize", func(args []engine.Value) (engine.Value, error) {
+		if len(args) >= 2 {
+			w, _ := args[0].Float()
+			h, _ := args[1].Float()
+			win.SetSize(int(w), int(h))
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("getSize", engine.NewFunction("getSize", func(args []engine.Value) (engine.Value, error) {
+		w, h := win.GetSize()
+		return engine.NewArray([]engine.Value{engine.Number(float64(w)), engine.Number(float64(h))}), nil
+	}))
+
+	_ = obj.Set("minimize", engine.NewFunction("minimize", func(args []engine.Value) (engine.Value, error) {
+		win.Minimize()
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("maximize", engine.NewFunction("maximize", func(args []engine.Value) (engine.Value, error) {
+		win.Maximize()
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("unmaximize", engine.NewFunction("unmaximize", func(args []engine.Value) (engine.Value, error) {
+		win.Unmaximize()
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("navigate", engine.NewFunction("navigate", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			win.Navigate(args[0].String())
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("setPosition", engine.NewFunction("setPosition", func(args []engine.Value) (engine.Value, error) {
+		if len(args) >= 2 {
+			x, _ := args[0].Float()
+			y, _ := args[1].Float()
+			win.SetPosition(int(x), int(y))
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("getPosition", engine.NewFunction("getPosition", func(args []engine.Value) (engine.Value, error) {
+		x, y := win.GetPosition()
+		return engine.NewArray([]engine.Value{engine.Number(float64(x)), engine.Number(float64(y))}), nil
+	}))
+
+	_ = obj.Set("setMinSize", engine.NewFunction("setMinSize", func(args []engine.Value) (engine.Value, error) {
+		if len(args) >= 2 {
+			w, _ := args[0].Float()
+			h, _ := args[1].Float()
+			win.SetMinSize(int(w), int(h))
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("setMaxSize", engine.NewFunction("setMaxSize", func(args []engine.Value) (engine.Value, error) {
+		if len(args) >= 2 {
+			w, _ := args[0].Float()
+			h, _ := args[1].Float()
+			win.SetMaxSize(int(w), int(h))
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("setAlwaysOnTop", engine.NewFunction("setAlwaysOnTop", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			b, _ := args[0].Bool()
+			win.SetAlwaysOnTop(b)
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("setResizable", engine.NewFunction("setResizable", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			b, _ := args[0].Bool()
+			win.SetResizable(b)
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("setHTML", engine.NewFunction("setHTML", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			win.SetHTML(args[0].String())
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = obj.Set("toggleMaximize", engine.NewFunction("toggleMaximize", func(args []engine.Value) (engine.Value, error) {
+		if win.IsMaximized() {
+			win.Unmaximize()
+		} else {
+			win.Maximize()
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = obj.Set("setProgressBar", engine.NewFunction("setProgressBar", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			if f, ok := args[0].Float(); ok {
+				win.SetProgressBar(f)
+			}
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = obj.Set("setOverlayIcon", engine.NewFunction("setOverlayIcon", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			win.SetOverlayIcon(args[0].String())
+		}
+		return engine.Undefined(), nil
+	}))
+	// setMenu(menuTemplate)：窗口菜单栏（平台支持时生效）
+	_ = obj.Set("setMenu", engine.NewFunction("setMenu", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 && args[0].IsObject() {
+			if menuObj, ok := args[0].AsObject(); ok {
+				win.SetMenu(&gui.Menu{Items: parseMenuItems(ctx, menuObj)})
+			}
+		}
+		return engine.Undefined(), nil
+	}))
+	_ = obj.Set("getTitle", engine.NewFunction("getTitle", func(args []engine.Value) (engine.Value, error) {
+		return engine.Str(win.GetTitle()), nil
+	}))
+
+	_ = obj.Set("isMaximized", engine.NewFunction("isMaximized", func(args []engine.Value) (engine.Value, error) {
+		return engine.Boolean(win.IsMaximized()), nil
+	}))
+
+	_ = obj.Set("isFullscreen", engine.NewFunction("isFullscreen", func(args []engine.Value) (engine.Value, error) {
+		return engine.Boolean(win.IsFullscreen()), nil
+	}))
+
+	_ = obj.Set("setOpacity", engine.NewFunction("setOpacity", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			if f, ok := args[0].Float(); ok {
+				win.SetOpacity(f)
+			}
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("setFullscreen", engine.NewFunction("setFullscreen", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			b, _ := args[0].Bool()
+			win.SetFullscreen(b)
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("openDevTools", engine.NewFunction("openDevTools", func(args []engine.Value) (engine.Value, error) {
+		win.OpenDevTools()
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("executeScript", engine.NewFunction("executeScript", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			win.ExecuteScript(args[0].String())
+		}
+		return engine.Undefined(), nil
+	}))
+
+	// evaluate(js) → Promise<value>：在页面执行 JS 并返回结果。
+	//
+	// 实现基于事件桥（ExecuteScript completion handler 在该运行时栈不可靠）：
+	// 1. 生成唯一 evalId，注册一次性窗口事件监听
+	// 2. executeScript 注入包装脚本，页面执行用户表达式后经
+	//    window.aluka.events.emit(evalId, {ok, result|error}) 回传
+	// 3. 监听器经 ctx.PostTask 回引擎线程 resolve/reject
+	//
+	// 表达式支持：表达式 / 函数调用 / async（Promise 自动 await）。
+	// 结果须可 JSON 序列化（undefined/函数/循环引用会退化为 null）。
+	_ = obj.Set("evaluate", engine.NewFunction("evaluate", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("window.evaluate requires script")
+		}
+		js := args[0].String()
+		evalID := fmt.Sprintf("aluka_eval_%d_%d", win.ID(), atomic.AddUint64(&evalCounter, 1))
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 2 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+			reject := execArgs[1]
+
+			release := ctx.AddRef()
+			settled := int32(0)
+			var dispose func()
+			dispose = win.On(evalID, func(data interface{}) {
+				if !atomic.CompareAndSwapInt32(&settled, 0, 1) {
+					return
+				}
+				dispose()
+				ctx.PostTask(func() {
+					defer release()
+					payload, _ := data.(map[string]interface{})
+					if payload == nil {
+						if rf, ok := resolve.AsFunction(); ok {
+							_, _ = rf.Call([]engine.Value{engine.Null()})
+						}
+						ctx.FlushMicrotasks()
+						return
+					}
+					if okFlag, _ := payload["ok"].(bool); okFlag {
+						if rf, ok := resolve.AsFunction(); ok {
+							_, _ = rf.Call([]engine.Value{gbase.JSONToEngine(payload["result"])})
+						}
+					} else {
+						if rf, ok := reject.AsFunction(); ok {
+							errObj := engine.NewObject()
+							_ = errObj.Set("message", engine.Str(fmt.Sprintf("%v", payload["error"])))
+							_, _ = rf.Call([]engine.Value{errObj})
+						}
+					}
+					ctx.FlushMicrotasks()
+				})
+			})
+			// 超时兜底（页面无 window.aluka / postMessage 被禁时避免永久挂起）
+			time.AfterFunc(120*time.Second, func() {
+				if !atomic.CompareAndSwapInt32(&settled, 0, 1) {
+					return
+				}
+				dispose()
+				ctx.PostTask(func() {
+					defer release()
+					if rf, ok := reject.AsFunction(); ok {
+						errObj := engine.NewObject()
+						_ = errObj.Set("message", engine.Str("window.evaluate timeout (120s)"))
+						_, _ = rf.Call([]engine.Value{errObj})
+					}
+					ctx.FlushMicrotasks()
+				})
+			})
+			// 注入执行脚本（页面上下文，window.aluka 由桥脚本注入所有文档）
+			win.ExecuteScript(evalWrapperScript(js, evalID))
+			return engine.Undefined(), nil
+		})
+		return gbase.NewPromise(ctx, executor)
+	}))
+
+	// capturePreview() → Promise<{data: base64, mimeType, bytes}>：捕获页面渲染为 PNG。
+	_ = obj.Set("capturePreview", engine.NewFunction("capturePreview", func(args []engine.Value) (engine.Value, error) {
+		executor := engine.NewFunction("executor", func(execArgs []engine.Value) (engine.Value, error) {
+			if len(execArgs) < 2 {
+				return engine.Undefined(), nil
+			}
+			resolve := execArgs[0]
+			reject := execArgs[1]
+
+			release := ctx.AddRef()
+			settled := int32(0)
+			win.CapturePreviewPNG(func(data []byte, err error) {
+				if !atomic.CompareAndSwapInt32(&settled, 0, 1) {
+					return
+				}
+				ctx.PostTask(func() {
+					defer release()
+					if err != nil {
+						if rf, ok := reject.AsFunction(); ok {
+							errObj := engine.NewObject()
+							_ = errObj.Set("message", engine.Str(err.Error()))
+							_, _ = rf.Call([]engine.Value{errObj})
+						}
+						ctx.FlushMicrotasks()
+						return
+					}
+					if rf, ok := resolve.AsFunction(); ok {
+						res := map[string]interface{}{
+							"data":     base64.StdEncoding.EncodeToString(data),
+							"mimeType": "image/png",
+							"bytes":    float64(len(data)),
+						}
+						_, _ = rf.Call([]engine.Value{gbase.JSONToEngine(res)})
+					}
+					ctx.FlushMicrotasks()
+				})
+			})
+			// 超时兜底（webview 异常 / 回调丢失时避免永久挂起）
+			time.AfterFunc(60*time.Second, func() {
+				if !atomic.CompareAndSwapInt32(&settled, 0, 1) {
+					return
+				}
+				ctx.PostTask(func() {
+					defer release()
+					if rf, ok := reject.AsFunction(); ok {
+						errObj := engine.NewObject()
+						_ = errObj.Set("message", engine.Str("window.capturePreview timeout (60s)"))
+						_, _ = rf.Call([]engine.Value{errObj})
+					}
+					ctx.FlushMicrotasks()
+				})
+			})
+			return engine.Undefined(), nil
+		})
+		return gbase.NewPromise(ctx, executor)
+	}))
+
+	_ = obj.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("window.on requires event and callback")
+		}
+		evt := args[0].String()
+		fn, ok := args[1].AsFunction()
+		if !ok {
+			return nil, fmt.Errorf("window.on handler must be a function")
+		}
+
+		dispose := win.On(evt, func(data interface{}) {
+			release := ctx.AddRef()
+			ctx.PostTask(func() {
+				defer release()
+				_, _ = fn.Call([]engine.Value{gbase.JSONToEngine(data)})
+				ctx.FlushMicrotasks()
+			})
+		})
+		// 按事件名归档 disposer，供 off(event, handler?) 定向注销。
+		winDisposers[evt] = append(winDisposers[evt], guiListener{fn: fn, dispose: dispose})
+		return engine.NewFunction("dispose", func(callArgs []engine.Value) (engine.Value, error) {
+			dispose()
+			return engine.Undefined(), nil
+		}), nil
+	}))
+
+	_ = obj.Set("off", engine.NewFunction("off", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("window.off requires event name")
+		}
+		evt := args[0].String()
+		if len(args) >= 2 && !args[1].IsUndefined() && !args[1].IsNull() {
+			if targetFn, ok := args[1].AsFunction(); ok {
+				var remaining []guiListener
+				for _, item := range winDisposers[evt] {
+					if item.fn == targetFn {
+						if item.dispose != nil {
+							item.dispose()
+						}
+					} else {
+						remaining = append(remaining, item)
+					}
+				}
+				if len(remaining) > 0 {
+					winDisposers[evt] = remaining
+				} else {
+					delete(winDisposers, evt)
+				}
+				return engine.Undefined(), nil
+			}
+		}
+		for _, d := range winDisposers[evt] {
+			if d.dispose != nil {
+				d.dispose()
+			}
+		}
+		delete(winDisposers, evt)
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("emit", engine.NewFunction("emit", func(args []engine.Value) (engine.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("window.emit requires event name")
+		}
+		evt := args[0].String()
+		var data interface{}
+		if len(args) > 1 {
+			data = gbase.ValueToJSON(args[1])
+		}
+		win.Emit(evt, data)
+		return engine.Undefined(), nil
+	}))
+
+	return obj
+}
+
+func wrapTrayInstance(ctx engine.Context, tray *gui.Tray) engine.Value {
+	obj := engine.NewObject()
+	_ = obj.Set("id", engine.Number(float64(tray.ID())))
+
+	_ = obj.Set("setIcon", engine.NewFunction("setIcon", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			tray.SetIcon(args[0].String())
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("setTooltip", engine.NewFunction("setTooltip", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 {
+			tray.SetTooltip(args[0].String())
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("setMenu", engine.NewFunction("setMenu", func(args []engine.Value) (engine.Value, error) {
+		if len(args) > 0 && args[0].IsObject() {
+			if arr, ok := args[0].AsObject(); ok {
+				tray.SetMenu(parseMenuItems(ctx, arr))
+			}
+		}
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("destroy", engine.NewFunction("destroy", func(args []engine.Value) (engine.Value, error) {
+		tray.Destroy()
+		return engine.Undefined(), nil
+	}))
+
+	_ = obj.Set("on", engine.NewFunction("on", func(args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("tray.on requires event and callback")
+		}
+		evt := args[0].String()
+		fn, ok := args[1].AsFunction()
+		if !ok {
+			return nil, fmt.Errorf("tray.on handler must be a function")
+		}
+
+		tray.On(evt, func(data interface{}) {
+			release := ctx.AddRef()
+			ctx.PostTask(func() {
+				defer release()
+				_, _ = fn.Call([]engine.Value{gbase.JSONToEngine(data)})
+				ctx.FlushMicrotasks()
+			})
+		})
+		return engine.Undefined(), nil
+	}))
+
+	return obj
+}

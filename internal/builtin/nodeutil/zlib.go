@@ -20,9 +20,9 @@ import (
 	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 )
@@ -162,7 +162,7 @@ func makeZlibSync(fn func([]byte) ([]byte, error)) engine.Func {
 		if err != nil {
 			return engine.Undefined(), fmt.Errorf("zlib: %w", err)
 		}
-		return globals.NewBufferInstance(out), nil
+		return gbuffer.NewBufferInstance(out), nil
 	}
 }
 
@@ -198,7 +198,7 @@ func makeZlibAsync(ctx engine.Context, fn func([]byte) ([]byte, error)) engine.F
 								interpreter.ReportUncaught(nil, err)
 							}
 						} else {
-							if _, err := f.Call([]engine.Value{engine.Null(), globals.NewBufferInstance(out)}); err != nil {
+							if _, err := f.Call([]engine.Value{engine.Null(), gbuffer.NewBufferInstance(out)}); err != nil {
 								interpreter.ReportUncaught(nil, err)
 							}
 						}

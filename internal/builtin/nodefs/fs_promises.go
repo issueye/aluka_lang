@@ -15,7 +15,7 @@ import (
 
 	"github.com/aluka-lang/aluka/internal/builtin/nodebase"
 	"github.com/aluka-lang/aluka/internal/engine"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
 )
 
 // fspromisesCache 按上下文缓存 fs/promises 模块对象，保证
@@ -54,7 +54,7 @@ func NewFSPromises(ctx engine.Context) (engine.Value, error) {
 			if encoding != "" {
 				return engine.Str(string(data)), nil
 			}
-			return globals.NewBufferInstance(data), nil
+			return gbuffer.NewBufferInstance(data), nil
 		})
 	}))
 

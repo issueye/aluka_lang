@@ -10,7 +10,13 @@ import (
 	"github.com/aluka-lang/aluka/internal/builtin"
 	"github.com/aluka-lang/aluka/internal/engine"
 	"github.com/aluka-lang/aluka/internal/engine/interpreter"
-	"github.com/aluka-lang/aluka/internal/runtime/globals"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gbuffer"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gconsole"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gcrypto"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gencoding"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gfetch"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gproc"
+	"github.com/aluka-lang/aluka/internal/runtime/globals/gtimers"
 	modmodule "github.com/aluka-lang/aluka/internal/runtime/module"
 )
 
@@ -56,15 +62,15 @@ func NewRuntime() (*Runtime, error) {
 	}
 
 	// 注册全局标准对象
-	_ = globals.NewConsole(ctx, globals.ConsoleConfig{})
-	_ = globals.NewProcess(ctx, globals.ProcessConfig{})
-	_ = globals.NewTimers(ctx, globals.TimerConfig{})
-	_ = globals.NewBuffer(ctx, globals.BufferConfig{})
-	_ = globals.NewEncoding(ctx, globals.EncodingConfig{})
-	_ = globals.NewURL(ctx, globals.URLConfig{})
-	_ = globals.NewFetch(ctx, globals.FetchConfig{})
-	_ = globals.NewWebCrypto(ctx, globals.WebCryptoConfig{})
-	_ = globals.NewPerformance(ctx, globals.PerformanceConfig{})
+	_ = gconsole.NewConsole(ctx, gconsole.ConsoleConfig{})
+	_ = gproc.NewProcess(ctx, gproc.ProcessConfig{})
+	_ = gtimers.NewTimers(ctx, gtimers.TimerConfig{})
+	_ = gbuffer.NewBuffer(ctx, gbuffer.BufferConfig{})
+	_ = gencoding.NewEncoding(ctx, gencoding.EncodingConfig{})
+	_ = gfetch.NewURL(ctx, gfetch.URLConfig{})
+	_ = gfetch.NewFetch(ctx, gfetch.FetchConfig{})
+	_ = gcrypto.NewWebCrypto(ctx, gcrypto.WebCryptoConfig{})
+	_ = gtimers.NewPerformance(ctx, gtimers.PerformanceConfig{})
 
 	_ = ctx.Global().Set("globalThis", ctx.Global())
 	_ = ctx.Global().Set("global", ctx.Global())
