@@ -77,6 +77,10 @@ CGO_ENABLED=0 go test ./internal/engine/jit/ -run='^$' -fuzz=FuzzVerifyProgram -
 # 针对某包跑测试（示例）
 CGO_ENABLED=0 go test ./internal/engine/interpreter/...
 CGO_ENABLED=0 go test ./internal/engine/jit/... ./internal/engine/interpreter
+
+# 子包依赖无环自查（builtin / globals 分包约束）
+go list -deps ./internal/builtin/... > /dev/null   # 有环时 go 直接报 import cycle
+go list -deps ./internal/runtime/globals/... > /dev/null
 ```
 
 ### 一致性测试（conformance，需先构建 `./bin/aluka`）
@@ -121,10 +125,28 @@ internal/
     shape.go               隐藏类 + 内联缓存（IC）
     gc.go                  标记-清除 GC
   runtime/
-    globals/               全局对象：console/process/Buffer/URL/fetch/Intl/timers/streams...
-                           aluka*.go = Aluka 特有 API（兼容 Bun，含 SQL/Redis/S3/shell）
+    globals/               全局对象注册（按能力域分子包，依赖为 4 层 DAG）
+      gbase/               共享基座：WebIDL 接口注册 / Promise 驱动 / 参数归一 / JSON 互转（不 import 任何 g* 子包）
+      gevent/  gintl/      Event·EventTarget·AbortController·MessageChannel ／ Intl 全家桶
+      gbuffer/ gconsole/   Buffer 全局与 node:buffer ／ console·navigator·BroadcastChannel
+      gtimers/             timers·performance·gc()
+      gcrypto/ gproc/      crypto.subtle 与 Aluka.hash/password ／ process（平台分文件）
+      gstream/             WHATWG Streams·CompressionStream·Blob/File
+      gencoding/ gfetch/   TextEncoder/Decoder·atob/btoa ／ fetch·WebSocket·URL·URLPattern
+      galuka/              Aluka（Bun 兼容）API 实现：GUI/IPC/SQL/Redis/S3/shell/压缩
+      aluka.go             根包只留 Aluka 命名空间装配入口
     module/                ESM/CJS 模块系统 + 字节码缓存 + .ts 导入 / TLA
-  builtin/                 Node.js 内置模块（fs/http/net/crypto/sqlite/test/...，文件名即模块名）
+  builtin/                 Node.js 内置模块（按领域分子包，依赖为 4 层 DAG）
+    nodebase/  nodeglob/   共享基座：参数取值/值比较/错误码/JSON/Promise ／ glob 引擎
+    nodeassert/ nodeevents/ assert·assert/strict ／ EventEmitter
+    nodeos/ nodeutil/      os·path·tty·constants ／ util·url·querystring·punycode·zlib·wasi
+    nodecrypto/ nodesqlite/ crypto 与 WebCrypto ／ sqlite（DatabaseSync）
+    nodetimers/ nodevm/    timers·timers/promises ／ vm·module
+    nodefs/ nodestream/    fs·fs/promises·fs.cp ／ stream 族·string_decoder
+    nodenet/ nodeproc/     net·tls·dns·dgram ／ child_process·cluster
+    noderepl/ nodetest/    readline·repl ／ node:test 运行器
+    nodediag/ nodehttp/    async_hooks·perf_hooks·inspector·v8·domain ／ http·https·http2
+    registry.go            根包只留 RegisterAll 注册表 + worker_threads.go
   pkgmanager/              npm 兼容包管理器（semver/registry/resolver/installer/lockfile/workspace/config）
   bundler/                 build --compile + --target=web（graph/shake/minify/emit/webemit/Vue SFC；独立 module）
   gui/                     跨平台桌面 GUI 框架（Windows WebView2 / macOS WKWebView；参考 Wails v3 架构，无 CGO）
@@ -140,7 +162,9 @@ docs/                      需求 / 开发计划 / 兼容计划 / 性能报告 /
 docs/adr/                  架构决策记录（ADR）
 ```
 
-**速记**：新增 Node 内置模块 → `internal/builtin/`；新增面向 Go 宿主的公共嵌入 API → `pkg/aluka/`（保持薄封装，转发 internal 实现）；新增 Web API / 全局 → `internal/runtime/globals/`；新增 Aluka（Bun 兼容）API → `internal/runtime/globals/aluka*.go`；新增 IPC/插件通信 → `internal/runtime/globals/aluka*.go` + `internal/ipc/`；新增桌面 GUI 能力 → `internal/gui/`；新增 web 构建/项目编排 → `internal/project/`。
+**速记**：新增 Node 内置模块 → `internal/builtin/node<领域>/`（新领域则新建子包并在 `registry.go` 注册）；新增面向 Go 宿主的公共嵌入 API → `pkg/aluka/`（保持薄封装，转发 internal 实现）；新增 Web API / 全局 → `internal/runtime/globals/g<领域>/`；新增 Aluka（Bun 兼容）API → `internal/runtime/globals/galuka/`；新增 IPC/插件通信 → `internal/runtime/globals/galuka/aluka_ipc.go` + `internal/ipc/`；新增桌面 GUI 能力 → `internal/gui/`；新增 web 构建/项目编排 → `internal/project/`。
+
+**分包约束**：`builtin` 与 `globals` 的子包依赖必须无环。跨两个及以上领域复用的 helper 提到基座包（`nodebase` / `gbase`），只被单一领域使用的留在该领域包内；基座包不得 import 任何同级领域子包。`interpreter`（VM 145 + Interpreter 127 个方法集中在两个类型上）、`parser`（Parser 96 个方法）、`engine`（同一值系统互引）不再细拆——Go 要求方法与其 receiver 类型同包，强拆会退化成大量导出访问器。
 
 ---
 
@@ -196,9 +220,9 @@ docs/adr/                  架构决策记录（ADR）
 
 ## 实现新功能时的注意事项
 
-- **新增 Node 内置模块**：在 `internal/builtin/` 加 `<modname>.go`，注册到模块表；对照 Node 行为补 `tests/compat/node22/` 差分用例。
-- **新增全局 / Web API**：放 `internal/runtime/globals/`，参考 `console.go`/`fetch.go` 的注册方式。
-- **新增 Aluka（Bun 兼容）API**：放 `internal/runtime/globals/aluka*.go`，以 Bun 同名 API 行为为准；`Bun` 是兼容别名。
+- **新增 Node 内置模块**：在 `internal/builtin/node<领域>/` 加 `<modname>.go`（领域不存在则新建子包 + `doc.go`），在根 `registry.go` 的 `RegisterAll` 注册；对照 Node 行为补 `tests/compat/node22/` 差分用例。跨领域复用的 helper 提到 `nodebase/`，勿在领域包之间横向 import 形成环。
+- **新增全局 / Web API**：放 `internal/runtime/globals/g<领域>/`，参考 `gconsole/console.go`、`gfetch/fetch.go` 的注册方式；注册入口由 `cmd/aluka` 与 `pkg/aluka` 调用。共享 helper 提到 `gbase/`。
+- **新增 Aluka（Bun 兼容）API**：实现放 `internal/runtime/globals/galuka/aluka*.go`，装配入口在 `internal/runtime/globals/aluka.go`；以 Bun 同名 API 行为为准，`Bun` 是兼容别名。
 - **新增/修改字节码指令**：改 `internal/engine/bytecode/opcodes.go`，并 **bump `FormatVersion`**。
 - **新增/修改 Web bundle 或 Vue SFC**：graph/resolver/printer/emit 改动必须同时考虑主 bundle 与动态 chunk；Vue backend 维持 subset 默认和 official 显式选择。新增 SFC block 支持必须同步依赖图、watch 输入、错误位置映射和资产输出，禁止只读 `descriptor.*.content` 后静默丢弃 external `src`。
 - **平台相关代码**：用构建标签分文件（`_unix`/`_windows`/`_amd64`/`_unsupported`），保持公共逻辑在无后缀文件里。禁止让无 CGO 构建失败。

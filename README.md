@@ -238,11 +238,28 @@ aluka_lang/
 │   │   └── gc.go              # 标记-清除 GC
 │   ├── ipc/                   # Aluka 原生 IPC 协议（AIP：16B 帧头、全双工并发客户端/服务端、管道传输）
 │   ├── runtime/
-│   │   ├── globals/           # 全局对象（console/process/Buffer/URL/fetch/Intl/SubtleCrypto...）
-│   │   │   ├── aluka*.go      # Aluka 特有 API（含 aluka_sql/redis/s3/ipc 外部服务驱动）
-│   │   │   └── intl.go        # ECMAScript Intl 国际化全家桶
+│   │   ├── globals/           # 全局对象与 Web API（按能力域分 12 个子包 + 装配入口，依赖为 4 层 DAG）
+│   │   │   ├── gbase/         # 共享基座：WebIDL 注册 / Promise 驱动 / 参数归一 / JSON 互转
+│   │   │   ├── gevent/        # Event/EventTarget、AbortController、DOMException、MessageChannel
+│   │   │   ├── gbuffer/       # Buffer 全局与 node:buffer
+│   │   │   ├── gencoding/     # TextEncoder/TextDecoder、atob/btoa
+│   │   │   ├── gstream/       # WHATWG Streams、CompressionStream、Blob/File
+│   │   │   ├── gfetch/        # fetch/Request/Response、WebSocket、URL、URLPattern
+│   │   │   ├── gcrypto/       # crypto.subtle（SubtleCrypto）与 Aluka.hash/password
+│   │   │   ├── gproc/         # process（argv/env/stdio/signals，平台分文件）
+│   │   │   ├── gtimers/       # timers、performance、gc()
+│   │   │   ├── gintl/         # ECMAScript Intl 国际化全家桶
+│   │   │   ├── gconsole/      # console、navigator、BroadcastChannel
+│   │   │   └── galuka/        # Aluka 特有 API 实现（gui/ipc/sql/redis/s3/shell/压缩）
 │   │   └── module/            # ESM/CJS 模块系统 + package.json 规范 + aluka:plugin 动态透明 RPC 代理
-│   ├── builtin/               # Node.js 内置模块（fs/http/net/crypto/sqlite/v8/inspector/test/...）
+│   ├── builtin/               # Node.js 内置模块（按领域分 18 个子包 + 注册表，依赖为 4 层 DAG）
+│   │   ├── nodebase/          # 共享基座：参数取值 / 值比较 / 错误码 / JSON / Promise
+│   │   ├── nodefs/  nodeos/   # fs、fs/promises ／ os、path、tty、constants
+│   │   ├── nodenet/ nodehttp/ # net、tls、dns、dgram ／ http、https、http2
+│   │   ├── nodecrypto/        # crypto 与 Web Cryptography
+│   │   ├── nodetest/          # node:test 运行器
+│   │   ├── nodediag/          # async_hooks、perf_hooks、inspector、v8、domain
+│   │   └── ...                # nodestream/nodeproc/nodeutil/nodevm/nodetimers/noderepl/nodesqlite/nodeassert/nodeevents/nodeglob
 │   ├── bundler/               # 可执行/web 打包器（graph/shake/minify/emit/Vue SFC）
 │   ├── gui/                   # 跨平台桌面 GUI 框架（Windows WebView2 / macOS WKWebView，无 CGO）
 │   ├── project/               # web 构建工作台（项目配置 / 插件会话 / HTML 入口 / 写盘）
