@@ -835,7 +835,7 @@ func (v *VM) run() (engine.Value, error) {
 				propCount := int(operand)
 				var obj engine.Object
 				if propCount == 0 {
-					obj = engine.NewObject()
+					obj = engine.NewObjectWithProto(v.interp.objectProto)
 				} else {
 					pairCount := propCount * 2
 					start := len(v.stack) - pairCount
@@ -844,18 +844,17 @@ func (v *VM) run() (engine.Value, error) {
 					// 未命中（首次执行）解析并缓存
 					site := objLitSite{tmpl: tmpl, pc: uint32(pc)}
 					if e := v.objLitCache[site]; e != nil {
-						obj = engine.NewObjectFromShape(e.shape, e.idxs, pairs)
+						obj = engine.NewObjectFromShapeWithProto(e.shape, e.idxs, pairs, v.interp.objectProto)
 					} else {
 						shape, idxs := engine.ResolveLiteralShape(pairs)
 						if v.objLitCache == nil {
 							v.objLitCache = make(map[objLitSite]*objLitEntry, 8)
 						}
 						v.objLitCache[site] = &objLitEntry{shape: shape, idxs: idxs}
-						obj = engine.NewObjectFromShape(shape, idxs, pairs)
+						obj = engine.NewObjectFromShapeWithProto(shape, idxs, pairs, v.interp.objectProto)
 					}
 					v.stack = v.stack[:start]
 				}
-				engine.SetProto(obj, v.interp.objectProto)
 				v.push(obj)
 			case bytecode.OpNewArray:
 				n := int(operand)

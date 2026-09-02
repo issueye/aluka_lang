@@ -85,10 +85,23 @@ func ResolveLiteralShape(pairs []Value) (*Shape, []int32) {
 	return shape, idxs
 }
 
+// NewObjectWithProto creates an empty JS object with the given prototype.
+func NewObjectWithProto(proto Object) Object {
+	o := &objectValue{shape: rootShape, proto: proto}
+	register(o)
+	return o
+}
+
 // NewObjectFromShape 以预解析的 shape 与 pair→slot 索引构建对象
 // （字面量站点缓存命中路径）。
 func NewObjectFromShape(shape *Shape, idxs []int32, pairs []Value) Object {
-	o := &objectValue{shape: shape}
+	return NewObjectFromShapeWithProto(shape, idxs, pairs, nil)
+}
+
+// NewObjectFromShapeWithProto 以预解析的 shape、pair→slot 索引和 prototype 构建对象
+// （字面量站点缓存命中路径）。
+func NewObjectFromShapeWithProto(shape *Shape, idxs []int32, pairs []Value, proto Object) Object {
+	o := &objectValue{shape: shape, proto: proto}
 	n := shape.NumProps()
 	if n <= len(o.small) {
 		o.slots = o.small[:n]
