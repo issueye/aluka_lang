@@ -414,11 +414,3 @@ func (s *vmState) runIn(vc *vmContext, code, filename string) (engine.Value, err
 	s.syncBack(vc)
 	return result, nil
 }
-
-// currentVM 返回当前执行上下文对应的字节码 VM（node:vm 需要编译能力）。
-func currentVM(ctx engine.Context) *interpreter.VM {
-	if v, ok := ctx.(*interpreter.VM); ok {
-		return v
-	}
-	return nil
-}

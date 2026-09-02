@@ -5,7 +5,6 @@ package builtin
 // 经 PostTask 回 JS 线程触发 'data'；退出触发 'exit'。
 
 import (
-	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"io"
 	"os"
 	"os/exec"
@@ -14,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"github.com/aluka-lang/aluka/internal/runtime/globals"
 )
 
@@ -364,13 +364,4 @@ func forkChild(ctx engine.Context, args []engine.Value) engine.Value {
 		engine.NewArray(stringsToValues(spawnArgs)),
 		opts,
 	})
-}
-
-// stringsToValues 把字符串切片转成 engine.Value 数组。
-func stringsToValues(ss []string) []engine.Value {
-	out := make([]engine.Value, len(ss))
-	for i, s := range ss {
-		out[i] = engine.Str(s)
-	}
-	return out
 }

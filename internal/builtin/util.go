@@ -195,16 +195,6 @@ type parseArgsOpt struct {
 	def      engine.Value
 }
 
-// codedError 携带 Node 风格错误码的错误（经 goErrorToJSValue 转为 err.code）。
-type codedError struct {
-	err  error
-	code string
-}
-
-func (e *codedError) Error() string { return e.err.Error() }
-func (e *codedError) Unwrap() error { return e.err }
-func (e *codedError) Code() string  { return e.code }
-
 func parseArgsError(code, msg string) error {
 	return &codedError{err: fmt.Errorf("%w: %s", engine.ErrTypeError, msg), code: code}
 }
@@ -658,32 +648,6 @@ func utilFormat(args []engine.Value) string {
 		b.WriteString(args[argIdx].String())
 	}
 	return b.String()
-}
-
-// deepStrictEqual 简化版严格相等（递归比较对象/数组）。
-func deepStrictEqual(a, b engine.Value) bool {
-	if a.Type() != b.Type() {
-		return false
-	}
-	switch a.Type() {
-	case engine.TypeNumber:
-		af, _ := a.Float()
-		bf, _ := b.Float()
-		return af == bf
-	case engine.TypeString:
-		return a.String() == b.String()
-	case engine.TypeBoolean:
-		ab, _ := a.Bool()
-		bb, _ := b.Bool()
-		return ab == bb
-	case engine.TypeBigInt:
-		return a.String() == b.String()
-	case engine.TypeUndefined, engine.TypeNull:
-		return true
-	default:
-		// 对象/数组/函数：递归比较（简化版，用 String 兜底）。
-		return a.String() == b.String()
-	}
 }
 
 // registerUtilTypes 注册 util.types 子对象的方法。

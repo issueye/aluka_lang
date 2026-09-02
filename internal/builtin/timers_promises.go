@@ -4,11 +4,11 @@ package builtin
 // setTimeout/setImmediate 返回 Promise；setInterval 返回异步迭代器（简化）。
 
 import (
-	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"sync"
 	"time"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // NewTimersPromises 构造 node:timers/promises 模块导出对象。
@@ -159,17 +159,4 @@ func iterationResult(value engine.Value, done bool) engine.Value {
 	_ = obj.Set("value", value)
 	_ = obj.Set("done", engine.Boolean(done))
 	return obj
-}
-
-// newBuiltinPromise 用全局 Promise 构造器创建 Promise。
-func newBuiltinPromise(ctx engine.Context, executor engine.Value) (engine.Value, error) {
-	promiseCtor, err := ctx.Global().Get("Promise")
-	if err != nil || !promiseCtor.IsFunction() {
-		return engine.Undefined(), err
-	}
-	pf, ok := promiseCtor.AsFunction()
-	if !ok {
-		return engine.Undefined(), err
-	}
-	return pf.Call([]engine.Value{executor})
 }

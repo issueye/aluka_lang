@@ -8,11 +8,11 @@ package builtin
 import (
 	"bufio"
 	"fmt"
-	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 	"os"
 	"strings"
 
 	"github.com/aluka-lang/aluka/internal/engine"
+	"github.com/aluka-lang/aluka/internal/engine/interpreter"
 )
 
 // NewReadlinePromises 构造 node:readline/promises 模块导出对象。
@@ -240,27 +240,4 @@ func consumeStreamLine(ctx engine.Context, input engine.Value, resolve, reject e
 	_, _ = callEmitterMethod(input, "on", []engine.Value{engine.Str("end"), endCb})
 	_, _ = callEmitterMethod(input, "on", []engine.Value{engine.Str("error"), errCb})
 	_, _ = callEmitterMethod(input, "on", []engine.Value{engine.Str("data"), dataCb})
-}
-
-// promiseResolved 构造一个立即 resolve 的 Promise。
-func promiseResolved(ctx engine.Context, val engine.Value) (engine.Value, error) {
-	promiseCtor, err := ctx.Global().Get("Promise")
-	if err != nil || !promiseCtor.IsFunction() {
-		return engine.Undefined(), fmt.Errorf("readline/promises: global Promise not available")
-	}
-	executor := engine.NewFunction("executor", func(args []engine.Value) (engine.Value, error) {
-		if len(args) >= 1 {
-			if f, ok := args[0].AsFunction(); ok {
-				if _, err := f.Call([]engine.Value{val}); err != nil {
-					interpreter.ReportUncaught(nil, err)
-				}
-			}
-		}
-		return engine.Undefined(), nil
-	})
-	pf, ok := promiseCtor.AsFunction()
-	if !ok {
-		return engine.Undefined(), fmt.Errorf("readline/promises: Promise not callable")
-	}
-	return pf.Call([]engine.Value{executor})
 }

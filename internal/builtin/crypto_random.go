@@ -70,14 +70,6 @@ func stringContains(ss []string, want string) bool {
 	return false
 }
 
-// cryptoBytes 把参数转为字节（Buffer 或字符串）。
-func cryptoBytes(v engine.Value) ([]byte, error) {
-	if b, ok := engine.AsBytes(v); ok {
-		return b, nil
-	}
-	return []byte(v.String()), nil
-}
-
 // base64Encode 简易 base64 编码（避免额外 import 冲突）。
 func base64Encode(data []byte) string {
 	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
