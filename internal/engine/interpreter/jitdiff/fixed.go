@@ -1046,6 +1046,26 @@ try { LOG("call", "kT"); LOG("return", SV(kT(20))); } catch (e) { LOG("throw", e
 LOG("post", SV(tAcc));
 `,
 		},
+		{
+			// Trace-tier GetElem: dense numeric reads (param receiver), object
+			// elements with a property read (upvalue receiver), and hole /
+			// out-of-range reads that must fall back to Tier 0 mid-trace with
+			// identical results (undefined propagates through + as NaN).
+			ID: -99, Kind: KindArrayIndex, Seed: 199, Params: params,
+			Expected: "call:kG1\nreturn:n:26\ncall:kG2\nreturn:NaN\ncall:kO\nreturn:n:6\ncall:kH\nreturn:s:nnunn",
+			Body: `const G = [3, 5, 7, 11];
+const O = [{v:1},{v:2},{v:3}];
+const H = [1,2,3,4,5];
+delete H[2];
+function kG(k, n) { let s = 0; for (let i = 0; i < n; i++) s += k[i]; return s; }
+function kO() { let s = 0; for (let i = 0; i < 3; i++) s += O[i].v; return s; }
+function kH() { let s = ""; for (let i = 0; i < 5; i++) s += (H[i] === undefined ? "u" : "n"); return s; }
+try { LOG("call", "kG1"); LOG("return", SV(kG(G, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kG2"); LOG("return", SV(kG(G, 6))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kO"); LOG("return", SV(kO())); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kH"); LOG("return", SV(kH())); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
 	}
 }
 

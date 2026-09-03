@@ -186,6 +186,11 @@ func rejectTraceCandidateWithUpvalues(tmpl *bytecode.FuncTemplate, startPC, back
 		case bytecode.OpCall, bytecode.OpCallMethod:
 			// Guarded forms compile; unguarded forms are rejected at compile
 			// time once the bridge supplies (or omits) the guards.
+		case bytecode.OpGetElem:
+			// Dense array element read: the executor guards ArrayValue receiver,
+			// integral in-range index and element presence at runtime; every
+			// other shape (string indexing, object keys, holes, out of range)
+			// fails the guard and falls back to Tier 0.
 		case bytecode.OpAdd, bytecode.OpSub, bytecode.OpMul, bytecode.OpDiv, bytecode.OpMod, bytecode.OpPow,
 			bytecode.OpBitAnd, bytecode.OpBitOr, bytecode.OpBitXor, bytecode.OpShl, bytecode.OpShr, bytecode.OpUShr,
 			bytecode.OpEq, bytecode.OpStrictEq, bytecode.OpNe, bytecode.OpStrictNe,

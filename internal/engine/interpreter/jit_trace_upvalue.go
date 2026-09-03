@@ -58,6 +58,25 @@ func (c traceUpvalueCell) StoreNumber(number float64) bool {
 	return true
 }
 
+// LoadRef 返回单元当前持有的对象值（数组、普通对象等）。trace 的
+// OpLoadUpvalueRef 每次执行现读——切片内没有用户代码，与 Tier 0 的
+// LOAD_UPVALUE 观察等价；非对象值返回 false，guard 拒绝该 trace。
+func (c traceUpvalueCell) LoadRef() (engine.Value, bool) {
+	if c.uv == nil {
+		return nil, false
+	}
+	var value engine.Value
+	if c.uv.slot != nil {
+		value = *c.uv.slot
+	} else {
+		value = c.uv.closed
+	}
+	if value == nil || !value.IsObject() {
+		return nil, false
+	}
+	return value, true
+}
+
 // traceUpvalueGuards 收集 [startPC, backedgePC] 触碰的每个 upvalue 索引的
 // guard。任一索引不满足前提（越界、单元缺失、非数值、与本帧局部别名）时返回
 // nil, false，调用方据此保持原有的"拒绝该 trace"行为。
@@ -100,7 +119,11 @@ func (v *VM) traceUpvalueGuards(frame *vmFrame, startPC, backedgePC int) ([]jit.
 		}
 		cell := traceUpvalueCell{uv: uv}
 		if _, ok := cell.LoadNumber(); !ok {
-			return nil, false
+			// 非数值单元：对象值（如模块作用域的数组）作为只读引用 guard
+			// 放行——OpLoadUpvalueRef 每次执行现读当前值。其余类型拒绝。
+			if _, ok := cell.LoadRef(); !ok {
+				return nil, false
+			}
 		}
 		seen[index] = true
 		guards = append(guards, jit.TraceUpvalueGuard{Index: index, Cell: cell})

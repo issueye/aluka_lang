@@ -28,6 +28,12 @@ func (c *fakeCell) LoadNumber() (float64, bool) {
 	return c.value, true
 }
 
+// LoadRef reports object-ness: the fake cell never holds objects, so guards
+// compile the numeric path; the object path is exercised interpreter-side.
+func (c *fakeCell) LoadRef() (engine.Value, bool) {
+	return nil, false
+}
+
 func (c *fakeCell) StoreNumber(number float64) bool {
 	c.stores++
 	if c.storeFails {
@@ -145,15 +151,19 @@ func TestTraceUpvalueDuplicateGuardRejected(t *testing.T) {
 }
 
 // TestTraceUpvalueNonNumberEntryGuard proves a cell holding a non-Number fails
-// the entry guard before anything is mutated.
+// the entry guard before anything is mutated. The cell must pass the
+// compile-time probe (Number at guard collection) and flip before execution —
+// a cell that is non-Number, non-Object at compile time is rejected outright.
 func TestTraceUpvalueNonNumberEntryGuard(t *testing.T) {
 	bound := &fakeCell{value: 6}
-	acc := &fakeCell{value: 3, loadFails: true}
+	acc := &fakeCell{value: 3}
 	trace, err := CompileTraceWithUpvalues(upvalueLoopTemplate(), 0, 44, nil, nil,
 		[]TraceUpvalueGuard{{Index: 0, Cell: bound}, {Index: 1, Cell: acc}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 用户代码在两次执行之间把单元换成了字符串。
+	acc.loadFails = true
 	locals := []engine.Value{engine.Undefined(), engine.Number(0)}
 	_, reason, err := trace.ExecuteBudgetDetailed(locals, 0)
 	if err != nil || reason != GuardFailed {
@@ -161,6 +171,11 @@ func TestTraceUpvalueNonNumberEntryGuard(t *testing.T) {
 	}
 	if acc.stores != 0 || locals[1].String() != "0" {
 		t.Fatalf("failed entry guard mutated state: acc=%+v i=%v", acc, locals[1])
+	}
+	// 编译期即非数值非对象的单元：guard 本身无效，编译拒绝。
+	if _, err := CompileTraceWithUpvalues(upvalueLoopTemplate(), 0, 44, nil, nil,
+		[]TraceUpvalueGuard{{Index: 0, Cell: bound}, {Index: 1, Cell: &fakeCell{loadFails: true}}}); err == nil {
+		t.Fatal("non-number non-object cell compiled, want rejection")
 	}
 }
 

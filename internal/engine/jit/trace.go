@@ -42,6 +42,11 @@ type TraceMethodGuard struct {
 type TraceUpvalueCell interface {
 	LoadNumber() (float64, bool)
 	StoreNumber(float64) bool
+	// LoadRef returns the current value when the cell holds an object (arrays,
+	// plain objects). The trace reads it fresh per OpLoadUpvalueRef — no user
+	// code runs mid-slice, so per-op reads are observably identical to Tier 0's
+	// LOAD_UPVALUE. ok=false for non-object values (the guard rejects them).
+	LoadRef() (engine.Value, bool)
 }
 
 // TraceUpvalueGuard binds one upvalue index of the traced frame to its cell.
@@ -66,11 +71,16 @@ type traceMethodGuard struct {
 }
 
 // traceUpvalue is the compiled form of a TraceUpvalueGuard: OpLoadUpvalueNum /
-// OpStoreUpvalueNum operands index the program's traceUpvalues slice.
+// OpStoreUpvalueNum / OpLoadUpvalueRef operands index the program's
+// traceUpvalues slice. kind selects the cell's value discipline: numeric cells
+// cache a float64 at entry and commit writes back through the two-phase
+// protocol; object cells are read fresh per OpLoadUpvalueRef (no user code runs
+// mid-slice, so this matches Tier 0 exactly) and reject writes.
 type traceUpvalue struct {
-	index int
-	cell  TraceUpvalueCell
-	write bool
+	index    int
+	cell     TraceUpvalueCell
+	write    bool
+	isObject bool
 }
 
 type DeoptExit struct {
@@ -133,7 +143,14 @@ func CompileTraceWithUpvalues(tmpl *bytecode.FuncTemplate, startPC, backedgePC i
 			return nil, fmt.Errorf("jit: duplicate trace upvalue guard")
 		}
 		upvalueByIndex[guard.Index] = len(p.traceUpvalues)
-		p.traceUpvalues = append(p.traceUpvalues, traceUpvalue{index: guard.Index, cell: guard.Cell})
+		// 数值单元走缓存路径；对象单元（LoadNumber 失败但 LoadRef 成功）
+		// 走只读现读路径。两者都不可用时 guard 无效。
+		_, numeric := guard.Cell.LoadNumber()
+		_, object := guard.Cell.LoadRef()
+		if !numeric && !object {
+			return nil, fmt.Errorf("jit: invalid trace upvalue guard")
+		}
+		p.traceUpvalues = append(p.traceUpvalues, traceUpvalue{index: guard.Index, cell: guard.Cell, isObject: !numeric})
 	}
 	guardByPC := make(map[int]TraceCallGuard, len(callGuards))
 	for _, guard := range callGuards {
@@ -218,11 +235,18 @@ func CompileTraceWithUpvalues(tmpl *bytecode.FuncTemplate, startPC, backedgePC i
 			if !guarded {
 				return nil, fmt.Errorf("jit: trace unguarded upvalue %d", arg)
 			}
-			p.Code = append(p.Code, Instr{Op: OpLoadUpvalueNum, Operand: uint32(slot)})
+			if p.traceUpvalues[slot].isObject {
+				p.Code = append(p.Code, Instr{Op: OpLoadUpvalueRef, Operand: uint32(slot)})
+			} else {
+				p.Code = append(p.Code, Instr{Op: OpLoadUpvalueNum, Operand: uint32(slot)})
+			}
 		case bytecode.OpStoreUpvalue:
 			slot, guarded := upvalueByIndex[int(arg)]
 			if !guarded {
 				return nil, fmt.Errorf("jit: trace unguarded upvalue %d", arg)
+			}
+			if p.traceUpvalues[slot].isObject {
+				return nil, fmt.Errorf("jit: trace object upvalue %d is read-only", arg)
 			}
 			p.traceUpvalues[slot].write = true
 			p.Code = append(p.Code, Instr{Op: OpStoreUpvalueNum, Operand: uint32(slot)})
@@ -242,6 +266,11 @@ func CompileTraceWithUpvalues(tmpl *bytecode.FuncTemplate, startPC, backedgePC i
 				return nil, fmt.Errorf("jit: trace property write name")
 			}
 			p.Code = append(p.Code, Instr{Op: OpSetProp, Name: tmpl.Constants[arg].String()})
+		case bytecode.OpGetElem:
+			// 数组稠密下标读：receiver 与 key 都在操作数栈上，无操作数。
+			// 执行器在运行时守卫（ArrayValue / 整数下标 / 稠密范围内 /
+			// 元素 present），洞与越界回 Tier 0。
+			p.Code = append(p.Code, Instr{Op: OpGetElem})
 		case bytecode.OpCall:
 			guard, guarded := guardByPC[pc]
 			if arg != 0 || !guarded || len(p.Code) == 0 ||
@@ -491,12 +520,17 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 	// OpLoadUpvalueNum/OpStoreUpvalueNum then works on the cache and the writes
 	// are committed with the property writes at exits and budget yields. A cell
 	// holding a non-Number fails the guard here, before any state changed.
+	// Object-valued cells skip the cache entirely: OpLoadUpvalueRef reads them
+	// fresh per execution (the current value goes through the objects buffer).
 	var upvalueCache [maxQuickSlots]float64
 	var upvalueDirty [maxQuickSlots]bool
 	if len(t.program.traceUpvalues) > len(upvalueCache) {
 		return DeoptExit{}, GuardFailed, nil
 	}
 	for i := range t.program.traceUpvalues {
+		if t.program.traceUpvalues[i].isObject {
+			continue
+		}
 		number, ok := t.program.traceUpvalues[i].cell.LoadNumber()
 		if !ok {
 			return DeoptExit{}, GuardFailed, nil
@@ -515,6 +549,11 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 		value  float64
 		dirty  bool
 	}
+	// tracePropertyStateCap bounds the per-slice property memo. Fixed-object
+	// loops use one or two entries; `k[i].x` reads a different object every
+	// iteration and would otherwise grow the table per iteration, making
+	// findProperty's linear scan quadratic in the slice budget.
+	const tracePropertyStateCap = 32
 	propertyStates := make([]tracePropertyState, 0, 4)
 	findProperty := func(object engine.Value, name string) int {
 		for i := range propertyStates {
@@ -634,6 +673,21 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 			dirty[in.Operand] = true
 		case OpLoadUpvalueNum:
 			push(numberValue(upvalueCache[in.Operand]))
+		case OpLoadUpvalueRef:
+			// 对象值单元：每次执行现读当前值入 objects 池。切片内没有用户
+			// 代码，现读与 Tier 0 的 LOAD_UPVALUE 观察等价。池满先压缩；
+			// fromEngine 池满会静默返回 undefined，必须先腾位置。
+			value, ok := t.program.traceUpvalues[in.Operand].cell.LoadRef()
+			if !ok {
+				return DeoptExit{}, GuardFailed, nil
+			}
+			if objectCount >= maxQuickSlots {
+				compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), stack, &objects, &objectCount)
+				if objectCount >= maxQuickSlots {
+					return DeoptExit{}, GuardFailed, nil
+				}
+			}
+			push(fromEngine(value, &objects, &objectCount))
 		case OpStoreUpvalueNum:
 			value := pop()
 			if value.kind != quickNumber {
@@ -656,7 +710,13 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 			if !ok {
 				return DeoptExit{}, GuardFailed, nil
 			}
-			propertyStates = append(propertyStates, tracePropertyState{object: objectValue, name: in.Name, guard: guard, value: n})
+			// 读 memo 有封顶：`k[i].x` 这类每迭代读不同对象的形态会让
+			// propertyStates 每迭代追加一条，findProperty 的线性扫描把切片
+			// 推向 O(budget²)。超过上限后读直接走 PIC guard（写仍会建条目，
+			// 见 OpSetProp 的同款封顶）。
+			if len(propertyStates) < tracePropertyStateCap {
+				propertyStates = append(propertyStates, tracePropertyState{object: objectValue, name: in.Name, guard: guard, value: n})
+			}
 			push(numberValue(n))
 		case OpSetProp:
 			object, value := pop(), pop()
@@ -666,6 +726,11 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 			objectValue := objects[object.ref]
 			stateIndex := findProperty(objectValue, in.Name)
 			if stateIndex < 0 {
+				// 写条目是延迟提交协议的一部分，不能省；但表满后继续追加
+				// 会把 findProperty 推向平方级——回退 Tier 0 让其重放。
+				if len(propertyStates) >= tracePropertyStateCap {
+					return DeoptExit{}, GuardFailed, nil
+				}
 				guard := &t.program.propertyGuards[ip-1]
 				current, ok := guard.loadNumber(objectValue, in.Name)
 				if !ok {
@@ -676,6 +741,36 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 			}
 			propertyStates[stateIndex].value = value.num
 			propertyStates[stateIndex].dirty = true
+		case OpGetElem:
+			// 数组稠密下标读：receiver 是 ArrayValue、key 为非负整数且落在
+			// 稠密范围内、元素 present。洞 / 越界 / 非数组 / 非整数 key 一律
+			// GuardFailed 回 Tier 0（原型链查找与增长语义留给解释器）。
+			key := pop()
+			object := pop()
+			if key.kind != quickNumber || object.kind != quickObject || int(object.ref) >= objectCount {
+				return DeoptExit{}, GuardFailed, nil
+			}
+			arr, ok := objects[object.ref].(*engine.ArrayValue)
+			if !ok {
+				return DeoptExit{}, GuardFailed, nil
+			}
+			f := key.num
+			if f < 0 || f != math.Trunc(f) || f > float64(len(arr.Elems())-1) {
+				return DeoptExit{}, GuardFailed, nil
+			}
+			elem, ok := arr.ElemAt(int(f))
+			if !ok {
+				return DeoptExit{}, GuardFailed, nil
+			}
+			// 元素可能每次迭代都不同（对象数组），objects 池满了先压缩；
+			// fromEngine 池满时静默返回 undefined——必须先腾出位置。
+			if objectCount >= maxQuickSlots {
+				compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), stack, &objects, &objectCount)
+				if objectCount >= maxQuickSlots {
+					return DeoptExit{}, GuardFailed, nil
+				}
+			}
+			push(fromEngine(elem, &objects, &objectCount))
 		case OpGuardNoopCall:
 			callee := pop()
 			if callee.kind != quickObject || int(callee.ref) >= objectCount ||
@@ -735,7 +830,13 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 					return DeoptExit{}, GuardFailed, nil
 				}
 				if objectCount >= maxQuickSlots {
-					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), &objects, &objectCount)
+					// l/r 已弹出成 Go 局部——先压回操作数栈再压缩，让压缩
+					// 重写它们的 ref，随后重新弹出（否则 ref 悬空）。
+					push(l)
+					push(r)
+					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), stack, &objects, &objectCount)
+					r = pop()
+					l = pop()
 				}
 				result, ok := quickStringConcat(l, r, &objects, &objectCount)
 				if !ok {
@@ -747,7 +848,13 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 					return DeoptExit{}, GuardFailed, nil
 				}
 				if objectCount >= maxQuickSlots {
-					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), &objects, &objectCount)
+					// l/r 已弹出成 Go 局部——先压回操作数栈再压缩，让压缩
+					// 重写它们的 ref，随后重新弹出（否则 ref 悬空）。
+					push(l)
+					push(r)
+					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), stack, &objects, &objectCount)
+					r = pop()
+					l = pop()
 				}
 				result, ok := quickStringAnyConcat(l, r, true, &objects, &objectCount)
 				if !ok {
@@ -759,7 +866,13 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 					return DeoptExit{}, GuardFailed, nil
 				}
 				if objectCount >= maxQuickSlots {
-					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), &objects, &objectCount)
+					// l/r 已弹出成 Go 局部——先压回操作数栈再压缩，让压缩
+					// 重写它们的 ref，随后重新弹出（否则 ref 悬空）。
+					push(l)
+					push(r)
+					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), stack, &objects, &objectCount)
+					r = pop()
+					l = pop()
 				}
 				result, ok := quickStringAnyConcat(r, l, false, &objects, &objectCount)
 				if !ok {
@@ -936,7 +1049,7 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 					return DeoptExit{ID: -1, ResumePC: t.startPC}, Yielded, nil
 				}
 				if objectCount > 24 {
-					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), &objects, &objectCount)
+					compactTraceObjects(values[:t.program.NumLocals], len(t.program.stringConsts), stack, &objects, &objectCount)
 				}
 			}
 			ip = int(in.Operand)
@@ -1005,38 +1118,47 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 }
 
 // compactTraceObjects 紧凑化回收 trace 循环中的非存活临时对象引用，
-// 保持常量池在前部，并重写当前活跃 locals 的 ref，避免在长循环中填满固定对象池。
-func compactTraceObjects(values []quickValue, stringConstsCount int, objects *[maxQuickSlots]engine.Value, objectCount *int) {
+// 保持常量池在前部，并重写当前活跃 locals 与操作数栈的 ref，避免在长循环中
+// 填满固定对象池。stack 是当前操作数栈（循环体内的部分求值中间值）——
+// 不重写它的话，压缩后栈上残留的 ref 会指向被搬走的条目。
+func compactTraceObjects(values []quickValue, stringConstsCount int, stack []quickValue, objects *[maxQuickSlots]engine.Value, objectCount *int) {
 	var newObjects [maxQuickSlots]engine.Value
 	newCount := stringConstsCount
 	for i := 0; i < stringConstsCount && i < maxQuickSlots; i++ {
 		newObjects[i] = objects[i]
 	}
 
-	for i := range values {
-		v := &values[i]
-		if v.kind == quickString || v.kind == quickObject || v.kind == quickBigInt || v.kind == quickSymbol {
-			oldRef := int(v.ref)
-			if oldRef < len(objects) && objects[oldRef] != nil {
-				if oldRef < stringConstsCount {
-					continue
-				}
-				found := -1
-				for j := stringConstsCount; j < newCount; j++ {
-					if newObjects[j] == objects[oldRef] {
-						found = j
-						break
-					}
-				}
-				if found >= 0 {
-					v.ref = uint8(found)
-				} else if newCount < maxQuickSlots {
-					newObjects[newCount] = objects[oldRef]
-					v.ref = uint8(newCount)
-					newCount++
-				}
+	relocate := func(v *quickValue) {
+		if v.kind != quickString && v.kind != quickObject && v.kind != quickBigInt && v.kind != quickSymbol {
+			return
+		}
+		oldRef := int(v.ref)
+		if oldRef >= len(objects) || objects[oldRef] == nil {
+			return
+		}
+		if oldRef < stringConstsCount {
+			return
+		}
+		found := -1
+		for j := stringConstsCount; j < newCount; j++ {
+			if newObjects[j] == objects[oldRef] {
+				found = j
+				break
 			}
 		}
+		if found >= 0 {
+			v.ref = uint8(found)
+		} else if newCount < maxQuickSlots {
+			newObjects[newCount] = objects[oldRef]
+			v.ref = uint8(newCount)
+			newCount++
+		}
+	}
+	for i := range values {
+		relocate(&values[i])
+	}
+	for i := range stack {
+		relocate(&stack[i])
 	}
 	*objects = newObjects
 	*objectCount = newCount

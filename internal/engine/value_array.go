@@ -270,6 +270,15 @@ func arrayIndex(key string) (int, bool) {
 // Elems 返回数组元素切片（只读视图）。
 func (a *ArrayValue) Elems() []Value { return a.elems }
 
+// ElemAt 返回下标 i 的自有元素及是否存在（含洞检查）。供 JIT trace 的
+// GetElem 快路径使用：越界 / 洞返回 false，调用方回退完整路径。
+func (a *ArrayValue) ElemAt(i int) (Value, bool) {
+	if i < 0 || i >= len(a.elems) || !a.isPresent(i) {
+		return nil, false
+	}
+	return a.elems[i], true
+}
+
 // CanAppend reports whether Array.prototype.push/JIT may create count trailing indices.
 func (a *ArrayValue) CanAppend(count int) bool {
 	if count < 0 || uint64(len(a.elems))+uint64(count) > uint64(1)<<32-1 {

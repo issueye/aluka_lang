@@ -262,6 +262,15 @@ func lowerNativeInputsForMode(p *Program, trace bool) (*Program, *nativeInputPla
 	if p.hasExceptionExit() {
 		return nil, nil, fmt.Errorf("jit: native cannot represent exception exit (pending JS exception)")
 	}
+	for _, in := range p.Code {
+		if in.Op == OpGetElem || in.Op == OpLoadUpvalueRef {
+			// Element values and object-valued cells are engine.Values read per
+			// iteration through the Go-side objects buffer; the pointer-free
+			// Native frame cannot dereference them. Auto keeps such traces in
+			// the Quick tier (the rejection is recorded once per program).
+			return nil, nil, fmt.Errorf("jit: native cannot represent object-backed reads (kept in Quick tier)")
+		}
+	}
 	plan := &nativeInputPlan{}
 	code := make([]Instr, 0, len(p.Code))
 	preassigned := uint64(0)
