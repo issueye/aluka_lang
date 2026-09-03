@@ -192,3 +192,20 @@ inline-tiered-bytecode-plan.md §8）。
 - **迭代化调用 + O-6 原生化扩展**（见 inline-tiered-bytecode-plan.md）：把更多 JS 模式
   下沉到 Go 侧直执行，绕过解释器装箱（已在 arrayMap 验证 16x→9.4x）。
 - **热函数编译（JIT 雏形）**：唯一能全部 ≤10x 的途径。
+
+## 10. 双栈上限实验（2026-09-03，feat/object-arena 分支）
+
+§9 之后 Stage 1（numberValue slab，pointer-shaped 单指针）已落地——`convT64` 装箱
+不再存在（numberValue 零分配装入 interface）。此时双栈的剩余收益只剩"栈拷贝
+16B（interface）vs 8B（float64）"。用 3 千万次 `s += i` 循环做三种栈的上限基准：
+
+| 栈实现 | 结果 |
+|--------|------|
+| `[]any`（现状：numberValue pointer-shaped）| 55.0 ms（≈1 ns/iter）|
+| `[]float64`（双栈理想形态）| 54.5 ms（≈1 ns/iter）|
+
+**结论：双栈收益为空。** pointer-shaped 的 interface 压栈/断言与 raw float64 等价
+（编译器对单指针形值零拷贝处理），双栈只增加两栈同步的复杂度，无性能回报。
+装箱痛点已由 Stage 1 根治，类型化栈方向的收益上限**到此封闭**（stackSlot 32B 否决、
+双栈 0 收益）；后续分配/扫描优化应投向对象本体瘦身与 Stage 3（Value=uint64
+全量重写，另见 stage2-nanbox-slots-rejected.md 的 GC 可见性约束）。
