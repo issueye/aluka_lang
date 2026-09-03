@@ -14,8 +14,12 @@ type closureIncrementTraceState struct {
 	calleeLocal int
 	indexLocal  int
 	boundLocal  int
-	sumLocal    int
-	target      *vmClosure
+	// boundConst is set when the loop bound is a numeric literal rather than a
+	// local slot (matchClosureIncrementTrace's const-bound form); boundLocal is
+	// -1 in that case.
+	boundConst float64
+	sumLocal   int
+	target     *vmClosure
 	// plan is the parsed numeric-upvalue body of the callee closure. It is
 	// the R4-2 generalization of the single `() => ++n` shape: any sequence
 	// of numeric upvalue read/write statements followed by one numeric
@@ -265,7 +269,12 @@ func closureTraceUpvalueAliased(trace *closureIncrementTraceState, locals []engi
 //
 //	for (; i < bound; i++) sum += incrementClosure()
 //
-// where incrementClosure is exactly () => ++numericUpvalue.
+// where incrementClosure is exactly () => ++numericUpvalue. The bound may come
+// from a local slot (classic form) or from a numeric literal pushed inline
+// (const-bound form: `for (i = 0; i < 30000000; i++)`). A literal compiles to
+// OpPushInt/OpPushNegInt (integers within ±2²⁴) or OpPushConst (anything else,
+// including >24-bit integers), so both are accepted when they decode to a
+// safe-integer Number.
 func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int) *closureIncrementTraceState {
 	if frame == nil || frame.tmpl == nil || frame.base < 0 {
 		return nil
@@ -278,7 +287,33 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 	}
 	op := func(index int) bytecode.Opcode { return bytecode.Opcode(code[startPC+index*bytecode.InstrSize]) }
 	arg := func(index int) uint32 { return jitTraceOperand(code, startPC+index*bytecode.InstrSize) }
-	if op(0) != bytecode.OpLoadLocal || op(1) != bytecode.OpLoadLocal || op(2) != bytecode.OpLt ||
+	boundIsConst := false
+	var boundConst float64
+	switch op(1) {
+	case bytecode.OpLoadLocal:
+		// Classic form: bound read from a local slot every iteration.
+	case bytecode.OpPushInt:
+		boundIsConst, boundConst = true, float64(arg(1))
+	case bytecode.OpPushNegInt:
+		boundIsConst, boundConst = true, -float64(arg(1))
+	case bytecode.OpPushConst:
+		constVal := frame.tmpl.Constants[arg(1)]
+		if int(arg(1)) >= len(frame.tmpl.Constants) || constVal == nil {
+			return nil
+		}
+		if constVal.Type() != engine.TypeNumber {
+			return nil
+		}
+		f, _ := constVal.Float()
+		if math.IsNaN(f) || math.IsInf(f, 0) || math.Trunc(f) != f ||
+			f < 0 || f > float64(1<<53-1) {
+			return nil
+		}
+		boundIsConst, boundConst = true, f
+	default:
+		return nil
+	}
+	if op(0) != bytecode.OpLoadLocal || op(2) != bytecode.OpLt ||
 		op(3) != bytecode.OpJmpFalsePop || op(4) != bytecode.OpLoadLocal || op(5) != bytecode.OpLoadLocal ||
 		op(6) != bytecode.OpCall || arg(6) != 0 || op(7) != bytecode.OpAdd || op(8) != bytecode.OpDup ||
 		op(9) != bytecode.OpStoreLocal || op(10) != bytecode.OpPop || op(11) != bytecode.OpLoadLocal ||
@@ -288,7 +323,10 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 		return nil
 	}
 	indexLocal := int(arg(0))
-	boundLocal := int(arg(1))
+	boundLocal := -1
+	if !boundIsConst {
+		boundLocal = int(arg(1))
+	}
 	sumLocal := int(arg(4))
 	calleeLocal := int(arg(5))
 	if int(arg(9)) != sumLocal || int(arg(11)) != indexLocal || int(arg(14)) != indexLocal {
@@ -296,12 +334,16 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 	}
 	localCount := frame.tmpl.NumLocals
 	for _, slot := range []int{indexLocal, boundLocal, sumLocal, calleeLocal} {
+		// boundLocal == -1 marks the const-bound form (no slot at all).
+		if slot == -1 {
+			continue
+		}
 		if slot < 0 || slot >= localCount {
 			return nil
 		}
 	}
 	if indexLocal == boundLocal || indexLocal == sumLocal || indexLocal == calleeLocal ||
-		boundLocal == sumLocal || boundLocal == calleeLocal || sumLocal == calleeLocal {
+		(boundLocal >= 0 && (boundLocal == sumLocal || boundLocal == calleeLocal)) || sumLocal == calleeLocal {
 		return nil
 	}
 	backedgeTarget := backedgePC + bytecode.InstrSize + bytecode.SignedOperand(arg(16))
@@ -324,7 +366,7 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 	}
 	trace := &closureIncrementTraceState{
 		calleeLocal: calleeLocal, indexLocal: indexLocal, boundLocal: boundLocal,
-		sumLocal: sumLocal, target: target, plan: plan,
+		boundConst: boundConst, sumLocal: sumLocal, target: target, plan: plan,
 		upvalues: target.upvalues, startPC: startPC, exitPC: exitPC,
 	}
 	if closureTraceUpvalueAliased(trace, locals) {
@@ -339,11 +381,23 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 func (t *closureIncrementTraceState) closureLoopNumbers(locals []engine.Value) (float64, float64, float64, []float64, bool) {
 	if t == nil || t.target == nil || t.plan == nil || len(t.upvalues) == 0 ||
 		t.indexLocal < 0 || t.indexLocal >= len(locals) ||
-		t.boundLocal < 0 || t.boundLocal >= len(locals) || t.sumLocal < 0 || t.sumLocal >= len(locals) {
+		t.sumLocal < 0 || t.sumLocal >= len(locals) {
 		return 0, 0, 0, nil, false
 	}
 	index, indexOK := locals[t.indexLocal].Float()
-	bound, boundOK := locals[t.boundLocal].Float()
+	// The bound is either a local slot (classic form) or a numeric literal
+	// constant frozen at compile time (const-bound form): a compile-time
+	// constant cannot drift between executions, so it needs no re-validation.
+	var bound float64
+	boundOK := true
+	if t.boundLocal >= 0 {
+		if t.boundLocal >= len(locals) {
+			return 0, 0, 0, nil, false
+		}
+		bound, boundOK = locals[t.boundLocal].Float()
+	} else {
+		bound = t.boundConst
+	}
 	sum, sumOK := locals[t.sumLocal].Float()
 	if !indexOK || !boundOK || !sumOK {
 		return 0, 0, 0, nil, false

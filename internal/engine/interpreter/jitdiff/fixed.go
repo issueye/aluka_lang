@@ -36,11 +36,17 @@ LOG("post", SV(A.length) + ":" + SV(A[4]));
 		},
 		{
 			ID: -3, Kind: KindClosure, Seed: 103, Params: params,
-			Expected: "call:runC\nreturn:n:10\npost:n:5",
+			// C was called once by runC(4) and once by the post C() above, so it
+			// holds 5; runCL drives it 20 more times (6..25, summing to 310) and
+			// the trailing C() returns 26.
+			Expected: "call:runC\nreturn:n:10\npost:n:5\ncall:runCL\nreturn:n:310\npost:n:26",
 			Body: `function makeC() { let n = 0; return () => ++n; }
 function runC(fn, end) { let sum = 0; for (let i = 0; i < end; i++) sum += fn(); return sum; }
 const C = makeC();
 try { LOG("call", "runC"); LOG("return", SV(runC(C, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(C()));
+function runCL(fn) { let sum = 0; for (let i = 0; i < 20; i++) sum += fn(); return sum; }
+try { LOG("call", "runCL"); LOG("return", SV(runCL(C))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 LOG("post", SV(C()));
 `,
 		},
