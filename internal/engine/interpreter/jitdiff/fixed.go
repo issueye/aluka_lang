@@ -38,8 +38,10 @@ LOG("post", SV(A.length) + ":" + SV(A[4]));
 			ID: -3, Kind: KindClosure, Seed: 103, Params: params,
 			// C was called once by runC(4) and once by the post C() above, so it
 			// holds 5; runCL drives it 20 more times (6..25, summing to 310) and
-			// the trailing C() returns 26.
-			Expected: "call:runC\nreturn:n:10\npost:n:5\ncall:runCL\nreturn:n:310\npost:n:26",
+			// the trailing C() returns 26. runCC repeats the same 20-iteration
+			// drive but reads C from its own captured cell (callee-capture
+			// form): starting at 27 it sums 27..46 (=730) and leaves 47.
+			Expected: "call:runC\nreturn:n:10\npost:n:5\ncall:runCL\nreturn:n:310\npost:n:26\ncall:runCC\nreturn:n:730\npost:n:47",
 			Body: `function makeC() { let n = 0; return () => ++n; }
 function runC(fn, end) { let sum = 0; for (let i = 0; i < end; i++) sum += fn(); return sum; }
 const C = makeC();
@@ -47,6 +49,9 @@ try { LOG("call", "runC"); LOG("return", SV(runC(C, 4))); } catch (e) { LOG("thr
 LOG("post", SV(C()));
 function runCL(fn) { let sum = 0; for (let i = 0; i < 20; i++) sum += fn(); return sum; }
 try { LOG("call", "runCL"); LOG("return", SV(runCL(C))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(C()));
+function runCC() { let sum = 0; for (let i = 0; i < 20; i++) sum += C(); return sum; }
+try { LOG("call", "runCC"); LOG("return", SV(runCC())); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 LOG("post", SV(C()));
 `,
 		},

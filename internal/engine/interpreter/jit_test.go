@@ -1962,6 +1962,16 @@ func TestJITTraceGuardedClosureIncrementUpvalue(t *testing.T) {
 		const incrementConst = makeConst();
 		globalThis.jitClosureConstBoundSum = runConst(incrementConst);
 		globalThis.jitClosureConstBoundNext = incrementConst();
+		// callee-capture form: the callee lives in a captured cell of the
+		// traced frame rather than in a local or parameter.
+		const incrementCap = makeConst();
+		function runCap() {
+			let sum = 0;
+			for (let i = 0; i < 30000000; i++) sum += incrementCap();
+			return sum;
+		}
+		globalThis.jitClosureCalleeCapSum = runCap();
+		globalThis.jitClosureCalleeCapNext = incrementCap();
 	`
 	for _, mode := range []jit.Mode{jit.Quick, jit.Auto} {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -1989,6 +1999,9 @@ func TestJITTraceGuardedClosureIncrementUpvalue(t *testing.T) {
 				// 调一次得 30000001。
 				"jitClosureConstBoundSum":  "450000015000000",
 				"jitClosureConstBoundNext": "30000001",
+				// callee-capture 形态：同上，只是 callee 来自捕获单元。
+				"jitClosureCalleeCapSum":  "450000015000000",
+				"jitClosureCalleeCapNext": "30000001",
 			} {
 				got, err := vm.Global().Get(name)
 				if err != nil || got.String() != want {
@@ -1996,7 +2009,7 @@ func TestJITTraceGuardedClosureIncrementUpvalue(t *testing.T) {
 				}
 			}
 			stats := vm.JITStats()
-			if stats.ClosureUpvalueSites != 2 || stats.TracesExecuted == 0 || stats.ClosureUpvalueYields == 0 {
+			if stats.ClosureUpvalueSites != 3 || stats.TracesExecuted == 0 || stats.ClosureUpvalueYields == 0 {
 				logJITBytecode(t, mod.Functions)
 				t.Fatalf("unexpected closure upvalue stats: %+v", stats)
 			}

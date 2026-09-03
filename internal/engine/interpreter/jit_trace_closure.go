@@ -31,8 +31,13 @@ type closureIncrementTraceState struct {
 	// target.upvalues[i] == upvalues[i], so a second closure instance of the
 	// same template with different captured cells falls back to Tier 0.
 	upvalues []*upvalue
-	startPC  int
-	exitPC   int
+	// calleeCell is set in the callee-capture form: the callee itself lives in
+	// a captured cell of the traced frame rather than in a local. The executor
+	// re-reads the cell per execution and requires the same *upvalue with the
+	// same closure value; nil in the classic local form.
+	calleeCell *upvalue
+	startPC    int
+	exitPC     int
 }
 
 type closureExprKind uint8
@@ -287,6 +292,20 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 	}
 	op := func(index int) bytecode.Opcode { return bytecode.Opcode(code[startPC+index*bytecode.InstrSize]) }
 	arg := func(index int) uint32 { return jitTraceOperand(code, startPC+index*bytecode.InstrSize) }
+	// The callee may come from a local slot (classic form) or from an upvalue
+	// of the traced frame (callee-capture form: `for...s += fUp()` where fUp is
+	// captured, not passed or stored). The latter compiles the callee operand
+	// (instruction 5) to OpLoadUpvalue instead of OpLoadLocal.
+	calleeIsUpvalue := false
+	var calleeUpvalue int
+	switch op(5) {
+	case bytecode.OpLoadLocal:
+		// Classic form.
+	case bytecode.OpLoadUpvalue:
+		calleeIsUpvalue, calleeUpvalue = true, int(arg(5))
+	default:
+		return nil
+	}
 	boundIsConst := false
 	var boundConst float64
 	switch op(1) {
@@ -314,7 +333,7 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 		return nil
 	}
 	if op(0) != bytecode.OpLoadLocal || op(2) != bytecode.OpLt ||
-		op(3) != bytecode.OpJmpFalsePop || op(4) != bytecode.OpLoadLocal || op(5) != bytecode.OpLoadLocal ||
+		op(3) != bytecode.OpJmpFalsePop || op(4) != bytecode.OpLoadLocal ||
 		op(6) != bytecode.OpCall || arg(6) != 0 || op(7) != bytecode.OpAdd || op(8) != bytecode.OpDup ||
 		op(9) != bytecode.OpStoreLocal || op(10) != bytecode.OpPop || op(11) != bytecode.OpLoadLocal ||
 		op(12) != bytecode.OpDup || op(13) != bytecode.OpInc ||
@@ -328,13 +347,17 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 		boundLocal = int(arg(1))
 	}
 	sumLocal := int(arg(4))
-	calleeLocal := int(arg(5))
+	calleeLocal := -1
+	if !calleeIsUpvalue {
+		calleeLocal = int(arg(5))
+	}
 	if int(arg(9)) != sumLocal || int(arg(11)) != indexLocal || int(arg(14)) != indexLocal {
 		return nil
 	}
 	localCount := frame.tmpl.NumLocals
 	for _, slot := range []int{indexLocal, boundLocal, sumLocal, calleeLocal} {
-		// boundLocal == -1 marks the const-bound form (no slot at all).
+		// -1 marks "no slot" (boundLocal in the const-bound form, calleeLocal
+		// in the callee-capture form).
 		if slot == -1 {
 			continue
 		}
@@ -342,8 +365,9 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 			return nil
 		}
 	}
-	if indexLocal == boundLocal || indexLocal == sumLocal || indexLocal == calleeLocal ||
-		(boundLocal >= 0 && (boundLocal == sumLocal || boundLocal == calleeLocal)) || sumLocal == calleeLocal {
+	if indexLocal == sumLocal || indexLocal == calleeLocal || sumLocal == calleeLocal ||
+		indexLocal == boundLocal ||
+		(boundLocal >= 0 && (boundLocal == sumLocal || boundLocal == calleeLocal)) {
 		return nil
 	}
 	backedgeTarget := backedgePC + bytecode.InstrSize + bytecode.SignedOperand(arg(16))
@@ -356,9 +380,38 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 		return nil
 	}
 	locals := v.stack[frame.base:localsEnd]
-	target, ok := locals[calleeLocal].(*vmClosure)
-	if !ok || target.vm != v {
-		return nil
+	// The callee is either a local (classic) or a captured cell of this frame
+	// (callee-capture form). In the latter case the cell must hold the closure
+	// right now; the trace records the *upvalue identity and re-checks it per
+	// execution (the same discipline as the callee's own captured cells), so a
+	// frame re-entered with a different binding falls back to Tier 0.
+	var target *vmClosure
+	var calleeCell *upvalue
+	if calleeIsUpvalue {
+		if calleeUpvalue < 0 || calleeUpvalue >= len(frame.upvalues) {
+			return nil
+		}
+		calleeCell = frame.upvalues[calleeUpvalue]
+		if calleeCell == nil {
+			return nil
+		}
+		var cellVal engine.Value
+		if calleeCell.slot != nil {
+			cellVal = *calleeCell.slot
+		} else {
+			cellVal = calleeCell.closed
+		}
+		var ok bool
+		target, ok = cellVal.(*vmClosure)
+		if !ok || target.vm != v {
+			return nil
+		}
+	} else {
+		var ok bool
+		target, ok = locals[calleeLocal].(*vmClosure)
+		if !ok || target.vm != v {
+			return nil
+		}
 	}
 	plan, ok := matchNumericUpvalueClosure(target)
 	if !ok {
@@ -367,7 +420,7 @@ func (v *VM) matchClosureIncrementTrace(frame *vmFrame, startPC, backedgePC int)
 	trace := &closureIncrementTraceState{
 		calleeLocal: calleeLocal, indexLocal: indexLocal, boundLocal: boundLocal,
 		boundConst: boundConst, sumLocal: sumLocal, target: target, plan: plan,
-		upvalues: target.upvalues, startPC: startPC, exitPC: exitPC,
+		upvalues: target.upvalues, calleeCell: calleeCell, startPC: startPC, exitPC: exitPC,
 	}
 	if closureTraceUpvalueAliased(trace, locals) {
 		return nil
@@ -465,9 +518,36 @@ func evalClosureExpr(e *closureExpr, values []float64) float64 {
 }
 
 func (v *VM) executeClosureIncrementTrace(trace *closureIncrementTraceState, locals []engine.Value) (int, jit.ExitReason, error) {
-	if trace == nil || trace.calleeLocal < 0 || trace.calleeLocal >= len(locals) ||
-		locals[trace.calleeLocal] != trace.target || trace.plan == nil {
+	if trace == nil || trace.plan == nil {
 		return 0, jit.GuardFailed, nil
+	}
+	// Callee identity: in the classic form the local must still hold the same
+	// closure; in the callee-capture form the recorded cell must still be the
+	// frame's current cell and still hold the same closure. Either drift means
+	// the compiled plan binds to the wrong function or cells.
+	if trace.calleeCell != nil {
+		frame := v.cur()
+		found := false
+		for _, uv := range frame.upvalues {
+			if uv == trace.calleeCell {
+				found = true
+				break
+			}
+		}
+		var cellVal engine.Value
+		if trace.calleeCell.slot != nil {
+			cellVal = *trace.calleeCell.slot
+		} else {
+			cellVal = trace.calleeCell.closed
+		}
+		if !found || cellVal != engine.Value(trace.target) {
+			return 0, jit.GuardFailed, nil
+		}
+	} else {
+		if trace.calleeLocal < 0 || trace.calleeLocal >= len(locals) ||
+			locals[trace.calleeLocal] != trace.target {
+			return 0, jit.GuardFailed, nil
+		}
 	}
 	// Callee identity + captured upvalue identity: the plan binds to the
 	// concrete captured cells, so a different closure instance of the same
