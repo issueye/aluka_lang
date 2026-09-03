@@ -69,8 +69,39 @@ slots[0] = uint64(uintptr(unsafe.Pointer(m))); weak := weak.Make(m); m = nil
 ObjectValue 字段压缩、外提 proto/ext）** 达成——两者都必须在"GC 可见"
 约束内设计。
 
+## 补充：汇编 / unsafe 路线为何同样不通
+
+对"能否用汇编或 unsafe 把 float64 位模式直接放进 interface data 字
+（免 convT64 分配）"的验证，两条路都崩：
+
+1. **汇编无法介入**：float64 装 interface 的 `convT64` 分配是编译器在
+   IR/生成代码阶段插入的决策，运行期汇编没有挂载点；替换 runtime 的
+   convT64 也不能让它"不分配"。
+
+2. **unsafe 直写 data 字在消费端崩溃**（实验实测）：
+   - 构造 `iface{typ: float64TypeDesc, data: uintptr(math.Float64bits(x))}`；
+   - GC 侧安全：typ 无指针 → 不扫描 data 字；
+   - 但任何 `v.(float64)` 断言／`reflect.ValueOf(v).Float()` 都会按
+     `*(*float64)(data)` 解引用——位模式不是合法地址，进程当场 fault
+     （实测 fatal error，addr=0xffffffffffffffff）。
+
+   引擎内数字要频繁进出接口断言（算术、属性读写、方法分派），这条路
+   在消费端是硬崩溃，与 GC 可见性无关。
+
+3. **现状已是 Go 能免费给的最优**：`numberValue struct{ b *numberBox }`
+   是 pointer-shaped 单字段——编译器直接把 b 放 data 字（零分配），
+   GC 扫 b 指向的 numberBox（无指针 → 零扫描），断言返回 &b.V 正常。
+   数字的装箱成本已被摊薄到 slab（每 64KB 一次分配），实测 convT64
+   形态是 8B/次，而 numberValue 是 0B/次。
+
+**结论**：interface 内无数字直存方案（编译器能力、GC 可见性、消费端
+解引用三重约束）。真正绕开 interface 的唯一路径是 Stage 3：Value 从
+interface 改为引擎自有 uint64 代数类型（引擎内所有消费点自行解释位
+模式），该重写不需要汇编（位编解码已是编译器最优），且 JIT Native tier
+（引擎自产 amd64 机器码）天然受益于无接口分派。
+
 ## 复现
 
-本 ADR 的对照实验是独立的 main 包，未入库（避免仓库内 unsafe 测试）。
-如需在 CI 复现：将"B 臂：uint64 槽 + weak + 压力循环"写为单文件
-Go 程序运行即可，条件与上文一致。
+- 槽位 GC 可见性对照：uint64 槽 + weak + 压力循环（正文）。
+- convT64 分配：`sink = float64(i)` 3M 次 → TotalAlloc 增 24MB（8B/次）。
+- unsafe 直写崩溃：构造 iface 后 `v.(float64)` → fatal fault（消费端）。
