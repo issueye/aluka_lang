@@ -12,5 +12,8 @@ aluka-core = { workspace = true }
 aluka-parser = { workspace = true }
 aluka-bytecode = { workspace = true }
 
+[dev-dependencies]
+aluka-vm = { workspace = true }
+
 [lints]
 workspace = true

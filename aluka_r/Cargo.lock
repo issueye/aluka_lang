@@ -33,6 +33,7 @@ dependencies = [
  "aluka-bytecode",
  "aluka-core",
  "aluka-parser",
+ "aluka-vm",
 ]
 
 [[package]]

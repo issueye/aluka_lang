@@ -1,0 +1,107 @@
+操作码数值	常量标识符	指令名称	操作数类别数值	操作数类别标识	操作数说明	含操作数	出栈	入栈	净栈变动	纯压栈	跳转	终结	条件栈	动态栈	特殊说明
+0	OpNop	NOP	0	OperandNone	OperandNone(无)	false	0	0	+0	false	false	false	false	false	
+1	OpPushUndefined	PUSH_UNDEFINED	0	OperandNone	OperandNone(无)	false	0	1	+1	true	false	false	false	false	
+2	OpPushNull	PUSH_NULL	0	OperandNone	OperandNone(无)	false	0	1	+1	true	false	false	false	false	
+3	OpPushTrue	PUSH_TRUE	0	OperandNone	OperandNone(无)	false	0	1	+1	true	false	false	false	false	
+4	OpPushFalse	PUSH_FALSE	0	OperandNone	OperandNone(无)	false	0	1	+1	true	false	false	false	false	
+5	OpPushConst	PUSH_CONST	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	0	1	+1	true	false	false	false	false	
+6	OpPushInt	PUSH_INT	2	OperandInt	OperandInt(24位整数)	true	0	1	+1	true	false	false	false	false	立即数：24位无符号小整数(0..16777215)
+7	OpPushNegInt	PUSH_NEG_INT	2	OperandInt	OperandInt(24位整数)	true	0	1	+1	true	false	false	false	false	立即数：24位负整数，压入 -(A)
+8	OpPop	POP	0	OperandNone	OperandNone(无)	false	1	0	-1	false	false	false	false	false	
+9	OpDup	DUP	0	OperandNone	OperandNone(无)	false	0	1	+1	false	false	false	false	false	
+10	OpSwap	SWAP	0	OperandNone	OperandNone(无)	false	2	2	+0	false	false	false	false	false	
+11	OpLoadLocal	LOAD_LOCAL	3	OperandSlot	OperandSlot(局部槽位)	true	0	1	+1	false	false	false	false	false	
+12	OpStoreLocal	STORE_LOCAL	3	OperandSlot	OperandSlot(局部槽位)	true	1	0	-1	false	false	false	false	false	
+13	OpLoadGlobal	LOAD_GLOBAL	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	0	1	+1	false	false	false	false	false	
+14	OpStoreGlobal	STORE_GLOBAL	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	1	0	-1	false	false	false	false	false	
+15	OpLoadUpvalue	LOAD_UPVALUE	4	OperandUpvalueIdx	OperandUpvalueIdx(闭包上值索引)	true	0	1	+1	false	false	false	false	false	
+16	OpStoreUpvalue	STORE_UPVALUE	4	OperandUpvalueIdx	OperandUpvalueIdx(闭包上值索引)	true	1	0	-1	false	false	false	false	false	
+17	OpMakeClosure	MAKE_CLOSURE	5	OperandTemplateIdx	OperandTemplateIdx(模板索引)	true	0	1	+1	false	false	false	false	false	
+18	OpAdd	ADD	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+19	OpSub	SUB	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+20	OpMul	MUL	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+21	OpDiv	DIV	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+22	OpMod	MOD	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+23	OpPow	POW	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+24	OpBitAnd	BIT_AND	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+25	OpBitOr	BIT_OR	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+26	OpBitXor	BIT_XOR	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+27	OpShl	SHL	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+28	OpShr	SHR	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+29	OpUShr	USHR	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+30	OpNeg	NEG	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	
+31	OpNot	NOT	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	
+32	OpBitNot	BIT_NOT	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	
+33	OpTypeof	TYPEOF	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	
+34	OpEq	EQ	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+35	OpStrictEq	STRICT_EQ	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+36	OpStrictNe	STRICT_NE	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+37	OpNe	NE	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+38	OpLt	LT	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+39	OpLe	LE	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+40	OpGt	GT	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+41	OpGe	GE	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+42	OpJmp	JMP	7	OperandSignedOff	OperandSignedOff(有符号相对跳转偏移)	true	0	0	+0	false	true	false	false	false	相对跳转；跳转目标允许 target == len(code)
+43	OpJmpTruePop	JMP_TRUE_POP	7	OperandSignedOff	OperandSignedOff(有符号相对跳转偏移)	true	1	0	-1	false	true	false	false	false	
+44	OpJmpFalsePop	JMP_FALSE_POP	7	OperandSignedOff	OperandSignedOff(有符号相对跳转偏移)	true	1	0	-1	false	true	false	false	false	
+45	OpJmpTrueKeep	JMP_TRUE_KEEP	7	OperandSignedOff	OperandSignedOff(有符号相对跳转偏移)	true	0	0	动态	false	true	false	true	false	相对跳转；跳转目标允许 target == len(code)
+46	OpJmpFalseKeep	JMP_FALSE_KEEP	7	OperandSignedOff	OperandSignedOff(有符号相对跳转偏移)	true	0	0	动态	false	true	false	true	false	相对跳转；跳转目标允许 target == len(code)
+47	OpJmpNullishKeep	JMP_NULLISH_KEEP	7	OperandSignedOff	OperandSignedOff(有符号相对跳转偏移)	true	0	0	动态	false	true	false	true	false	相对跳转；跳转目标允许 target == len(code)
+48	OpOptionalJump	OPTIONAL_JUMP	7	OperandSignedOff	OperandSignedOff(有符号相对跳转偏移)	true	0	0	动态	false	true	false	true	false	
+49	OpCall	CALL	8	OperandCount	OperandCount(参数或元素数量)	true	0	1	动态	false	false	false	false	true	
+50	OpCallMethod	CALL_METHOD	10	OperandPackedCall	OperandPackedCall(打包参数数量与方法名)	true	0	1	动态	false	false	false	false	true	打包调用：参数数量与方法名(numArgs<<16 | nameIdx)
+51	OpCallWithThis	CALL_WITH_THIS	8	OperandCount	OperandCount(参数或元素数量)	true	0	1	动态	false	false	false	false	true	
+52	OpCallWithThisArgs	CALL_WITH_THIS_ARGS	0	OperandNone	OperandNone(无)	false	0	1	动态	false	false	false	false	true	
+53	OpNew	NEW	8	OperandCount	OperandCount(参数或元素数量)	true	0	1	动态	false	false	false	false	true	
+54	OpReturn	RETURN	0	OperandNone	OperandNone(无)	false	1	0	-1	false	false	true	false	false	
+55	OpReturnUndef	RETURN_UNDEF	0	OperandNone	OperandNone(无)	false	0	0	+0	false	false	true	false	false	
+56	OpNewObject	NEW_OBJECT	8	OperandCount	OperandCount(参数或元素数量)	true	0	1	动态	false	false	false	false	true	
+57	OpNewArray	NEW_ARRAY	8	OperandCount	OperandCount(参数或元素数量)	true	0	1	动态	false	false	false	false	true	
+58	OpGetProp	GET_PROP	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	1	1	+0	false	false	false	false	false	
+59	OpSetProp	SET_PROP	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	2	1	-1	false	false	false	false	false	
+60	OpSetPropObj	SET_PROP_OBJ	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	1	0	-1	false	false	false	false	false	
+61	OpSetPropTop	SET_PROP_TOP	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	2	0	-2	false	false	false	false	false	
+62	OpGetElem	GET_ELEM	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+63	OpSetElem	SET_ELEM	0	OperandNone	OperandNone(无)	false	3	1	-2	false	false	false	false	false	
+64	OpSetElemTop	SET_ELEM_TOP	0	OperandNone	OperandNone(无)	false	3	0	-3	false	false	false	false	false	
+65	OpDelProp	DEL_PROP	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	1	1	+0	false	false	false	false	false	
+66	OpDelElem	DEL_ELEM	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+67	OpSetPropComputedObj	SET_PROP_COMPUTED_OBJ	0	OperandNone	OperandNone(无)	false	2	0	-2	false	false	false	false	false	
+68	OpBuildArray	BUILD_ARRAY	0	OperandNone	OperandNone(无)	false	0	1	+1	false	false	false	false	false	
+69	OpArrayPush	ARRAY_PUSH	0	OperandNone	OperandNone(无)	false	1	0	-1	false	false	false	false	false	
+70	OpArraySpread	ARRAY_SPREAD	0	OperandNone	OperandNone(无)	false	1	0	-1	false	false	false	false	false	
+71	OpCallArgs	CALL_ARGS	0	OperandNone	OperandNone(无)	false	0	1	动态	false	false	false	false	true	
+72	OpCallMethodArgs	CALL_METHOD_ARGS	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	0	1	动态	false	false	false	false	true	
+73	OpNewArgs	NEW_ARGS	0	OperandNone	OperandNone(无)	false	0	1	动态	false	false	false	false	true	
+74	OpSpreadObject	SPREAD_OBJECT	0	OperandNone	OperandNone(无)	false	1	0	-1	false	false	false	false	false	
+75	OpUnaryPlus	UNARY_PLUS	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	
+76	OpTypeofGlobal	TYPEOF_GLOBAL	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	0	1	+1	false	false	false	false	false	
+77	OpTryEnter	TRY_ENTER	6	OperandTryIdx	OperandTryIdx(Try表索引)	true	0	0	+0	false	false	false	false	false	
+78	OpTryExit	TRY_EXIT	6	OperandTryIdx	OperandTryIdx(Try表索引)	true	0	0	+0	false	false	false	false	false	
+79	OpTryExitFinally	TRY_EXIT_FINALLY	6	OperandTryIdx	OperandTryIdx(Try表索引)	true	0	0	+0	false	false	false	false	false	
+80	OpTryExitJmp	TRY_EXIT_JMP	7	OperandSignedOff	OperandSignedOff(有符号相对跳转偏移)	true	0	0	+0	false	true	false	false	false	
+81	OpThrow	THROW	0	OperandNone	OperandNone(无)	false	1	0	-1	false	false	true	false	false	
+82	OpInstanceof	INSTANCEOF	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+83	OpIn	IN	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	
+84	OpForInNext	FOR_IN_NEXT	7	OperandSignedOff	OperandSignedOff(有符号相对跳转偏移)	true	0	0	动态	false	true	false	false	true	遗留指令；VM中无对应dispatch分支
+85	OpMakeClass	MAKE_CLASS	5	OperandTemplateIdx	OperandTemplateIdx(模板索引)	true	0	1	动态	false	false	false	false	true	
+86	OpGetProto	GET_PROTO	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	
+87	OpCallThis	CALL_THIS	8	OperandCount	OperandCount(参数或元素数量)	true	0	1	动态	false	false	false	false	true	
+88	OpConstructThis	CONSTRUCT_THIS	8	OperandCount	OperandCount(参数或元素数量)	true	0	1	动态	false	false	false	false	true	
+89	OpCallThisArgs	CALL_THIS_ARGS	0	OperandNone	OperandNone(无)	false	0	1	动态	false	false	false	false	true	
+90	OpConstructThisArgs	CONSTRUCT_THIS_ARGS	0	OperandNone	OperandNone(无)	false	0	1	动态	false	false	false	false	true	
+91	OpGetIterator	GET_ITERATOR	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	
+92	OpYield	YIELD	0	OperandNone	OperandNone(无)	false	1	0	-1	false	false	false	false	false	
+93	OpGetAsyncIterator	GET_ASYNC_ITERATOR	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	
+94	OpAwait	AWAIT	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	
+95	OpMakeRegexp	MAKE_REGEXP	0	OperandNone	OperandNone(无)	false	2	1	-1	false	false	false	false	false	弹栈flags+pattern，生成RegExp对象
+96	OpSetGetterObj	SET_GETTER_OBJ	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	1	0	-1	false	false	false	false	false	
+97	OpSetSetterObj	SET_SETTER_OBJ	1	OperandConstIdx	OperandConstIdx(常量池索引)	true	1	0	-1	false	false	false	false	false	
+98	OpSetGetterComputedObj	SET_GETTER_COMPUTED_OBJ	0	OperandNone	OperandNone(无)	false	2	0	-2	false	false	false	false	false	
+99	OpSetSetterComputedObj	SET_SETTER_COMPUTED_OBJ	0	OperandNone	OperandNone(无)	false	2	0	-2	false	false	false	false	false	
+100	OpGetPropLocal	GET_PROP_LOCAL	9	OperandPackedSlotName	OperandPackedSlotName(打包槽位与属性名)	true	0	1	+1	false	false	false	false	false	超指令：打包局部槽位与属性名(slot<<16 | nameIdx)
+101	OpCloseUpvalues	CLOSE_UPVALUES	3	OperandSlot	OperandSlot(局部槽位)	true	0	0	+0	false	false	false	false	false	闭包作用域：关闭从指定槽位开始的捕获上值
+102	OpInc	INC	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	
+103	OpDec	DEC	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	
+104	OpEnumKeys	ENUM_KEYS	0	OperandNone	OperandNone(无)	false	1	1	+0	false	false	false	false	false	弹栈对象，压入原型链可枚举键数组
+105	OpEnd	END	0	OperandNone	OperandNone(无)	false	0	0	+0	false	false	false	false	false	代码结尾哨兵指令；不实际执行

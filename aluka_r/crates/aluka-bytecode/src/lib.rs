@@ -11,6 +11,11 @@
 
 pub mod op;
 pub mod serialize;
+pub mod verifier;
 
-pub use op::{Instr, Op};
+pub use op::{Instr, Op, OperandKind, StackEffect};
 pub use serialize::FORMAT_VERSION;
+pub use verifier::{
+    BytecodeModule, ClassMethod, ClassTemplate, Constant, FuncTemplate, TryEntry, UpvalueCapture,
+    VerifyError,
+};

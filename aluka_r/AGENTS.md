@@ -36,6 +36,13 @@ Go 版仍是正式版**：这里不做"两边都改、互为备份"的开发。
    `aluka-bytecode` 的 `FORMAT_VERSION`，否则旧磁盘缓存被误读。Rust 侧格式与
    Go 侧 `ALUKABC1` 是两个独立命名空间（Rust 自 `FORMAT_VERSION = 1` 起），
    但**读 Go 产物时按 Go 的版本号（当前 30）解析**，不要混。
+7. **禁止 Fat `lib.rs`，强制单元拆分（Modular Units Discipline）**。
+   - 严禁将业务实现（如解释循环、数据结构方法、代码生成逻辑）全部塞入单个 `lib.rs`。
+   - `lib.rs` 定位为**公共 API 门面与声明入口**（Facade），仅负责 `mod <submodule>;`
+     声明和 `pub use <submodule>::*;` 重导出，保持行数清爽（原则上不超过 100 行）。
+   - 各 crate 内部业务必须按单一职责原则划分到具体的子模块单元（如 `value.rs`,
+     `heap.rs`, `ops.rs`, `property.rs`, `call.rs`, `interpreter.rs`, `scope.rs`, `codegen.rs` 等）。
+   - 单个源码文件建议控制在 500 行以内，复杂逻辑（如核心解释循环调度）原则上不得超过 800 行。
 
 ---
 
@@ -111,6 +118,8 @@ JIT 会信任 verifier 的结论来省略运行期检查，所以 verifier 强�
 - **穷尽 `match`，不用 `_ =>` 兜底**。尤其是 `Op::stack_effect` 这类元数据函数：
   加新指令时必须能在编译期被"缺一支"卡住。
 - **`#[must_use]`** 标注返回 `Result`/新值的纯函数，与现有 crate 保持一致。
+- **按职责拆分独立源文件（禁止滥用 lib.rs）**：每个概念域独立成 `.rs` 文件，公开 API 在 `lib.rs`
+  中以门面形式导出。测试文件集中在 `tests/` 目录或伴生子模块，杜绝千行级大单体文件。
 
 ---
 

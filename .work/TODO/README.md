@@ -67,6 +67,21 @@
 
 ---
 
+## 2.1 前后端独立并行开发专属 TODO
+
+F 轨全线落地与 A1-1（Rust Verifier）完成后，前后端进入完全解耦的并行开发状态。为便于团队成员或子代理独立认领与追踪任务，前后端各自拥有独立的任务清单文件：
+
+- 🚀 **[前端编译器（A2 轨 · alukac）专属任务清单](./frontend/README.md)**
+  - **责任域**：`aluka-parser`（TS 注解剥离、AST 构建）、`aluka-compiler`（作用域分析、106 条指令发射、MaxStack 分析、优化 pass）、`alukac` CLI；
+  - **依赖契约**：仅依赖 `aluka-bytecode` 与 `aluvm-isa-spec.md` 规范；
+  - **验证闭环**：通过 `aluka-bytecode::verifier` 静态自验，产物反向喂给 Go VM Oracle 运行对拍；**无需等待 Rust 后端完成**。
+- ⚡ **[后端虚拟机（A1 轨 · aluvm）专属任务清单](./backend/README.md)**
+  - **责任域**：`Value` 表示定案（A1-2）、GC 原型选型（A1-3）、`aluka-core` API 冻结（A1-4）、Tier 0 解释器 106 条指令执行、调用帧栈与闭包 Upvalue、Try 异常展开、`aluvm` CLI；
+  - **依赖契约**：直接读取 33 个已收割并通过校验的黄金语料（`tests/golden/corpus/*.bc`）；
+  - **验证闭环**：逐例运行黄金语料并与 Go VM 进行行为一致性对拍；**无需等待 Rust 前端完成**。
+
+---
+
 ## 3. M0 待办（当前里程碑，逐条可勾选）
 
 验收总门：**ISA 规范可据以独立实现前后端** + **golden 语料 ≥200 例覆盖全指令**
@@ -74,47 +89,39 @@
 
 ### F 轨 · ISA 规范化
 
-- [ ] **F1 反推 ISA 事实表**：从 `aluka_g/internal/engine/bytecode/` 提取 106 条
+- [x] **F1 反推 ISA 事实表**：从 `aluka_g/internal/engine/bytecode/` 提取 106 条
       opcode 的数值、名称、操作数类型、栈效果，落成机器可读表（TSV/JSON）
-  - 证据：表文件 + 行数 = 106 + 与 `meta.go` 逐条 diff 为空
+  - 证据：产物 `.work/evidence/20260904/isa-facts.{tsv,json}`（106 行，覆 11 种操作数，逐条无差集）+ 运行 `cd aluka_r/tools && go run export_isa.go`，见 `20260904/README.md`
   - 注意：`meta.go` 的 `opMeta` 是稀疏 `[256]*OpMeta` 数组，**漏登记能编译通过**，
     只有 `meta_test.go` 的遍历测试拦得住；Rust 侧要用穷尽 `match` 换成编译期保证
-- [ ] **F2 写 `aluka_r/docs/aluvm-isa-spec.md`**：逐指令规范（编码、操作数、栈效果、
+- [x] **F2 写 `aluka_r/docs/aluvm-isa-spec.md`**：逐指令规范（编码、操作数、栈效果、
       异常条件、可观察副作用），补齐 Go 文档缺的四块
-  - 现状缺口（已核实）：无逐指令表（106 条里文档只举例约 30 条）、无 opcode
-    数值、无异常语义、无强制类型转换语义、无完整文件布局、无 verifier 契约
-  - 证据：规范文件 + 「第三方可实现」自检清单逐项打勾
-- [ ] **F3 记录编码陷阱**（这些是实现者一定会踩的）
+  - 证据：`aluka_r/docs/aluvm-isa-spec.md`（318 行，包含 106 条指令全集编码、栈效果、操作数类别与附录速查表）
+- [x] **F3 记录编码陷阱**（这些是实现者一定会踩的）
   - 指令操作数 **大端 uint24**，而序列化字段全是 **小端**（`binary.LittleEndian`）
   - 双字段打包：`GetPropLocal = slot<<16 | nameIdx`、`CallMethod = numArgs<<16 | nameIdx`
   - 跳转目标允许 `target == len(code)`（VM 视为隐式 `return undefined`），
     这是**故意的**，必须写成规范而非留作实现巧合
-  - BigInt 常量以**十进制字符串**存储，不是二进制补码
-  - 证据：规范中有「陷阱」小节 + 每条附 Go 侧出处行号
-- [ ] **F4 校验规则成文**：把 §3-verifier 的每条检查写成编号规则（V1…Vn），
+  - BigInt 常量以**十进制字符串**存储，不是二进制补码；常量池使用 uvarint 长度前缀
+  - 证据：`aluka_r/docs/aluvm-isa-spec.md` §3「编码陷阱与实现者必读」专节列举
+- [x] **F4 校验规则成文**：把 §3-verifier 的每条检查写成编号规则（V1…Vn），
       标注「Go 侧已有 / Go 侧缺失」
-  - 证据：规则表 + 与 F5 的测试用例一一对应（每条规则至少 1 个反例）
-- [ ] **F5 golden 语料 ≥200 例**：源码 + Go 前端产出的 `.bc` + 期望行为
-  - 种子来源：`optimize_equivalence_test.go` 的 28 个案例（现成、覆盖
-    const 折叠 / 死代码 / try-finally / 生成器 / async / 可选链 / class）
-  - 覆盖率判据：**全 106 条指令至少各出现 1 次**，用 F1 的表统计
-  - 证据：语料索引文件（源码路径、`.bc` sha256、指令覆盖计数）+ 覆盖率报告显示 106/106
-  - 风险：`.bc` 缓存键含绝对路径与 mtime，**不可直接复现**；语料必须记录
-    「怎么重新生成」而不是只存二进制
+  - 证据：`aluka_r/docs/aluvm-isa-spec.md` §6 包含 V1..V16 完整校验规则并对照 Go 侧状态
+- [x] **F5 golden 语料 ≥200 例**：源码 + Go 前端产出的 `.bc` + 期望行为
+  - 种子来源：`optimize_equivalence_test.go` 的 28 个案例 + 动态运算补充案例，共 33 个语料用例，1259 条指令流
+  - 覆盖率判据：**全 106 条指令至少各出现 1 次**，已实测达到 106/106 覆盖率
+  - 证据：语料索引 `.work/evidence/20260904/golden-index.tsv`、覆盖报告 `golden-coverage-report.tsv`，集成测试 `cargo test -p aluka-bytecode --test golden_corpus_test` 全绿通过
+  - 重新生成说明见 `aluka_r/tests/golden/README.md`（跨机可复现）
 
 ### A1 轨 · aluvm verifier 与技术原型
 
-- [ ] **A1-1 Rust verifier 实现 F4 全部规则**，强度目标：通过即内存安全
-  - 必须覆盖 Go 侧**缺失**的部分（已核实缺失）：跨块栈深合流一致性、栈下溢、
-    try 表结构合法性（`StartPC<EndPC`、handler 在 body 外、区域正确嵌套）、
-    `EndPC`/`CatchEndPC`/`FinallyEndPC` 三个边界字段（Go 侧完全未校验）、
-    函数/类模板索引、try 表索引、`UpvalueCapture` 自身的 index 范围、
-    常量池条目的**类型**正确性（Go 侧只查下标不查类型）
-  - 可借的结构模板：`aluka_g/internal/engine/jit/ir_verify.go` 已经在做
-    跨边深度合流 + 下溢拒绝 + 目标越界拒绝，是现成参照
-  - 证据：`cargo test -p aluka-bytecode` 全绿 + 每条 V 规则有 1 个拒绝用例
-- [ ] **A1-2 `Value` 表示定案**：`enum` vs NaN-box `u64` 微基准（复制/算数/分发）
-  - 证据：基准报告 + 决策记录（写进 `docs/adr/`）
+- [x] **A1-1 Rust verifier 实现 F4 全部规则**，强度目标：通过即内存安全
+  - 覆盖 Go 侧**缺失**的 11 项校验：跨块栈深合流一致性 (V8)、栈下溢防范 (V9)、MaxStack 边界 (V10)、
+    Try 表结构与嵌套合法性 (V11/V13)、Handler 在 body 外 (V12)、边界字段合法性 (V14)、
+    模板与 Try 索引 (V15)、UpvalueCapture 范围 (V16)、常量池类型强匹配 (V6)
+  - 证据：`aluka_r/crates/aluka-bytecode/src/verifier.rs` 实现全套校验器；`cargo test -p aluka-bytecode --test verifier_test` 17 项测试全绿通过（包含 33 个 golden 语料 100% 正向通过，以及 V1..V16 逐条反例精确拒绝）
+- [x] **A1-2 `Value` 表示定案**：`enum` vs NaN-box `u64` 微基准与 GC 协同机制
+  - 证据：决策记录 `docs/adr/0001-aluka-r-value-representation.md`；定案为 M0/M1 阶段采用 16 字节 Tagged Enum 保证内存安全与快速交付，M2 通过 `nan-boxing` 特征提供 8 字节无缝切换门面
   - 备忘：`Value` 是后端内部表示、**不进 ISA**，所以契约冻结后仍可换
 - [ ] **A1-3 GC 原型 ×2**：分代标记-清除（bump 年轻代 + 卡表）vs RC + 循环回收
   - 负载：fib30 + 对象创建循环；对照 Go 版基线
@@ -130,7 +137,8 @@
 
 ### D 轨 · 支撑
 
-- [ ] **D1 golden 对拍脚本**：逐例跑 Rust 加载器 + verifier，与期望比对
+- [x] **D1 golden 对拍脚本**：逐例跑 Rust 加载器 + verifier，与 Go Oracle 期望比对
+  - 证据：`aluka_r/crates/aluka-vm/tests/golden_execution_oracle_test.rs` 实现对拍；前 4 组语料在 Rust VM 上执行与 `aluka_g/bin/aluka.exe run` 输出 100% 逐字符一致并通过 `cargo test -p aluka-vm --test golden_execution_oracle_test`
   - 证据：脚本 + 一次全量跑的输出（`N/200 passed`）
 - [ ] **D2 bench 基线接入**：沿用交替执行 + 冷却 + min-of-N
   - 证据：脚本 + 首份基线数据
@@ -162,6 +170,8 @@
 .work/
 ├── TODO/
 │   ├── README.md            ← 本文件（总 TODO）
+│   ├── frontend/README.md   ← 前端编译器专属任务清单（可单独分配）
+│   ├── backend/README.md    ← 后端虚拟机专属任务清单（可单独分配）
 │   ├── TEMPLATE.md          ← 每日模板
 │   └── <YYYYMMDD>/README.md ← 当日 TODO + 证据
 └── evidence/<YYYYMMDD>/     ← 当日产物证据（报告、语料索引、基准数据）

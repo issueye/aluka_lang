@@ -66,7 +66,8 @@ impl Runtime {
     pub fn evaluate(&mut self, program: &Program) -> Result<Value, RuntimeError> {
         let unit = compile(program);
         let mut vm = Vm::new(unit.locals);
-        Ok(vm.run(&unit.code)?)
+        let res = vm.run(&unit.code)?;
+        Ok(res.into())
     }
 
     /// 内置模块注册表（迁移期兼作进度看板）。
