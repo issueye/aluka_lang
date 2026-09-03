@@ -38,6 +38,11 @@ pub enum ValueKind {
 /// 数值内联在值里（不经堆），引用类型持有指向堆对象的 [`ObjectRef`]。
 /// 该类型是 `Copy`：复制值不涉及分配，也不改变对象的存活状态——存活只由
 /// [`crate::gc`] 的根集可达性决定。
+///
+/// **故意不派生 `PartialEq`**：Rust 的结构相等与 JS 相等语义处处冲突
+/// （`NaN !== NaN`、`-0 === 0`、`0.1 + 0.2 !== 0.3`，对象比引用、原始值比内容）。
+/// 派生一个"看着像相等"的实现会造出整类静默错判。判类型用 [`Value::kind`]，
+/// 比大小走 ECMAScript 抽象操作。
 #[derive(Debug, Clone, Copy)]
 pub enum Value {
     /// `undefined`
