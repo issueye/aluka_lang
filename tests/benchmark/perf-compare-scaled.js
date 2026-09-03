@@ -90,6 +90,17 @@ bench("methodCall-30M", () => {
   return s;
 });
 
+bench("elemRead-6M", () => {
+  // 模块作用域数组 + 下标读 + 属性读（trace tier 的 GetElem/对象 upvalue 路径）
+  const nums = []; for (let i = 0; i < 2000000; i++) nums.push(i);
+  const objs = []; for (let i = 0; i < 2000000; i++) objs.push({ v: i });
+  let s1 = 0;
+  for (let i = 0; i < 2000000; i++) s1 += nums[i];
+  let s2 = 0;
+  for (let i = 0; i < 2000000; i++) s2 += objs[i].v;
+  return s1 + s2;
+});
+
 bench("gcPressure-3M", () => {
   let keep = [];
   for (let i = 0; i < 3000000; i++) {
