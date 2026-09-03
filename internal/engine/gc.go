@@ -121,6 +121,19 @@ func startFreeOSLoop() {
 // freeOSLoopOnce 保证后台 goroutine 只启动一次。
 var freeOSLoopOnce sync.Once
 
+// resetSweepAtLocked 按当前存活规模重设自动清扫阈值（摊还 O(1)）。
+// 调用方须持有 mu。清扫是 O(表长) 全扫，阈值必须随存活规模增长才能把成本
+// 摊还到分配次数上；固定步长在存活数远超步长时退化为"每几次分配就全表扫
+// 一遍"（监控模式下 60 万存活对象实测慢 20 倍）。任何会把表清小的路径
+// （周期清扫、显式 GC）都必须调用它，否则下次自动清扫要等表重新长到旧阈值。
+func (h *jsHeap) resetSweepAtLocked() {
+	if next := 2 * len(h.objects); next > gcSweepEvery {
+		h.sweepAt = next
+	} else {
+		h.sweepAt = gcSweepEvery
+	}
+}
+
 // sweepLocked 移除已由 Go GC 回收（weak.Value()==nil）的弱引用条目。
 // 调用方须持有 mu。同时清理所有已注册 WeakMap（builtin 包关联存储）的
 // 失效条目，避免 JS 对象死亡后 Go 资源条目残留。
@@ -130,14 +143,7 @@ func (h *jsHeap) sweepLocked() {
 			delete(h.objects, w)
 		}
 	}
-	// 下次清扫阈值设为存活数的两倍：清扫是 O(表长) 全扫，阈值必须随存活
-	// 规模增长才能把成本摊还到分配次数上。固定步长在存活数远超步长时退化
-	// 为"每几次分配就全表扫一遍"（监控模式下 60 万存活对象实测慢 20 倍）。
-	if next := 2 * len(h.objects); next > gcSweepEvery {
-		h.sweepAt = next
-	} else {
-		h.sweepAt = gcSweepEvery
-	}
+	h.resetSweepAtLocked()
 	sweepAllWeakMaps()
 }
 
@@ -178,6 +184,10 @@ func GC(roots []Value) HeapStats {
 				live++
 			}
 		}
+		// 显式 GC 同样会清小表，必须按存活规模重设自动清扫阈值；否则
+		// sweepAt 停留在旧的大值，后续分配要等表重新长到旧阈值才触发
+		// 周期清扫，死条目在此期间持续堆积。
+		jsHeapGlobal.resetSweepAtLocked()
 	}
 	jsHeapGlobal.mu.Unlock()
 	alloc := allocCount.Load()
