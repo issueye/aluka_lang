@@ -34,13 +34,16 @@ var arrayRootShape = rootShape.transition("length")
 // NewArray 创建数组对象。elems 长度 ≤3 时拷贝进 objectValue.small 的尾部
 // （槽位 0 归 length，1..3 归元素），省去独立 elems 分配；更长时另开堆数组。
 // 新建数组无洞：present 保持 nil（全 present 的紧凑表示）。
+//
+// length 的权威值恒为 len(a.elems)：所有读路径（Get/GetOwnSlot/描述符/迭代）
+// 都现场计算，从不读 slots[0]——投毒实验（槽位写 "POISON"）经全量测试与五套
+// conformance 验证无读者。因此变更长度的路径不再回写槽位；shape 里的 "length"
+// 条目仅为 own-key 枚举保留。slots 容量截到 1：新增 own 属性经 append 迁移到
+// 独立数组，不会覆写借给 elems 的 small[1:]。
 func NewArray(elems []Value) *ArrayValue {
 	a := &ArrayValue{lengthWritable: true}
 	a.shape = arrayRootShape
-	// slots 容量截到 1：后续新增 own 属性经 append 迁移到独立数组，
-	// 不会覆写借给 elems 的 small[1:]。
 	a.slots = a.small[0:1:1]
-	a.slots[0] = IntValue(len(elems))
 	if n := len(elems); n <= len(a.small)-1 {
 		copy(a.small[1:], elems)
 		a.elems = a.small[1 : 1+n : len(a.small)]
@@ -60,7 +63,6 @@ func NewArrayHoles(n int) *ArrayValue {
 	a := &ArrayValue{lengthWritable: true}
 	a.shape = arrayRootShape
 	a.slots = a.small[0:1:1]
-	a.slots[0] = IntValue(n)
 	a.elems = make([]Value, n)
 	for i := range a.elems {
 		a.elems[i] = Undefined()
@@ -169,7 +171,6 @@ func (a *ArrayValue) Set(key string, value Value) error {
 				a.present = append(a.present, false)
 			}
 		}
-		a.objectValue.setSlot("length", IntValue(n))
 		return nil
 	}
 	if idx, ok := arrayIndex(key); ok {
@@ -191,7 +192,6 @@ func (a *ArrayValue) Set(key string, value Value) error {
 		if a.present != nil {
 			a.present[idx] = true
 		}
-		a.objectValue.setSlot("length", IntValue(len(a.elems)))
 		return nil
 	}
 	return a.objectValue.Set(key, value)
@@ -343,7 +343,6 @@ func (a *ArrayValue) Append(v Value) {
 	if a.present != nil {
 		a.present = append(a.present, true)
 	}
-	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
 // AppendValues appends vs in order and synchronizes length once.
@@ -370,7 +369,6 @@ func (a *ArrayValue) AppendValues(vs []Value) {
 			a.present[oldLen+i] = true
 		}
 	}
-	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
 // SetIndex writes a value to a numeric array index, growing the slice with
@@ -397,7 +395,6 @@ func (a *ArrayValue) SetIndex(idx int, value Value) {
 	if a.present != nil {
 		a.present[idx] = true
 	}
-	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
 // AppendNumberRange appends count consecutive Number values starting at start
@@ -423,7 +420,6 @@ func (a *ArrayValue) AppendNumberRange(start float64, count int) {
 			a.present[oldLen+i] = true
 		}
 	}
-	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
 // WriteNumberRange fills elems[start:start+count] with count consecutive
@@ -461,5 +457,4 @@ func (a *ArrayValue) WriteNumberRange(start int, valueStart float64, count int) 
 			a.present[start+i] = true
 		}
 	}
-	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }

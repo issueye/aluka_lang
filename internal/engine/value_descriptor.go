@@ -403,7 +403,6 @@ func defineArrayOwnProperty(a *ArrayValue, key string, d Descriptor) error {
 		}
 		// attrs 收敛：全默认仅移除条目；length 不在 map 中，索引约束才物化 map。
 		a.setAttr(key, eff)
-		a.objectValue.setSlot("length", IntValue(len(a.elems)))
 		return nil
 	}
 
@@ -442,7 +441,6 @@ func defineArrayOwnProperty(a *ArrayValue, key string, d Descriptor) error {
 				a.present = append(a.present, false)
 			}
 		}
-		a.objectValue.setSlot("length", IntValue(n))
 	}
 	if d.HasWritable {
 		a.lengthWritable = d.Writable
