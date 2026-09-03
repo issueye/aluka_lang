@@ -1,0 +1,197 @@
+//! `node:*` 内置模块注册表。
+//!
+//! Go 版有 59 个内置模块（`internal/builtin/registry.go`）。迁移期这里先
+//! 提供注册表骨架：模块名 → 工厂函数，工厂可以是 Rust 原生实现，也可以
+//! 在过渡阶段经 FFI 转发到 Go 实现（见
+//! `docs/rust-reimplementation-devplan.md` 轨道 B 的分批排序）。
+//!
+//! # 名称规范
+//!
+//! 注册表里存**不带前缀**的名字（`fs`、`path`），`node:` 前缀在查询时剥离，
+//! 这样 `require("fs")` 与 `import "node:fs"` 命中同一条目。
+
+use std::collections::BTreeMap;
+
+/// 内置模块尚未实现时的占位错误。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotImplemented {
+    /// 模块名
+    pub module: String,
+}
+
+impl std::fmt::Display for NotImplemented {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "builtin module '{}' is not implemented yet", self.module)
+    }
+}
+
+impl std::error::Error for NotImplemented {}
+
+/// 内置模块注册表。
+#[derive(Debug, Default)]
+pub struct Registry {
+    modules: BTreeMap<String, ModuleStatus>,
+}
+
+/// 一个内置模块的实现状态，用于迁移期的进度追踪。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleStatus {
+    /// 已有 Rust 原生实现
+    Native,
+    /// 迁移期经 FFI 转发到 Go 实现
+    ForeignBridge,
+    /// 仅登记名字，尚无实现
+    Planned,
+}
+
+impl Registry {
+    /// 创建空注册表。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 登记 Go 版全部内置模块名，初始状态为 [`ModuleStatus::Planned`]。
+    ///
+    /// 迁移过程中逐个改为 [`ModuleStatus::ForeignBridge`] 再到
+    /// [`ModuleStatus::Native`]，注册表因此同时是进度看板。
+    #[must_use]
+    pub fn with_planned_modules() -> Self {
+        let mut registry = Self::new();
+        for name in PLANNED_MODULES {
+            registry.register(name, ModuleStatus::Planned);
+        }
+        registry
+    }
+
+    /// 登记（或覆盖）一个模块的状态。
+    pub fn register(&mut self, name: &str, status: ModuleStatus) {
+        self.modules.insert(name.to_owned(), status);
+    }
+
+    /// 查询模块状态；自动剥离 `node:` 前缀。
+    #[must_use]
+    pub fn status(&self, specifier: &str) -> Option<ModuleStatus> {
+        let name = specifier.strip_prefix("node:").unwrap_or(specifier);
+        self.modules.get(name).copied()
+    }
+
+    /// 已登记的模块数量。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.modules.len()
+    }
+
+    /// 注册表是否为空。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.modules.is_empty()
+    }
+
+    /// 统计处于某状态的模块数（迁移进度）。
+    #[must_use]
+    pub fn count(&self, status: ModuleStatus) -> usize {
+        self.modules
+            .values()
+            .filter(|current| **current == status)
+            .count()
+    }
+}
+
+/// Go 版 `internal/builtin/registry.go` 登记的内置模块全集。
+///
+/// 顺序与 Go 版一致，便于逐条核对迁移进度。
+pub const PLANNED_MODULES: &[&str] = &[
+    "path",
+    "path/posix",
+    "path/win32",
+    "os",
+    "url",
+    "util",
+    "util/types",
+    "events",
+    "diagnostics_channel",
+    "async_hooks",
+    "fs",
+    "fs/promises",
+    "assert",
+    "assert/strict",
+    "constants",
+    "crypto",
+    "stream",
+    "stream/web",
+    "stream/promises",
+    "stream/consumers",
+    "querystring",
+    "string_decoder",
+    "http",
+    "https",
+    "net",
+    "tls",
+    "dns",
+    "dns/promises",
+    "zlib",
+    "perf_hooks",
+    "timers",
+    "timers/promises",
+    "v8",
+    "vm",
+    "inspector",
+    "inspector/promises",
+    "dgram",
+    "http2",
+    "cluster",
+    "trace_events",
+    "readline",
+    "readline/promises",
+    "repl",
+    "child_process",
+    "worker_threads",
+    "module",
+    "buffer",
+    "tty",
+    "sqlite",
+    "domain",
+    "punycode",
+    "wasi",
+    "process",
+    "console",
+    "test",
+    "test/reporters",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn planned_registry_covers_the_go_module_set() {
+        let registry = Registry::with_planned_modules();
+        assert_eq!(registry.len(), PLANNED_MODULES.len());
+        assert_eq!(registry.count(ModuleStatus::Planned), PLANNED_MODULES.len());
+        assert_eq!(registry.count(ModuleStatus::Native), 0);
+    }
+
+    #[test]
+    fn status_lookup_strips_the_node_prefix() {
+        let registry = Registry::with_planned_modules();
+        assert_eq!(registry.status("fs"), Some(ModuleStatus::Planned));
+        assert_eq!(registry.status("node:fs"), Some(ModuleStatus::Planned));
+        assert_eq!(
+            registry.status("node:fs/promises"),
+            Some(ModuleStatus::Planned)
+        );
+        assert_eq!(registry.status("express"), None);
+    }
+
+    #[test]
+    fn register_promotes_a_module_through_migration_states() {
+        let mut registry = Registry::with_planned_modules();
+        registry.register("fs", ModuleStatus::ForeignBridge);
+        assert_eq!(registry.status("fs"), Some(ModuleStatus::ForeignBridge));
+
+        registry.register("fs", ModuleStatus::Native);
+        assert_eq!(registry.status("fs"), Some(ModuleStatus::Native));
+        assert_eq!(registry.count(ModuleStatus::Native), 1);
+    }
+}

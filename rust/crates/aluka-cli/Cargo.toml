@@ -1,0 +1,19 @@
+[package]
+name = "aluka-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "aluka 命令行入口：run / repl / build 等子命令的参数解析与分派。"
+
+[[bin]]
+name = "aluka"
+path = "src/main.rs"
+
+[dependencies]
+aluka-runtime = { workspace = true }
+aluka-builtins = { workspace = true }
+
+[lints]
+workspace = true

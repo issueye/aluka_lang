@@ -1,0 +1,16 @@
+[package]
+name = "aluka-vm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tier 0 字节码虚拟机：帧、操作数栈、内联缓存、异常与调用。"
+
+[dependencies]
+aluka-core = { workspace = true }
+aluka-bytecode = { workspace = true }
+aluka-compiler = { workspace = true }
+
+[lints]
+workspace = true
