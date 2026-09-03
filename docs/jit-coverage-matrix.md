@@ -51,6 +51,13 @@
 | `OpTraceExit` | trace 语义出口（exitID/resumePC） | — | ✓ | ✓ | `TestTraceSupportsMultiplePreciseDeoptExits`、`TestJITTraceRestoresTwoDistinctDeoptExits` |
 | `OpGuardNoopCall` | noop 调用身份 guard | — | ✓ | ✓（融合） | `TestJITTraceGuardedNoopCallDeoptsOnCalleeChange` |
 | `OpGuardMethodGet` | `return this.x` getter guard | — | ✓ | ✓（融合） | `TestJITTraceGuardedTrivialMethodGetter` |
+| `OpLoadUpvalueNum` | Number 捕获单元读（入口缓存） | — | ✓ | ✓（帧内 float64 槽位） | `TestTraceUpvalueRoundTrip`、`TestTraceUpvalueNativeLowering`、`TestTraceUpvalueNonNumberEntryGuard` |
+| `OpStoreUpvalueNum` | Number 捕获单元写（两阶段提交） | — | ✓ | ✓（Go 两阶段写回） | `TestTraceUpvalueRoundTrip`、`TestTraceUpvalueCommitFailureLeavesNoPartialState`、`TestTraceUpvalueBudgetYieldCommits` |
+
+upvalue 两个 opcode 的准入前提（每个触碰的单元都有 guard、单元持 Number、开放单元不与被
+追踪帧的局部别名、单元身份跨执行稳定）由 `TestTraceUpvalueUnguardedRejected`、
+`TestTraceUpvalueDuplicateGuardRejected` 与 jitdiff 固定用例 -92..-98 覆盖；bridge 侧的
+别名/身份复查见 `internal/engine/interpreter/jit_trace_upvalue.go`。
 
 全部 opcode 均被 verifier 覆盖（栈深/合流/跳转目标检查），verifier 拒绝测试见
 `TestVerifyRejectsNonEmptyTraceExitStack`、`TestVerifyRejectsLogicalKeepBranchWithMismatchedJoinDepth`、
@@ -186,6 +193,8 @@ guard 失败被记录、Auto 不产生 verify 失败）。审计后矩阵不存�
 | jitdiff exception exit 差分与 artifact 保存/重放 | 固定用例 -18（`TestEventLogFixedCases`）、`TestArtifactRoundTripExceptionExit`（jitdiff） |
 | R1-5 副作用两阶段提交协议（prepare/validate/commit；validate-all + 原值快照 → store-all → 失败回滚；提交点只有语义 exit 与预算 yield） | jit 包 `TestTraceCommitProtocolAppliesWritesExactlyOnce`（跨 3 个 budget slice 提交恰一次、恢复 PC 精确）、`TestTraceGuardFailureAfterCommittedSliceNoPartialWrite`（已提交 slice 后 guard 失败零写入、locals 停在最后提交点） |
 | verifier 拒绝副作用协议违规（`OpSetProp`/`OpGuardNoopCall`/`OpGuardMethodGet` 出现在非 trace 程序；trace guard 索引越界；伪造 deopt map 后走函数返回） | jit 包 `TestVerifyRejectsSideEffectsWithoutTraceProtocol`（6 类拒绝 + 合法对照） |
+| upvalue 副作用纳入同一两阶段提交（脏单元与脏属性同批 validate/store/回滚；提交点只有语义 exit 与预算 yield） | jit 包 `TestTraceUpvalueRoundTrip`（读写往返、只读单元零写回、提交恰一次）、`TestTraceUpvalueCommitFailureLeavesNoPartialState`（写拒绝后单元与 locals 均未变）、`TestTraceUpvalueBudgetYieldCommits`（每次 yield 发布一致的 (i, acc) 对） |
+| verifier 拒绝 upvalue 协议违规（`OpLoadUpvalueNum`/`OpStoreUpvalueNum` 出现在非 trace 程序；引用不存在的单元） | jit 包 `TestTraceUpvalueVerifierRejectsOutsideTrace`、`TestTraceUpvalueVerifierRejectsMissingCell` |
 | Native 属性写回协议（全量 validate 后 store/回滚；store 失败走干净 Yielded；verify 快照恢复原子且不重复 safepoint 回调） | `TestAutoJITNativePropertyWriteTrace`、`TestNativePropertyWriteVerifyRestoresQuickResultOnMismatch`、`TestNativeCommitValidatesAllWritesBeforeMutation`、`TestNativeRestoreValidatesAllPropertiesBeforeMutation`、amd64 `TestNativePropertyWriteVerifyDoesNotDoublePollSafepoint` |
 | 属性写提交先于异常（deferred 写先 commit，再把原始值移入 PendingException） | interpreter 包 `TestDeoptPropertyWriteCommitBeforeException`（catch 读到 o.a=2）、jitdiff 固定用例 -22（属性写 + throw + finally） |
 | 调用 guard 失败无部分写（noop callee 换成延迟抛错者；guard 在调用前失效；Tier 0 重放后用户调用抛错进同一 catch） | interpreter 包 `TestDeoptCallGuardFailureNoPartialWrite`、jitdiff 固定用例 -19（事件日志含抛错与提交前缀） |

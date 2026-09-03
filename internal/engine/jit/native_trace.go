@@ -66,6 +66,24 @@ func (t *TraceProgram) HasPropertyWrites() bool {
 	return false
 }
 
+// HasSideEffectWrites reports whether the native plan commits any externally
+// visible write (own property or captured upvalue cell) — i.e. whether the
+// verify path must snapshot and restore state around the speculative pass.
+func (t *TraceProgram) HasSideEffectWrites() bool {
+	if t.HasPropertyWrites() {
+		return true
+	}
+	if t == nil || t.program == nil || t.program.nativePlan == nil {
+		return false
+	}
+	for i := range t.program.nativePlan.upvalues {
+		if t.program.nativePlan.upvalues[i].write {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *TraceProgram) Close() error {
 	if !t.HasNative() {
 		return nil
@@ -119,6 +137,14 @@ func (t *TraceProgram) ExecuteNativeBudgetDetailedWithSafepoint(locals []engine.
 		}
 		number, _ := value.Float()
 		setNativeFrameLocal(frame, slot, t.program.NumParams, number)
+	}
+	for i := range plan.upvalues {
+		input := &plan.upvalues[i]
+		number, ok := input.cell.LoadNumber()
+		if !ok {
+			return DeoptExit{}, GuardFailed, 0, nil
+		}
+		frame.Locals[input.frameLocal] = number
 	}
 	propertyObjects := make([]engine.Value, len(plan.properties))
 	for i := range plan.properties {
@@ -187,12 +213,30 @@ func (t *TraceProgram) ExecuteNativeBudgetDetailedWithSafepoint(locals []engine.
 	return exit, Executed, yields, nil
 }
 
+// nativeSideEffectSnapshot captures one externally visible value the verify
+// path must restore: either a Number-valued own property (object+name+guard) or
+// a captured upvalue cell. Exactly one of guard / cell is set.
 type nativePropertySnapshot struct {
 	object   engine.Value
 	name     string
 	guard    *propertyGuard
+	cell     TraceUpvalueCell
 	original float64
 	expected float64
+}
+
+func (s *nativePropertySnapshot) load() (float64, bool) {
+	if s.cell != nil {
+		return s.cell.LoadNumber()
+	}
+	return s.guard.loadNumber(s.object, s.name)
+}
+
+func (s *nativePropertySnapshot) store(number float64) bool {
+	if s.cell != nil {
+		return s.cell.StoreNumber(number)
+	}
+	return s.guard.storeNumber(s.object, s.name, number)
 }
 
 // ExecuteNativeBudgetVerified compares a side-effecting native trace with the
@@ -202,12 +246,12 @@ func (t *TraceProgram) ExecuteNativeBudgetVerified(locals []engine.Value, budget
 }
 
 func (t *TraceProgram) ExecuteNativeBudgetVerifiedWithSafepoint(locals []engine.Value, budget uint32, poll Safepoint) (DeoptExit, ExitReason, uint64, bool, bool, error) {
-	if !t.HasPropertyWrites() {
+	if !t.HasSideEffectWrites() {
 		exit, reason, yields, err := t.ExecuteNativeBudgetDetailedWithSafepoint(locals, budget, poll)
 		return exit, reason, yields, false, true, err
 	}
 	originalLocals := append([]engine.Value(nil), locals...)
-	snapshots, ok := t.snapshotNativePropertyWrites(locals)
+	snapshots, ok := t.snapshotNativeSideEffectWrites(locals)
 	if !ok {
 		return DeoptExit{}, GuardFailed, 0, false, true, nil
 	}
@@ -261,7 +305,7 @@ func (t *TraceProgram) ExecuteNativeBudgetVerifiedWithSafepoint(locals []engine.
 	return DeoptExit{}, GuardFailed, yields, true, false, nil
 }
 
-func (t *TraceProgram) snapshotNativePropertyWrites(locals []engine.Value) ([]nativePropertySnapshot, bool) {
+func (t *TraceProgram) snapshotNativeSideEffectWrites(locals []engine.Value) ([]nativePropertySnapshot, bool) {
 	plan := t.program.nativePlan
 	snapshots := make([]nativePropertySnapshot, 0, len(plan.properties))
 	for i := range plan.properties {
@@ -288,12 +332,23 @@ func (t *TraceProgram) snapshotNativePropertyWrites(locals []engine.Value) ([]na
 			object: object, name: input.name, guard: &input.guard, original: number,
 		})
 	}
+	for i := range plan.upvalues {
+		input := &plan.upvalues[i]
+		if !input.write {
+			continue
+		}
+		number, ok := input.cell.LoadNumber()
+		if !ok {
+			return nil, false
+		}
+		snapshots = append(snapshots, nativePropertySnapshot{cell: input.cell, original: number})
+	}
 	return snapshots, len(snapshots) != 0
 }
 
 func captureNativePropertyValues(snapshots []nativePropertySnapshot, expected bool) bool {
 	for i := range snapshots {
-		number, ok := snapshots[i].guard.loadNumber(snapshots[i].object, snapshots[i].name)
+		number, ok := snapshots[i].load()
 		if !ok {
 			return false
 		}
@@ -311,7 +366,7 @@ func captureNativePropertyValues(snapshots []nativePropertySnapshot, expected bo
 func restoreNativePropertyValues(snapshots []nativePropertySnapshot, expected bool) bool {
 	current := make([]float64, len(snapshots))
 	for i := range snapshots {
-		number, ok := snapshots[i].guard.loadNumber(snapshots[i].object, snapshots[i].name)
+		number, ok := snapshots[i].load()
 		if !ok {
 			return false
 		}
@@ -323,10 +378,10 @@ func restoreNativePropertyValues(snapshots []nativePropertySnapshot, expected bo
 		if expected {
 			value = snapshots[i].expected
 		}
-		if !snapshots[i].guard.storeNumber(snapshots[i].object, snapshots[i].name, value) {
+		if !snapshots[i].store(value) {
 			for k := len(restored) - 1; k >= 0; k-- {
 				j := restored[k]
-				_ = snapshots[j].guard.storeNumber(snapshots[j].object, snapshots[j].name, current[j])
+				_ = snapshots[j].store(current[j])
 			}
 			return false
 		}
@@ -337,7 +392,7 @@ func restoreNativePropertyValues(snapshots []nativePropertySnapshot, expected bo
 
 func matchNativePropertyValues(snapshots []nativePropertySnapshot) bool {
 	for i := range snapshots {
-		number, ok := snapshots[i].guard.loadNumber(snapshots[i].object, snapshots[i].name)
+		number, ok := snapshots[i].load()
 		if !ok || math.Float64bits(number) != math.Float64bits(snapshots[i].expected) {
 			return false
 		}
@@ -387,6 +442,7 @@ func sameTraceValues(a, b []engine.Value) bool {
 func (t *TraceProgram) commitNativeTraceFrame(locals []engine.Value, propertyObjects []engine.Value, frame *jitnative.Frame) (bool, error) {
 	plan := t.program.nativePlan
 	originals := make([]float64, len(plan.properties))
+	upvalueOriginals := make([]float64, len(plan.upvalues))
 	for i := range plan.properties {
 		input := &plan.properties[i]
 		if input.write && frame.Status&(uint64(1)<<input.frameLocal) != 0 {
@@ -397,19 +453,47 @@ func (t *TraceProgram) commitNativeTraceFrame(locals []engine.Value, propertyObj
 			originals[i] = number
 		}
 	}
+	for i := range plan.upvalues {
+		input := &plan.upvalues[i]
+		if input.write && frame.Status&(uint64(1)<<input.frameLocal) != 0 {
+			number, ok := input.cell.LoadNumber()
+			if !ok {
+				return false, nil
+			}
+			upvalueOriginals[i] = number
+		}
+	}
 	var stored []int
+	var storedUpvalues []int
+	rollback := func() {
+		for k := len(storedUpvalues) - 1; k >= 0; k-- {
+			j := storedUpvalues[k]
+			_ = plan.upvalues[j].cell.StoreNumber(upvalueOriginals[j])
+		}
+		for k := len(stored) - 1; k >= 0; k-- {
+			j := stored[k]
+			entry := &plan.properties[j]
+			_ = entry.guard.storeNumber(propertyObjects[j], entry.name, originals[j])
+		}
+	}
 	for i := range plan.properties {
 		input := &plan.properties[i]
 		if input.write && frame.Status&(uint64(1)<<input.frameLocal) != 0 {
 			if !input.guard.storeNumber(propertyObjects[i], input.name, frame.Locals[input.frameLocal]) {
-				for k := len(stored) - 1; k >= 0; k-- {
-					j := stored[k]
-					rollback := &plan.properties[j]
-					_ = rollback.guard.storeNumber(propertyObjects[j], rollback.name, originals[j])
-				}
+				rollback()
 				return false, nil
 			}
 			stored = append(stored, i)
+		}
+	}
+	for i := range plan.upvalues {
+		input := &plan.upvalues[i]
+		if input.write && frame.Status&(uint64(1)<<input.frameLocal) != 0 {
+			if !input.cell.StoreNumber(frame.Locals[input.frameLocal]) {
+				rollback()
+				return false, nil
+			}
+			storedUpvalues = append(storedUpvalues, i)
 		}
 	}
 	for slot, written := range t.written {
@@ -440,6 +524,13 @@ func (t *TraceProgram) nativeTraceInputsMatch(locals []engine.Value, propertyObj
 			return false
 		}
 		number, ok := input.guard.loadNumber(propertyObjects[i], input.name)
+		if !ok || math.Float64bits(number) != math.Float64bits(frame.Locals[input.frameLocal]) {
+			return false
+		}
+	}
+	for i := range plan.upvalues {
+		input := &plan.upvalues[i]
+		number, ok := input.cell.LoadNumber()
 		if !ok || math.Float64bits(number) != math.Float64bits(frame.Locals[input.frameLocal]) {
 			return false
 		}

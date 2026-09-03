@@ -330,7 +330,13 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 			}
 			// R3-7 compile-time candidate filter: reject ranges with try/catch
 			// regions or unsupported opcodes before the full trace compiler run.
-			if scanErr := jit.RejectTraceReason(frame.tmpl, startPC, backedgePC); scanErr != nil {
+			// upvalueGuards is resolved first: it decides which upvalue indices
+			// the scan may admit (an unguardable one still rejects the range).
+			upvalueGuards, upvaluesOK := v.traceUpvalueGuards(frame, startPC, backedgePC)
+			if !upvaluesOK {
+				upvalueGuards = nil
+			}
+			if scanErr := jit.RejectTraceReasonWithUpvalues(frame.tmpl, startPC, backedgePC, upvalueGuards); scanErr != nil {
 				v.recordJITRejection("trace", scanErr)
 				state.rejected = true
 				state.reason = scanErr.Error()
@@ -341,10 +347,11 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 				v.noteAdaptiveFailure()
 				return 0, false, nil
 			}
-			program, err := jit.CompileTraceWithGuards(
+			program, err := jit.CompileTraceWithUpvalues(
 				frame.tmpl, startPC, backedgePC,
 				v.traceNoopCallGuards(frame, startPC, backedgePC),
-				v.traceMethodGuards(frame, startPC, backedgePC))
+				v.traceMethodGuards(frame, startPC, backedgePC),
+				upvalueGuards)
 			if v.jitConfig.Stats {
 				elapsed := uint64(time.Since(compileStart))
 				v.jitStats.TraceCompileNanos += elapsed
@@ -362,10 +369,12 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 				return 0, false, nil
 			}
 			state.program = program
+			state.upvalues = upvalueGuards
 			if v.jitConfig.Stats {
 				v.jitStats.TracesCompiled++
 				v.jitStats.NoopCallSites += uint64(program.GuardedNoopCalls())
 				v.jitStats.MethodCallSites += uint64(program.GuardedMethodCalls())
+				v.jitStats.TraceUpvalueSites += uint64(len(upvalueGuards))
 			}
 			if v.jitConfig.Dump == jit.DumpIR && !state.dumpedIR {
 				fmt.Fprintf(v.jitDumpWriter(), "JIT dump tier=trace\n%s", program.DumpIR())
@@ -415,6 +424,20 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 		return 0, false, nil
 	}
 	locals := v.stack[base:end]
+	// Upvalue traces re-validate their preconditions per execution: the frame
+	// may have been re-entered with different captured cells, and open cells'
+	// slot pointers are rebound whenever the value stack grows.
+	if len(state.upvalues) != 0 &&
+		(!traceUpvalueIdentityMatch(frame, state.upvalues) ||
+			v.traceUpvalueAliasesLocals(frame, state.upvalues, locals)) {
+		frame.jitTraceFailedPC = backedgePC
+		v.noteTraceGuardFailure(state)
+		if v.jitConfig.Stats {
+			v.jitStats.GuardFailures++
+			v.jitStats.TraceUpvalueGuardFailures++
+		}
+		return 0, false, nil
+	}
 	if state.arrayPush != nil {
 		exitPC, reason, err := v.executeArrayPushTrace(state.arrayPush, locals)
 		if err != nil {
@@ -536,7 +559,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 		var expectedExit jit.DeoptExit
 		var expectedReason jit.ExitReason
 		var expectedErr error
-		verifyReadOnly := v.jitConfig.Verify && !state.program.HasPropertyWrites()
+		verifyReadOnly := v.jitConfig.Verify && !state.program.HasSideEffectWrites()
 		if verifyReadOnly {
 			expectedLocals = append([]engine.Value(nil), locals...)
 			expectedExit, expectedReason, expectedErr = state.program.ExecuteBudgetDetailed(expectedLocals, 0)
@@ -548,7 +571,7 @@ func (v *VM) tryQuickTrace(frame *vmFrame, startPC, backedgePC int) (int, bool, 
 		var verifyChecked bool
 		var verifyMatched = true
 		var nativeErr error
-		if v.jitConfig.Verify && state.program.HasPropertyWrites() {
+		if v.jitConfig.Verify && state.program.HasSideEffectWrites() {
 			exit, reason, yields, verifyChecked, verifyMatched, nativeErr =
 				state.program.ExecuteNativeBudgetVerifiedWithSafepoint(
 					locals, v.jitConfig.TraceBudget, v.pollJITSafepoint)

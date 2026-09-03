@@ -45,7 +45,7 @@ import (
 // generated source shapes, the value domain, the event log format or the
 // comparison change; the value is recorded in every failure artifact so a
 // reproduction stays tied to the exact generator that produced the mismatch.
-const Version = "5"
+const Version = "6"
 
 // Params controls generation and execution. It is part of the failure
 // artifact; changing it changes reproducibility, and changes that alter

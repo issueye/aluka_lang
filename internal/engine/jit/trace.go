@@ -29,6 +29,30 @@ type TraceMethodGuard struct {
 	Property    string
 }
 
+// TraceUpvalueCell is a Number-valued captured cell the trace tier may read
+// and write. The interpreter owns the concrete cell (its `*upvalue`); the jit
+// package only ever calls these two methods, so it never depends on the
+// interpreter's closure representation.
+//
+// LoadNumber reports ok=false when the cell currently holds a non-Number (the
+// trace must fall back to Tier 0). StoreNumber reports false when the cell can
+// no longer accept the write. Both are called at trace entry and at commit
+// points only — never per loop iteration — so the interface dispatch is off
+// the hot path.
+type TraceUpvalueCell interface {
+	LoadNumber() (float64, bool)
+	StoreNumber(float64) bool
+}
+
+// TraceUpvalueGuard binds one upvalue index of the traced frame to its cell.
+// The bridge supplies a guard per upvalue index the trace range touches, after
+// checking that no cell aliases a local slot of the traced frame (an aliased
+// open cell would be read per-iteration by Tier 0 but cached by the trace).
+type TraceUpvalueGuard struct {
+	Index int
+	Cell  TraceUpvalueCell
+}
+
 type traceCallGuard struct {
 	sourceLocal int
 	target      engine.Value
@@ -39,6 +63,14 @@ type traceMethodGuard struct {
 	target      engine.Value
 	method      string
 	property    string
+}
+
+// traceUpvalue is the compiled form of a TraceUpvalueGuard: OpLoadUpvalueNum /
+// OpStoreUpvalueNum operands index the program's traceUpvalues slice.
+type traceUpvalue struct {
+	index int
+	cell  TraceUpvalueCell
+	write bool
 }
 
 type DeoptExit struct {
@@ -79,11 +111,30 @@ func CompileTraceWithCallGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC
 }
 
 func CompileTraceWithGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC int, callGuards []TraceCallGuard, methodGuards []TraceMethodGuard) (*TraceProgram, error) {
-	if err := rejectTraceCandidate(tmpl, startPC, backedgePC); err != nil {
+	return CompileTraceWithUpvalues(tmpl, startPC, backedgePC, callGuards, methodGuards, nil)
+}
+
+// CompileTraceWithUpvalues additionally admits OpLoadUpvalue/OpStoreUpvalue in
+// the trace range for every upvalue index covered by upvalueGuards. Indices the
+// range touches without a guard keep rejecting the trace.
+func CompileTraceWithUpvalues(tmpl *bytecode.FuncTemplate, startPC, backedgePC int,
+	callGuards []TraceCallGuard, methodGuards []TraceMethodGuard, upvalueGuards []TraceUpvalueGuard) (*TraceProgram, error) {
+	if err := rejectTraceCandidateWithUpvalues(tmpl, startPC, backedgePC, upvalueGuards); err != nil {
 		return nil, err
 	}
 	p := &Program{NumParams: tmpl.NumParams, NumLocals: tmpl.NumLocals, SelfUpvalue: -1}
 	trace := &TraceProgram{program: p, startPC: startPC, written: make([]bool, tmpl.NumLocals)}
+	upvalueByIndex := make(map[int]int, len(upvalueGuards))
+	for _, guard := range upvalueGuards {
+		if guard.Index < 0 || guard.Index >= len(tmpl.Upvalues) || guard.Cell == nil {
+			return nil, fmt.Errorf("jit: invalid trace upvalue guard")
+		}
+		if _, duplicate := upvalueByIndex[guard.Index]; duplicate {
+			return nil, fmt.Errorf("jit: duplicate trace upvalue guard")
+		}
+		upvalueByIndex[guard.Index] = len(p.traceUpvalues)
+		p.traceUpvalues = append(p.traceUpvalues, traceUpvalue{index: guard.Index, cell: guard.Cell})
+	}
 	guardByPC := make(map[int]TraceCallGuard, len(callGuards))
 	for _, guard := range callGuards {
 		if guard.PC < startPC || guard.PC > backedgePC || guard.PC%bytecode.InstrSize != 0 ||
@@ -162,6 +213,19 @@ func CompileTraceWithGuards(tmpl *bytecode.FuncTemplate, startPC, backedgePC int
 			}
 			trace.written[arg] = true
 			p.Code = append(p.Code, Instr{Op: OpStoreLocal, Operand: arg})
+		case bytecode.OpLoadUpvalue:
+			slot, guarded := upvalueByIndex[int(arg)]
+			if !guarded {
+				return nil, fmt.Errorf("jit: trace unguarded upvalue %d", arg)
+			}
+			p.Code = append(p.Code, Instr{Op: OpLoadUpvalueNum, Operand: uint32(slot)})
+		case bytecode.OpStoreUpvalue:
+			slot, guarded := upvalueByIndex[int(arg)]
+			if !guarded {
+				return nil, fmt.Errorf("jit: trace unguarded upvalue %d", arg)
+			}
+			p.traceUpvalues[slot].write = true
+			p.Code = append(p.Code, Instr{Op: OpStoreUpvalueNum, Operand: uint32(slot)})
 		case bytecode.OpGetPropLocal:
 			slot, nameIdx := int(arg>>16), int(arg&0xFFFF)
 			if slot >= tmpl.NumLocals || nameIdx >= len(tmpl.Constants) || tmpl.Constants[nameIdx].Type() != engine.TypeString {
@@ -423,6 +487,22 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 	for i := 0; i < t.program.NumLocals; i++ {
 		values[i] = fromEngine(locals[i], &objects, &objectCount)
 	}
+	// Upvalue cells are read once at entry into a flat cache; every
+	// OpLoadUpvalueNum/OpStoreUpvalueNum then works on the cache and the writes
+	// are committed with the property writes at exits and budget yields. A cell
+	// holding a non-Number fails the guard here, before any state changed.
+	var upvalueCache [maxQuickSlots]float64
+	var upvalueDirty [maxQuickSlots]bool
+	if len(t.program.traceUpvalues) > len(upvalueCache) {
+		return DeoptExit{}, GuardFailed, nil
+	}
+	for i := range t.program.traceUpvalues {
+		number, ok := t.program.traceUpvalues[i].cell.LoadNumber()
+		if !ok {
+			return DeoptExit{}, GuardFailed, nil
+		}
+		upvalueCache[i] = number
+	}
 	var stackBuf [maxQuickSlots]quickValue
 	stack := stackBuf[:0]
 	push := func(v quickValue) { stack = append(stack, v) }
@@ -459,8 +539,14 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 	// are written back. The store loop snapshots the original values first and
 	// rolls back the already-stored properties if a store fails, so a partial
 	// commit is never observable even on a defensive failure.
+	//
+	// Dirty upvalue cells join the same batch: they are validated in phase 1
+	// (the cell must still hold a Number) and stored in phase 2 with the same
+	// rollback discipline, so an upvalue and a property write can never be
+	// half-committed relative to each other.
 	commitSideEffects := func() bool {
 		originals := make([]float64, len(propertyStates))
+		var upvalueOriginals [maxQuickSlots]float64
 		// Phase 1 must complete for the whole batch before any externally
 		// visible mutation. Otherwise a later invalid property could leave an
 		// earlier property committed while locals remain uncommitted.
@@ -475,21 +561,49 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 			}
 			originals[i] = number
 		}
+		for i := range t.program.traceUpvalues {
+			if !upvalueDirty[i] {
+				continue
+			}
+			number, ok := t.program.traceUpvalues[i].cell.LoadNumber()
+			if !ok {
+				return false
+			}
+			upvalueOriginals[i] = number
+		}
 		var stored []int
+		var storedUpvalues []int
+		rollback := func() {
+			for k := len(storedUpvalues) - 1; k >= 0; k-- {
+				j := storedUpvalues[k]
+				_ = t.program.traceUpvalues[j].cell.StoreNumber(upvalueOriginals[j])
+			}
+			for k := len(stored) - 1; k >= 0; k-- {
+				j := stored[k]
+				entry := &propertyStates[j]
+				_ = entry.guard.storeNumber(entry.object, entry.name, originals[j])
+			}
+		}
 		for i := range propertyStates {
 			state := &propertyStates[i]
 			if !state.dirty {
 				continue
 			}
 			if !state.guard.storeNumber(state.object, state.name, state.value) {
-				for k := len(stored) - 1; k >= 0; k-- {
-					j := stored[k]
-					rollback := &propertyStates[j]
-					_ = rollback.guard.storeNumber(rollback.object, rollback.name, originals[j])
-				}
+				rollback()
 				return false
 			}
 			stored = append(stored, i)
+		}
+		for i := range t.program.traceUpvalues {
+			if !upvalueDirty[i] {
+				continue
+			}
+			if !t.program.traceUpvalues[i].cell.StoreNumber(upvalueCache[i]) {
+				rollback()
+				return false
+			}
+			storedUpvalues = append(storedUpvalues, i)
 		}
 		for i, written := range dirty {
 			if written {
@@ -518,6 +632,15 @@ func (t *TraceProgram) ExecuteBudgetDetailedWithSafepoint(locals []engine.Value,
 		case OpStoreLocal:
 			values[in.Operand] = pop()
 			dirty[in.Operand] = true
+		case OpLoadUpvalueNum:
+			push(numberValue(upvalueCache[in.Operand]))
+		case OpStoreUpvalueNum:
+			value := pop()
+			if value.kind != quickNumber {
+				return DeoptExit{}, GuardFailed, nil
+			}
+			upvalueCache[in.Operand] = value.num
+			upvalueDirty[in.Operand] = true
 		case OpGetProp:
 			object := pop()
 			if object.kind != quickObject || int(object.ref) >= objectCount {
