@@ -16,8 +16,8 @@ docs/           两实现共享的计划、ADR、性能报告
 均相对 `aluka_g/`**（即先 `cd aluka_g`）；`crates/…` 相对 `aluka_r/`。
 
 Rust 侧的重构计划、里程碑与退役门禁见
-[docs/rust-reimplementation-plan.md](../docs/rust-reimplementation-plan.md)、
-[docs/rust-reimplementation-devplan.md](../docs/rust-reimplementation-devplan.md)。
+[../aluka_r/docs/rust-reimplementation-plan.md](../aluka_r/docs/rust-reimplementation-plan.md)、
+[../aluka_r/docs/rust-reimplementation-devplan.md](../aluka_r/docs/rust-reimplementation-devplan.md)。
 终局是 Rust 版取代 Go 版，但**在八项退役门禁全过之前，`aluka_g/` 仍是唯一正式实现**，
 所有功能与修复以 Go 版为准。
 
@@ -279,8 +279,8 @@ Go 与 Rust 两实现共享。
 - [docs/vue-compiler-sfc-merge-notes.md](../docs/vue-compiler-sfc-merge-notes.md) —— official compiler-sfc 安全/功能边界、fixture 升级与合并后观察项
 - [docs/adr/](../docs/adr/) —— 架构决策记录
 - Rust 重构（`aluka_r/`）：
-  - [docs/rust-reimplementation-plan.md](../docs/rust-reimplementation-plan.md) —— 功能全景、alukac/aluvm 架构、阶段路线、Go 版退役门禁
-  - [docs/rust-reimplementation-devplan.md](../docs/rust-reimplementation-devplan.md) —— M0-M7 里程碑、7 条并行轨道、验收指标
+  - [../aluka_r/docs/rust-reimplementation-plan.md](../aluka_r/docs/rust-reimplementation-plan.md) —— 功能全景、alukac/aluvm 架构、阶段路线、Go 版退役门禁
+  - [../aluka_r/docs/rust-reimplementation-devplan.md](../aluka_r/docs/rust-reimplementation-devplan.md) —— M0-M7 里程碑、7 条并行轨道、验收指标
   - [docs/adr/jvm-style-bytecode-architecture.md](../docs/adr/jvm-style-bytecode-architecture.md) —— 字节码升格为 ISA 契约（已采纳）
 - JIT 专项（`docs/`）：
   - [jit-performance-optimization-plan.md](../docs/jit-performance-optimization-plan.md) —— JIT 总体架构与性能优化主文档

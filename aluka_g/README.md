@@ -292,8 +292,8 @@ aluka_g/
 ```
 
 Rust 重构的计划、里程碑与 Go 版退役门禁见
-[docs/rust-reimplementation-plan.md](../docs/rust-reimplementation-plan.md) 与
-[docs/rust-reimplementation-devplan.md](../docs/rust-reimplementation-devplan.md)。
+[../aluka_r/docs/rust-reimplementation-plan.md](../aluka_r/docs/rust-reimplementation-plan.md) 与
+[../aluka_r/docs/rust-reimplementation-devplan.md](../aluka_r/docs/rust-reimplementation-devplan.md)。
 终局是 Rust 版取代 Go 版，但**八项退役门禁全过之前 `aluka_g/` 仍是唯一正式实现**。
 
 ## 开发

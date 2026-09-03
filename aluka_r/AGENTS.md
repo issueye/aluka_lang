@@ -1,7 +1,7 @@
 # AGENTS.md — aluka Rust 重构工作区
 
 > 面向 AI 代码助手（与新人）的工程指南。先读本文，再读 [README.md](./README.md)
-> 与共享计划 [../docs/rust-reimplementation-plan.md](../docs/rust-reimplementation-plan.md)。
+> 与共享计划 [docs/rust-reimplementation-plan.md](docs/rust-reimplementation-plan.md)。
 > 每日待办与证据落在 [../.work/TODO/](../.work/TODO/README.md)，见本文「开发流程」。
 
 `aluka_r/` 是 aluka 的 Rust 实现，与 `aluka_g/`（Go 实现，当前唯一正式产物）平级，
@@ -204,8 +204,8 @@ Rust 重构周期长、跨里程碑，因此**每天的工作都要留下可复�
 ## 进一步阅读
 
 - [README.md](./README.md) —— 工作区总览与现状
-- [../docs/rust-reimplementation-plan.md](../docs/rust-reimplementation-plan.md) —— 功能全景、alukac/aluvm 架构、8 阶段、退役门禁
-- [../docs/rust-reimplementation-devplan.md](../docs/rust-reimplementation-devplan.md) —— M0-M7 里程碑、7 轨道、16 项验收
+- [docs/rust-reimplementation-plan.md](docs/rust-reimplementation-plan.md) —— 功能全景、alukac/aluvm 架构、8 阶段、退役门禁
+- [docs/rust-reimplementation-devplan.md](docs/rust-reimplementation-devplan.md) —— M0-M7 里程碑、7 轨道、16 项验收
 - [../docs/adr/jvm-style-bytecode-architecture.md](../docs/adr/jvm-style-bytecode-architecture.md) —— 字节码升格 ISA 契约（已采纳）
 - [../.work/TODO/README.md](../.work/TODO/README.md) —— 执行视图：当前待办与坑清单
 - Go 侧参照（只读）：[../aluka_g/AGENTS.md](../aluka_g/AGENTS.md)、

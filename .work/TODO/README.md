@@ -1,7 +1,7 @@
 # aluka Rust 重构 · 总 TODO
 
-> **权威计划**：[rust-reimplementation-plan.md](../../docs/rust-reimplementation-plan.md)（架构 / 8 阶段）
-> 与 [rust-reimplementation-devplan.md](../../docs/rust-reimplementation-devplan.md)（M0-M7 / 7 轨道 / 16 项验收）。
+> **权威计划**：[rust-reimplementation-plan.md](../../aluka_r/docs/rust-reimplementation-plan.md)（架构 / 8 阶段）
+> 与 [rust-reimplementation-devplan.md](../../aluka_r/docs/rust-reimplementation-devplan.md)（M0-M7 / 7 轨道 / 16 项验收）。
 > 本文件是**执行视图**：把计划的验收项拆成可勾选待办，每项配一条**可复现的证据**。
 > 计划变了要回头同步这里；这里的勾选不改变计划的验收标准。
 >
@@ -21,7 +21,7 @@
 | devplan 原定 | 本作用域下的做法 | 理由 |
 |---|---|---|
 | Go 版 `ValidateModule` 强化到"通过即安全" | **只在 Rust 侧实现**，且从第一天就是完整强度 | 不改 Go 源码；Rust 加载器成为唯一安全边界 |
-| `docs/bytecode-spec.md` 提升为规范 | **新写** `docs/aluvm-isa-spec.md` | 原文件是 Go 实现说明且被 AGENTS.md 引用，就地改写会混淆两种身份 |
+| `docs/bytecode-spec.md` 提升为规范 | **新写** `aluka_r/docs/aluvm-isa-spec.md` | 原文件是 Go 实现说明且被 AGENTS.md 引用，就地改写会混淆两种身份 |
 | golden 语料由 Go 前端产出 | **运行** Go 二进制收割 `.bc`，不改其源码 | `.aluka-cache/*.bc` 就是 `ALUKABC1` 序列化模块 |
 
 代价要说明：Go 版仍会加载未校验的字节码（`bc_cache.load` 拿到 `Deserialize` 结果
@@ -79,7 +79,7 @@
   - 证据：表文件 + 行数 = 106 + 与 `meta.go` 逐条 diff 为空
   - 注意：`meta.go` 的 `opMeta` 是稀疏 `[256]*OpMeta` 数组，**漏登记能编译通过**，
     只有 `meta_test.go` 的遍历测试拦得住；Rust 侧要用穷尽 `match` 换成编译期保证
-- [ ] **F2 写 `docs/aluvm-isa-spec.md`**：逐指令规范（编码、操作数、栈效果、
+- [ ] **F2 写 `aluka_r/docs/aluvm-isa-spec.md`**：逐指令规范（编码、操作数、栈效果、
       异常条件、可观察副作用），补齐 Go 文档缺的四块
   - 现状缺口（已核实）：无逐指令表（106 条里文档只举例约 30 条）、无 opcode
     数值、无异常语义、无强制类型转换语义、无完整文件布局、无 verifier 契约
@@ -151,6 +151,7 @@
 | **时钟分辨率** | Windows 上 Go `time.Since` ≈546µs，20 万次采样里 19.99 万个零差值 | 把迭代量放大到单次读数 >50ms |
 | **手算期望值** | 差分用例的期望值靠脑算，错了却以为是引擎 bug | 先读 Tier 0 实际输出，再用 Node 交叉验证 |
 | **元数据漏登记** | 稀疏数组漏一项照样编译通过（Go 侧 `opMeta: [256]*OpMeta` 实测如此） | 用穷尽 `match`，让漏登记变成编译错误。**已实测**：故意加一个未登记的 `Op` 变体 → `error[E0004]: not covered`（见 `20260903` §3） |
+| **批量改路径按错的目录深度算** | 从 `docs/adr/` 复用的相对算法套到 `aluka_g/`，产出 `../../aluka_r/…`（多跳一级）——链接语法合法但全部指错 | 改完必跑**全仓链接校验**，不能只 grep 自己改过的文件（`20260903` 待办 13 即由此抓出） |
 | **验证脚本自身有坑** | CRLF 仓库里 grep 输出带 `\r`，链接检查会把全部有效链接误报 MISS | 校验前先 `tr -d '\r'`；工具失效比代码失效更隐蔽 |
 
 ---
@@ -164,11 +165,19 @@
 │   ├── TEMPLATE.md          ← 每日模板
 │   └── <YYYYMMDD>/README.md ← 当日 TODO + 证据
 └── evidence/<YYYYMMDD>/     ← 当日产物证据（报告、语料索引、基准数据）
+
+docs/                跨实现共享：ADR、Go 版性能报告、bytecode-spec（ISA 反推输入源）
+aluka_r/docs/        Rust 重构专属：plan / devplan / 后续专项计划（含 aluvm-isa-spec.md）
+aluka_g/             Go 实现（只读参考 + oracle）
 ```
 
 `.work/` 入库：证据要能被别人翻出来复核，放在 gitignore 里就失去意义。
 但**不要**往 `evidence/` 塞大二进制（golden `.bc` 语料放
 `aluka_r/tests/golden/`，`.work` 只存索引与 sha256）。
+
+**文档该放哪**（判据与细节见 `aluka_r/docs/README.md`）：改动后 Go 版要不要跟着改？
+要 → `docs/`（ADR、历史结论、性能基线）；不要，只是 Rust 侧待办与规划 →
+`aluka_r/docs/`。
 
 ---
 

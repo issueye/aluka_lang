@@ -1,8 +1,10 @@
 # aluka Rust 重构——详细开发计划（MVP 里程碑 + 并行轨道）
 
-> 状态：规划稿（v0.3）｜日期：2026-09-03｜依赖：docs/rust-reimplementation-plan.md（架构与阶段）
+> 状态：规划稿（v0.3）｜日期：2026-09-03｜依赖：rust-reimplementation-plan.md（架构与阶段）
 > 关联决策：docs/adr/jvm-style-bytecode-architecture.md（ISA 契约，已采纳）
 > 原则：strangler 逐子系统替换；conformance 套件为唯一行为仲裁；每里程碑有可演示交付物
+> 路径约定：见 rust-reimplementation-plan.md 头部（裸写的 `internal/…`、`tests/…` 等
+> 相对 `aluka_g/`；`crates/…` 相对 `aluka_r/`；带 `docs/`、`aluka_g/`、`aluka_r/` 前缀的相对仓库根）
 
 ---
 

@@ -1,8 +1,8 @@
 # ADR：JVM 式架构——字节码升格为发布契约，aluvm 独立执行
 
 > 状态：**已采纳**（2026-09-03）｜日期：2026-09-03
-> 关联：docs/bytecode-spec.md（现有 ISA）、docs/rust-reimplementation-plan.md（架构与阶段）、
-> docs/rust-reimplementation-devplan.md（并行轨道与里程碑）
+> 关联：docs/bytecode-spec.md（现有 ISA）、aluka_r/docs/rust-reimplementation-plan.md（架构与阶段）、
+> aluka_r/docs/rust-reimplementation-devplan.md（并行轨道与里程碑）
 >
 > **采纳理由**：本决策已成为 Rust 重构终局的**硬前提之一**——Go 版退役要求
 > (1) 完全兼容 JS/TS 语法，(2) 字节码契约落地使后续新语法可无缝接入平台。

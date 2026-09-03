@@ -2,7 +2,7 @@
 
 > 日期：2026-08-17
 > 依据：当前实现评审（P2 × 6）
-> 前置：[项目工作台 + Vite 风格插件](../internal/project) 已落地；本文只修钩子语义与写盘边界，不扩 HMR / `this.resolve`。
+> 前置：[项目工作台 + Vite 风格插件](../aluka_g/internal/project) 已落地；本文只修钩子语义与写盘边界，不扩 HMR / `this.resolve`。
 
 **Goal:** 让已挂上的 Vite 同名钩子在失败路径、`config`/`resolveId`/`transform`、产物路径上行为可预期，并补测试。
 

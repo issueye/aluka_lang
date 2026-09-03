@@ -35,7 +35,7 @@ aluka-runtime = { path = "crates/aluka-runtime" }
 
 [workspace.lints.rust]
 # 业务 crate 默认禁 unsafe；仅 aluka-core 的分配器/GC 与未来 JIT 后端可显式解禁
-# （见 docs/rust-reimplementation-plan.md §6.4 unsafe 收口策略）。
+# （见 aluka_r/docs/rust-reimplementation-plan.md §6.4 unsafe 收口策略）。
 unsafe_code = "deny"
 missing_docs = "warn"
 

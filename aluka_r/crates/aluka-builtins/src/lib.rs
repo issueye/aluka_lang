@@ -3,7 +3,7 @@
 //! Go 版有 59 个内置模块（`internal/builtin/registry.go`）。迁移期这里先
 //! 提供注册表骨架：模块名 → 工厂函数，工厂可以是 Rust 原生实现，也可以
 //! 在过渡阶段经 FFI 转发到 Go 实现（见
-//! `docs/rust-reimplementation-devplan.md` 轨道 B 的分批排序）。
+//! `aluka_r/docs/rust-reimplementation-devplan.md` 轨道 B 的分批排序）。
 //!
 //! # 名称规范
 //!

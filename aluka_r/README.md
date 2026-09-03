@@ -131,10 +131,10 @@ builtin modules: 58 registered
 - 端到端最小链路可跑：`Program` → compile → VM → `Value`（数值加法）
 - 内置模块注册表登记 Go 版全部 58 个模块名，兼作迁移进度看板
 
-下一步（M0 验收项，见 [devplan §2](../docs/rust-reimplementation-devplan.md)）：
+下一步（M0 验收项，见 [devplan §2](docs/rust-reimplementation-devplan.md)）：
 
 1. **反推 ISA 事实表**：从 Go 侧导出 106 条 opcode 的数值/操作数/栈效果
-2. **写 `../docs/aluvm-isa-spec.md`**：逐指令规范，补 Go 文档缺的 opcode 数值、
+2. **写 `../aluka_r/docs/aluvm-isa-spec.md`**：逐指令规范，补 Go 文档缺的 opcode 数值、
    异常语义、强制转换语义、完整文件布局、verifier 契约
 3. **golden 字节码语料 ≥200 例**：跑 Go 二进制收割，判据是全 106 条指令各出现 ≥1 次
 4. **Rust verifier**：从第一天就是"通过即安全"完整强度（含 Go 侧缺失的跨块栈深

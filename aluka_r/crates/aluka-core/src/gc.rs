@@ -15,7 +15,7 @@
 //! # 现状
 //!
 //! M0 阶段只固定接口。具体策略（分代标记-清除 vs 引用计数 + 循环回收）
-//! 由 M0 的两份原型基准定夺，见 `docs/rust-reimplementation-devplan.md`
+//! 由 M0 的两份原型基准定夺，见 `aluka_r/docs/rust-reimplementation-devplan.md`
 //! 的 M0 验收项。
 
 use crate::object::{ObjectClass, ObjectRef};

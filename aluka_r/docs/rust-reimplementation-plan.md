@@ -6,7 +6,11 @@
 > 关联决策：`docs/adr/jvm-style-bytecode-architecture.md`（ISA 契约，已采纳）
 >
 > **仓库布局**：Go 实现在 `aluka_g/`，Rust 实现在 `aluka_r/`，`docs/` 为两者共享。
-> 本文档内的 `internal/…` 等路径均相对 `aluka_g/`；crate 路径相对 `aluka_r/`。
+> 本文位于 `aluka_r/docs/`（Rust 重构专属文档目录）。
+>
+> **路径约定**：裸写的 `internal/…`、`cmd/…`、`pkg/…`、`tests/…`、`bench/…` 一律
+> 相对 `aluka_g/`（Go 侧现状）；`crates/…` 相对 `aluka_r/`；带前缀的 `docs/…`、
+> `aluka_g/…`、`aluka_r/…` 相对仓库根。与本文同级的重构文档直接写文件名。
 
 ---
 
@@ -65,7 +69,7 @@ stage2-nanbox-slots、汇编直写、双栈）证明了该结论：Go 无法做 
 以 conformance 套件作唯一行为仲裁。计划分 **8 阶段（阶段 0-7）约 20 个月**
 （含 ISA 规范化与 Go 版退役门禁；若各阶段取工期下限且并行度理想可压到 15 个月，
 但不应据此排期）。里程碑级拆解、并行轨道与人力分配见
-`docs/rust-reimplementation-devplan.md`。
+`rust-reimplementation-devplan.md`。
 
 ---
 
@@ -157,7 +161,7 @@ run/编译产物检测、repl、test、build/install/add/remove/update、--watch
   vue-sfc 1/1、npm、install、express、test262；另有 tests/compat/node22 差分对拍
 - jitdiff 生成式差分（三 tier 零失配）+ 5 个 fuzz target
 - bench 跨引擎对比（node/aluka 交替，方法学见 tests/benchmark/）
-- 52 份 docs/*.md 计划+报告，其中 10 份 ADR
+- `docs/` 50 份顶层计划+报告（另有 `docs/adr/` 10 份 ADR；Rust 重构专属文档在 `aluka_r/docs/`）
 
 ---
 
@@ -415,7 +419,7 @@ M3 3 / M4 1.5 / M5 3.5 / M6 2.5 / M7 1.5 月）。分属不同轨道的相邻阶
 ## 8. 验收与里程碑汇总
 
 阶段 0-7 与 devplan 的 M0-M7 一一对应；下表给出累计时间点，任务级拆解与
-并行轨道归属见 `docs/rust-reimplementation-devplan.md` §2/§4。
+并行轨道归属见 `rust-reimplementation-devplan.md` §2/§4。
 
 | 里程碑 | 阶段 | 轨道 | 时间 | 验收 |
 |---|---|---|---|---|
@@ -432,7 +436,7 @@ M3 3 / M4 1.5 / M5 3.5 / M6 2.5 / M7 1.5 月）。分属不同轨道的相邻阶
 
 ## 9. 附录
 
-- Go 版功能清单出处：README.md 核心能力一览（§1）、docs 39 份、tests/conformance
+- Go 版功能清单出处：README.md 核心能力一览（§1）、`docs/` 50 份顶层文档 + `docs/adr/` 10 份 ADR、tests/conformance
 - 性能基线：docs/performance-report-v7.md
 - 内存/GC 探索结论：docs/adr/object-arena-rejected.md、stage2-nanbox-slots-rejected.md、
   typed-value-stack-plan.md §9/§10

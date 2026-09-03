@@ -30,10 +30,11 @@
 | 6 | 分目录后修 CI / gitignore / Makefile / build.bat，并验证测试与 conformance | `[x]` | D3 |
 | 7 | 建立 `.work/TODO` 体系（总 TODO + 每日模板 + 今日） | `[x]` | §5 目录约定 |
 | 8 | 确认 ISA 反推输入源与 golden 语料收割路径可行 | `[x]` | F1、F5 |
-| 9 | 写出 `docs/aluvm-isa-spec.md` 首版 | `[ ]` | F2 |
+| 9 | 写出 `aluka_r/docs/aluvm-isa-spec.md` 首版 | `[ ]` | F2 |
 | 10 | 补 Rust 侧工程指南：`aluka_r/AGENTS.md` + 重写 `README.md` + `docs/README.md` | `[x]` | §5 目录约定 |
 | 11 | 把每日 TODO 与证据流程写进 `aluka_r/AGENTS.md`，让约定离改动最近 | `[x]` | §1 证据规则 |
 | 12 | 修 `AGENTS.md`/`README.md` 迁入 `aluka_g/` 后失效的 20 处 `./docs/` 链接 | `[x]` | — |
+| 13 | 重构相关文档迁入 `aluka_r/docs/`，并修全部受影响引用 | `[x]` | §5 目录约定 |
 
 第 9 条今日未动，理由见 §5——它依赖第 8 条查明的事实量，估工超出今日剩余时间，
 拆到明日做才有意义。
@@ -238,6 +239,88 @@ link check done   （三份新文档零 MISS）
 **说明**：注意 grep 输出带 `\r`（CRLF 仓库），不 `tr -d '\r'` 会把所有链接误报成
 MISS——这条也是坑，验证脚本本身要先过一遍。
 
+### 待办 13 · 重构文档迁入 `aluka_r/docs/`
+
+**结论**：达成
+**证据类型**：命令 + 提交
+
+迁移集合（`git mv` 保历史，状态列显示为 `R` 而非 `D`+`A`）：
+
+```
+docs/rust-reimplementation-plan.md     -> aluka_r/docs/rust-reimplementation-plan.md
+docs/rust-reimplementation-devplan.md  -> aluka_r/docs/rust-reimplementation-devplan.md
+```
+
+```bash
+git status --short | grep '^R'
+```
+
+```
+RM docs/rust-reimplementation-devplan.md -> aluka_r/docs/rust-reimplementation-devplan.md
+RM docs/rust-reimplementation-plan.md    -> aluka_r/docs/rust-reimplementation-plan.md
+```
+
+**未迁**的部分是有意为之，判据写进 `aluka_r/docs/README.md`：ADR 与「Go 侧实验
+证伪的历史结论」（`docs/adr/{jvm-style,object-arena,stage2-nanbox-slots}…`）、
+`bytecode-spec.md`、`performance-report-*` 的主语都是 Go 版或跨实现决策，留共享目录。
+
+受影响引用逐处改：反向链接 `aluka_g/{AGENTS,README}.md`、`.work/TODO/README.md`、
+`docs/adr/jvm-style-bytecode-architecture.md`；Rust 侧 `aluka_r/{AGENTS,README}.md`、
+`Cargo.toml`、`aluka-core/{lib,gc}.rs`、`aluka-builtins/lib.rs`；迁走两份的互引。
+
+全仓校验（87 个相对链接）：
+
+```bash
+python /tmp/linkcheck.py
+```
+
+```
+checked 87 relative links across *.md
+ALL RESOLVE
+```
+
+**这一条的价值在于校验器抓到了我自己引入的错误**：批量替换时按 `docs/adr/` 的
+目录深度算相对路径，套到了 `aluka_g/` 上，产出 `../../aluka_r/docs/…`（多跳一级）。
+纯靠人眼读 diff 极易漏。修后重跑才 `ALL RESOLVE`。
+
+校验顺带查出文档计数在迁移后失真，改为实测值：
+
+```bash
+ls docs/*.md | wc -l; ls docs/adr/*.md | wc -l; ls aluka_r/docs/*.md | wc -l
+```
+
+```
+50
+10
+3
+```
+
+plan 原写「docs 39 份」（迁前就已过期）→ 改为 `docs/` 50 份顶层 + `docs/adr/`
+10 份 ADR，并注明重构专属文档在 `aluka_r/docs/`。
+
+顺带暴露 4 处**更早就断掉**的历史链接（上次 `aluka_g` 搬迁漏网，非本次引入），
+一并修掉：
+
+```
+docs/node22-api-coverage.md    -> ./node22/../tests/compat/node22/gaps.md
+docs/web-plugin-hook-fixes-plan.md -> ../internal/project
+docs/performance-and-functionality-evaluation.md -> file:///E:/code/issueye/…（2 处，
+  指向别人机器的绝对路径，本仓库从未有效）
+```
+
+Rust 门禁未因注释改动回归：
+
+```
+cargo fmt --all --check  -> OK
+cargo test               -> 39 passed; 0 failed
+cargo clippy -D warnings -> 0 error
+```
+
+**遗留说明**：校验另有 2 个"未解析"是**故意的未来路径**——`aluka_r/docs/aluvm-isa-spec.md`
+与 `aluka_r/tests/golden/` 是 F2/F5 的产出目标，现在还不该存在。这类引用要能
+与真正的笔误区分，所以在 plan 头部补了路径约定段（裸 `internal/…`、`tests/…`
+相对 `aluka_g/`；带 `docs/`、`aluka_r/` 前缀相对仓库根），devplan 引用同一条约定。
+
 ### 附带：验证「穷尽 match = 编译期保证」这条主张
 
 AGENTS.md 里写了「新增指令漏登记栈效果会编译失败」，这是约束不是偏好，所以实测：
@@ -263,19 +346,21 @@ error: could not compile `aluka-bytecode` (lib) due to 1 previous error
 | 类型 | 内容 | 影响 |
 |------|------|------|
 | **计划偏差** | devplan M0 原写「**Go 版** verifier 强化到通过即安全」。本日确立 Rust-only 作用域后，此项改为**只在 Rust 侧实现**，且从第一天就是完整强度 | 已记入总 TODO §0 对照表；devplan 正文暂不改（等 M0 收口一次性同步，避免文档反复） |
-| **计划偏差** | devplan M0 原写「把 `docs/bytecode-spec.md` 提升为规范」。改为**新写** `docs/aluvm-isa-spec.md` | 原文件是 Go 实现说明且被 AGENTS.md 引用，就地改写会让一份文档同时承担「Go 实现说明」与「跨实现契约」两种身份 |
+| **计划偏差** | devplan M0 原写「把 `docs/bytecode-spec.md` 提升为规范」。改为**新写** `aluka_r/docs/aluvm-isa-spec.md` | 原文件是 Go 实现说明且被 AGENTS.md 引用，就地改写会让一份文档同时承担「Go 实现说明」与「跨实现契约」两种身份 |
 | **技术决策** | 目录命名取 `aluka_g` / `aluka_r`，docs 留根 | 计划、ADR、性能报告本质是跨实现的；若跟着 Go 侧走，Rust 侧引用要跨目录回指，且退役时还要再搬一次 |
 | **技术决策** | TODO/证据流程不只写在 `.work`，同时写进 `aluka_r/AGENTS.md` | 约定若只活在 `.work`，下次会话读工程指南时看不到它，等于没有。判据是**离改动最近的那份文档**必须包含它 |
 | **技术决策** | 文档里「穷尽 match 是编译期保证」这类主张必须实测，不靠推断 | 已用探针验证 `E0004`（见 §3 附带条）。文档写「会编译失败」而实际不失败，比没写更糟 |
+| **技术决策** | 只迁 plan/devplan，ADR 与「Go 侧证伪实验结论」留在共享 `docs/adr/` | 判据是**主语是谁**：`jvm-style` 约束 Go 版（退役门禁）、`object-arena`/`nanbox` 的记录对象是 Go 实现。搬进 `aluka_r` 会让 Go 侧读者丢历史，且 ADR 流程本身在那边。判据写进 `aluka_r/docs/README.md` |
 | **意外发现** | 文档 4 处数字与仓库实际不符（见待办 4） | 已修 |
 | **意外发现** | Rust `PLANNED_MODULES` 漏 `markdown` / `sys` 两模块 | 已补；`sys` 是 `util` 的废弃别名（DEP0140）需同一对象身份，已写进注释 |
 | **意外发现** | Go 侧 5 项缺陷（加载不校验、残留调试打印、`Decode` 截断容忍、栈效果双实现、conformance 改写入库文件） | 作用域外**不修**，登记总 TODO §6；其中 3 项直接转成 Rust verifier 的必测项 |
+| **意外发现** | 4 处历史断链（上次 `aluka_g` 搬迁漏网 + 2 个指向他人机器的 `file:///`），非本次引入 | 一并修复；教训：改路径后必须跑**全仓**校验而非只查改动文件 |
 
 ---
 
 ## 5. 未达成与阻塞
 
-**待办 9（`docs/aluvm-isa-spec.md` 首版）未动。**
+**待办 9（`aluka_r/docs/aluvm-isa-spec.md` 首版）未动。**
 
 - **卡在哪**：不是技术阻塞，是估工。今日查明 Go 文档的缺口远比预想大——111 行的
   `bytecode-spec.md` 对 106 条指令只举例约 30 条，且**完全没有** opcode 数值、异常

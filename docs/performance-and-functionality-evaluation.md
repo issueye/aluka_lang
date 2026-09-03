@@ -86,10 +86,10 @@ Aluka 是一个纯 Go 实现、API 行为高度兼容 Bun 与 Node.js 22 的 Jav
 
 ### 4.2 优化落地与成果
 1. **打包器产物体积深度压缩（PayloadVersion v3）已落地**：
-   - 在 [internal/bundler/compile/payload.go](file:///E:/code/issueye/golang/aluka_lang/internal/bundler/compile/payload.go) 中实现预编译字节码段与 JSON Manifest 的流式压缩（`BestCompression`），同时支持向下兼容（v2/v3 双格式解析）；
+   - 在 [internal/bundler/compile/payload.go](../aluka_g/internal/bundler/compile/payload.go) 中实现预编译字节码段与 JSON Manifest 的流式压缩（`BestCompression`），同时支持向下兼容（v2/v3 双格式解析）；
    - **实测收益**：2528 模块的大型项目（`coding-agent`）预编译 Payload 由 **39MB 压缩至 3.2MB**（压缩率达 **91.8%**），独立可执行二进制体积由 **74.1MB 直降至 38.1MB**（整体体积缩减 **48.6%**），启动解压耗时无感。
 2. **GC 根集标记安全与完整性升级**：
-   - 在 [internal/engine/gc.go](file:///E:/code/issueye/golang/aluka_lang/internal/engine/gc.go) 中将 DFS 递归重构为迭代式 Worklist 遍历，彻底杜绝深层对象图下的 Goroutine 栈扩容与栈溢出风险；
+   - 在 [internal/engine/gc.go](../aluka_g/internal/engine/gc.go) 中将 DFS 递归重构为迭代式 Worklist 遍历，彻底杜绝深层对象图下的 Goroutine 栈扩容与栈溢出风险；
    - 补全原型链（`proto`）与属性访问器（`AccessorValue` Getter/Setter）的存活标记，确保复杂对象生命周期准确。
 3. **后续演进方向**：
    - 继续推进 JIT Native Lowering 覆盖（Shape Check + 固定偏移读取直接发射机器码指针解引用）。

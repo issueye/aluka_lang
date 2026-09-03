@@ -19,7 +19,7 @@
 //! # 现状
 //!
 //! M0 阶段只固定 API 形状与不变量，实现体待 GC 选型定案后填充
-//! （见 `docs/rust-reimplementation-devplan.md` M0 验收项）。
+//! （见 `aluka_r/docs/rust-reimplementation-devplan.md` M0 验收项）。
 
 pub mod gc;
 pub mod object;
