@@ -69,7 +69,7 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 - **单二进制分发** — 静态编译，零运行时依赖
 - **不引入第三方 JS 引擎** — 拒绝 V8 / QuickJS / Goja，纯 Go 原生实现
 
-详见 [需求分析文档](./docs/requirements-analysis.md)。
+详见 [需求分析文档](../docs/requirements-analysis.md)。
 
 ## 快速开始
 
@@ -292,8 +292,8 @@ aluka_g/
 ```
 
 Rust 重构的计划、里程碑与 Go 版退役门禁见
-[docs/rust-reimplementation-plan.md](./docs/rust-reimplementation-plan.md) 与
-[docs/rust-reimplementation-devplan.md](./docs/rust-reimplementation-devplan.md)。
+[docs/rust-reimplementation-plan.md](../docs/rust-reimplementation-plan.md) 与
+[docs/rust-reimplementation-devplan.md](../docs/rust-reimplementation-devplan.md)。
 终局是 Rust 版取代 Go 版，但**八项退役门禁全过之前 `aluka_g/` 仍是唯一正式实现**。
 
 ## 开发

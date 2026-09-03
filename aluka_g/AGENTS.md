@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> 面向 AI 代码助手（与新人）的工程指南。先读本文，再读 [README.md](./README.md) 与 [docs/](./docs/)。
+> 面向 AI 代码助手（与新人）的工程指南。先读本文，再读 [README.md](./README.md) 与 [docs/](../docs/)。
 
 Aluka 是一个**用纯 Go 实现的、API 行为兼容 [Bun](https://bun.sh/) 的 JavaScript/TypeScript 运行时**。核心组件（JS 引擎、模块系统、事件循环、TS 转译器、RegExp 引擎、GC、包管理器、打包器）全部自研。
 
@@ -16,14 +16,14 @@ docs/           两实现共享的计划、ADR、性能报告
 均相对 `aluka_g/`**（即先 `cd aluka_g`）；`crates/…` 相对 `aluka_r/`。
 
 Rust 侧的重构计划、里程碑与退役门禁见
-[docs/rust-reimplementation-plan.md](./docs/rust-reimplementation-plan.md)、
-[docs/rust-reimplementation-devplan.md](./docs/rust-reimplementation-devplan.md)。
+[docs/rust-reimplementation-plan.md](../docs/rust-reimplementation-plan.md)、
+[docs/rust-reimplementation-devplan.md](../docs/rust-reimplementation-devplan.md)。
 终局是 Rust 版取代 Go 版，但**在八项退役门禁全过之前，`aluka_g/` 仍是唯一正式实现**，
 所有功能与修复以 Go 版为准。
 
 - 模块路径：`github.com/aluka-lang/aluka`
 - Go 版本：`1.25.x`（见 `aluka_g/go.mod` 与各子模块 `go.mod`，CI 使用 `1.25`）
-- 单仓多 module：各 `internal/<pkg>/go.mod` 路径与今日 import 相同；根模块与子模块用 `replace` 指向相对目录。提交 `go.work`。`aluka_g` 下 `./...` **不会**进入嵌套 module，全量测试用 `make test`（`go test $(go list -f '{{.Dir}}/...' -m)`）。跨模块新 import 必须写入对应 `go.mod` 的 `require` + `replace`。改 engine 可只测 engine 模块（`cd internal/engine && GOWORK=off go test ./...`）。详见 [docs/adr/go-modules.md](./docs/adr/go-modules.md)。
+- 单仓多 module：各 `internal/<pkg>/go.mod` 路径与今日 import 相同；根模块与子模块用 `replace` 指向相对目录。提交 `go.work`。`aluka_g` 下 `./...` **不会**进入嵌套 module，全量测试用 `make test`（`go test $(go list -f '{{.Dir}}/...' -m)`）。跨模块新 import 必须写入对应 `go.mod` 的 `require` + `replace`。改 engine 可只测 engine 模块（`cd internal/engine && GOWORK=off go test ./...`）。详见 [docs/adr/go-modules.md](../docs/adr/go-modules.md)。
 - CLI 入口：`./cmd/aluka`
 
 ---
@@ -272,18 +272,18 @@ Go 与 Rust 两实现共享。
 ## 进一步阅读
 
 - [README.md](./README.md) —— 项目总览、能力清单、已知限制、快速开始
-- [docs/requirements-analysis.md](./docs/requirements-analysis.md) —— 需求与约束
-- [docs/development-plan.md](./docs/development-plan.md) —— 分 Phase 开发计划（主蓝图）
-- [docs/development-roadmap.md](./docs/development-roadmap.md) —— 路线图
-- [docs/pi-compat-plan.md](./docs/pi-compat-plan.md) —— 真实世界兼容计划
-- [docs/vue-compiler-sfc-merge-notes.md](./docs/vue-compiler-sfc-merge-notes.md) —— official compiler-sfc 安全/功能边界、fixture 升级与合并后观察项
-- [docs/adr/](./docs/adr/) —— 架构决策记录
+- [docs/requirements-analysis.md](../docs/requirements-analysis.md) —— 需求与约束
+- [docs/development-plan.md](../docs/development-plan.md) —— 分 Phase 开发计划（主蓝图）
+- [docs/development-roadmap.md](../docs/development-roadmap.md) —— 路线图
+- [docs/pi-compat-plan.md](../docs/pi-compat-plan.md) —— 真实世界兼容计划
+- [docs/vue-compiler-sfc-merge-notes.md](../docs/vue-compiler-sfc-merge-notes.md) —— official compiler-sfc 安全/功能边界、fixture 升级与合并后观察项
+- [docs/adr/](../docs/adr/) —— 架构决策记录
 - Rust 重构（`aluka_r/`）：
-  - [docs/rust-reimplementation-plan.md](./docs/rust-reimplementation-plan.md) —— 功能全景、alukac/aluvm 架构、阶段路线、Go 版退役门禁
-  - [docs/rust-reimplementation-devplan.md](./docs/rust-reimplementation-devplan.md) —— M0-M7 里程碑、7 条并行轨道、验收指标
-  - [docs/adr/jvm-style-bytecode-architecture.md](./docs/adr/jvm-style-bytecode-architecture.md) —— 字节码升格为 ISA 契约（已采纳）
+  - [docs/rust-reimplementation-plan.md](../docs/rust-reimplementation-plan.md) —— 功能全景、alukac/aluvm 架构、阶段路线、Go 版退役门禁
+  - [docs/rust-reimplementation-devplan.md](../docs/rust-reimplementation-devplan.md) —— M0-M7 里程碑、7 条并行轨道、验收指标
+  - [docs/adr/jvm-style-bytecode-architecture.md](../docs/adr/jvm-style-bytecode-architecture.md) —— 字节码升格为 ISA 契约（已采纳）
 - JIT 专项（`docs/`）：
-  - [jit-performance-optimization-plan.md](./docs/jit-performance-optimization-plan.md) —— JIT 总体架构与性能优化主文档
-  - [jit-follow-up-development-plan.md](./docs/jit-follow-up-development-plan.md) —— JIT 后续里程碑（R0–R6）：完成定义、deopt/副作用协议、平台门禁、覆盖与预算调优的实施记录
-  - [jit-coverage-matrix.md](./docs/jit-coverage-matrix.md) —— JIT 正确性覆盖矩阵（opcode × 值类型 × tier 的权威测试索引）
-- [docs/](./docs/) —— 各专项计划与性能报告（`*-plan.md` / `performance-report-*.md`）
+  - [jit-performance-optimization-plan.md](../docs/jit-performance-optimization-plan.md) —— JIT 总体架构与性能优化主文档
+  - [jit-follow-up-development-plan.md](../docs/jit-follow-up-development-plan.md) —— JIT 后续里程碑（R0–R6）：完成定义、deopt/副作用协议、平台门禁、覆盖与预算调优的实施记录
+  - [jit-coverage-matrix.md](../docs/jit-coverage-matrix.md) —— JIT 正确性覆盖矩阵（opcode × 值类型 × tier 的权威测试索引）
+- [docs/](../docs/) —— 各专项计划与性能报告（`*-plan.md` / `performance-report-*.md`）
