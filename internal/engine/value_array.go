@@ -25,26 +25,25 @@ type ArrayValue struct {
 	// attrs map——此前每个数组为 {length} 单条目 eager 建 map，多付
 	// ~260B/2 allocs，是数组分配贵于普通对象 3 倍的主因。
 	lengthWritable bool
-	// smallElems 是小数组（≤4 元素）的内嵌元素后备：字面量 [a, b] 类
-	// 高频短生命周期数组省去独立 elems 分配；更大数组走独立堆数组。
-	smallElems [4]Value
 }
 
 // arrayRootShape 是预先派生的数组标准 Shape（包含 length 属性）。
 // 避免每次创建数组时在 rootShape 上重复做 transition("length") 的锁竞争与 map 查找。
 var arrayRootShape = rootShape.transition("length")
 
-// NewArray 创建数组对象。elems 长度 ≤4 时拷贝进内嵌后备（调用方可让
-// 传入切片留在栈上避免逃逸）；更长时直接接管传入切片（零拷贝）。
+// NewArray 创建数组对象。elems 长度 ≤3 时拷贝进 objectValue.small 的尾部
+// （槽位 0 归 length，1..3 归元素），省去独立 elems 分配；更长时另开堆数组。
 // 新建数组无洞：present 保持 nil（全 present 的紧凑表示）。
 func NewArray(elems []Value) *ArrayValue {
 	a := &ArrayValue{lengthWritable: true}
 	a.shape = arrayRootShape
-	a.slots = a.small[:1]
+	// slots 容量截到 1：后续新增 own 属性经 append 迁移到独立数组，
+	// 不会覆写借给 elems 的 small[1:]。
+	a.slots = a.small[0:1:1]
 	a.slots[0] = IntValue(len(elems))
-	if len(elems) <= len(a.smallElems) {
-		copy(a.smallElems[:], elems)
-		a.elems = a.smallElems[:len(elems)]
+	if n := len(elems); n <= len(a.small)-1 {
+		copy(a.small[1:], elems)
+		a.elems = a.small[1 : 1+n : len(a.small)]
 	} else {
 		a.elems = make([]Value, len(elems))
 		copy(a.elems, elems)
@@ -60,7 +59,7 @@ func NewArrayHoles(n int) *ArrayValue {
 	}
 	a := &ArrayValue{lengthWritable: true}
 	a.shape = arrayRootShape
-	a.slots = a.small[:1]
+	a.slots = a.small[0:1:1]
 	a.slots[0] = IntValue(n)
 	a.elems = make([]Value, n)
 	for i := range a.elems {
@@ -252,6 +251,9 @@ func (a *ArrayValue) Delete(key string) bool {
 
 func arrayIndex(key string) (int, bool) {
 	if key == "" || key == "-0" {
+		return 0, false
+	}
+	if c := key[0]; c < '0' || c > '9' {
 		return 0, false
 	}
 	idx64, err := strconv.ParseInt(key, 10, 64)

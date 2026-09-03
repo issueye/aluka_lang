@@ -7,6 +7,7 @@ package engine
 
 import (
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -224,5 +225,40 @@ func TestArrayTrailingIndexAttrsGuard(t *testing.T) {
 	}
 	if !a.HasTrailingIndexAttrs(1) {
 		t.Fatalf("尾随索引残留自定义描述符时应回退 Set 路径, ext=%v", a.ext)
+	}
+}
+
+// 小数组把元素借放在 objectValue.small 的尾部（槽位 0 归 length）。新增
+// own 属性必须迁移到独立 slots 数组，不得覆写借出的元素槽位。
+func TestArraySmallSlotAliasing(t *testing.T) {
+	a := newDense(IntValue(1), IntValue(2), IntValue(3))
+	if err := a.Set("-1", IntValue(99)); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Set("foo", Str("bar")); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"1", "2", "3"} {
+		if got, _ := a.Get(strconv.Itoa(i)); got.String() != want {
+			t.Fatalf("elems[%d] = %s, want %s（被 own 属性覆写）", i, got, want)
+		}
+	}
+	if got, _ := a.Get("-1"); got.String() != "99" {
+		t.Fatalf(`Get("-1") = %s, want 99`, got)
+	}
+	if got, _ := a.Get("length"); got.String() != "3" {
+		t.Fatalf("length = %s, want 3", got)
+	}
+	// 追加越过内嵌容量后 elems 迁移到堆数组，两侧数据都须完整。
+	a.Append(IntValue(4))
+	a.Append(IntValue(5))
+	if got, _ := a.Get("4"); got.String() != "5" {
+		t.Fatalf("Get(4) = %s, want 5", got)
+	}
+	if got, _ := a.Get("0"); got.String() != "1" {
+		t.Fatalf("Get(0) = %s, want 1", got)
+	}
+	if got, _ := a.Get("foo"); got.String() != "bar" {
+		t.Fatalf(`扩容后 Get("foo") = %s, want bar`, got)
 	}
 }
