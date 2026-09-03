@@ -1,12 +1,15 @@
-# Go 构建产物
-/bin/
-/dist/
+# Go 构建产物（Go 实现位于 aluka_g/）
+aluka_g/bin/
+aluka_g/dist/
 *.exe
 *.dll
 *.so
 *.dylib
-/aluka
+aluka_g/aluka
 aluka.exe
+
+# Rust 构建产物（另见 aluka_r/.gitignore）
+aluka_r/target/
 
 # 测试与覆盖率
 *.test
@@ -28,30 +31,30 @@ Thumbs.db
 # 项目缓存
 .aluka-cache/
 node_modules/
-demo/vue3-run-build-demo/.generated/
-demo/vue3-run-build-demo/dist/
+aluka_g/demo/vue3-run-build-demo/.generated/
+aluka_g/demo/vue3-run-build-demo/dist/
 
 # web bundle Vue demo：真实 vue@3.5.13 离线 fixture 需随仓库分发
-!demo/web-bundle-vue-demo/node_modules/
-!demo/web-bundle-vue-demo/node_modules/**
+!aluka_g/demo/web-bundle-vue-demo/node_modules/
+!aluka_g/demo/web-bundle-vue-demo/node_modules/**
 
 # ZCode plan/agent workspace
 .zcode/
-demo/express-demo/probe.js
+aluka_g/demo/express-demo/probe.js
 # node22 compat：只忽略可再生成的探针结果；manifest/probe/diff/tools 与冻结快照需入库
-tests/compat/node22/results/
+aluka_g/tests/compat/node22/results/
 
 # node:test 包生态 fixture（condpkg）需入库，测试依赖
-!tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/
-!tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/**/package.json
-!tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/**/*.js
-!tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/**/*.mjs
-!tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/condpkg/
+!aluka_g/tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/
+!aluka_g/tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/**/package.json
+!aluka_g/tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/**/*.js
+!aluka_g/tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/**/*.mjs
+!aluka_g/tests/compat/node22/diff/m7-fixtures/pkgapp/node_modules/condpkg/
 
 # aluka 编译缓存（node:test fixture 内的运行时产物不入库）
 .aluka/
 
 # .freebuff
 .freebuff/*
-demo/web-bundle-demo/dist/*
-demo/web-bundle-vue-demo/dist/*
+aluka_g/demo/web-bundle-demo/dist/*
+aluka_g/demo/web-bundle-vue-demo/dist/*

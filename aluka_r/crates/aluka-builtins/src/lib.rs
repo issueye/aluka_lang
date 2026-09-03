@@ -158,6 +158,10 @@ pub const PLANNED_MODULES: &[&str] = &[
     "console",
     "test",
     "test/reporters",
+    // node:markdown / aluka:markdown —— Aluka 扩展模块（非 Node 标准）。
+    "markdown",
+    // node:sys —— node:util 的废弃别名（DEP0140），须与 util 同一对象身份。
+    "sys",
 ];
 
 #[cfg(test)]

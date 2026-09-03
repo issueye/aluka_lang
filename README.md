@@ -75,7 +75,11 @@ Aluka 旨在用纯 Go 实现一个 JavaScript/TypeScript 运行时，**API 行�
 
 ### 构建
 
+Go 实现在 `aluka_g/`，先切进去（下文所有 `make`/`go`/`tests/` 命令均在该目录执行）：
+
 ```bash
+cd aluka_g
+
 # 本机构建
 make build
 
@@ -220,6 +224,12 @@ aluka --monitor --monitor-out=metrics.json app.js
 
 ```
 aluka_lang/
+├── aluka_g/                   # Go 实现（当前正式版）——以下 cmd/internal/tests 等均在其下
+├── aluka_r/                   # Rust 重构工作区（M0 骨架，cargo workspace）
+├── docs/                      # 两实现共享：需求分析 / 开发计划 / AIP 协议规范 / JIT 报告 / ADR
+└── .github/workflows/ci.yml   # CI（Go 三端 lint+test+build，Rust build/test/clippy/fmt）
+
+aluka_g/
 ├── assets/                   # 品牌资源（LOGO：assets/logo.svg）
 ├── cmd/
 │   └── aluka/                 # CLI 入口（run/repl/test/install/build + 包管理子命令）
@@ -276,12 +286,15 @@ aluka_lang/
 │   ├── vue3-run-build-demo/   # 官方 vue@3.5.13：aluka run SSR + build web/--compile
 │   └── web-bundle-vue-demo/   # Vue 3.5.13 web bundle + official compiler-sfc 离线 fixture
 ├── bench/                     # 性能基准
-├── docs/                      # 需求分析 / 开发计划 / AIP 协议规范 / JIT 优化报告
-├── .github/workflows/ci.yml   # CI（三端 lint + test + build）
 ├── Makefile
 ├── go.work                    # 单仓多 module workspace（与 replace 配套）
 └── go.mod                     # 根模块：cmd/aluka + tests/demo/bench 胶水
 ```
+
+Rust 重构的计划、里程碑与 Go 版退役门禁见
+[docs/rust-reimplementation-plan.md](./docs/rust-reimplementation-plan.md) 与
+[docs/rust-reimplementation-devplan.md](./docs/rust-reimplementation-devplan.md)。
+终局是 Rust 版取代 Go 版，但**八项退役门禁全过之前 `aluka_g/` 仍是唯一正式实现**。
 
 ## 开发
 
@@ -323,13 +336,13 @@ ALUKA=./bin/aluka bash tests/conformance/express/run.sh
 # build --compile conformance（可执行产物 + shake/minify/analyze，24/24）
 ALUKA=./bin/aluka bash tests/conformance/build/run.sh
 
-# 浏览器 bundle conformance（React/TSX/chunk/ESM/CJS/UMD/cache，11/11）
+# 浏览器 bundle conformance（React/TSX/chunk/ESM/CJS/UMD/cache，13/13）
 ALUKA=./bin/aluka bash tests/conformance/webbuild/run.sh
 
 # Aluka 与 Node 双跑 @vue/compiler-sfc 探针（1/1）
 ALUKA=./bin/aluka bash tests/conformance/vue-sfc/run.sh
 
-# Node 22 差分 conformance（同一用例 aluka vs node22 双跑对比，18 个场景全绿）
+# Node 22 差分 conformance（同一用例 aluka vs node22 双跑对比，17/17）
 ALUKA=./bin/aluka bash tests/conformance/node22/run.sh
 ```
 

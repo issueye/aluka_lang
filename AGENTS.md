@@ -4,9 +4,26 @@
 
 Aluka 是一个**用纯 Go 实现的、API 行为兼容 [Bun](https://bun.sh/) 的 JavaScript/TypeScript 运行时**。核心组件（JS 引擎、模块系统、事件循环、TS 转译器、RegExp 引擎、GC、包管理器、打包器）全部自研。
 
+## 仓库布局（两实现并存）
+
+```
+aluka_g/        Go 实现（当前正式版）——go.work / Makefile / cmd / internal / tests 都在这里
+aluka_r/        Rust 重构工作区（M0 骨架）——cargo workspace，不参与 go.work
+docs/           两实现共享的计划、ADR、性能报告
+```
+
+**本文档其余部分的 `internal/…`、`cmd/…`、`tests/…`、`bench/…`、`make …` 等路径与命令
+均相对 `aluka_g/`**（即先 `cd aluka_g`）；`crates/…` 相对 `aluka_r/`。
+
+Rust 侧的重构计划、里程碑与退役门禁见
+[docs/rust-reimplementation-plan.md](./docs/rust-reimplementation-plan.md)、
+[docs/rust-reimplementation-devplan.md](./docs/rust-reimplementation-devplan.md)。
+终局是 Rust 版取代 Go 版，但**在八项退役门禁全过之前，`aluka_g/` 仍是唯一正式实现**，
+所有功能与修复以 Go 版为准。
+
 - 模块路径：`github.com/aluka-lang/aluka`
-- Go 版本：`1.25.x`（见根 `go.mod` 与各子模块 `go.mod`，CI 使用 `1.25`）
-- 单仓多 module：各 `internal/<pkg>/go.mod` 路径与今日 import 相同；根模块与子模块用 `replace` 指向相对目录。提交 `go.work`。仓库根 `./...` **不会**进入嵌套 module，全量测试用 `make test`（`go test $(go list -f '{{.Dir}}/...' -m)`）。跨模块新 import 必须写入对应 `go.mod` 的 `require` + `replace`。改 engine 可只测 engine 模块（`cd internal/engine && GOWORK=off go test ./...`）。详见 [docs/adr/go-modules.md](./docs/adr/go-modules.md)。
+- Go 版本：`1.25.x`（见 `aluka_g/go.mod` 与各子模块 `go.mod`，CI 使用 `1.25`）
+- 单仓多 module：各 `internal/<pkg>/go.mod` 路径与今日 import 相同；根模块与子模块用 `replace` 指向相对目录。提交 `go.work`。`aluka_g` 下 `./...` **不会**进入嵌套 module，全量测试用 `make test`（`go test $(go list -f '{{.Dir}}/...' -m)`）。跨模块新 import 必须写入对应 `go.mod` 的 `require` + `replace`。改 engine 可只测 engine 模块（`cd internal/engine && GOWORK=off go test ./...`）。详见 [docs/adr/go-modules.md](./docs/adr/go-modules.md)。
 - CLI 入口：`./cmd/aluka`
 
 ---
@@ -87,8 +104,8 @@ go list -deps ./internal/runtime/globals/... > /dev/null
 
 ```bash
 ALUKA=./bin/aluka bash tests/conformance/node/run.sh       # Node.js 官方测试子集（11/11）
-ALUKA=./bin/aluka bash tests/conformance/build/run.sh      # build --compile 产物（23/23）
-ALUKA=./bin/aluka bash tests/conformance/webbuild/run.sh   # React/TSX/chunk/ESM-CJS-UMD（11/11）
+ALUKA=./bin/aluka bash tests/conformance/build/run.sh      # build --compile 产物（24/24）
+ALUKA=./bin/aluka bash tests/conformance/webbuild/run.sh   # React/TSX/chunk/ESM-CJS-UMD（13/13）
 ALUKA=./bin/aluka bash tests/conformance/vue-sfc/run.sh    # Node/Aluka compiler-sfc 探针对拍（1/1）
 ALUKA=./bin/aluka bash tests/conformance/express/run.sh    # express 真实 HTTP 链路
 ALUKA=./bin/aluka bash tests/conformance/npm/run.sh        # 真实 npm 包加载
@@ -99,6 +116,8 @@ ALUKA=./bin/aluka bash tests/conformance/npm/run.sh        # 真实 npm 包加�
 ---
 
 ## 代码仓库布局
+
+顶层两个实现目录 + 共享 `docs/`（见开头「仓库布局」）。下面是 `aluka_g/` 内部结构：
 
 ```
 cmd/aluka/                 CLI 入口：main.go / build.go / compiled.go / install.go / repl.go
@@ -158,9 +177,10 @@ tests/
   compat/node22/           Node 22 差分 conformance（aluka vs node22 双跑对比）
 bench/                     性能基准（fib/jit/matrix + cmd/jitbench）
 pkg/aluka/                 嵌入式 Go API（NewRuntime/Eval/RunFile——Go 宿主嵌入 JS 运行时的公共面）
-docs/                      需求 / 开发计划 / 兼容计划 / 性能报告 / 优化计划 / ADR
-docs/adr/                  架构决策记录（ADR）
 ```
+
+`docs/` 与 `docs/adr/`（需求 / 开发计划 / 兼容计划 / 性能报告 / ADR）在仓库根，
+Go 与 Rust 两实现共享。
 
 **速记**：新增 Node 内置模块 → `internal/builtin/node<领域>/`（新领域则新建子包并在 `registry.go` 注册）；新增面向 Go 宿主的公共嵌入 API → `pkg/aluka/`（保持薄封装，转发 internal 实现）；新增 Web API / 全局 → `internal/runtime/globals/g<领域>/`；新增 Aluka（Bun 兼容）API → `internal/runtime/globals/galuka/`；新增 IPC/插件通信 → `internal/runtime/globals/galuka/aluka_ipc.go` + `internal/ipc/`；新增桌面 GUI 能力 → `internal/gui/`；新增 web 构建/项目编排 → `internal/project/`。
 
@@ -258,6 +278,10 @@ docs/adr/                  架构决策记录（ADR）
 - [docs/pi-compat-plan.md](./docs/pi-compat-plan.md) —— 真实世界兼容计划
 - [docs/vue-compiler-sfc-merge-notes.md](./docs/vue-compiler-sfc-merge-notes.md) —— official compiler-sfc 安全/功能边界、fixture 升级与合并后观察项
 - [docs/adr/](./docs/adr/) —— 架构决策记录
+- Rust 重构（`aluka_r/`）：
+  - [docs/rust-reimplementation-plan.md](./docs/rust-reimplementation-plan.md) —— 功能全景、alukac/aluvm 架构、阶段路线、Go 版退役门禁
+  - [docs/rust-reimplementation-devplan.md](./docs/rust-reimplementation-devplan.md) —— M0-M7 里程碑、7 条并行轨道、验收指标
+  - [docs/adr/jvm-style-bytecode-architecture.md](./docs/adr/jvm-style-bytecode-architecture.md) —— 字节码升格为 ISA 契约（已采纳）
 - JIT 专项（`docs/`）：
   - [jit-performance-optimization-plan.md](./docs/jit-performance-optimization-plan.md) —— JIT 总体架构与性能优化主文档
   - [jit-follow-up-development-plan.md](./docs/jit-follow-up-development-plan.md) —— JIT 后续里程碑（R0–R6）：完成定义、deopt/副作用协议、平台门禁、覆盖与预算调优的实施记录

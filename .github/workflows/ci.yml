@@ -9,6 +9,12 @@ on:
     - cron: "0 18 * * *"
   workflow_dispatch:
 
+# Go 实现位于 aluka_g/（Rust 重构工作区在 aluka_r/，见 rust job）。
+# 所有 run 步骤默认在 aluka_g 下执行；uses: 动作需各自显式指定目录。
+defaults:
+  run:
+    working-directory: aluka_g
+
 jobs:
   # 单元测试 + 覆盖率
   test:
@@ -27,6 +33,7 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           cache: true
+          cache-dependency-path: aluka_g/go.sum
 
       - name: Build (CGO disabled)
         shell: bash
@@ -46,7 +53,7 @@ jobs:
           GOWORK: "off"
         run: |
           go test ./... -count=1
-        working-directory: internal/pkgmanager
+        working-directory: aluka_g/internal/pkgmanager
 
       - name: Coverage summary
         if: matrix.os == 'ubuntu-latest'
@@ -109,6 +116,7 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
+          cache-dependency-path: aluka_g/go.sum
 
       - name: Native JIT tests
         env:
@@ -233,6 +241,7 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
+          cache-dependency-path: aluka_g/go.sum
 
       - name: Run 100,000-case differential
         env:
@@ -246,7 +255,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jitdiff-failure-${{ github.run_id }}
-          path: bench/results/jitdiff/
+          path: aluka_g/bench/results/jitdiff/
           if-no-files-found: ignore
 
   # Lint（仅 ubuntu）
@@ -261,11 +270,14 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
+          cache-dependency-path: aluka_g/go.sum
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          # defaults.run 不作用于 uses: 步骤，必须显式指定 Go 实现目录。
+          working-directory: aluka_g
           args: >-
             --timeout 5m
             ./...
@@ -305,6 +317,7 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
+          cache-dependency-path: aluka_g/go.sum
 
       - name: Build
         env:
@@ -341,4 +354,30 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: aluka-${{ matrix.os }}-${{ matrix.arch }}
-          path: bin/aluka-${{ matrix.os }}-${{ matrix.arch }}*
+          path: aluka_g/bin/aluka-${{ matrix.os }}-${{ matrix.arch }}*
+
+  # Rust 重构工作区（aluka_r/）：骨架期只做 build/test/clippy/fmt 门禁。
+  # 与 Go 版完全独立——Rust 侧红灯不阻塞 Go 版发布（退役门禁前 Go 版是唯一正式实现）。
+  rust:
+    name: Rust skeleton
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aluka_r
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: rustup component add clippy rustfmt
+
+      - name: Cargo build
+        run: cargo build --all-targets
+
+      - name: Cargo test
+        run: cargo test
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Format check
+        run: cargo fmt --all --check

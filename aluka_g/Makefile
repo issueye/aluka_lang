@@ -66,17 +66,17 @@ cover:
 lint:
 	golangci-lint run --timeout 5m $(WORKPKGS)
 
-# === Rust 重构工作区（rust/，见 docs/rust-reimplementation-devplan.md）=====
+# === Rust 重构工作区（../aluka_r/，见 ../docs/rust-reimplementation-devplan.md）=
 # 与 Go 版并存：Rust 侧自成 cargo workspace，不参与 go.work。
 
 rust-build:
-	cd rust && cargo build
+	cd ../aluka_r && cargo build
 
 rust-test:
-	cd rust && cargo test
+	cd ../aluka_r && cargo test
 
 rust-lint:
-	cd rust && cargo clippy --all-targets && cargo fmt --all --check
+	cd ../aluka_r && cargo clippy --all-targets && cargo fmt --all --check
 
 # Rust 侧提交前自查（构建 + 测试 + lint）
 rust-check: rust-build rust-test rust-lint
