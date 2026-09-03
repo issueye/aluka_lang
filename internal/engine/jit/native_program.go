@@ -22,10 +22,22 @@ type nativePropertyInput struct {
 	guard       propertyGuard
 }
 
+// nativeUpvalueInput mirrors nativePropertyInput for a captured cell: the cell
+// pointer stays on the Go side (in the plan), while the native frame only ever
+// holds the float64 in frameLocal. Entry loads the number, exits and budget
+// yields commit it back — the same protocol as property inputs, so the frame
+// remains pointer-free.
+type nativeUpvalueInput struct {
+	cell       TraceUpvalueCell
+	frameLocal int
+	write      bool
+}
+
 type nativeInputPlan struct {
 	numberArgs   uint16
 	numberLocals uint64
 	properties   []nativePropertyInput
+	upvalues     []nativeUpvalueInput
 	callees      []nativeCalleeGuard
 	stackBase    int
 }
@@ -250,6 +262,15 @@ func lowerNativeInputsForMode(p *Program, trace bool) (*Program, *nativeInputPla
 	if p.hasExceptionExit() {
 		return nil, nil, fmt.Errorf("jit: native cannot represent exception exit (pending JS exception)")
 	}
+	for _, in := range p.Code {
+		if in.Op == OpGetElem || in.Op == OpLoadUpvalueRef {
+			// Element values and object-valued cells are engine.Values read per
+			// iteration through the Go-side objects buffer; the pointer-free
+			// Native frame cannot dereference them. Auto keeps such traces in
+			// the Quick tier (the rejection is recorded once per program).
+			return nil, nil, fmt.Errorf("jit: native cannot represent object-backed reads (kept in Quick tier)")
+		}
+	}
 	plan := &nativeInputPlan{}
 	code := make([]Instr, 0, len(p.Code))
 	preassigned := uint64(0)
@@ -269,6 +290,26 @@ func lowerNativeInputsForMode(p *Program, trace bool) (*Program, *nativeInputPla
 		oldTarget int
 	}
 	fixups := make([]jumpFixup, 0, 4)
+	// Upvalue cells get their frame locals first (the set is known up front),
+	// then property inputs are appended lazily as the lowering encounters them.
+	if len(p.traceUpvalues) != 0 {
+		if !trace {
+			return nil, nil, fmt.Errorf("jit: upvalue cells require a trace program")
+		}
+		if p.NumLocals+len(p.traceUpvalues) >= maxQuickSlots {
+			return nil, nil, fmt.Errorf("jit: native upvalue input limit exceeded")
+		}
+		for i := range p.traceUpvalues {
+			frameLocal := p.NumLocals + i
+			plan.upvalues = append(plan.upvalues, nativeUpvalueInput{
+				cell:       p.traceUpvalues[i].cell,
+				frameLocal: frameLocal,
+				write:      p.traceUpvalues[i].write,
+			})
+			preassigned |= uint64(1) << frameLocal
+		}
+	}
+	propertyBase := p.NumLocals + len(plan.upvalues)
 	type propertyKey struct {
 		sourceLocal int
 		name        string
@@ -286,11 +327,11 @@ func lowerNativeInputsForMode(p *Program, trace bool) (*Program, *nativeInputPla
 		if index, ok := propertyIndexes[key]; ok {
 			return index, nil
 		}
-		if p.NumLocals+len(plan.properties) >= maxQuickSlots {
+		if propertyBase+len(plan.properties) >= maxQuickSlots {
 			return 0, fmt.Errorf("jit: native property input limit exceeded")
 		}
 		index := len(plan.properties)
-		frameLocal := p.NumLocals + index
+		frameLocal := propertyBase + index
 		plan.properties = append(plan.properties, nativePropertyInput{
 			sourceLocal: source,
 			frameLocal:  frameLocal,
@@ -374,6 +415,20 @@ func lowerNativeInputsForMode(p *Program, trace bool) (*Program, *nativeInputPla
 		if in.Op == OpSetProp {
 			return nil, nil, fmt.Errorf("jit: native property write requires a local object")
 		}
+		// Upvalue reads and writes become plain frame-local moves: entry loaded
+		// the cell's number into frameLocal and the commit writes it back.
+		if in.Op == OpLoadUpvalueNum || in.Op == OpStoreUpvalueNum {
+			if int(in.Operand) >= len(plan.upvalues) {
+				return nil, nil, fmt.Errorf("jit: native upvalue operand out of range")
+			}
+			frameLocal := uint32(plan.upvalues[in.Operand].frameLocal)
+			if in.Op == OpLoadUpvalueNum {
+				code = append(code, Instr{Op: OpLoadLocal, Operand: frameLocal})
+			} else {
+				code = append(code, Instr{Op: OpStoreLocal, Operand: frameLocal})
+			}
+			continue
+		}
 		if in.Op == OpLoadLocal {
 			slot := int(in.Operand)
 			if trace {
@@ -402,7 +457,7 @@ func lowerNativeInputsForMode(p *Program, trace bool) (*Program, *nativeInputPla
 	}
 	lowered := &Program{
 		NumParams:           p.NumParams,
-		NumLocals:           p.NumLocals + len(plan.properties),
+		NumLocals:           p.NumLocals + len(plan.upvalues) + len(plan.properties),
 		SelfUpvalue:         -1,
 		hasSelfCall:         !trace && p.hasSelfCall,
 		Code:                code,

@@ -1952,6 +1952,27 @@ func TestJITTraceGuardedClosureIncrementUpvalue(t *testing.T) {
 		globalThis.jitClosureIncrementSum = run(increment, 20);
 		globalThis.jitClosureIncrementNext = increment();
 	`
+	const constBoundSource = `
+		function makeConst() { let n = 0; return () => ++n; }
+		function runConst(fn) {
+			let sum = 0;
+			for (let i = 0; i < 30000000; i++) sum += fn();
+			return sum;
+		}
+		const incrementConst = makeConst();
+		globalThis.jitClosureConstBoundSum = runConst(incrementConst);
+		globalThis.jitClosureConstBoundNext = incrementConst();
+		// callee-capture form: the callee lives in a captured cell of the
+		// traced frame rather than in a local or parameter.
+		const incrementCap = makeConst();
+		function runCap() {
+			let sum = 0;
+			for (let i = 0; i < 30000000; i++) sum += incrementCap();
+			return sum;
+		}
+		globalThis.jitClosureCalleeCapSum = runCap();
+		globalThis.jitClosureCalleeCapNext = incrementCap();
+	`
 	for _, mode := range []jit.Mode{jit.Quick, jit.Auto} {
 		t.Run(mode.String(), func(t *testing.T) {
 			vm, err := NewVM()
@@ -1959,7 +1980,7 @@ func TestJITTraceGuardedClosureIncrementUpvalue(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer vm.Close()
-			mod, err := vm.Compile(source, "jit-trace-closure-increment.js")
+			mod, err := vm.Compile(source+constBoundSource, "jit-trace-closure-increment.js")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1973,6 +1994,14 @@ func TestJITTraceGuardedClosureIncrementUpvalue(t *testing.T) {
 			for name, want := range map[string]string{
 				"jitClosureIncrementSum":  "210",
 				"jitClosureIncrementNext": "21",
+				// 字面量上界（30000000 超 24 位，走 OpPushConst）：闭包被调
+				// 30000000 次返回 1..30000000，总和 450000015000000；之后再
+				// 调一次得 30000001。
+				"jitClosureConstBoundSum":  "450000015000000",
+				"jitClosureConstBoundNext": "30000001",
+				// callee-capture 形态：同上，只是 callee 来自捕获单元。
+				"jitClosureCalleeCapSum":  "450000015000000",
+				"jitClosureCalleeCapNext": "30000001",
 			} {
 				got, err := vm.Global().Get(name)
 				if err != nil || got.String() != want {
@@ -1980,7 +2009,7 @@ func TestJITTraceGuardedClosureIncrementUpvalue(t *testing.T) {
 				}
 			}
 			stats := vm.JITStats()
-			if stats.ClosureUpvalueSites != 1 || stats.TracesExecuted == 0 || stats.ClosureUpvalueYields == 0 {
+			if stats.ClosureUpvalueSites != 3 || stats.TracesExecuted == 0 || stats.ClosureUpvalueYields == 0 {
 				logJITBytecode(t, mod.Functions)
 				t.Fatalf("unexpected closure upvalue stats: %+v", stats)
 			}
@@ -2107,13 +2136,13 @@ func TestJITClosureIncrementTraceSafepointCommitsUpvalue(t *testing.T) {
 			})
 			_, err = vm.Eval(`
 				function make() { let n = 0; return () => ++n; }
-				function run(fn, end) {
+				function run(fn) {
 					let sum = 0;
-					for (let i = 0; i < end; i++) sum += fn();
+					for (let i = 0; i < 100; i++) sum += fn();
 					return sum;
 				}
 				const increment = make();
-				try { run(increment, 100); }
+				try { run(increment); }
 				catch (error) { globalThis.jitClosureInterrupt = error.message; }
 				globalThis.jitClosureAfterInterrupt = increment();
 			`, "jit-trace-closure-interrupt.js")

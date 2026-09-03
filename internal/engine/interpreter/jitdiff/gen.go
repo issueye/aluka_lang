@@ -529,6 +529,17 @@ const CR%s = makeR%s();
 	fmt.Fprintf(&b, `function runF%s(end) { let acc = %s; const inc = () => ++acc; let sum = 0; for (let i = 0; i < end; i++) sum += inc(); return sum; }
 `, fn, g.numberLeaf(rng))
 	b.WriteString(tryLog(id, fmt.Sprintf("runF%s(%d)", fn, n)))
+	// Trace-tier upvalue read/write: the loop body itself touches captured
+	// cells (bound, constant, accumulator) with no closure call involved. These
+	// ranges were rejected outright before OpLoadUpvalue/OpStoreUpvalue were
+	// lowered, so the generator keeps proving they stay tier-equivalent.
+	fmt.Fprintf(&b, `const UB%s = %d;
+const UK%s = %s;
+let UA%s = %s;
+function runU%s() { let s = 0; for (let i = 0; i < UB%s; i++) { s += UK%s; UA%s += i; } return s; }
+`, fn, n, fn, g.numberLeaf(rng), fn, g.numberLeaf(rng), fn, fn, fn, fn)
+	b.WriteString(tryLog(id, fmt.Sprintf("runU%s()", fn)))
+	b.WriteString(fmt.Sprintf("LOG(\"post\", SV(UA%s));\n", fn))
 	return g.build(id, KindClosure, seed, b.String())
 }
 

@@ -36,11 +36,22 @@ LOG("post", SV(A.length) + ":" + SV(A[4]));
 		},
 		{
 			ID: -3, Kind: KindClosure, Seed: 103, Params: params,
-			Expected: "call:runC\nreturn:n:10\npost:n:5",
+			// C was called once by runC(4) and once by the post C() above, so it
+			// holds 5; runCL drives it 20 more times (6..25, summing to 310) and
+			// the trailing C() returns 26. runCC repeats the same 20-iteration
+			// drive but reads C from its own captured cell (callee-capture
+			// form): starting at 27 it sums 27..46 (=730) and leaves 47.
+			Expected: "call:runC\nreturn:n:10\npost:n:5\ncall:runCL\nreturn:n:310\npost:n:26\ncall:runCC\nreturn:n:730\npost:n:47",
 			Body: `function makeC() { let n = 0; return () => ++n; }
 function runC(fn, end) { let sum = 0; for (let i = 0; i < end; i++) sum += fn(); return sum; }
 const C = makeC();
 try { LOG("call", "runC"); LOG("return", SV(runC(C, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(C()));
+function runCL(fn) { let sum = 0; for (let i = 0; i < 20; i++) sum += fn(); return sum; }
+try { LOG("call", "runCL"); LOG("return", SV(runCL(C))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(C()));
+function runCC() { let sum = 0; for (let i = 0; i < 20; i++) sum += C(); return sum; }
+try { LOG("call", "runCC"); LOG("return", SV(runCC())); } catch (e) { LOG("throw", e.name + ":" + e.message); }
 LOG("post", SV(C()));
 `,
 		},
@@ -926,6 +937,134 @@ try { LOG("call", "kP4"); LOG("return", SV(kP(0, -1))); } catch (e) { LOG("throw
 			ID: -91, Kind: KindCall, Seed: 191, Params: params,
 			Expected: "call:kS\nreturn:n:1944",
 			Body:     r5StormBody(24),
+		},
+		{
+			// Trace-tier upvalue reads: the loop bound and a read-only captured
+			// constant both come from the enclosing scope. Before the trace
+			// tier learned OpLoadUpvalue these ranges were rejected outright
+			// and interpreted; the differential pins that lifting the
+			// restriction did not change observable results.
+			ID: -92, Kind: KindClosure, Seed: 192, Params: params,
+			Expected: "call:kU1\nreturn:n:66\ncall:kU2\nreturn:n:36\npost:n:66",
+			Body: `const UB = 12;
+const UK = 3;
+let uSum = 0;
+function kU1() { let s = 0; for (let i = 0; i < UB; i++) s += i; uSum = s; return s; }
+function kU2() { let s = 0; for (let i = 0; i < UB; i++) s += UK; return s; }
+try { LOG("call", "kU1"); LOG("return", SV(kU1())); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kU2"); LOG("return", SV(kU2())); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(uSum));
+`,
+		},
+		{
+			// Trace-tier upvalue writes: the accumulator itself is a captured
+			// cell, so every iteration's OpStoreUpvalue is deferred into the
+			// trace's two-phase commit. The post record proves the committed
+			// cell value is exactly Tier 0's.
+			ID: -93, Kind: KindClosure, Seed: 193, Params: params,
+			Expected: "call:kW\nreturn:n:45\npost:n:45\ncall:kW2\nreturn:n:90\npost:n:90",
+			Body: `let wAcc = 0;
+function kW(n) { for (let i = 0; i < n; i++) wAcc += i; return wAcc; }
+try { LOG("call", "kW"); LOG("return", SV(kW(10))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(wAcc));
+function kW2(n) { for (let i = 0; i < n; i++) { wAcc = wAcc + i; } return wAcc; }
+try { LOG("call", "kW2"); LOG("return", SV(kW2(10))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(wAcc));
+`,
+		},
+		{
+			// The captured cell stops holding a Number mid-loop: the trace's
+			// entry guard (or the store guard) must hand the remaining
+			// iterations back to Tier 0 so the String concatenation result is
+			// identical across tiers. pAcc sums 0..3 numerically (=6), turns
+			// into "6s" at i=4, then concatenates 5.
+			ID: -94, Kind: KindClosure, Seed: 194, Params: params,
+			Expected: "call:kP\nreturn:s:6s5\npost:s:6s5",
+			Body: `let pAcc = 0;
+function kP(n) {
+  for (let i = 0; i < n; i++) {
+    if (i === 4) pAcc = pAcc + "s";
+    else pAcc = pAcc + i;
+  }
+  return pAcc;
+}
+try { LOG("call", "kP"); LOG("return", SV(kP(6))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(pAcc));
+`,
+		},
+		{
+			// Aliasing precondition: the captured cell IS a local of the
+			// frame running the traced loop, and a callee mutates it every
+			// iteration. Tier 0 re-reads the evolving local; a trace that
+			// cached the entry value would diverge, so the guard must reject.
+			ID: -95, Kind: KindClosure, Seed: 195, Params: params,
+			Expected: "call:kA\nreturn:n:55",
+			Body: `function kA(n) {
+  let local = 0;
+  const bump = () => { local++; };
+  let s = 0;
+  for (let i = 0; i < n; i++) { bump(); s += local; }
+  return s;
+}
+try { LOG("call", "kA"); LOG("return", SV(kA(10))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// Cell identity: the same template runs with a fresh closure
+			// instance per outer iteration, so the compiled trace's recorded
+			// cells go stale and the identity guard must re-validate. Each
+			// instance counts 1..7 (=28); three instances sum to 84.
+			ID: -96, Kind: KindClosure, Seed: 196, Params: params,
+			Expected: "call:kI\nreturn:n:84",
+			Body: `function mkI() { let n = 0; return () => ++n; }
+function driveI(f, n) { let s = 0; for (let i = 0; i < n; i++) s += f(); return s; }
+function kI() { let t = 0; for (let k = 0; k < 3; k++) t += driveI(mkI(), 7); return t; }
+try { LOG("call", "kI"); LOG("return", SV(kI())); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
+		},
+		{
+			// A budget yield lands mid-loop with a dirty upvalue cell: the
+			// yield commit must publish the partial value, and resuming must
+			// continue from it (safepointParams sets TraceBudget=1).
+			ID: -97, Kind: KindClosure, Seed: 197, Params: safepointParams,
+			Expected: "call:kY\nreturn:n:120\npost:n:120",
+			Body: `let yAcc = 0;
+function kY(n) { for (let i = 0; i < n; i++) yAcc += i; return yAcc; }
+try { LOG("call", "kY"); LOG("return", SV(kY(16))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(yAcc));
+`,
+		},
+		{
+			// An exception unwinds out of a loop whose accumulator is a
+			// captured cell: the cell must hold exactly the iterations that
+			// completed before the throw, in every tier.
+			ID: -98, Kind: KindClosure, Seed: 198, Params: params,
+			Expected: "call:kT\nthrow:Error:stop\npost:n:28",
+			Body: `let tAcc = 0;
+function kT(n) { for (let i = 0; i < n; i++) { if (i === 8) throw new Error("stop"); tAcc += i; } return tAcc; }
+try { LOG("call", "kT"); LOG("return", SV(kT(20))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+LOG("post", SV(tAcc));
+`,
+		},
+		{
+			// Trace-tier GetElem: dense numeric reads (param receiver), object
+			// elements with a property read (upvalue receiver), and hole /
+			// out-of-range reads that must fall back to Tier 0 mid-trace with
+			// identical results (undefined propagates through + as NaN).
+			ID: -99, Kind: KindArrayIndex, Seed: 199, Params: params,
+			Expected: "call:kG1\nreturn:n:26\ncall:kG2\nreturn:NaN\ncall:kO\nreturn:n:6\ncall:kH\nreturn:s:nnunn",
+			Body: `const G = [3, 5, 7, 11];
+const O = [{v:1},{v:2},{v:3}];
+const H = [1,2,3,4,5];
+delete H[2];
+function kG(k, n) { let s = 0; for (let i = 0; i < n; i++) s += k[i]; return s; }
+function kO() { let s = 0; for (let i = 0; i < 3; i++) s += O[i].v; return s; }
+function kH() { let s = ""; for (let i = 0; i < 5; i++) s += (H[i] === undefined ? "u" : "n"); return s; }
+try { LOG("call", "kG1"); LOG("return", SV(kG(G, 4))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kG2"); LOG("return", SV(kG(G, 6))); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kO"); LOG("return", SV(kO())); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+try { LOG("call", "kH"); LOG("return", SV(kH())); } catch (e) { LOG("throw", e.name + ":" + e.message); }
+`,
 		},
 	}
 }

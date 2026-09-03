@@ -47,6 +47,11 @@ type Program struct {
 	traceExceptionExits []bool
 	traceCallGuards     []traceCallGuard
 	traceMethodGuards   []traceMethodGuard
+	// traceUpvalues are the Number-valued captured cells the trace may read and
+	// write. OpLoadUpvalueNum / OpStoreUpvalueNum operands index it. Only trace
+	// programs populate it; the cells are Go pointers, so a program with
+	// upvalues is never published as machine code (see lowerNativeInputsForMode).
+	traceUpvalues []traceUpvalue
 }
 
 func (p *Program) DumpIR() string {
@@ -64,10 +69,13 @@ func (p *Program) DumpIR() string {
 		case OpConstString:
 			fmt.Fprintf(&out, " %q", in.Name)
 		case OpLoadLocal, OpStoreLocal, OpJump, OpJumpTrue, OpJumpFalse, OpJumpTrueKeep, OpJumpFalseKeep, OpJumpNullishKeep,
-			OpSelfCall, OpTraceExit, OpGuardNoopCall:
+			OpSelfCall, OpTraceExit, OpGuardNoopCall, OpLoadUpvalueNum, OpStoreUpvalueNum:
 			fmt.Fprintf(&out, " %d", in.Operand)
 			if in.Op == OpTraceExit && int(in.Operand) < len(p.traceExceptionExits) && p.traceExceptionExits[in.Operand] {
 				out.WriteString(" (exception)")
+			}
+			if (in.Op == OpLoadUpvalueNum || in.Op == OpStoreUpvalueNum) && int(in.Operand) < len(p.traceUpvalues) {
+				fmt.Fprintf(&out, " (upvalue %d)", p.traceUpvalues[in.Operand].index)
 			}
 		case OpGetProp, OpSetProp:
 			fmt.Fprintf(&out, " %q", in.Name)

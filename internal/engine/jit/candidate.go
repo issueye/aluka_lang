@@ -39,6 +39,13 @@ func RejectTraceReason(tmpl *bytecode.FuncTemplate, startPC, backedgePC int) err
 	return rejectTraceCandidate(tmpl, startPC, backedgePC)
 }
 
+// RejectTraceReasonWithUpvalues is RejectTraceReason for a bridge that already
+// resolved which upvalue cells it can guard. Ranges touching an unguarded
+// upvalue are still rejected.
+func RejectTraceReasonWithUpvalues(tmpl *bytecode.FuncTemplate, startPC, backedgePC int, upvalueGuards []TraceUpvalueGuard) error {
+	return rejectTraceCandidateWithUpvalues(tmpl, startPC, backedgePC, upvalueGuards)
+}
+
 func rejectLeafCandidate(tmpl *bytecode.FuncTemplate) error {
 	if tmpl == nil || tmpl.IsAsync || tmpl.IsGenerator || tmpl.IsVarArgs ||
 		(tmpl.ArgumentsSlot >= 0 && !tmpl.NoArgumentsObject) {
@@ -116,6 +123,14 @@ func rejectLeafCandidate(tmpl *bytecode.FuncTemplate) error {
 }
 
 func rejectTraceCandidate(tmpl *bytecode.FuncTemplate, startPC, backedgePC int) error {
+	return rejectTraceCandidateWithUpvalues(tmpl, startPC, backedgePC, nil)
+}
+
+// rejectTraceCandidateWithUpvalues additionally admits the upvalue indices
+// covered by upvalueGuards. An upvalue access without a guard still rejects the
+// range: the compiled trace caches cell values across the whole slice, so every
+// touched cell must have been validated (Number-valued, non-aliasing) first.
+func rejectTraceCandidateWithUpvalues(tmpl *bytecode.FuncTemplate, startPC, backedgePC int, upvalueGuards []TraceUpvalueGuard) error {
 	if tmpl == nil || startPC < 0 || backedgePC < startPC || backedgePC+bytecode.InstrSize > len(tmpl.Code) {
 		return fmt.Errorf("jit: invalid trace range")
 	}
@@ -125,10 +140,22 @@ func rejectTraceCandidate(tmpl *bytecode.FuncTemplate, startPC, backedgePC int) 
 	if tmpl.NumLocals > maxQuickSlots {
 		return fmt.Errorf("jit: too many trace locals")
 	}
+	guardedUpvalue := func(index uint32) bool {
+		for _, guard := range upvalueGuards {
+			if guard.Index == int(index) && guard.Cell != nil {
+				return true
+			}
+		}
+		return false
+	}
 	for pc := startPC; pc <= backedgePC; pc += bytecode.InstrSize {
 		op := bytecode.Opcode(tmpl.Code[pc])
 		arg := uint32(tmpl.Code[pc+1])<<16 | uint32(tmpl.Code[pc+2])<<8 | uint32(tmpl.Code[pc+3])
 		switch op {
+		case bytecode.OpLoadUpvalue, bytecode.OpStoreUpvalue:
+			if int(arg) >= len(tmpl.Upvalues) || !guardedUpvalue(arg) {
+				return fmt.Errorf("jit: trace unguarded upvalue %d", arg)
+			}
 		case bytecode.OpTryExitJmp:
 			// try 展开跳转（break/continue 穿出 try 区域）依赖 VM 的 finally
 			// 运行语义，trace 无法表达，直接拒绝。
@@ -159,6 +186,11 @@ func rejectTraceCandidate(tmpl *bytecode.FuncTemplate, startPC, backedgePC int) 
 		case bytecode.OpCall, bytecode.OpCallMethod:
 			// Guarded forms compile; unguarded forms are rejected at compile
 			// time once the bridge supplies (or omits) the guards.
+		case bytecode.OpGetElem:
+			// Dense array element read: the executor guards ArrayValue receiver,
+			// integral in-range index and element presence at runtime; every
+			// other shape (string indexing, object keys, holes, out of range)
+			// fails the guard and falls back to Tier 0.
 		case bytecode.OpAdd, bytecode.OpSub, bytecode.OpMul, bytecode.OpDiv, bytecode.OpMod, bytecode.OpPow,
 			bytecode.OpBitAnd, bytecode.OpBitOr, bytecode.OpBitXor, bytecode.OpShl, bytecode.OpShr, bytecode.OpUShr,
 			bytecode.OpEq, bytecode.OpStrictEq, bytecode.OpNe, bytecode.OpStrictNe,

@@ -71,6 +71,40 @@ func (p *Program) Verify() error {
 				return fmt.Errorf("jit: side effect set_prop requires a trace program with deopt exits")
 			}
 			need, delta = 2, -2
+		case OpLoadUpvalueNum:
+			if p.traceExitDepths == nil {
+				return fmt.Errorf("jit: load_upvalue_f64 requires a trace program with deopt exits")
+			}
+			if int(in.Operand) >= len(p.traceUpvalues) {
+				return fmt.Errorf("jit: load_upvalue_f64 references missing upvalue %d", in.Operand)
+			}
+			delta = 1
+		case OpGetElem:
+			// Pure read (no commit protocol needed): pops receiver + key,
+			// pushes the element. Trace tier only because only the trace
+			// executor guards the receiver shape.
+			if p.traceExitDepths == nil {
+				return fmt.Errorf("jit: get_elem requires a trace program with deopt exits")
+			}
+			need, delta = 2, -1
+		case OpLoadUpvalueRef:
+			if p.traceExitDepths == nil {
+				return fmt.Errorf("jit: load_upvalue_ref requires a trace program with deopt exits")
+			}
+			if int(in.Operand) >= len(p.traceUpvalues) {
+				return fmt.Errorf("jit: load_upvalue_ref references missing upvalue %d", in.Operand)
+			}
+			delta = 1
+		case OpStoreUpvalueNum:
+			// Like set_prop, an upvalue write is an externally visible side
+			// effect and only the trace tier has commit points for it.
+			if p.traceExitDepths == nil {
+				return fmt.Errorf("jit: side effect store_upvalue_f64 requires a trace program with deopt exits")
+			}
+			if int(in.Operand) >= len(p.traceUpvalues) {
+				return fmt.Errorf("jit: store_upvalue_f64 references missing upvalue %d", in.Operand)
+			}
+			need, delta = 1, -1
 		case OpStoreLocal, OpPop:
 			need, delta = 1, -1
 		case OpDup:

@@ -78,11 +78,15 @@ type quickTraceState struct {
 	reason     string
 	nativeUsed uint64
 	// nativeHits: R5-5 heat factor, see quickJITState.nativeHits.
-	nativeHits          uint64
-	arrayPush           *arrayPushTraceState
-	closureIncrement    *closureIncrementTraceState
-	arrayIndex          *arrayIndexTraceState
-	arrayBatch          *arrayBatchWriteTraceState
+	nativeHits       uint64
+	arrayPush        *arrayPushTraceState
+	closureIncrement *closureIncrementTraceState
+	arrayIndex       *arrayIndexTraceState
+	arrayBatch       *arrayBatchWriteTraceState
+	// upvalues are the compiled trace's upvalue guards. Every execution
+	// re-validates cell identity and the non-aliasing precondition before
+	// entering the trace (see jit_trace_upvalue.go).
+	upvalues            []jit.TraceUpvalueGuard
 	guardFailures       uint8
 	nativeGuardFailures uint8
 	nativeDisabled      bool

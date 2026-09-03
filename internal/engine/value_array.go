@@ -25,26 +25,28 @@ type ArrayValue struct {
 	// attrs map——此前每个数组为 {length} 单条目 eager 建 map，多付
 	// ~260B/2 allocs，是数组分配贵于普通对象 3 倍的主因。
 	lengthWritable bool
-	// smallElems 是小数组（≤4 元素）的内嵌元素后备：字面量 [a, b] 类
-	// 高频短生命周期数组省去独立 elems 分配；更大数组走独立堆数组。
-	smallElems [4]Value
 }
 
 // arrayRootShape 是预先派生的数组标准 Shape（包含 length 属性）。
 // 避免每次创建数组时在 rootShape 上重复做 transition("length") 的锁竞争与 map 查找。
 var arrayRootShape = rootShape.transition("length")
 
-// NewArray 创建数组对象。elems 长度 ≤4 时拷贝进内嵌后备（调用方可让
-// 传入切片留在栈上避免逃逸）；更长时直接接管传入切片（零拷贝）。
+// NewArray 创建数组对象。elems 长度 ≤3 时拷贝进 objectValue.small 的尾部
+// （槽位 0 归 length，1..3 归元素），省去独立 elems 分配；更长时另开堆数组。
 // 新建数组无洞：present 保持 nil（全 present 的紧凑表示）。
+//
+// length 的权威值恒为 len(a.elems)：所有读路径（Get/GetOwnSlot/描述符/迭代）
+// 都现场计算，从不读 slots[0]——投毒实验（槽位写 "POISON"）经全量测试与五套
+// conformance 验证无读者。因此变更长度的路径不再回写槽位；shape 里的 "length"
+// 条目仅为 own-key 枚举保留。slots 容量截到 1：新增 own 属性经 append 迁移到
+// 独立数组，不会覆写借给 elems 的 small[1:]。
 func NewArray(elems []Value) *ArrayValue {
 	a := &ArrayValue{lengthWritable: true}
 	a.shape = arrayRootShape
-	a.slots = a.small[:1]
-	a.slots[0] = IntValue(len(elems))
-	if len(elems) <= len(a.smallElems) {
-		copy(a.smallElems[:], elems)
-		a.elems = a.smallElems[:len(elems)]
+	a.slots = a.small[0:1:1]
+	if n := len(elems); n <= len(a.small)-1 {
+		copy(a.small[1:], elems)
+		a.elems = a.small[1 : 1+n : len(a.small)]
 	} else {
 		a.elems = make([]Value, len(elems))
 		copy(a.elems, elems)
@@ -60,8 +62,7 @@ func NewArrayHoles(n int) *ArrayValue {
 	}
 	a := &ArrayValue{lengthWritable: true}
 	a.shape = arrayRootShape
-	a.slots = a.small[:1]
-	a.slots[0] = IntValue(n)
+	a.slots = a.small[0:1:1]
 	a.elems = make([]Value, n)
 	for i := range a.elems {
 		a.elems[i] = Undefined()
@@ -170,7 +171,6 @@ func (a *ArrayValue) Set(key string, value Value) error {
 				a.present = append(a.present, false)
 			}
 		}
-		a.objectValue.setSlot("length", IntValue(n))
 		return nil
 	}
 	if idx, ok := arrayIndex(key); ok {
@@ -192,7 +192,6 @@ func (a *ArrayValue) Set(key string, value Value) error {
 		if a.present != nil {
 			a.present[idx] = true
 		}
-		a.objectValue.setSlot("length", IntValue(len(a.elems)))
 		return nil
 	}
 	return a.objectValue.Set(key, value)
@@ -254,6 +253,9 @@ func arrayIndex(key string) (int, bool) {
 	if key == "" || key == "-0" {
 		return 0, false
 	}
+	if c := key[0]; c < '0' || c > '9' {
+		return 0, false
+	}
 	idx64, err := strconv.ParseInt(key, 10, 64)
 	if err != nil || idx64 < 0 || idx64 > int64(^uint32(0)-1) {
 		return 0, false
@@ -267,6 +269,15 @@ func arrayIndex(key string) (int, bool) {
 
 // Elems 返回数组元素切片（只读视图）。
 func (a *ArrayValue) Elems() []Value { return a.elems }
+
+// ElemAt 返回下标 i 的自有元素及是否存在（含洞检查）。供 JIT trace 的
+// GetElem 快路径使用：越界 / 洞返回 false，调用方回退完整路径。
+func (a *ArrayValue) ElemAt(i int) (Value, bool) {
+	if i < 0 || i >= len(a.elems) || !a.isPresent(i) {
+		return nil, false
+	}
+	return a.elems[i], true
+}
 
 // CanAppend reports whether Array.prototype.push/JIT may create count trailing indices.
 func (a *ArrayValue) CanAppend(count int) bool {
@@ -341,7 +352,6 @@ func (a *ArrayValue) Append(v Value) {
 	if a.present != nil {
 		a.present = append(a.present, true)
 	}
-	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
 // AppendValues appends vs in order and synchronizes length once.
@@ -368,7 +378,6 @@ func (a *ArrayValue) AppendValues(vs []Value) {
 			a.present[oldLen+i] = true
 		}
 	}
-	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
 // SetIndex writes a value to a numeric array index, growing the slice with
@@ -395,7 +404,6 @@ func (a *ArrayValue) SetIndex(idx int, value Value) {
 	if a.present != nil {
 		a.present[idx] = true
 	}
-	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
 // AppendNumberRange appends count consecutive Number values starting at start
@@ -421,7 +429,6 @@ func (a *ArrayValue) AppendNumberRange(start float64, count int) {
 			a.present[oldLen+i] = true
 		}
 	}
-	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }
 
 // WriteNumberRange fills elems[start:start+count] with count consecutive
@@ -459,5 +466,4 @@ func (a *ArrayValue) WriteNumberRange(start int, valueStart float64, count int) 
 			a.present[start+i] = true
 		}
 	}
-	a.objectValue.setSlot("length", IntValue(len(a.elems)))
 }

@@ -55,6 +55,20 @@ const (
 	OpSetProp
 	OpGuardNoopCall
 	OpGuardMethodGet
+	// OpLoadUpvalueNum / OpStoreUpvalueNum 读写 Number 值的捕获单元
+	// （operand = upvalue 索引）。仅 trace tier：单元指针在 Go 侧，执行器在
+	// 入口把数值读入缓存，写回经两阶段提交在语义出口/预算让出时一次完成。
+	OpLoadUpvalueNum
+	OpStoreUpvalueNum
+	// OpLoadUpvalueRef reads an object-valued captured cell (operand = upvalue
+	// index) by materializing the current value into the objects buffer each
+	// execution. No write counterpart: STORE_UPVALUE on an object cell rejects
+	// the trace.
+	OpLoadUpvalueRef
+	// OpGetElem reads arr[intKey] from a dense in-range element (trace tier).
+	// The receiver and key come off the operand stack; guards (ArrayValue
+	// receiver, integral in-range index, present element) fail the trace.
+	OpGetElem
 )
 
 func (op Op) String() string {
@@ -63,6 +77,7 @@ func (op Op) String() string {
 		"neg_f64", "not_bool", "bit_not_i32", "number_identity",
 		"eq_f64", "ne_f64", "strict_eq", "strict_ne", "bit_and_i32", "bit_or_i32", "bit_xor_i32", "shl_i32", "shr_i32", "ushr_u32", "lt_f64", "le_f64", "gt_f64", "ge_f64", "pop", "return", "return_undef", "jump", "jump_true",
 		"jump_false", "jump_true_keep", "jump_false_keep", "jump_nullish_keep", "push_self", "self_call", "dup", "swap", "get_prop", "trace_exit", "set_prop", "guard_noop_call", "guard_method_get",
+		"load_upvalue_f64", "store_upvalue_f64", "load_upvalue_ref", "get_elem",
 	}
 	if int(op) >= len(names) {
 		return fmt.Sprintf("op_%d", op)

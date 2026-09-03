@@ -219,8 +219,13 @@ type Stats struct {
 	ArrayPushYields          uint64
 	ClosureUpvalueSites      uint64
 	ClosureUpvalueYields     uint64
-	VerifyChecks             uint64
-	VerifyFailures           uint64
+	// TraceUpvalueSites counts guarded upvalue cells admitted into compiled
+	// traces; TraceUpvalueGuardFailures counts pre-entry rejections (cell
+	// identity changed, or an open cell now aliases a traced frame local).
+	TraceUpvalueSites         uint64
+	TraceUpvalueGuardFailures uint64
+	VerifyChecks              uint64
+	VerifyFailures            uint64
 	// R4-3/R4-4 property PIC diagnostics. PropertyPICAdds counts admissions
 	// beyond the two-way baseline (third/fourth shape); PropertyPICHits counts
 	// successful guarded loads through the entries; PropertyPICRejections

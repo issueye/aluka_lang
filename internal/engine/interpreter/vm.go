@@ -19,10 +19,13 @@ import (
 )
 
 // VM is a stack-based bytecode VM that shares builtins with the AST interpreter.
-// objLitSite 是对象字面量站点键：同一模板同一 PC 的字面量键序列恒定。
-type objLitSite struct {
-	tmpl *bytecode.FuncTemplate
-	pc   uint32
+// objLitSlot 是对象字面量站点缓存的直接映射槽：同一模板同一 PC 的字面量键
+// 序列恒定，(tmpl, pc) 校验命中后复用解析好的 shape。取代原先的
+// map[objLitSite]，省去每次字面量创建的 (指针,PC) 结构体哈希。
+type objLitSlot struct {
+	tmpl  *bytecode.FuncTemplate
+	pc    uint32
+	entry *objLitEntry
 }
 
 // objLitEntry 是字面量站点缓存项（解析好的 shape 与 pair→slot 索引）。
@@ -30,6 +33,11 @@ type objLitEntry struct {
 	shape *engine.Shape
 	idxs  []int32
 }
+
+// objLitSites 是站点缓存槽数（2 的幂，按 PC 低位直接映射）。同一函数内
+// PC 相差 objLitSites 整数倍的两个字面量站点会互相踢出，退化为每次重新
+// 解析 shape（结果仍正确，只是少了缓存收益）。表在首个字面量站点惰性分配。
+const objLitSites = 512
 
 type VM struct {
 	interp *Interpreter // provides builtins, globalObj, prototypes, etc.
@@ -44,7 +52,7 @@ type VM struct {
 	// objLitCache 是对象字面量站点缓存：(模板,PC) → 解析好的 shape 与
 	// pair→slot 索引。同一字面量站点的键序列恒定，首次执行解析后缓存，
 	// 后续创建零哈希/零 transition 行走。
-	objLitCache map[objLitSite]*objLitEntry
+	objLitCache []objLitSlot
 
 	// numSlab/numIdx 是 VM 私有数字 slab：JS 执行单线程独占 VM，
 	// 数字单元 bump 分配免全局原子（engine.Number 走全局原子 slab）。
@@ -841,16 +849,17 @@ func (v *VM) run() (engine.Value, error) {
 					start := len(v.stack) - pairCount
 					pairs := v.stack[start:]
 					// 字面量站点缓存：命中则免哈希直接构建（热路径）；
-					// 未命中（首次执行）解析并缓存
-					site := objLitSite{tmpl: tmpl, pc: uint32(pc)}
-					if e := v.objLitCache[site]; e != nil {
+					// 未命中（首次执行或槽位被其他站点占用）解析并写回
+					if v.objLitCache == nil {
+						v.objLitCache = make([]objLitSlot, objLitSites)
+					}
+					slot := &v.objLitCache[uint32(pc)&(objLitSites-1)]
+					if slot.entry != nil && slot.tmpl == tmpl && slot.pc == uint32(pc) {
+						e := slot.entry
 						obj = engine.NewObjectFromShapeWithProto(e.shape, e.idxs, pairs, v.interp.objectProto)
 					} else {
 						shape, idxs := engine.ResolveLiteralShape(pairs)
-						if v.objLitCache == nil {
-							v.objLitCache = make(map[objLitSite]*objLitEntry, 8)
-						}
-						v.objLitCache[site] = &objLitEntry{shape: shape, idxs: idxs}
+						*slot = objLitSlot{tmpl: tmpl, pc: uint32(pc), entry: &objLitEntry{shape: shape, idxs: idxs}}
 						obj = engine.NewObjectFromShapeWithProto(shape, idxs, pairs, v.interp.objectProto)
 					}
 					v.stack = v.stack[:start]

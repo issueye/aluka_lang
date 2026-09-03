@@ -31,10 +31,13 @@ import (
 type jsHeap struct {
 	mu      sync.Mutex
 	objects map[weak.Pointer[objectValue]]struct{}
+	// sweepAt 是下次清扫的条目数阈值（每次清扫后按存活规模重设，见 sweepLocked）。
+	sweepAt int
 }
 
-// gcSweepEvery 控制注册表自动清扫频率：每分配这么多对象就清扫一次，
-// 移除已被 Go GC 回收（weak.Value()==nil）的弱引用条目，防止注册表无限增长。
+// gcSweepEvery 是注册表清扫的起始阈值：条目数涨到它就清扫一次，移除已被
+// Go GC 回收（weak.Value()==nil）的弱引用条目，防止注册表无限增长。清扫后
+// 阈值按存活规模上调（sweepLocked），使全表扫描的成本对分配次数摊还。
 const gcSweepEvery = 4096
 
 // freeOSAllocThreshold 控制高分配压力下通知后台 freeOS 的频率：每分配这么
@@ -46,7 +49,7 @@ const freeOSAllocThreshold = 32 * gcSweepEvery
 var allocCount atomic.Int64
 
 // jsHeapGlobal 是全局对象堆。
-var jsHeapGlobal = &jsHeap{objects: make(map[weak.Pointer[objectValue]]struct{})}
+var jsHeapGlobal = &jsHeap{objects: make(map[weak.Pointer[objectValue]]struct{}), sweepAt: gcSweepEvery}
 
 // register 在 JS 对象创建时注册到堆（由 NewObject/NewArray/NewFunction 等调用）。
 //
@@ -66,7 +69,7 @@ func register(obj *objectValue) {
 		BumpAlloc()
 		jsHeapGlobal.mu.Lock()
 		jsHeapGlobal.objects[weak.Make(obj)] = struct{}{}
-		if len(jsHeapGlobal.objects)%gcSweepEvery == 0 {
+		if len(jsHeapGlobal.objects) >= jsHeapGlobal.sweepAt {
 			jsHeapGlobal.sweepLocked()
 		}
 		jsHeapGlobal.mu.Unlock()
@@ -126,6 +129,14 @@ func (h *jsHeap) sweepLocked() {
 		if w.Value() == nil {
 			delete(h.objects, w)
 		}
+	}
+	// 下次清扫阈值设为存活数的两倍：清扫是 O(表长) 全扫，阈值必须随存活
+	// 规模增长才能把成本摊还到分配次数上。固定步长在存活数远超步长时退化
+	// 为"每几次分配就全表扫一遍"（监控模式下 60 万存活对象实测慢 20 倍）。
+	if next := 2 * len(h.objects); next > gcSweepEvery {
+		h.sweepAt = next
+	} else {
+		h.sweepAt = gcSweepEvery
 	}
 	sweepAllWeakMaps()
 }

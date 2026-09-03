@@ -146,7 +146,7 @@ func (v *VM) getPropertyWithReceiver(obj engine.Value, key string, receiver engi
 			return own, nil
 		}
 		// hole 或越界索引须继续查原型链。
-		if _, err := strconv.ParseUint(key, 10, 32); err == nil {
+		if isDigitKey(key) {
 			if proto := engine.GetProto(arr); proto != nil {
 				return v.getPropertyWithReceiver(proto, key, receiver)
 			}
@@ -393,4 +393,17 @@ func (v *VM) hasProperty(l, r engine.Value) (bool, error) {
 		cur = v.getProto(cur)
 	}
 	return false, nil
+}
+
+// isDigitKey 判断 key 是否为纯十进制数字串（免 strconv 错误路径分配）。
+func isDigitKey(key string) bool {
+	if key == "" || len(key) > 10 {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < '0' || key[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
