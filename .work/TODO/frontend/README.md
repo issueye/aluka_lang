@@ -138,6 +138,11 @@
   - 修复：排查修复 `serializer.rs` 中函数模板标量头 20 字节错误写 0 导致 Go VM 误将 slot 0 当作 arguments 覆盖 `this` 的隐蔽 bug；
   - 验收：全量 32 个黄金语料在四象限上全部 100% 逐字全绿对齐通过！
   - 证据：`aluka-cli/tests/four_quadrants_oracle_test.rs`。
+- [x] **T-FE-22 ISA 契约实证性 DSL 前端实现（M4 提前验证 · 选项 4）**
+  - 范围：`aluka-compiler::dsl`、`aluka-parser::source_unit`、`aluka-cli/tests/dsl_frontend_test.rs`；
+  - 内容：极简函数式 S-expression DSL（`.adsl`/`.lisp`），轻量词法分析、S 表达式 AST 解析及标准 ALUKABC1（Version 30）字节码发射；接入 `LanguageRegistry` 与 `SourceUnit` 流水线；后端绝对隔离（零侵入修改 `aluka-vm`/`aluka-runtime`）；产物通过 Verifier 静态校验，并在 Rust VM 与 Go VM 双端执行控制台输出 100% 逐字完全一致；
+  - 证据：`aluka-cli/tests/dsl_frontend_test.rs`（2 项通过）、`aluka-compiler/tests/source_unit_pipeline_test.rs`（`test_dsl_source_unit_pipeline` 通过）。
+
 
 ---
 

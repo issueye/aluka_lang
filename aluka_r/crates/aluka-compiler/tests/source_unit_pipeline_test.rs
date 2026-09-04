@@ -121,3 +121,27 @@ fn test_custom_language_registry_dispatch() {
     let module = compile_source_unit(&mut unit).expect("编译自定义 JSON");
     module.verify().expect("校验通过");
 }
+
+#[test]
+fn test_dsl_source_unit_pipeline() {
+    let dsl_src = r#"
+        ;; 定义基础变量
+        (def x 10)
+        (def y 20)
+        ;; 高阶函数应用
+        (fn add (a b) (+ a b))
+        (def res (add x y))
+        (console.log "result:" res)
+    "#;
+    let mut unit = LanguageRegistry::global()
+        .parse_source(dsl_src, "test.adsl", ModuleKind::Script)
+        .expect("DSL 源码单元解析成功");
+
+    assert_eq!(unit.source_kind, SourceKind::Dsl);
+    unit.require_stages(STAGE_PARSED).expect("应标记已解析");
+
+    let module = compile_source_unit(&mut unit).expect("DSL 单元编译成功");
+    module.verify().expect("生成的字节码必须通过 ISA 静态校验");
+    unit.require_stages(STAGE_BYTECODE_COMPILED)
+        .expect("应推进到字节码编译完成阶段");
+}

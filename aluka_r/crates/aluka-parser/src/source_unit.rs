@@ -31,6 +31,8 @@ pub enum SourceKind {
     TypeScript,
     /// JSON（不做 JS 解析，延迟处理）
     Json,
+    /// 自定义 DSL（S-expression / Lisp 等专用领域语言）
+    Dsl,
 }
 
 impl SourceKind {
@@ -41,6 +43,7 @@ impl SourceKind {
             Self::TypeScript => "typescript",
             Self::Json => "json",
             Self::JavaScript => "javascript",
+            Self::Dsl => "dsl",
         }
     }
 }
@@ -247,6 +250,7 @@ pub fn detect_source_kind(path: &str) -> SourceKind {
     match normalized_extension(path).as_str() {
         "ts" | "mts" | "cts" | "tsx" => SourceKind::TypeScript,
         "json" => SourceKind::Json,
+        "adsl" | "lisp" => SourceKind::Dsl,
         _ => SourceKind::JavaScript,
     }
 }
@@ -268,7 +272,7 @@ fn strip_bom(src: &str) -> &str {
 /// 扩展名 → 语言的注册表（对齐 Go loader 的 `require.extensions` 设计）。
 ///
 /// 默认注册表覆盖 `.js/.mjs/.cjs/.jsx` → JS、`.ts/.mts/.cts/.tsx` → TS、
-/// `.json` → JSON；新语言经 [`LanguageRegistry::register`] 注册后即可被
+/// `.json` → JSON、`.adsl/.lisp` → DSL；新语言经 [`LanguageRegistry::register`] 注册后即可被
 /// [`LanguageRegistry::classify`] 识别。
 #[derive(Debug, Default, Clone)]
 pub struct LanguageRegistry {
@@ -287,6 +291,9 @@ impl LanguageRegistry {
             reg.register(ext, SourceKind::TypeScript);
         }
         reg.register("json", SourceKind::Json);
+        for ext in ["adsl", "lisp"] {
+            reg.register(ext, SourceKind::Dsl);
+        }
         reg
     }
 
@@ -352,6 +359,17 @@ impl LanguageRegistry {
                 program: None,
                 has_tla: false,
                 stage: TransformStage(0),
+            });
+        }
+        if source_kind == SourceKind::Dsl {
+            return Ok(SourceUnit {
+                path: path.to_owned(),
+                source: src.to_owned(),
+                source_kind,
+                module_kind,
+                program: None,
+                has_tla: false,
+                stage: STAGE_PARSED,
             });
         }
         check_unsupported_ts(src, path)?;

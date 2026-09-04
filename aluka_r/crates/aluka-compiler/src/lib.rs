@@ -4,6 +4,8 @@
 
 /// 语法树遍历与指令生成
 pub mod codegen;
+/// S-expression 领域特定语言（DSL）编译器
+pub mod dsl;
 /// 编译期错误类型
 pub mod error;
 /// JSX/TSX 降级转换器
@@ -20,6 +22,7 @@ pub mod scope;
 pub mod source_unit;
 
 pub use codegen::{backpatch_jump, compile, emit_jump};
+pub use dsl::{DslCompiler, compile_dsl_source};
 pub use error::CompileError;
 pub use jsx::{lower_expr, lower_jsx};
 pub use max_stack::compute_max_stack;

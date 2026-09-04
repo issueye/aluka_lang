@@ -252,8 +252,12 @@ impl<'src> Lexer<'src> {
             }
         }
 
-        // 单字符标点
-        self.pos += 1;
+        // 单字符标点或未知字符（按 Unicode 字符边界步进）
+        if let Some(ch) = self.src[self.pos..].chars().next() {
+            self.pos += ch.len_utf8();
+        } else {
+            self.pos += 1;
+        }
         let text = self.src[start..self.pos].to_owned();
         Token {
             kind: TokenKind::Punct(text.clone()),

@@ -30,6 +30,11 @@ pub fn compile_source_unit(unit: &mut SourceUnit) -> Result<BytecodeModule, Comp
             unit.mark_stage(STAGE_BYTECODE_COMPILED)?;
             Ok(module)
         }
+        SourceKind::Dsl => {
+            let module = crate::dsl::compile_dsl_source(&unit.source)?;
+            unit.mark_stage(STAGE_BYTECODE_COMPILED)?;
+            Ok(module)
+        }
     }
 }
 

@@ -69,6 +69,7 @@
 | 51 | 选项 1【前端语言注册流水线全链路贯通】：`SourceUnit`、`LanguageRegistry`、`TransformStage` 接入 `aluka-compiler` 与 `alukac` CLI，支持 `.json`、`.ts`、`.js` 多语言分发与单向阶段位推进 | `[x]` | T-FE 前置/M1 |
 | 52 | 选项 2【M2 阶段高级语法扩展：JSX/TSX Lowering 与 ESM 规范】：AST、Parser 与 Compiler 支持 `<tag attr={expr}>children</tag>` 转为 `React.createElement`，以及 ESM `import`/`export` 完整语法解析与发射 | `[x]` | T-FE-03, M2 |
 | 53 | 选项 3【双向四象限质量对拍矩阵（D 轨）】：Rust 前端 × Rust VM、Rust 前端 × Go VM、Go 前端 × Rust VM、Go 前端 × Go VM 四象限交叉矩阵测试套件（32 个真实黄金语料 100% 逐字全绿通过） | `[x]` | D1, D3 |
+| 54 | 选项 4【ISA 契约实证性 DSL 前端实现（M4 提前验证）】：极简函数式 S-expression DSL 前端编译器（.adsl/.lisp），经 LanguageRegistry/SourceUnit 流水线无缝挂载；后端绝对隔离（零改动 aluka-vm/runtime）；产物通过 Verifier 并在 Rust VM 与 Go VM 双端执行 100% 逐字一致 | `[x]` | M4 提前验证, ISA 跨语言实证 |
 
 ---
 
@@ -113,6 +114,21 @@ cargo test -p aluka-cli --test golden_compile_oracle_test -- --nocapture
   - 驱动全部 32 个真实黄金语料（含算术、控制流、多层跨层闭包、getter/setter、class 继承、try-catch-finally、generator、async/await、for-await-of）在四象限上全部 100% 逐字对齐一致！
 - 测试命令：`cargo test -p aluka-cli --test four_quadrants_oracle_test -- --nocapture`（全绿通过）；
 - 质量门禁：`cargo fmt --check` 0 diff，`cargo clippy` 0 warning / 0 error。
+
+### 待办 54 · 选项 4【ISA 契约实证性 DSL 前端实现与双端 Oracle 对拍】
+**结论**：达成（双端执行 100% 逐字完全一致）  
+**证据类型**：DSL 编译器 + 语言注册分发 + 双端 Oracle 交叉集成测试  
+- 极简 S-expression 函数式 DSL 编译器：在 `aluka-compiler::dsl` 实现轻量词法与 S 表达式解析器，支持 `def`、`set!`、`fn`、`if`、`do`、算术比较及 `console.log` 特化指令生成，输出严格符合统一 ISA（Version 30，主函数名为 "main"，末尾 ReturnUndef，slot 0 留给 this）；
+- 流水线集成与后端绝对隔离：在 `aluka-parser::source_unit` 中扩充 `SourceKind::Dsl`，自动识别 `.adsl`/`.lisp` 扩展名；在 `compile_source_unit` 中自动路由编译并推进 `STAGE_BYTECODE_COMPILED`；**完全未修改 `aluka-vm` 与 `aluka-runtime` 任何一行后端代码**，实证 Aluka ISA 契约作为通用字节码跨前端完全解耦与可插拔；
+- 端到端双端 Oracle 对拍集成测试：新建 `aluka-cli/tests/dsl_frontend_test.rs`，编译经 Verifier 校验后分别在 Rust VM (`aluvm`) 与 Go VM (`run_bc.exe`) 双端执行，多参函数与高阶函数执行输出 100% 逐字完全一致：
+  ```
+  sum: 20
+  branch: greater than 15
+  poly result: 47
+  higher order result: 110
+  ```
+- 测试命令：`cargo test -p aluka-cli --test dsl_frontend_test -- --nocapture`（全绿通过）；全前端套件 80 项单测与集成测试 100% 全绿。
+
 
 
 ### 待办 1-2 · F1 导出 106 条 ISA 事实表
