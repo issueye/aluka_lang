@@ -111,7 +111,7 @@ pub struct Vm {
     /// 宏任务队列（句柄 id + 到期累计毫秒 + 延迟 + 回调 + 是否周期）
     pub(crate) macro_tasks: std::collections::VecDeque<(u64, u64, u64, Value, bool)>,
     /// 定时器句柄计数器（setTimeout/setInterval 分配 id）
-    timer_counter: u64,
+    pub(crate) timer_counter: u64,
     /// 已被 clear 的定时器句柄集合（drain 时跳过）
     pub(crate) active_timers: std::collections::HashSet<u64>,
     /// `Promise` 原生构造器单例（resolve/withResolvers 拦截）

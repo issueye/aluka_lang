@@ -28,6 +28,19 @@ impl Vm {
         this_val: Value,
         args: &[Value],
     ) -> Result<Value, VmError> {
+        if let Value::Object(r) = callee {
+            if let Some(HeapObject::PromiseResolver { promise, .. }) = self.heap.get(r.0 as usize) {
+                let p = *promise;
+                let val = match args.first() {
+                    Some(v) if !matches!(v, Value::Undefined) => *v,
+                    _ => {
+                        crate::builtins::timers::take_resolver_val(r.0).unwrap_or(Value::Undefined)
+                    }
+                };
+                self.fulfill_promise(p, val)?;
+                return Ok(Value::Undefined);
+            }
+        }
         let (f_idx, uvs) = self.resolve_callable(callee);
         if let Some(fi) = f_idx {
             return self.invoke_function(fi, this_val, args, uvs);

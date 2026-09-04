@@ -68,12 +68,14 @@
 - `assert`：`ok/equal/strictEqual/throws`；
 - 验收：真实脚本风格 e2e（文件树操作 + 断言链）对拍。
 
-### Phase 3（T3，≈3-4 次会话）
-- `events`：`EventEmitter`（on/once/emit/off）——回调经微任务/同步分派；
-- `timers`：`setInterval/clearInterval/clearTimeout`（宏任务队列扩展为周期型）；
-- `stream`：Readable/Writable 最小集（供 01-for-await-stream 用例）；
-- `v8`/`perf_hooks`：`getHeapStatistics/performance.now`（低价值但 conformance 12/13 用）；
-- 验收：`04-nexttick`/`01-for-await-stream` 用例推进 + EventEmitter e2e。
+### Phase 3（T3）
+- [x] `buffer` 基础：`Buffer` 构造器与类对象、`SlowBuffer`、`kMaxLength`、`isUtf8`、`isAscii`、静态方法（`from`/`alloc`/`allocUnsafe`/`isBuffer`/`byteLength`/`isEncoding`/`concat`/`compare`）、实例方法（`toString`/`slice`/`toJSON`/`equals`）；
+- [x] `timers` 与 `timers/promises`：定时器族导出，`setTimeout`/`setImmediate` Promise 化支持供 async 脚本原生 `await`；
+- [x] `perf_hooks`：`performance.now`（单调高精度毫秒）、`timeOrigin`、`mark`、`measure`、`getEntries*`、`clearMarks`（消除 conformance 13 缺口）；
+- [x] `v8`：`getHeapStatistics`（14 个 Node 规范统计键）、`cachedDataVersionTag`、`serialize`/`deserialize`（消除 conformance 12 缺口）；
+- [ ] `events`：`EventEmitter`（on/once/emit/off）深化与模块级事件 API；
+- [ ] `stream`：Readable/Writable 最小集（供 01-for-await-stream 用例）；
+- 验收：`crates/aluka-cli/tests/builtins_phase3_test.rs` 4 组 e2e 用例与 Go 逐字对拍全绿固化。
 
 ### Phase 4（T4，M2 末/按需）
 - `url` 深化（parse/format + searchParams）、`dns`（node 内置解析最小）、

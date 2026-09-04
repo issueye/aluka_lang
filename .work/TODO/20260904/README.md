@@ -58,6 +58,7 @@
 | 40 | 前端推进：T-FE-14 静态编译期优化 Pass（常量折叠、死代码消除、跳转穿透并在 `compile_module` 自动挂载） | `[x]` | T-FE-14 |
 | 41 | 前端推进：T-FE-15 最大栈深（MaxStack）精确推导（基于 Worklist 前向控制流数据流分析， Try 保护区补偿，满足 V10 校验） | `[x]` | T-FE-15 |
 | 42 | 前端推进：T-FE-17 `alukac` 独立编译器 CLI 命令行工具（支持 compile 编译为 .bc、disasm 反汇编格式化报告、彻底解耦） | `[x]` | T-FE-17 |
+| 45 | 内置库 Phase 3 建设：实现 buffer（Buffer 类与静态/实例方法）、perf_hooks（performance.now/mark/measure）、v8（getHeapStatistics 14 键）、timers 与 timers/promises（定时器与 Promise 化 setTimeout），新建 builtins_phase3_test 与 Go Oracle 逐字对拍 100% 绿通 | `[x]` | 内置库 Phase 3 |
 | 43 | 后端推进：`aluka-regex` 正则引擎（递归下降解析 + CPS 回溯匹配 + 百万步预算护栏）与 VM 侧 `MAKE_REGEXP`/`exec`/`test`，黄金语料 14 通过——**T-BE-15 达成 33/33 全量对拍** | `[x]` | T-BE-15, D1 |
 | 44 | 后端推进：T-BE-14 `aluvm` 独立虚拟机 CLI（`run .bc` / `--version` / `process.argv` 注入 / 退出码映射 / 未捕获异常 stderr 展示），4 项集成测试全绿 | `[x]` | T-BE-14 |
 | 45 | 后端推进：T-BE-02 GC 原型 ×2 实现（分代标记-清除 vs 引用计数+循环回收，`gc_protos` 模块）+ 20 项正确性单测 + gc_bench 基准（min-of-5）+ 两份评测报告 + 选型 ADR——**原型 A 全面胜出（churn 80.8×/cycles 23.3×/fib30 1.8×）** | `[x]` | T-BE-02, A1-3 |

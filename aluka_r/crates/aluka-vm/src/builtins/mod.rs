@@ -13,14 +13,18 @@
 //! 无借用问题），返回值直接压栈。
 
 pub mod assert;
+pub mod buffer;
 pub mod constants;
 pub mod fs;
 pub mod os;
 pub mod path_posix;
 pub mod path_win32;
+pub mod perf_hooks;
 pub mod querystring;
 pub mod string_decoder;
+pub mod timers;
 pub mod util;
+pub mod v8;
 
 pub(crate) use crate::microtask::{Job, PendingResume};
 
@@ -28,7 +32,22 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
+
+thread_local! {
+    static CURRENT_RECEIVER: RefCell<Value> = const { RefCell::new(Value::Undefined) };
+}
+
+/// 设置当前分派调用的接收者（this）。
+pub fn set_current_receiver(v: Value) {
+    CURRENT_RECEIVER.with(|r| *r.borrow_mut() = v);
+}
+
+/// 获取当前分派调用的接收者（this）。
+pub fn current_receiver() -> Value {
+    CURRENT_RECEIVER.with(|r| *r.borrow())
+}
 
 /// 内置方法处理器：`(vm, 实参) -> 返回值`。
 pub type BuiltinHandler = fn(&mut Vm, &[Value]) -> Result<Value, VmError>;
@@ -68,6 +87,14 @@ macro_rules! builtin_modules {
             crate::builtins::util::MODULE,
             crate::builtins::util::TYPES_MODULE,
             crate::builtins::assert::MODULE,
+            crate::builtins::buffer::MODULE,
+            crate::builtins::buffer::BUFFER_CLASS_MODULE,
+            crate::builtins::buffer::INSTANCE_MODULE,
+            crate::builtins::perf_hooks::MODULE,
+            crate::builtins::perf_hooks::PERFORMANCE_MODULE,
+            crate::builtins::v8::MODULE,
+            crate::builtins::timers::MODULE,
+            crate::builtins::timers::PROMISES_MODULE,
         ]
     };
 }
@@ -166,14 +193,20 @@ pub fn try_dispatch(
     let key = match &vm.heap[r.index()] {
         // 形态一：GET_PROP 后调用（receiver 是 NativeFn "模块.方法"）
         HeapObject::NativeFn { name } if name.contains('.') => name.clone(),
-        // 形态二：模块单例直调（receiver 是模块对象）
-        HeapObject::Ordinary { .. } => {
-            let module_name = vm.builtin_registry.module_of(r)?;
-            format!("{module_name}.{method}")
+        // 形态二：模块单例直调（receiver 是模块对象或类构造器）
+        HeapObject::Ordinary { properties, .. } | HeapObject::NativeCtor { properties, .. } => {
+            if properties.contains_key("_isBuffer") {
+                format!("buffer:instance.{method}")
+            } else if let Some(module_name) = vm.builtin_registry.module_of(r) {
+                format!("{module_name}.{method}")
+            } else {
+                return None;
+            }
         }
         _ => return None,
     };
     let handler = vm.builtin_registry.lookup(&key)?;
+    set_current_receiver(receiver);
     Some(handler(vm, args))
 }
 
