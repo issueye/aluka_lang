@@ -241,6 +241,8 @@ impl Vm {
             self.microtask_queue
                 .push_back(crate::builtins::Job::ResumeFrame(resume));
         }
+        // 组合器（all/race/allSettled）推进：元素定型出口
+        crate::builtins::promise::on_settled(self, promise, value, false)?;
         Ok(())
     }
 
@@ -279,6 +281,8 @@ impl Vm {
             self.microtask_queue
                 .push_back(crate::builtins::Job::ResumeFrameRejected(resume));
         }
+        // 组合器推进（All 首个拒绝 / Race 拒绝胜出 / AllSettled 记槽）
+        crate::builtins::promise::on_settled(self, promise, value, true)?;
         Ok(())
     }
 }

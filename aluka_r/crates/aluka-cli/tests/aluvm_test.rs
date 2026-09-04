@@ -18,6 +18,10 @@ fn corpus_path(name: &str) -> std::path::PathBuf {
 }
 
 fn go_oracle_exe() -> std::path::PathBuf {
+    // ALUKA_ORACLE 优先（worktree / CI 注入），回退主仓相对布局
+    if let Ok(p) = std::env::var("ALUKA_ORACLE") {
+        return std::path::PathBuf::from(p);
+    }
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()

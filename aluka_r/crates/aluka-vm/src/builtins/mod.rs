@@ -40,6 +40,7 @@ pub mod os;
 pub mod path_posix;
 pub mod path_win32;
 pub mod perf_hooks;
+pub mod promise;
 pub mod punycode;
 pub mod querystring;
 pub mod readline;

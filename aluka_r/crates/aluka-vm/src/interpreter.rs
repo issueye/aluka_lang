@@ -1302,6 +1302,22 @@ impl Vm {
                         let cb = args.first().copied().unwrap_or(Value::Undefined);
                         self.nexttick_queue.push_back(cb);
                         self.stack.push(Value::Undefined);
+                    } else if method_name == "finally"
+                        && matches!(
+                            receiver,
+                            Value::Object(rr)
+                                if matches!(
+                                    self.heap.get(rr.0 as usize),
+                                    Some(HeapObject::Promise { .. })
+                                )
+                        )
+                    {
+                        // promise.finally(cb)：cb 定型后运行（不收参），值/原因透传
+                        let cb = args.first().copied().unwrap_or(Value::Undefined);
+                        if let Value::Object(rr) = receiver {
+                            self.promise_finally(rr, cb)?;
+                        }
+                        self.stack.push(receiver);
                     } else if matches!(method_name.as_str(), "then" | "catch")
                         && matches!(
                             receiver,
@@ -1385,6 +1401,19 @@ impl Vm {
                         let reason = args.first().copied().unwrap_or(Value::Undefined);
                         let p = self.alloc_rejected_promise(reason);
                         self.stack.push(Value::Object(p));
+                    } else if matches!(method_name.as_str(), "all" | "race" | "allSettled")
+                        && self
+                            .promise_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // 组合器：all/race/allSettled（any 在 Go 侧不存在，不实现）
+                        let kind = match method_name.as_str() {
+                            "all" => crate::builtins::promise::CombinerKind::All,
+                            "race" => crate::builtins::promise::CombinerKind::Race,
+                            _ => crate::builtins::promise::CombinerKind::AllSettled,
+                        };
+                        let p = self.promise_combiner(kind, &args)?;
+                        self.stack.push(p);
                     } else if method_name == "withResolvers"
                         && self
                             .promise_ctor
