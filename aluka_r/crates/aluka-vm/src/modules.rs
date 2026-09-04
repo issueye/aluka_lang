@@ -40,13 +40,16 @@ impl Vm {
     /// 内置模块名 → 模块对象（`node:` 前缀剥离；M2：`fs`/`path`/`os`）。
     fn builtin_module(&self, name: &str) -> Option<Value> {
         let name = name.strip_prefix("node:").unwrap_or(name);
+        if let Some(m) = self.builtin_registry.module(name) {
+            return Some(Value::Object(m));
+        }
         match name {
             "fs" => self.fs_object.map(Value::Object),
             "path" => self.path_module.map(Value::Object),
             "os" => self.os_module.map(Value::Object),
             "stream" => self.stream_module.map(Value::Object),
             "events" => self.events_module.map(Value::Object),
-            _ => self.builtin_registry.module(name).map(Value::Object),
+            _ => None,
         }
     }
 

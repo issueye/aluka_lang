@@ -13,15 +13,20 @@
 //! 无借用问题），返回值直接压栈。
 
 pub mod assert;
+pub mod assert_strict;
 pub mod buffer;
 pub mod constants;
+pub mod events;
 pub mod fs;
+pub mod fs_promises;
 pub mod os;
 pub mod path_posix;
 pub mod path_win32;
 pub mod perf_hooks;
 pub mod querystring;
+pub mod stream;
 pub mod string_decoder;
+pub mod sys;
 pub mod timers;
 pub mod util;
 pub mod v8;
@@ -95,6 +100,15 @@ macro_rules! builtin_modules {
             crate::builtins::v8::MODULE,
             crate::builtins::timers::MODULE,
             crate::builtins::timers::PROMISES_MODULE,
+            crate::builtins::assert_strict::MODULE,
+            crate::builtins::sys::MODULE,
+            crate::builtins::fs_promises::MODULE,
+            crate::builtins::events::MODULE,
+            crate::builtins::events::EMITTER_CLASS_MODULE,
+            crate::builtins::events::INSTANCE_MODULE,
+            crate::builtins::stream::MODULE,
+            crate::builtins::stream::PROMISES_MODULE,
+            crate::builtins::stream::CONSUMERS_MODULE,
         ]
     };
 }
@@ -194,14 +208,49 @@ pub fn try_dispatch(
         // 形态一：GET_PROP 后调用（receiver 是 NativeFn "模块.方法"）
         HeapObject::NativeFn { name } if name.contains('.') => name.clone(),
         // 形态二：模块单例直调（receiver 是模块对象或类构造器）
-        HeapObject::Ordinary { properties, .. } | HeapObject::NativeCtor { properties, .. } => {
+        HeapObject::Ordinary {
+            properties, proto, ..
+        } => {
+            let is_ee = properties.contains_key("_isEventEmitter")
+                || proto.is_some_and(|p| match vm.heap.get(p.index()) {
+                    Some(HeapObject::Ordinary {
+                        properties: p_props,
+                        ..
+                    }) => p_props.contains_key("_isEventEmitter"),
+                    _ => false,
+                });
+            let is_stream = properties.contains_key("_isStream")
+                || proto.is_some_and(|p| match vm.heap.get(p.index()) {
+                    Some(HeapObject::Ordinary {
+                        properties: p_props,
+                        ..
+                    }) => p_props.contains_key("_isStream"),
+                    _ => false,
+                });
             if properties.contains_key("_isBuffer") {
                 format!("buffer:instance.{method}")
+            } else if is_ee {
+                format!("events:instance.{method}")
+            } else if is_stream {
+                format!("stream.{method}")
             } else if let Some(module_name) = vm.builtin_registry.module_of(r) {
                 format!("{module_name}.{method}")
             } else {
                 return None;
             }
+        }
+        HeapObject::NativeCtor { .. } => {
+            if let Some(module_name) = vm.builtin_registry.module_of(r) {
+                format!("{module_name}.{method}")
+            } else {
+                return None;
+            }
+        }
+        HeapObject::EventEmitter { .. } => {
+            format!("events:instance.{method}")
+        }
+        HeapObject::Readable { .. } => {
+            format!("stream.{method}")
         }
         _ => return None,
     };

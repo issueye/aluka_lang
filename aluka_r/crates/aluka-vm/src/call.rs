@@ -40,6 +40,12 @@ impl Vm {
                 self.fulfill_promise(p, val)?;
                 return Ok(Value::Undefined);
             }
+            if let Some(HeapObject::NativeFn { name }) = self.heap.get(r.0 as usize).cloned() {
+                if let Some(handler) = self.builtin_registry.lookup(&name) {
+                    crate::builtins::set_current_receiver(this_val);
+                    return handler(self, args);
+                }
+            }
         }
         let (f_idx, uvs) = self.resolve_callable(callee);
         if let Some(fi) = f_idx {
@@ -54,23 +60,27 @@ impl Vm {
         if let Value::Object(r) = callee {
             let ctor_name = match self.heap.get(r.0 as usize) {
                 Some(HeapObject::NativeCtor { name, .. }) => Some(name.clone()),
+                Some(HeapObject::NativeFn { name, .. }) => Some(name.clone()),
                 _ => None,
             };
-            match ctor_name.as_deref() {
-                Some("Error") => {
-                    // message 未传或为 undefined 时按规范置空串
-                    let message = match args.first() {
-                        Some(Value::Undefined) | None => String::new(),
-                        Some(v) => self.format_value(*v),
-                    };
-                    return Ok(Value::Object(self.alloc_error_instance(&message)));
+            if let Some(ref name) = ctor_name {
+                match name.as_str() {
+                    "Error" => {
+                        // message 未传或为 undefined 时按规范置空串
+                        let message = match args.first() {
+                            Some(Value::Undefined) | None => String::new(),
+                            Some(v) => self.format_value(*v),
+                        };
+                        return Ok(Value::Object(self.alloc_error_instance(&message)));
+                    }
+                    "Array" => return Ok(Value::Object(self.alloc_array(Vec::new()))),
+                    "Object" => return Ok(Value::Object(self.alloc_ordinary())),
+                    "URL" => return Ok(self.url_constructor(args)),
+                    _ => {}
                 }
-                Some("Array") => return Ok(Value::Object(self.alloc_array(Vec::new()))),
-                Some("Object") => return Ok(Value::Object(self.alloc_ordinary())),
-                Some("URL") => return Ok(self.url_constructor(args)),
-                Some("stream.Readable") => return Ok(Value::Object(self.alloc_readable())),
-                Some("events.EventEmitter") => return Ok(Value::Object(self.alloc_emitter())),
-                _ => {}
+                if let Some(handler) = self.builtin_registry.lookup(name) {
+                    return handler(self, args);
+                }
             }
         }
         let proto_ref = match self.get_property(callee, "prototype") {
@@ -252,6 +262,11 @@ impl Vm {
         self.current_constants = old_constants.clone();
         self.current_upvalues = old_upvalues;
         self.open_upvalues = old_open_upvalues;
+        for (slot, uv) in &self.open_upvalues {
+            if let Some(loc) = self.locals.get_mut(*slot) {
+                *loc = *uv.0.borrow();
+            }
+        }
         self.try_stack = old_try_stack;
         self.current_try_table = old_try_table;
         self.current_func_idx = old_func_idx;

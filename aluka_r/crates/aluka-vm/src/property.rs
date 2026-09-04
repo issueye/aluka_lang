@@ -60,16 +60,6 @@ impl Vm {
         if key == "nextTick" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
             return Ok(Value::Object(self.alloc_native_fn("nextTick")));
         }
-        if key == "EventEmitter" && self.events_module.is_some_and(|m| obj == Value::Object(m)) {
-            return Ok(Value::Object(
-                self.alloc_native_ctor("events.EventEmitter", None),
-            ));
-        }
-        if key == "Readable" && self.stream_module.is_some_and(|m| obj == Value::Object(m)) {
-            return Ok(Value::Object(
-                self.alloc_native_ctor("stream.Readable", None),
-            ));
-        }
         let mut cur = obj;
         let mut depth = 0;
         while let Value::Object(r) = cur {

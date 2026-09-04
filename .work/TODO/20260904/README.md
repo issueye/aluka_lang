@@ -83,6 +83,7 @@
 | 61 | 后端推进（M2）：**内置库深化：`os` + `URL`**——`os.platform/homedir/tmpdir` 拦截 + `os.EOL` 属性物化（platform 感知 CRLF/LF）；`new URL(href)` 构造器（轻量解析 scheme/authority（userinfo 剥离）/host/port/pathname/search/hash/host/origin/href 全部物化为普通对象属性）；e2e 用例与 Go Oracle 逐字对拍（`os` 四字段 + `new URL` 十属性）+ 固化为 `cjs_test` 回归（3/3） | `[x]` | M2 内置库 |
 | 62 | 文档：**内置库补齐计划**（`aluka_r/docs/builtins-plan.md`）——现状矩阵（8 类 40+ 能力点实征）、差距全景（对齐 Go registry 60 模块四分层 T1-T4）、分批路线（Phase 1-4：轻量纯状态→文件/进程→事件/流→网络/重件，每批 e2e 对拍+固化+门禁闭环）、验收与门禁、风险表（平台差异/异步回调/Buffer/conformance 空对空） | `[x]` | M2 内置库计划 |
 | 63 | 后端推进（**多 Agent 并行**）：内置库按计划 Phase 1+2 两路并行交付——先搭 `builtins/` 注册表骨架（双形态 dispatch：模块单例直调 + GET_PROP/NativeFn 形态；`register_all` 时序后移消除单例依赖 workaround）；**Agent A**（Phase 1：path/posix、path/win32、constants 242 常量、string_decoder——Go utf8ValidPrefix 怪癖语义逐字对拍）；**Agent B**（Phase 2：fs readdirSync/statSync/mkdirSync/rmSync、os arch/type/release/cpus/userInfo、util format/inspect/util.types、assert ok/equal/throws）；共享 `tests/common` 对拍基建；合流修复（clippy 治理、空参 resolve 语义、missing-docs）——**112 项测试全绿 + clippy 0 + 各模块与 Go Oracle 逐字一致** | `[x]` | M2 内置库并行 |
+| 87 | 内置库 Phase 4 多代理并行开发：Agent-A (events 完整生命周期)、Agent-B (fs/promises 异步文件)、Agent-C (assert/strict 严格断言与 sys 兼容别名)、Agent-D (stream 家族流机制与数据消费)；统一接入 BuiltinRegistry，修复闭包上值回写与原生函数直调，4 组 13 项端到端测试与 Go Oracle 逐字对拍 100% 绿通，全工作区 200+ 测试零回归 | `[x]` | M2 内置库并行 |
 
 ---
 

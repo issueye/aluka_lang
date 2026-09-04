@@ -73,14 +73,18 @@
 - [x] `timers` 与 `timers/promises`：定时器族导出，`setTimeout`/`setImmediate` Promise 化支持供 async 脚本原生 `await`；
 - [x] `perf_hooks`：`performance.now`（单调高精度毫秒）、`timeOrigin`、`mark`、`measure`、`getEntries*`、`clearMarks`（消除 conformance 13 缺口）；
 - [x] `v8`：`getHeapStatistics`（14 个 Node 规范统计键）、`cachedDataVersionTag`、`serialize`/`deserialize`（消除 conformance 12 缺口）；
-- [ ] `events`：`EventEmitter`（on/once/emit/off）深化与模块级事件 API；
-- [ ] `stream`：Readable/Writable 最小集（供 01-for-await-stream 用例）；
 - 验收：`crates/aluka-cli/tests/builtins_phase3_test.rs` 4 组 e2e 用例与 Go 逐字对拍全绿固化。
 
-### Phase 4（T4，M2 末/按需）
-- `url` 深化（parse/format + searchParams）、`dns`（node 内置解析最小）、
-  `crypto`（hash/randomBytes）、`zlib`（deflate/inflate）、`http/https/net`
-  （TCP/HTTP 最小，验收=Go conformance 08/10 语义等价）、`vm`（runInContext 近似）。
+### Phase 4（核心事件、流与异步增强，四特工多代理并行开发完成）
+- [x] `events`：`EventEmitter` 类与实例完整生命周期（`on`/`once`/`emit`/`off`/`listenerCount` 等）；
+- [x] `stream` 家族：`Readable`/`Writable` 管道流转、`stream/promises`（`finished`/`pipeline`）、`stream/consumers`（`text`/`json`/`buffer`）；
+- [x] `fs/promises`：`readFile`/`writeFile`/`readdir`/`stat`/`mkdir`/`rm` 原生 Promise 化支持 `await`；
+- [x] `assert/strict`：严格断言模式与函数直调支持；
+- [x] `sys`：历史兼容别名模块，透明转发 `util`（符合 DEP0140 规范）；
+- 验收：4 组端到端测试套件（13 个对拍测试）全部 100% 绿通固化。
+
+### Phase 5（网络通信协议栈与重型大件）
+- `crypto`（hash/randomBytes）、`zlib`（deflate/inflate）、`http/https/net`（TCP/HTTP 最小，验收=Go conformance 08/10 语义等价）、`vm`（runInContext 近似）。
 - 验收：conformance 缺口清单逐项刷新（当前 4/17 语义类全过，目标 ≥8 项有 Go 输出）。
 
 ## 5. 验收与门禁（贯穿所有 Phase）

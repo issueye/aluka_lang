@@ -1080,8 +1080,12 @@ impl Vm {
                     }
                     args.reverse();
                     let receiver = self.pop()?;
-
-                    if method_name == "log" {
+                    if let Some(res) =
+                        crate::builtins::try_dispatch(self, receiver, &method_name, &args)
+                    {
+                        let val = res?;
+                        self.stack.push(val);
+                    } else if method_name == "log" {
                         let line = args
                             .iter()
                             .map(|v| self.format_console_value(*v))
@@ -2088,24 +2092,9 @@ impl Vm {
                                 .push_back(crate::builtins::Job::Call(cb, Value::Undefined));
                             self.stack.push(Value::Undefined);
                         } else {
-                            let (f_idx, uvs) =
-                                if let Some(HeapObject::Closure {
-                                    func_idx, upvalues, ..
-                                }) = self.heap.get(callee_ref)
-                                {
-                                    (Some(*func_idx), upvalues.clone())
-                                } else if callee_ref < self.module_functions.len() {
-                                    (Some(callee_ref), Vec::new())
-                                } else {
-                                    (None, Vec::new())
-                                };
-
-                            if let Some(fi) = f_idx {
-                                let ret = self.invoke_function(fi, Value::Undefined, &args, uvs)?;
-                                self.stack.push(ret);
-                            } else {
-                                self.stack.push(Value::Undefined);
-                            }
+                            let ret =
+                                self.invoke_callable(Value::Object(r), Value::Undefined, &args)?;
+                            self.stack.push(ret);
                         }
                     } else {
                         self.stack.push(Value::Undefined);
@@ -2120,28 +2109,8 @@ impl Vm {
                     args.reverse();
                     let this_val = self.pop()?;
                     let callee = self.pop()?;
-                    if let Value::Object(r) = callee {
-                        let (f_idx, uvs) =
-                            if let Some(HeapObject::Closure {
-                                func_idx, upvalues, ..
-                            }) = self.heap.get(r.0 as usize)
-                            {
-                                (Some(*func_idx), upvalues.clone())
-                            } else if (r.0 as usize) < self.module_functions.len() {
-                                (Some(r.0 as usize), Vec::new())
-                            } else {
-                                (None, Vec::new())
-                            };
-
-                        if let Some(fi) = f_idx {
-                            let ret = self.invoke_function(fi, this_val, &args, uvs)?;
-                            self.stack.push(ret);
-                        } else {
-                            self.stack.push(Value::Undefined);
-                        }
-                    } else {
-                        self.stack.push(Value::Undefined);
-                    }
+                    let ret = self.invoke_callable(callee, this_val, &args)?;
+                    self.stack.push(ret);
                 }
 
                 // 9. 闭包与 Upvalues
