@@ -15,6 +15,7 @@ pub mod modules;
 pub mod ops;
 pub mod prims;
 pub mod property;
+pub mod symbol;
 pub mod value;
 
 pub use heap::HeapObject;

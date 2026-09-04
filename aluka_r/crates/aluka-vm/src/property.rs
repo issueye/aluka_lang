@@ -33,6 +33,7 @@ impl Vm {
                     match &self.heap[idx] {
                         HeapObject::String(s) => return s.clone(),
                         HeapObject::BigInt(s) => return s.clone(),
+                        HeapObject::Symbol { .. } => return crate::symbol::mangled_key(r),
                         _ => {}
                     }
                 }
@@ -59,6 +60,10 @@ impl Vm {
         }
         if key == "nextTick" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
             return Ok(Value::Object(self.alloc_native_fn("nextTick")));
+        }
+        // Symbol 构造器的知名符号物化（Symbol.iterator 等属性读取）
+        if self.is_native_fn(obj, "Symbol") && crate::symbol::WELL_KNOWN_NAMES.contains(&key) {
+            return Ok(self.well_known_symbol(key));
         }
         // 闭包函数：`name` / `length` 读模板元数据（Go 前端编译产物携带函数名）
         if let Value::Object(r) = obj {

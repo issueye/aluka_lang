@@ -335,6 +335,9 @@ impl Vm {
                                 elements.iter().map(|e| self.format_value(*e)).collect();
                             items.join(",")
                         }
+                        HeapObject::Symbol { description, .. } => {
+                            crate::symbol::symbol_display(description)
+                        }
                         HeapObject::Ordinary { .. }
                         | HeapObject::Generator
                         | HeapObject::Promise { .. }
@@ -394,6 +397,7 @@ impl Vm {
             Value::Object(r) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::String(_)) => "string".to_owned(),
                 Some(HeapObject::BigInt(_)) => "bigint".to_owned(),
+                Some(HeapObject::Symbol { .. }) => "symbol".to_owned(),
                 Some(
                     HeapObject::Closure { .. }
                     | HeapObject::NativeCtor { .. }
@@ -1176,6 +1180,18 @@ impl Vm {
                         };
                         let result = self.array_iterator_next(iter_ref)?;
                         self.stack.push(result);
+                    } else if self.is_symbol(receiver)
+                        && matches!(method_name.as_str(), "toString" | "valueOf")
+                    {
+                        let sym_ref = match receiver {
+                            Value::Object(r) => r,
+                            _ => unreachable!("is_symbol 已确认 receiver 是对象"),
+                        };
+                        match self.call_symbol_method(&method_name, sym_ref) {
+                            Some(Ok(v)) => self.stack.push(v),
+                            Some(Err(e)) => return Err(e),
+                            None => self.stack.push(Value::Undefined),
+                        }
                     } else if self.is_string_value(receiver) {
                         // 字符串原型方法：trim/indexOf/slice 等在链上直接求值
                         let text = match &receiver {
@@ -1217,9 +1233,11 @@ impl Vm {
                         // 字典序输出保证确定性）
                         let mut keys: Vec<String> = match args.first() {
                             Some(Value::Object(r)) => match self.heap.get(r.0 as usize) {
-                                Some(HeapObject::Ordinary { properties, .. }) => {
-                                    properties.keys().cloned().collect()
-                                }
+                                Some(HeapObject::Ordinary { properties, .. }) => properties
+                                    .keys()
+                                    .filter(|k| !crate::symbol::is_symbol_key(k))
+                                    .cloned()
+                                    .collect(),
                                 Some(HeapObject::Array { elements, .. }) => {
                                     (0..elements.len()).map(|i| i.to_string()).collect()
                                 }
@@ -1236,6 +1254,35 @@ impl Vm {
                             })
                             .collect();
                         let arr = self.alloc_array(elems);
+                        self.stack.push(Value::Object(arr));
+                    } else if matches!(method_name.as_str(), "for" | "keyFor")
+                        && self.is_native_fn(receiver, "Symbol")
+                    {
+                        // Symbol.for(key) / Symbol.keyFor(sym)
+                        let out = if method_name == "for" {
+                            self.symbol_for(&args)?
+                        } else {
+                            self.symbol_key_for(&args)?
+                        };
+                        self.stack.push(out);
+                    } else if method_name == "getOwnPropertySymbols"
+                        && self
+                            .object_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Object.getOwnPropertySymbols(obj)：符号键还原为符号值
+                        let syms: Vec<Value> = match args.first() {
+                            Some(Value::Object(r)) => match self.heap.get(r.0 as usize) {
+                                Some(HeapObject::Ordinary { properties, .. }) => properties
+                                    .keys()
+                                    .filter_map(|k| crate::symbol::parse_symbol_key(k))
+                                    .map(Value::Object)
+                                    .collect(),
+                                _ => Vec::new(),
+                            },
+                            _ => Vec::new(),
+                        };
+                        let arr = self.alloc_array(syms);
                         self.stack.push(Value::Object(arr));
                     } else if method_name == "stringify" && self.is_json_object(receiver) {
                         // JSON.stringify(value)（成员调用形态）
@@ -2223,20 +2270,9 @@ impl Vm {
                         let out = self.json_stringify(v)?;
                         self.stack.push(out);
                     } else if self.is_native_fn(callee, "Symbol") {
-                        // Symbol(description)：无 Symbol 值类型，以描述对象近似
-                        // （typeof 为 "object"；描述访问经 description 属性）
-                        let obj = self.alloc_ordinary();
-                        if let Some(v) = args.first() {
-                            if !matches!(v, Value::Undefined) {
-                                let d = self.alloc_string(self.format_value(*v));
-                                let _ = self.set_property(
-                                    Value::Object(obj),
-                                    "description",
-                                    Value::Object(d),
-                                );
-                            }
-                        }
-                        self.stack.push(Value::Object(obj));
+                        // Symbol([description])：唯一符号原语
+                        let sym = self.symbol_create(&args);
+                        self.stack.push(sym);
                     } else if let Value::Object(r) = callee {
                         let callee_ref = r.0 as usize;
                         let resolver = match self.heap.get(callee_ref) {

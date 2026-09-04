@@ -71,7 +71,11 @@ impl Vm {
                         seen.push(r.0);
                         out.push('{');
                         // 字典序（Ordinary 为哈希存储，插入序不可得；与 util.inspect 一致）
-                        let mut keys: Vec<&String> = properties.keys().collect();
+                        // 符号键不参与 JSON 序列化（标准语义）
+                        let mut keys: Vec<&String> = properties
+                            .keys()
+                            .filter(|k| !crate::symbol::is_symbol_key(k))
+                            .collect();
                         keys.sort();
                         for (i, k) in keys.iter().enumerate() {
                             if i > 0 {

@@ -263,3 +263,127 @@ fn promise_finally_passes_value_matches_go() {
 after-finally: fv"
     );
 }
+
+/// Symbol 基础：typeof、显示形态、唯一性、String()、for 注册表与 keyFor。
+#[test]
+fn symbol_basics_match_go() {
+    let out = run_probe(
+        "symbol_basics",
+        concat!(
+            "var s1 = Symbol(\"d\");
+",
+            "var s2 = Symbol(\"d\");
+",
+            "console.log(\"typeof:\", typeof s1);
+",
+            "console.log(\"log:\", s1);
+",
+            "console.log(\"eq:\", s1 === s2);
+",
+            "console.log(\"str:\", String(s1));
+",
+            "var a = Symbol.for(\"k\");
+",
+            "var b = Symbol.for(\"k\");
+",
+            "console.log(\"for-eq:\", a === b, \"keyFor:\", Symbol.keyFor(a));
+",
+            "console.log(\"keyFor-miss:\", Symbol.keyFor(s1));
+",
+        ),
+    );
+    assert_eq!(
+        out,
+        concat!(
+            "typeof: symbol
+",
+            "log: Symbol(d)
+",
+            "eq: false
+",
+            "str: Symbol(d)
+",
+            "for-eq: true keyFor: k
+",
+            "keyFor-miss: undefined",
+        )
+    );
+}
+
+/// 符号属性键：读写、Object.keys 遮蔽、getOwnPropertySymbols、JSON 跳过。
+#[test]
+fn symbol_property_keys_match_go() {
+    let out = run_probe(
+        "symbol_keys",
+        concat!(
+            "var sym = Symbol(\"id\");
+",
+            "var o = {};
+",
+            "o[sym] = 42;
+",
+            "console.log(\"get:\", o[sym]);
+",
+            "console.log(\"keys:\", Object.keys(o).length);
+",
+            "console.log(\"syms:\", Object.getOwnPropertySymbols(o).length);
+",
+            "var o2 = { regular: 1 };
+",
+            "o2[Symbol(\"t\")] = 2;
+",
+            "console.log(\"keys2:\", Object.keys(o2).length, Object.getOwnPropertySymbols(o2).length);
+",
+            "console.log(\"json-sym-key:\", JSON.stringify(o2));
+",
+        ),
+    );
+    assert_eq!(
+        out,
+        concat!(
+            "get: 42
+",
+            "keys: 0
+",
+            "syms: 1
+",
+            "keys2: 1 1
+",
+            "json-sym-key: {\"regular\":1}",
+        )
+    );
+}
+
+/// 知名符号：typeof、相互唯一、for 注册表一致；description 未实现（对齐 Go）。
+#[test]
+fn symbol_well_known_match_go() {
+    let out = run_probe(
+        "symbol_well_known",
+        concat!(
+            "console.log(\"wk-typeof:\", typeof Symbol.iterator);
+",
+            "console.log(\"wk-neq:\", Symbol.iterator === Symbol.asyncIterator);
+",
+            "console.log(\"wk-same:\", Symbol.for(\"x\") === Symbol.for(\"x\"));
+",
+            "console.log(\"desc:\", typeof Symbol(\"d\").description === \"undefined\" ? \"n/a\" : \"has\");
+",
+            "console.log(\"sym-empty:\", typeof Symbol());
+",
+        ),
+    );
+    assert_eq!(
+        out,
+        concat!(
+            "wk-typeof: symbol
+",
+            "wk-neq: false
+",
+            "wk-same: true
+",
+            "desc: n/a
+",
+            "sym-empty: symbol",
+        )
+    );
+}

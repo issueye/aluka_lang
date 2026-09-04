@@ -77,6 +77,13 @@ pub enum HeapObject {
         /// 事件名 → (监听器回调, 是否 once) 列表
         listeners: std::collections::HashMap<String, Vec<(Value, bool)>>,
     },
+    /// Symbol 原语（唯一 id + 描述；`Value::Object` 句柄引用，`===` 即身份比较）
+    Symbol {
+        /// 全局唯一 id（分配序）
+        sym_id: u64,
+        /// 描述文本（`Symbol()` 为空串）
+        description: String,
+    },
     /// Map 对象（键字符串化；`get/set/has/groupBy` 运行时）
     Map {
         /// 项集（键经 `to_property_key` 字符串化）
@@ -244,6 +251,16 @@ impl Vm {
             is_rejected: false,
             handlers: Vec::new(),
             rejected: Vec::new(),
+        });
+        ObjectRef(idx)
+    }
+
+    /// 在堆上分配 Symbol 原语对象，返回句柄。
+    pub fn alloc_symbol(&mut self, sym_id: u64, description: String) -> ObjectRef {
+        let idx = self.heap.len() as u32;
+        self.heap.push(HeapObject::Symbol {
+            sym_id,
+            description,
         });
         ObjectRef(idx)
     }
