@@ -2,12 +2,15 @@
 //!
 //! 负责字节码解释循环执行、堆对象管理、调用帧与作用域隔离、类与原型链继承。
 
+pub mod builtins;
 pub mod call;
 pub mod class;
 pub mod exception;
 pub mod generator;
 pub mod heap;
 pub mod interpreter;
+pub mod microtask;
+pub mod modules;
 pub mod ops;
 pub mod property;
 pub mod value;

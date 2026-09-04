@@ -111,6 +111,12 @@ fn run_bc(input: &std::path::Path, cli_args: &[String]) -> ExitCode {
 
     let mut vm = Vm::new(0);
     inject_process_argv(&mut vm, input, cli_args);
+    vm.setup_cjs(input); // CJS 模块上下文（require/exports/循环依赖）
+    // 函数扩展标量头（arguments 槽位等）
+    if let Err(err) = vm.load_module(&data, &module) {
+        eprintln!("错误: functions 标量头不完整: {err}");
+        return ExitCode::FAILURE;
+    }
 
     match vm.run_module(&module) {
         Ok(_) => {
@@ -139,14 +145,15 @@ fn run_bc(input: &std::path::Path, cli_args: &[String]) -> ExitCode {
 
 /// 把脚本路径与命令行参数注入 `process.argv`（argv[0]=脚本路径，对齐 Node 语义的脚本段）。
 fn inject_process_argv(vm: &mut Vm, input: &std::path::Path, cli_args: &[String]) {
+    // argv 注入到 VM 的 process 单例（interpreter 的 nextTick 等拦截按单例匹配）
     let mut argv = vec![Value::Object(vm.alloc_string(input.display().to_string()))];
     for arg in cli_args {
         argv.push(Value::Object(vm.alloc_string(arg.clone())));
     }
     let argv_arr = Value::Object(vm.alloc_array(argv));
-    let process = Value::Object(vm.alloc_ordinary());
-    let _ = vm.set_property(process, "argv", argv_arr);
-    vm.globals.insert("process".to_owned(), process);
+    if let Some(p) = vm.process_object {
+        let _ = vm.set_property(Value::Object(p), "argv", argv_arr);
+    }
 }
 
 /// 未捕获异常的友好展示：Error 实例输出 `Name: message`，其余值原样格式化。

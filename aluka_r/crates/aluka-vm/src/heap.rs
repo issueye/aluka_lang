@@ -19,10 +19,12 @@ pub enum HeapObject {
         /// 隐式原型 [[Prototype]]
         proto: Option<ObjectRef>,
     },
-    /// 数组对象：线性元素列表 + 隐式原型（`Array.prototype` 单例）
+    /// 数组对象：线性元素列表 + 自有非索引属性 + 隐式原型（`Array.prototype` 单例）
     Array {
         /// 数组内存储的值列表
         elements: Vec<Value>,
+        /// 自有非索引属性（JS 数组可携带 `arr.foo` 类属性，arguments 对象也用）
+        properties: HashMap<String, Value>,
         /// 隐式原型 [[Prototype]]
         proto: Option<ObjectRef>,
     },
@@ -50,12 +52,33 @@ pub enum HeapObject {
     },
     /// 生成器对象（执行状态存于 `Vm.generators` 注册表，此变体仅作身份标记）
     Generator,
-    /// Promise 对象（当前仅同步完成语义：async 函数体同步执行后包装结果）
+    /// Promise 对象（微任务队列基建后支持 then 回调调度）
     Promise {
         /// 是否已完成（fulfilled）
-        fulfilled: bool,
-        /// 完成值
+        pending: bool,
+        /// 完成值（pending 时为 undefined）
         value: Value,
+        /// 已登记的回调（`.then` 的 fulfilled 处理器，fulfill 时进微任务队列）
+        handlers: Vec<Value>,
+        /// `.catch` 的 rejected 处理器（reject 时调度；fulfill 不触发）
+        rejected: Vec<Value>,
+    },
+    /// Promise 的 resolve/reject 函数（捕获目标 promise，调用即 fulfill）
+    PromiseResolver {
+        /// 被解析的目标 promise 句柄
+        promise: ObjectRef,
+        /// `true` = resolve，`false` = reject（reject 简化同 resolve）
+        resolve: bool,
+    },
+    /// EventEmitter 实例（Node `node:events`；事件名 → 监听器列表）
+    EventEmitter {
+        /// 事件名 → (监听器回调, 是否 once) 列表
+        listeners: std::collections::HashMap<String, Vec<(Value, bool)>>,
+    },
+    /// Map 对象（键字符串化；`get/set/has/groupBy` 运行时）
+    Map {
+        /// 项集（键经 `to_property_key` 字符串化）
+        entries: HashMap<String, Value>,
     },
     /// 正则表达式对象（模式与标志原文；匹配经 `aluka-regex` 引擎求值）
     RegExp {
@@ -63,6 +86,20 @@ pub enum HeapObject {
         pattern: String,
         /// 标志字符串（如 `i`、`g`）
         flags: String,
+    },
+    /// 原生函数（`require` 等宿主注入的可调用对象，调用由解释器拦截求值）
+    NativeFn {
+        /// 函数名（分派键）
+        name: String,
+    },
+    /// 可读流实例（缓冲队列 + 结束标记 + 等待中的 next promise）
+    Readable {
+        /// 数据缓冲队列（push 追加，next 消费）
+        buffer: std::collections::VecDeque<Value>,
+        /// 是否已结束（push(null) 后）
+        ended: bool,
+        /// 等待数据的 promise 句柄（next 空读时登记，push 时兑现）
+        waiting: Option<ObjectRef>,
     },
 }
 
@@ -115,6 +152,7 @@ impl Vm {
         let idx = self.heap.len() as u32;
         self.heap.push(HeapObject::Array {
             elements,
+            properties: HashMap::new(),
             proto: self.array_prototype,
         });
         ObjectRef(idx)
@@ -160,12 +198,72 @@ impl Vm {
         ObjectRef(idx)
     }
 
+    /// 在堆上分配原生函数对象，返回句柄。
+    pub fn alloc_native_fn(&mut self, name: &str) -> ObjectRef {
+        let idx = self.heap.len() as u32;
+        self.heap.push(HeapObject::NativeFn {
+            name: name.to_owned(),
+        });
+        ObjectRef(idx)
+    }
+
     /// 在堆上分配已完成（fulfilled）的 Promise 对象，返回句柄。
     pub fn alloc_fulfilled_promise(&mut self, value: Value) -> ObjectRef {
         let idx = self.heap.len() as u32;
         self.heap.push(HeapObject::Promise {
-            fulfilled: true,
+            pending: false,
             value,
+            handlers: Vec::new(),
+            rejected: Vec::new(),
+        });
+        ObjectRef(idx)
+    }
+
+    /// 在堆上分配未完成（pending）的 Promise 对象，返回句柄。
+    pub fn alloc_pending_promise(&mut self) -> ObjectRef {
+        let idx = self.heap.len() as u32;
+        self.heap.push(HeapObject::Promise {
+            pending: true,
+            value: Value::Undefined,
+            handlers: Vec::new(),
+            rejected: Vec::new(),
+        });
+        ObjectRef(idx)
+    }
+
+    /// 在堆上分配 EventEmitter 实例，返回句柄。
+    pub fn alloc_emitter(&mut self) -> ObjectRef {
+        let idx = self.heap.len() as u32;
+        self.heap.push(HeapObject::EventEmitter {
+            listeners: std::collections::HashMap::new(),
+        });
+        ObjectRef(idx)
+    }
+
+    /// 在堆上分配可读流实例，返回句柄。
+    pub fn alloc_readable(&mut self) -> ObjectRef {
+        let idx = self.heap.len() as u32;
+        self.heap.push(HeapObject::Readable {
+            buffer: std::collections::VecDeque::new(),
+            ended: false,
+            waiting: None,
+        });
+        ObjectRef(idx)
+    }
+
+    /// 在堆上分配 Promise 解析器（resolve/reject 函数对象），返回句柄。
+    pub fn alloc_promise_resolver(&mut self, promise: ObjectRef, resolve: bool) -> ObjectRef {
+        let idx = self.heap.len() as u32;
+        self.heap
+            .push(HeapObject::PromiseResolver { promise, resolve });
+        ObjectRef(idx)
+    }
+
+    /// 在堆上分配 Map 对象，返回句柄。
+    pub fn alloc_map(&mut self, entries: Vec<(String, Value)>) -> ObjectRef {
+        let idx = self.heap.len() as u32;
+        self.heap.push(HeapObject::Map {
+            entries: entries.into_iter().collect(),
         });
         ObjectRef(idx)
     }

@@ -30,6 +30,17 @@
 - **跨前端里程碑**：fib30.bc 由 **Go 前端**编译，在 Rust VM 上执行结果正确——
   「Go 前端产物 × Rust VM」链路首次贯通（M1 的核心预演）。
 
+## 基线更新（2026-09-04 晚，Rc 零拷贝帧切换重构后）
+
+| 版本 | min-of-5 | 说明 |
+|---|---|---|
+| 初版基线 | 912.7 ms | 每次函数调用深拷贝 FuncTemplate + 2× 常量池 |
+| **Rc 化重构后** | **388.3 ms** | `module_functions`/`module_constants`/`current_constants` 全部 Rc 共享，帧切换零拷贝；`STORE_LOCAL` 空上值快路径 |
+
+**提升 2.35×**，达到 M1 验收线（≤ Go 版 2×）——与 Go Tier 0（`--jit=off`，
+含进程启动固定开销 395ms）持平或更快。重构后 33/33 黄金对拍、CJS 端到端、
+全部单测零回归。
+
 ## 已知边界
 
 - debug 构建下 fib30 会栈溢出（递归 `invoke_function` 的未优化栈帧 × 30 层嵌套

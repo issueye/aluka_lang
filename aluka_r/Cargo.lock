@@ -72,6 +72,7 @@ name = "aluka-runtime"
 version = "0.1.0"
 dependencies = [
  "aluka-builtins",
+ "aluka-bytecode",
  "aluka-compiler",
  "aluka-core",
  "aluka-module",

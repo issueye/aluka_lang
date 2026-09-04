@@ -70,10 +70,39 @@
 | 52 | 选项 2【M2 阶段高级语法扩展：JSX/TSX Lowering 与 ESM 规范】：AST、Parser 与 Compiler 支持 `<tag attr={expr}>children</tag>` 转为 `React.createElement`，以及 ESM `import`/`export` 完整语法解析与发射 | `[x]` | T-FE-03, M2 |
 | 53 | 选项 3【双向四象限质量对拍矩阵（D 轨）】：Rust 前端 × Rust VM、Rust 前端 × Go VM、Go 前端 × Rust VM、Go 前端 × Go VM 四象限交叉矩阵测试套件（32 个真实黄金语料 100% 逐字全绿通过） | `[x]` | D1, D3 |
 | 54 | 选项 4【ISA 契约实证性 DSL 前端实现（M4 提前验证）】：极简函数式 S-expression DSL 前端编译器（.adsl/.lisp），经 LanguageRegistry/SourceUnit 流水线无缝挂载；后端绝对隔离（零改动 aluka-vm/runtime）；产物通过 Verifier 并在 Rust VM 与 Go VM 双端执行 100% 逐字一致 | `[x]` | M4 提前验证, ISA 跨语言实证 |
+| 55 | 后端推进（M1）：**CJS 模块最小集 + fs 内置**——`aluka-vm/src/modules.rs`（`require` 原生函数、`.bc` 字节码分发、模块缓存 + 循环依赖占位、CJS 7 参包装调用）、`fs.readFileSync/writeFileSync` 拦截；**重大修复 `run_func` 常量池跨帧污染**（嵌套模块加载后调用方常量池解引用错乱）；端到端（Go 前端 4 模块 CJS + 循环依赖 + fs IO）与 Go Oracle 逐字对拍通过 + cjs_test 回归固化 | `[x]` | M1 |
+| 56 | 后端推进（M1）：**Tier 0 解释器性能达标**——Rc 零拷贝帧切换重构（`module_functions`/`module_constants`/`current_constants` 全部 Rc 共享，消除每次调用的 FuncTemplate + 2× 常量池深拷贝）+ `STORE_LOCAL` 空上值快路径；fib30 基线 **912.7ms → 388.3ms（2.35× 提升）**，**达成 M1 验收线 ≤ Go 版 2×**（与 Go Tier 0 `--jit=off` 395ms 持平或更快）；33/33 对拍与全部单测零回归；基线更新见 `vm-fib30-baseline.md` | `[x]` | M1 性能 |
+| 57 | **M1 里程碑收口（node conformance 实测评估）**：17 用例经 Go 前端编译后 aluvm 执行 vs Go Oracle——**0 有效通过**（首轮 3 个 PASS 复核均为双空假阳性）；缺口定性：9 项 Node 内置模块依赖（归 M2 内置库建设）、4 项语义缺口（thisArg+数组方法/arguments 可短期修；nexttick/ES2024 需微任务队列）、1 项 ESM 分发映射——**M1 关闭（核心价值全部达成，conformance 缺口按归属转 M2）**，评估报告 `.work/evidence/20260904/node22-conformance-review.md` | `[x]` | M1 收口 |
+| 58 | 后端推进（M2 开局）：**语义缺口 2/4 修复**——①`arguments` 对象（`read_all_func_header_extras` 旁路读取 Go v12+ 函数标量头，`invoke_function` 按编译器槽位注入 Arguments 数组，O-5 未引用标记零开销；Array 变体补自有属性表支持 `arguments.foo`）、②数组原型方法 + thisArg（`map/filter/find/some/forEach/reduce/reduceRight` 全实现，回调 this 按规范绑定 + `(elem,idx,arr)` 实参；`Array.prototype` 填充方法属性支持存在性查询）——**conformance 语义类 0→2 全对齐**，剩余 04/05 依赖微任务队列基建 | `[x]` | M2 语义 |
+| 59 | 后端推进（M2）：**微任务队列与 Promise 基建，语义缺口 4/4**——`microtask.rs`（nextTick 优先队列 + Promise 微任务 + setTimeout 宏任务按延迟驱动，`run_module` 入口执行完成后排空）；Promise 变体升级（pending/handlers）、`PromiseResolver`、`Promise.resolve/withResolvers/then/catch`（fulfilled 立即调度、catch 不误触发）；`Array.fromAsync`（同步数组 + 生成器 `next()` 同步驱动）、`Object.hasOwn`、`Object.groupBy`/`Map.groupBy`、Map 变体 + get、ES2023 不可变数组方法（toSorted/toReversed/toSpliced/with）、字符串 isWellFormed/toWellFormed、`process.nextTick`/`queueMicrotask`/`setTimeout` 全局接入；**debug 定位修复**：生成器恢复注入值（fromAsync 驱动 PUSH undefined）、process 单例分叉（CLI argv 注入不入 globals）、drain 时序（入口闭包后）——**conformance 语义四用例 4/4 与 Go Oracle 逐字对齐** | `[x]` | M2 语义 |
+| 60 | 后端推进（M2）：**真异步挂起/恢复（事件循环模型）**——微任务队列升级 Job 枚举（Call/ResumeFrame）；`invoke_function` async 挂起（帧 base 记录 + `AWAIT` pending 时 `Awaited` 信号上抛 + 帧快照收割 + pending promise 返回给调用者，级联 await 自然成链）；`fulfill_promise` 触发 ResumeFrame 微任务恢复帧继续执行；current_func_idx 错误定位字段——**conformance 语义四用例在真异步驱动下 4/4 保持全绿**，为 stream（01 用例）铺路 | `[x]` | M2 async 地基 |
+| 61 | 后端推进（M2）：**stream/Readable 收口**——`require('node:stream')` 模块单例 + `new Readable({read(){}})` 构造器拦截（alloc Readable 变体）；`push` 追加缓冲（**有等待读取者时数据直交等待者，避免双读**）/`push(null)` 结束标记；`GET_ASYNC_ITERATOR` 对 Readable 返回自身；`next` 消费缓冲（空读未结束时登记等待 promise——**复用与 waiting 同一句柄**，push 兑现它经 fulfill → ResumeFrame 恢复 async 帧）；事件循环收口升级为**宏任务/微任务交替排空**（宏任务兑现 promise 会追加微任务）；Promise 分离 **fulfilled/rejected 处理器队列**（catch 回调只在 reject 时调度，fulfill 不触发）——**01-for-await-stream 全对齐（含 setTimeout 异步流挂起等待）**，语义四用例 4/4 保持全绿；**修复**：invoke_function AWAIT 收割在恢复调用者之前（帧归属错误）、receive AWAIT 恢复时压回兑现值（StackUnderflow） | `[x]` | M2 stream |
+| 62 | 后端推进（M2）：**events + timers（Phase 3）**——宏任务队列升级为**按到期时间排序**（累计 due + 线性最小扫描 + 周期任务到期后 `due += delay` 重排），`setTimeout`/`setInterval` 分配数字句柄 id（`clearTimeout`/`clearInterval` 按 id 取消，drain 跳过）；`require('node:events')` 模块单例 + `new EventEmitter()`（HeapObject::EventEmitter 变体承载事件名→监听器表）；`on`/`once` 注册（once 触发前移除）、`emit` 触发（普通监听器保持并触发、once 只触发一次、this=实例、args 透传）、`off`/`removeListener` 移除——**自造 ev_timers 对拍全对齐（on/once/off + setInterval 周期 + clearInterval + clearTimeout）**，conformance 语义五用例 5/5 保持全绿 | `[x]` | M2 events/timers |
+| 60 | 后端推进（M2）：**Node 轻量内置库起步**（对齐 Go `internal/builtin` 注册表设计）——`node:path` 五方法（join/basename 扩展名剥离/dirname/extname/resolve，Windows 分隔符语义与 Go filepath 逐字对齐）、`fs.existsSync`、`process.env` 物化（get_property 按需构建）、require 内置模块 `node:` 前缀剥离；e2e 用例（真实脚本风格）与 Go Oracle 全字段对拍 + 固化为 `cjs_test` 回归（compile_graph 单入口 fallback） | `[x]` | M2 内置库 |
+| 61 | 后端推进（M2）：**内置库深化：`os` + `URL`**——`os.platform/homedir/tmpdir` 拦截 + `os.EOL` 属性物化（platform 感知 CRLF/LF）；`new URL(href)` 构造器（轻量解析 scheme/authority（userinfo 剥离）/host/port/pathname/search/hash/host/origin/href 全部物化为普通对象属性）；e2e 用例与 Go Oracle 逐字对拍（`os` 四字段 + `new URL` 十属性）+ 固化为 `cjs_test` 回归（3/3） | `[x]` | M2 内置库 |
+| 62 | 文档：**内置库补齐计划**（`aluka_r/docs/builtins-plan.md`）——现状矩阵（8 类 40+ 能力点实征）、差距全景（对齐 Go registry 60 模块四分层 T1-T4）、分批路线（Phase 1-4：轻量纯状态→文件/进程→事件/流→网络/重件，每批 e2e 对拍+固化+门禁闭环）、验收与门禁、风险表（平台差异/异步回调/Buffer/conformance 空对空） | `[x]` | M2 内置库计划 |
+| 63 | 后端推进（**多 Agent 并行**）：内置库按计划 Phase 1+2 两路并行交付——先搭 `builtins/` 注册表骨架（双形态 dispatch：模块单例直调 + GET_PROP/NativeFn 形态；`register_all` 时序后移消除单例依赖 workaround）；**Agent A**（Phase 1：path/posix、path/win32、constants 242 常量、string_decoder——Go utf8ValidPrefix 怪癖语义逐字对拍）；**Agent B**（Phase 2：fs readdirSync/statSync/mkdirSync/rmSync、os arch/type/release/cpus/userInfo、util format/inspect/util.types、assert ok/equal/throws）；共享 `tests/common` 对拍基建；合流修复（clippy 治理、空参 resolve 语义、missing-docs）——**112 项测试全绿 + clippy 0 + 各模块与 Go Oracle 逐字一致** | `[x]` | M2 内置库并行 |
 
 ---
 
 ## 3. 达成目标证据
+
+### 待办 85 · 选项 A【顶层一体化：打通 aluka run 与 aluka-runtime 现代多语言执行门面】
+**结论**：达成（5 / 5 端到端用例全绿通过，全工作区测试 100% 全绿）  
+**证据类型**：运行时门面重构 + 顶层 CLI 入口实现 + 递归提升缺陷修复 + 集成测试  
+- **`aluka-runtime` 现代化执行门面**：
+  - 修复历史遗留的 `RuntimeError: Eq` 派生断裂错误，重构为结构化错误体系（`Io`, `Parse`, `Compile`, `Verify`, `Vm`）；
+  - 实现 `execute_file` 与 `execute_source`，自动串联 `LanguageRegistry`、`compile_source_unit`、`verify()` 与虚拟机执行；
+  - 修复提前返回导致 stdout 丢失的问题，利用拥有完整堆环境的 VM 实例安全提取未捕获异常的 `name` 与 `message`；
+- **顶层 `aluka` CLI 工具打通**：
+  - `aluka run <script> [args...]` 与直接 `aluka <script> [args...]`，全支持 `.js`、`.ts`、`.json`、`.adsl` 脚本；
+  - 支持透传脚本参数至 `process.argv`，支持 `--no-opt` 关闭优化，支持未捕获异常友好输出并返回退出码 1；
+- **前端递归自引用提升缺陷修复（T-FE 缺陷修复）**：
+  - 修复 `aluka-compiler::module` 在编译函数声明时未提前分配符号槽位的问题，使得递归自引用（如 `function fib(n) { return fib(n-1)... }`）能够在编译期正确识别为上值捕获（Upvalue），彻底修复 `fib(10) = NaN` 的缺陷；
+- **端到端集成测试与全量门禁**：
+  - 新建 `aluka-cli/tests/aluka_run_test.rs`，包含 JS 递归计算、TS 接口剥离、DSL 执行、argv 参数透传、未捕获异常退出码 5 项测试；
+  - 测试命令：`cargo test -p aluka-cli --test aluka_run_test --features runtime -- --nocapture`（5 passed）；
+  - 全工作区近 200 项测试 100% 绿通，`cargo fmt --check` 0 diff，`cargo clippy` 0 warning。
 
 ### 待办 50 · T-FE-18 全量 32 个黄金语料端到端编译与 Go Oracle 逐字对拍
 **结论**：达成（32 / 32 100% 逐字完全一致）  
@@ -508,6 +537,36 @@ cargo fmt --all --check
   语料优先）；如需回到字面 200 例另立任务（估 2-3 天）；
 - 重验命令与输出见评审报告 §6。
 
+### 待办 53 · CJS 模块最小集 + fs 内置 + 常量池污染修复（后端轨，M1）
+**结论**：达成  
+**证据类型**：代码 + 命令 + 端到端对拍  
+- **CJS 模块最小集**（新增 `aluka-vm/src/modules.rs`，对齐 Go 版 CJS 包装约定
+  `internal/runtime/module/cjs.go`）：`.bc` 的 `<main>` 返回 7 参数包装闭包
+  `(require, module, exports, __filename, __dirname, __import, __importMeta)`，
+  宿主（`run_module` 的 CJS 分支 + `invoke_cjs_entry`）按位传参调用；
+  `require(spec)`：内置模块（`fs`）优先 → `.bc` 字节码分发（`.js`/无后缀 → `.bc`）→
+  读文件 → 反序列化 → Verifier 校验 → 执行 `<main>` 取模块闭包 → 7 参调用 →
+  返回 `module.exports`（允许重赋值）；**exports 先进缓存再执行**（循环依赖的
+  经典 CJS 语义：后加载方持有未完成 exports）；
+- **fs 最小内置**：`fs.readFileSync(path)` / `fs.writeFileSync(path, data)` 原生拦截
+  （`fs` 单例对象经 `LoadGlobal` 解析）；IO 失败以 `VmError::Thrown` 上抛为 JS 异常；
+- **重大正确性修复：`run_func` 常量池跨帧污染**——`run_func` 原本只隔离 locals，
+  CJS 嵌套模块加载后调用方的 `current_constants` 被子模块常量池覆盖，
+  `get_const_string` 越界回退为数字字符串，导致 `console.log`/属性名静默失效
+  （trace 定位：`CALL_METHOD 10` 的 method_name 解析为 `"10"`）。修复为
+  constants + Try 表按帧隔离；**该缺陷对所有嵌套模块/函数调用场景生效，
+  属 M1 关键修复**；
+- 端到端验证（Go 前端整图编译 4 模块 CJS 应用：基本流 + 循环依赖 + fs IO，
+  特征分发为 `dist/*.bc`，`aluvm run app.bc`）输出与 Go Oracle **逐字一致**：
+  `dep loading` / `b sees a partially: undefined true`（循环依赖未完成 exports ✓）/
+  `main got: 42`（exports 传递 ✓）/ `loop: A(B)`（循环依赖完成态 ✓）/
+  `fs: written-by-aluvm`（fs 读写 ✓），退出码 0；
+- 回归固化：`aluka-cli/tests/cjs_test.rs`（整图编译 + disasm 特征分发 + 逐字对拍
+  + fs 落盘断言）；
+- 执行命令：`cargo test -p aluka-cli --test cjs_test`；
+- 结果：1/1 全绿；aluka-cli 全套（aluvm 4 + alukac 2 + cjs 1 + fib 1 + 其他）无回归；
+  后端核心 crate 79+ 项测试全绿；clippy `-D warnings` 0 错误。
+
 ### 待办 40 · 静态编译期优化 Pass（常量折叠、死代码消除与跳转穿透，前端轨）
 **结论**：达成  
 **证据类型**：代码 + 单元测试  
@@ -548,6 +607,8 @@ cargo fmt --all --check
 | **技术决策** | 脚本解析按语言注册（参考 Go 版 `module/source_unit.go` + `require.extensions` 设计）：`SourceKind` 扩展名分类（JS/TS/JSON）× `ModuleKind` 协议独立 × `SourceUnit` 稳定 IR + `TransformStage` 单向阶段位标志 × `LanguageRegistry` 可扩展注册表 + TS strip-only policy（enum/namespace 诊断对齐 Node 22） | 语言识别从「隐式按 JS」升级为注册制；`aluka-parser::source_unit` 落地为库能力，`alukac` CLI 主流程接入留给 A2 轨（避免与其在途改动冲突）；AST await 解析落地后接入 `has_tla` 检测 |
 | **技术决策** | 针对编译器常量折叠导致减法、除法等指令被消除的问题，设计动态传参用例（用例 29-32） | 真实前端直接生成的指令数由 89 条进一步提升至 96 条，其余 10 条遗留/内部指令由专用合成模块兜底 |
 | **技术决策** | 发现 Go 侧常量池字符串采用 `uvarint`（LEB128）长度编码而非固定 4 字节 | 已纳入 ISA 规范陷阱小节，并在解析器中正确实现 `read_uvarint` |
+| **🐞 前端缺陷修复（A2 轨）** | 修复 17 项特性差分评审中发现的缺陷 ①（递归函数自引用编译为 PUSH_UNDEFINED 导致 fib 得 NaN） | 在 `compile_module` 处理 `Stmt::Function` 时前置在 `top_unit.symbol_map` 预分配槽位，函数体内递归调用自身可感知并作为上值捕获发射 `Op::LoadUpvalue`，闭包递归完全恢复正确语义 |
+| **技术陷阱** | VM 异常对象格式化不能使用新建的空 `Vm::new(0)` 解引用 | 堆对象分配在执行模块的具体 VM 实例堆中，若用空 VM 读取属性会导致堆越界崩溃。必须通过借用原 VM 实例提取异常 message |
 | **架构收益** | F 轨闭环后，三大并行工作流（VM 循环、Compiler 发射、Value ADR）首期任务同步告捷 | **前后端团队已形成“自闭环单测 + 跨端互验 + 黄金语料对拍”三道质量护城河** |
 | **🐞 跨端缺陷（转交前端轨）** | 后端验证 aluvm CLI 未捕获异常路径时发现：**alukac 把顶层 `throw new Error("boom")` 编译成 `NEW 1` + `RETURN_UNDEF`，`THROW` 指令丢失**（disasm 复现：`uncaught.bc` 10 条指令无任何 THROW；`throw "str"` 同样丢失）。后端 VM 的 THROW/TryTable 语义已由语料 10/27/32 验证无恙 | 前端编译器 T-FE 的 throw 语句发射缺失——顶层/任意位置的 `throw` 语句静默不抛，属**正确性缺陷**，请前端轨优先修复并补 `compile_and_verify_test` 反例（编译含 throw 的源码，断言指令流含 `THROW`） |
 | **✅ 缺陷修复确认（前端评审）** | 前端评审（见 `.work/evidence/20260904/fe-review.md`）实测：上条 throw 缺陷**已在本轮在途 codegen 改动中修复**——17 项特性差分中 `throw new Error("boom")` 正确抛出、aluvm 展示 `Error: boom` 且退出码 1。该缺陷可关闭 | — |

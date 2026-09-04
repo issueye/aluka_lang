@@ -247,11 +247,6 @@ impl ModuleCompiler {
             let is_last = i == optimized_program.body.len() - 1;
             match stmt {
                 Stmt::Function(func_def) => {
-                    let parent_info = ParentScopeInfo::new(
-                        top_unit.symbol_map.clone(),
-                        top_unit.upvalue_map.clone(),
-                    );
-                    let fn_idx = self.compile_function_with_parent(func_def, Some(&parent_info));
                     let slot = if let Some(&s) = top_unit.symbol_map.get(&func_def.name) {
                         s
                     } else {
@@ -260,6 +255,11 @@ impl ModuleCompiler {
                         top_unit.symbol_map.insert(func_def.name.clone(), s);
                         s
                     };
+                    let parent_info = ParentScopeInfo::new(
+                        top_unit.symbol_map.clone(),
+                        top_unit.upvalue_map.clone(),
+                    );
+                    let fn_idx = self.compile_function_with_parent(func_def, Some(&parent_info));
                     top_unit
                         .code
                         .push(Instr::new(Op::MakeClosure, fn_idx as u32));

@@ -44,8 +44,8 @@ pub(crate) struct GeneratorState {
     pub(crate) args: Vec<Value>,
     /// MakeClosure 捕获的上值
     pub(crate) upvalues: Vec<Upvalue>,
-    /// 函数模板常量池（执行期间换入 `current_constants`）
-    pub(crate) constants: Vec<Constant>,
+    /// 函数模板常量池（执行期间换入 `current_constants`；Rc 共享零拷贝）
+    pub(crate) constants: std::rc::Rc<Vec<Constant>>,
     /// 函数模板 Try 表
     pub(crate) try_table: Vec<TryEntry>,
     /// 函数局部槽位总数（首帧初始化用）
@@ -84,7 +84,7 @@ impl Vm {
             this_val,
             args: args.to_vec(),
             upvalues,
-            constants: tmpl.constants.clone(),
+            constants: self.module_constants[func_idx].clone(),
             try_table: tmpl.try_table.clone(),
             num_locals: tmpl.num_locals as usize,
             num_params: tmpl.num_params as usize,
@@ -170,15 +170,16 @@ impl Vm {
                 self.open_upvalues = open_upvalues;
                 self.try_stack = try_stack;
                 self.stack.extend(stack);
-                if let Some(v) = injected {
-                    self.stack.push(v);
-                }
+                // 注入值（next(v) 的 v）压栈成为 yield 表达式求值结果；
+                // 无注入（如 fromAsync 内部驱动）按 next() 无参语义压 undefined
+                self.stack.push(injected.unwrap_or(Value::Undefined));
                 pc
             }
         };
         self.current_try_table = try_table;
 
-        let outcome = self.run_with_constants_at(&code, &constants, start_pc);
+        self.current_func_idx = self.generators[&key].func_idx as i64;
+        let outcome = self.run_with_constants_at(&code, constants, start_pc);
 
         // 收割生成器帧：先截走逻辑栈，再收割执行上下文字段
         let gen_stack = self.stack.split_off(base);
@@ -223,9 +224,9 @@ impl Vm {
 }
 
 /// 调用者帧上下文快照（生成器驱动期间换出、结束后换回）。
-struct CallerFrame {
+pub(crate) struct CallerFrame {
     locals: Vec<Value>,
-    constants: Vec<Constant>,
+    constants: std::rc::Rc<Vec<Constant>>,
     upvalues: Vec<Upvalue>,
     open_upvalues: HashMap<usize, Upvalue>,
     try_stack: Vec<TryHandler>,
@@ -233,10 +234,10 @@ struct CallerFrame {
 }
 
 impl CallerFrame {
-    fn save(vm: &mut Vm) -> Self {
+    pub(crate) fn save(vm: &mut Vm) -> Self {
         Self {
             locals: std::mem::take(&mut vm.locals),
-            constants: std::mem::take(&mut vm.current_constants),
+            constants: std::mem::replace(&mut vm.current_constants, std::rc::Rc::new(Vec::new())),
             upvalues: std::mem::take(&mut vm.current_upvalues),
             open_upvalues: std::mem::take(&mut vm.open_upvalues),
             try_stack: std::mem::take(&mut vm.try_stack),
@@ -244,7 +245,7 @@ impl CallerFrame {
         }
     }
 
-    fn restore(self, vm: &mut Vm) {
+    pub(crate) fn restore(self, vm: &mut Vm) {
         vm.locals = self.locals;
         vm.current_constants = self.constants;
         vm.current_upvalues = self.upvalues;

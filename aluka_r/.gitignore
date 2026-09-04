@@ -1,5 +1,6 @@
 # Rust 构建产物
 /target/
 
-# 环境相关
+# 环境与临时文件
 *.pdb
+m1_io.txt

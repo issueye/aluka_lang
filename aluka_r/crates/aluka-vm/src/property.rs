@@ -47,6 +47,29 @@ impl Vm {
 
     /// 读取属性（含原型链查找、getter 触发与数组元素读取）。
     pub fn get_property(&mut self, obj: Value, key: &str) -> Result<Value, VmError> {
+        // 内置对象的方法按需物化（process.nextTick 等属性访问先于调用）
+        if key == "env" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
+            // process.env：物化为环境变量对象
+            let env_obj = self.alloc_ordinary();
+            for (k, v) in std::env::vars() {
+                let s_ref = self.alloc_string(v);
+                let _ = self.set_property(Value::Object(env_obj), &k, Value::Object(s_ref));
+            }
+            return Ok(Value::Object(env_obj));
+        }
+        if key == "nextTick" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
+            return Ok(Value::Object(self.alloc_native_fn("nextTick")));
+        }
+        if key == "EventEmitter" && self.events_module.is_some_and(|m| obj == Value::Object(m)) {
+            return Ok(Value::Object(
+                self.alloc_native_ctor("events.EventEmitter", None),
+            ));
+        }
+        if key == "Readable" && self.stream_module.is_some_and(|m| obj == Value::Object(m)) {
+            return Ok(Value::Object(
+                self.alloc_native_ctor("stream.Readable", None),
+            ));
+        }
         let mut cur = obj;
         let mut depth = 0;
         while let Value::Object(r) = cur {
@@ -95,12 +118,19 @@ impl Vm {
                     }
                     break;
                 }
-                HeapObject::Array { elements, proto } => {
+                HeapObject::Array {
+                    elements,
+                    properties,
+                    proto,
+                } => {
                     if key == "length" {
                         return Ok(Value::Number(elements.len() as f64));
                     }
                     if let Ok(i) = key.parse::<usize>() {
                         return Ok(elements.get(i).copied().unwrap_or(Value::Undefined));
+                    }
+                    if let Some(v) = properties.get(key) {
+                        return Ok(*v);
                     }
                     if let Some(parent) = *proto {
                         cur = Value::Object(parent);
@@ -138,12 +168,18 @@ impl Vm {
                     HeapObject::NativeCtor { properties, .. } => {
                         properties.insert(key.to_owned(), val);
                     }
-                    HeapObject::Array { elements, .. } => {
+                    HeapObject::Array {
+                        elements,
+                        properties,
+                        ..
+                    } => {
                         if let Ok(i) = key.parse::<usize>() {
                             if i >= elements.len() {
                                 elements.resize(i + 1, Value::Undefined);
                             }
                             elements[i] = val;
+                        } else if key != "length" {
+                            properties.insert(key.to_owned(), val);
                         }
                     }
                     _ => {}
@@ -249,10 +285,15 @@ impl Vm {
                 HeapObject::Ordinary {
                     properties, proto, ..
                 } => (properties.keys().cloned().collect::<Vec<_>>(), *proto),
-                HeapObject::Array { elements, proto } => {
-                    let ks = (0..elements.len())
+                HeapObject::Array {
+                    elements,
+                    properties,
+                    proto,
+                } => {
+                    let mut ks = (0..elements.len())
                         .map(|i| i.to_string())
                         .collect::<Vec<_>>();
+                    ks.extend(properties.keys().cloned());
                     (ks, *proto)
                 }
                 HeapObject::Closure { properties, .. } => {

@@ -9,11 +9,13 @@
 //! 校验器都从它派生。Go 版把这条约定写进了 `AGENTS.md`（新增指令必须
 //! 登记元数据）；Rust 版靠 `match` 穷尽性把它变成编译期强制。
 
+pub mod extras;
 pub mod op;
 pub mod serialize;
 pub mod serializer;
 pub mod verifier;
 
+pub use extras::{FuncHeaderExtras, read_all_func_header_extras};
 pub use op::{Instr, Op, OperandKind, StackEffect};
 pub use serialize::FORMAT_VERSION;
 pub use verifier::{

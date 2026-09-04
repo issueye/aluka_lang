@@ -24,6 +24,8 @@ pub enum VmError {
     Thrown(Value),
     /// 生成器 `YIELD` 挂起信号（携带产出的值，由生成器驱动层捕获）
     Yielded(Value),
+    /// `AWAIT` 未完成 Promise 的挂起信号（携带 promise 句柄，由 async 驱动层捕获）
+    Awaited(aluka_core::ObjectRef),
     /// 遇到了当前里程碑尚未实现的操作码
     UnimplementedOpcode(Op),
 }
@@ -37,6 +39,7 @@ impl std::fmt::Display for VmError {
             Self::DivisionByZero => write!(f, "除以零错误"),
             Self::Thrown(_) => write!(f, "未捕获的 JS 异常"),
             Self::Yielded(_) => write!(f, "生成器挂起信号（不应逃逸到顶层）"),
+            Self::Awaited(_) => write!(f, "async 挂起信号（不应逃逸到顶层）"),
             Self::UnimplementedOpcode(op) => write!(f, "未实现的操作码: {op:?}"),
         }
     }
@@ -53,12 +56,16 @@ pub struct Vm {
     pub locals: Vec<Value>,
     /// 控制台打印捕获记录（供测试断言比对）
     pub stdout_records: Vec<String>,
-    /// 当前执行函数的常量池副本（用于字符串解引用与打印）
-    pub current_constants: Vec<Constant>,
+    /// 当前执行函数的常量池（Rc 共享，帧切换零拷贝）
+    pub current_constants: std::rc::Rc<Vec<Constant>>,
+    /// 当前模块的常量池表（与 `module_functions` 平行，供 `invoke_function` 零拷贝换帧）
+    pub(crate) module_constants: Vec<std::rc::Rc<Vec<Constant>>>,
+    /// 当前模块的函数扩展标量头（arguments 槽位等；与函数表平行）
+    pub(crate) module_header_extras: Vec<aluka_bytecode::FuncHeaderExtras>,
     /// 堆对象存储
     pub heap: Vec<HeapObject>,
-    /// 模块全部函数模板（供跨函数调用与 Getter 调度）
-    pub module_functions: Vec<FuncTemplate>,
+    /// 模块全部函数模板（供跨函数调用与 Getter 调度；Rc 共享避免逐调用深拷贝）
+    pub module_functions: Vec<std::rc::Rc<FuncTemplate>>,
     /// 模块全部类模板（供 MakeClass 构造类对象与原型链）
     pub module_classes: Vec<ClassTemplate>,
     /// 当前函数帧所持有的上值列表（供 LoadUpvalue / StoreUpvalue 访问）
@@ -83,6 +90,48 @@ pub struct Vm {
     pub array_ctor: Option<ObjectRef>,
     /// `Object` 原生构造器单例
     pub object_ctor: Option<ObjectRef>,
+    /// `fs` 内置对象单例（readFileSync/writeFileSync 拦截）
+    pub fs_object: Option<ObjectRef>,
+    /// `require` 原生函数句柄（`setup_cjs` 后可用）
+    pub require_fn: Option<ObjectRef>,
+    /// CJS 模块缓存：规范化路径 → exports
+    pub(crate) module_exports: HashMap<String, Value>,
+    /// 模块解析基准目录（入口文件所在目录）
+    pub(crate) base_dir: Option<std::path::PathBuf>,
+    /// 入口文件路径（CJS `__filename`）
+    pub(crate) entry_file: String,
+    /// 最近执行指令的下标（错误定位用）
+    pub(crate) last_pc: usize,
+    /// 当前执行函数索引（错误定位用；-1 表示无）
+    pub(crate) current_func_idx: i64,
+    /// nextTick 优先微任务队列（回调函数）
+    pub(crate) nexttick_queue: std::collections::VecDeque<Value>,
+    /// Promise 微任务队列（Job：回调或帧恢复）
+    pub(crate) microtask_queue: std::collections::VecDeque<crate::builtins::Job>,
+    /// 宏任务队列（句柄 id + 到期累计毫秒 + 延迟 + 回调 + 是否周期）
+    pub(crate) macro_tasks: std::collections::VecDeque<(u64, u64, u64, Value, bool)>,
+    /// 定时器句柄计数器（setTimeout/setInterval 分配 id）
+    timer_counter: u64,
+    /// 已被 clear 的定时器句柄集合（drain 时跳过）
+    pub(crate) active_timers: std::collections::HashSet<u64>,
+    /// `Promise` 原生构造器单例（resolve/withResolvers 拦截）
+    pub promise_ctor: Option<ObjectRef>,
+    /// `Map` 原生构造器单例（groupBy 拦截）
+    pub map_ctor: Option<ObjectRef>,
+    /// `process` 全局对象单例（nextTick 拦截）
+    pub process_object: Option<ObjectRef>,
+    /// `path` 内置模块单例（join/basename/dirname/extname/resolve 拦截）
+    pub path_module: Option<ObjectRef>,
+    /// `os` 内置模块单例（platform/homedir/tmpdir 拦截；EOL 属性读取特判）
+    pub os_module: Option<ObjectRef>,
+    /// `stream` 内置模块单例（Readable 构造器属性物化）
+    pub stream_module: Option<ObjectRef>,
+    /// `events` 内置模块单例（EventEmitter 构造器属性物化）
+    pub events_module: Option<ObjectRef>,
+    /// 内置库注册表（querystring/constants 等并行开发模块的分派表）
+    pub(crate) builtin_registry: crate::builtins::BuiltinRegistry,
+    /// 挂起 async 帧的恢复登记：promise 句柄索引 → 恢复帧
+    pub(crate) promise_resumes: HashMap<u32, crate::builtins::PendingResume>,
     /// 生成器对象注册表（堆句柄索引 → 执行状态）
     pub(crate) generators: HashMap<u32, GeneratorState>,
     /// 最近一次 `YIELD` 的恢复点（下一条指令索引）
@@ -100,7 +149,9 @@ impl Vm {
             stack: Vec::new(),
             locals: vec![Value::Undefined; locals],
             stdout_records: Vec::new(),
-            current_constants: Vec::new(),
+            current_constants: std::rc::Rc::new(Vec::new()),
+            module_constants: Vec::new(),
+            module_header_extras: Vec::new(),
             heap: Vec::new(),
             module_functions: Vec::new(),
             module_classes: Vec::new(),
@@ -117,20 +168,125 @@ impl Vm {
             object_ctor: None,
             generators: HashMap::new(),
             yield_pc: 0,
+            last_pc: 0,
+            current_func_idx: -1,
+            nexttick_queue: std::collections::VecDeque::new(),
+            microtask_queue: std::collections::VecDeque::new(),
+            macro_tasks: std::collections::VecDeque::new(),
+            timer_counter: 0,
+            active_timers: std::collections::HashSet::new(),
+            promise_ctor: None,
+            map_ctor: None,
+            process_object: None,
+            path_module: None,
+            os_module: None,
+            stream_module: None,
+            events_module: None,
+            builtin_registry: std::default::Default::default(),
+            promise_resumes: HashMap::new(),
+            module_exports: HashMap::new(),
+            base_dir: None,
+            entry_file: String::new(),
+            require_fn: None,
+            fs_object: None,
         };
         // Object.prototype：原型链顶端（[[Prototype]] 为 null）
         vm.object_prototype = Some(vm.alloc_ordinary());
-        // Array.prototype：沿原型链挂到 Object.prototype
+        // Array.prototype：沿原型链挂到 Object.prototype，并填充已实现的
+        // 数组方法（NativeFn 占位：CALL_METHOD 按名字分派求值，属性存在性
+        // 查询（`arr.forEach ? ...`）经原型链命中）
         vm.array_prototype = vm
             .object_prototype
             .map(|p| vm.alloc_ordinary_with_proto(Some(p)));
+        if let Some(ap) = vm.array_prototype {
+            let methods = [
+                "map",
+                "filter",
+                "find",
+                "some",
+                "forEach",
+                "reduce",
+                "reduceRight",
+                "join",
+                "push",
+                "pop",
+                "shift",
+                "unshift",
+                "slice",
+                "sort",
+            ];
+            for m in methods {
+                let fn_ref = vm.alloc_native_fn(m);
+                let _ = vm.set_property(Value::Object(ap), m, Value::Object(fn_ref));
+            }
+        }
         // Math 内置对象
         vm.math_object = Some(vm.alloc_ordinary());
+        // fs 内置对象
+        vm.fs_object = Some(vm.alloc_ordinary());
         // 三个原生构造器（`new` 由解释器拦截求值；instanceof 经 prototype 属性判定）
         let obj_proto = vm.object_prototype;
         vm.error_ctor = Some(vm.alloc_native_ctor("Error", obj_proto));
         vm.array_ctor = Some(vm.alloc_native_ctor("Array", vm.array_prototype));
         vm.object_ctor = Some(vm.alloc_native_ctor("Object", obj_proto));
+        // Promise / Map 构造器与 process 全局（微任务与异步基建）
+        vm.promise_ctor = Some(vm.alloc_native_ctor("Promise", obj_proto));
+        vm.map_ctor = Some(vm.alloc_native_ctor("Map", obj_proto));
+        vm.process_object = Some(vm.alloc_ordinary());
+        // path 内置模块（方法经 CALL_METHOD 拦截求值）
+        let path_mod = vm.alloc_ordinary();
+        let join_fn = vm.alloc_native_fn("path.join");
+        let basename_fn = vm.alloc_native_fn("path.basename");
+        let dirname_fn = vm.alloc_native_fn("path.dirname");
+        let extname_fn = vm.alloc_native_fn("path.extname");
+        let resolve_fn = vm.alloc_native_fn("path.resolve");
+        let _ = vm.set_property(Value::Object(path_mod), "join", Value::Object(join_fn));
+        let _ = vm.set_property(
+            Value::Object(path_mod),
+            "basename",
+            Value::Object(basename_fn),
+        );
+        let _ = vm.set_property(
+            Value::Object(path_mod),
+            "dirname",
+            Value::Object(dirname_fn),
+        );
+        let _ = vm.set_property(
+            Value::Object(path_mod),
+            "extname",
+            Value::Object(extname_fn),
+        );
+        let _ = vm.set_property(
+            Value::Object(path_mod),
+            "resolve",
+            Value::Object(resolve_fn),
+        );
+        vm.path_module = Some(path_mod);
+        // stream 内置模块
+        let stream_mod = vm.alloc_ordinary();
+        vm.stream_module = Some(stream_mod);
+        // events 内置模块
+        let events_mod = vm.alloc_ordinary();
+        vm.events_module = Some(events_mod);
+        // os 内置模块
+        let os_mod = vm.alloc_ordinary();
+        let platform_fn = vm.alloc_native_fn("os.platform");
+        let homedir_fn = vm.alloc_native_fn("os.homedir");
+        let tmpdir_fn = vm.alloc_native_fn("os.tmpdir");
+        let eol = if cfg!(windows) { "\r\n" } else { "\n" };
+        let eol_str = vm.alloc_string(eol.to_owned());
+        let _ = vm.set_property(
+            Value::Object(os_mod),
+            "platform",
+            Value::Object(platform_fn),
+        );
+        let _ = vm.set_property(Value::Object(os_mod), "homedir", Value::Object(homedir_fn));
+        let _ = vm.set_property(Value::Object(os_mod), "tmpdir", Value::Object(tmpdir_fn));
+        let _ = vm.set_property(Value::Object(os_mod), "EOL", Value::Object(eol_str));
+        vm.os_module = Some(os_mod);
+        // 内置库注册表：必须在全部单例（fs/path/os/process/构造器）初始化之后
+        // 预热（内置模块如 fs/os 的 build 复用已建单例）
+        let _ = crate::builtins::register_all(&mut vm);
         vm
     }
 
@@ -178,10 +334,14 @@ impl Vm {
                         }
                         HeapObject::Ordinary { .. }
                         | HeapObject::Generator
-                        | HeapObject::Promise { .. } => "[object Object]".to_owned(),
-                        HeapObject::Closure { .. } | HeapObject::NativeCtor { .. } => {
-                            "[function Function]".to_owned()
-                        }
+                        | HeapObject::Promise { .. }
+                        | HeapObject::Map { .. }
+                        | HeapObject::Readable { .. }
+                        | HeapObject::EventEmitter { .. } => "[object Object]".to_owned(),
+                        HeapObject::Closure { .. }
+                        | HeapObject::NativeCtor { .. }
+                        | HeapObject::NativeFn { .. }
+                        | HeapObject::PromiseResolver { .. } => "[function Function]".to_owned(),
                         HeapObject::RegExp { pattern, flags } => {
                             format!("/{pattern}/{flags}")
                         }
@@ -231,9 +391,11 @@ impl Vm {
             Value::Object(r) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::String(_)) => "string".to_owned(),
                 Some(HeapObject::BigInt(_)) => "bigint".to_owned(),
-                Some(HeapObject::Closure { .. } | HeapObject::NativeCtor { .. }) => {
-                    "function".to_owned()
-                }
+                Some(
+                    HeapObject::Closure { .. }
+                    | HeapObject::NativeCtor { .. }
+                    | HeapObject::NativeFn { .. },
+                ) => "function".to_owned(),
                 _ => "object".to_owned(),
             },
         }
@@ -274,8 +436,226 @@ impl Vm {
                 .object_ctor
                 .map(Value::Object)
                 .unwrap_or(Value::Undefined),
+            "fs" => self
+                .fs_object
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
+            "Promise" => self
+                .promise_ctor
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
+            "Map" => self.map_ctor.map(Value::Object).unwrap_or(Value::Undefined),
+            "process" => self
+                .process_object
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
+            "os" => self
+                .os_module
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
+            "URL" => {
+                let c = self.alloc_native_ctor("URL", None);
+                Value::Object(c)
+            }
+            "setTimeout" => {
+                let f = self.alloc_native_fn("setTimeout");
+                Value::Object(f)
+            }
+            "setInterval" => {
+                let f = self.alloc_native_fn("setInterval");
+                Value::Object(f)
+            }
+            "clearTimeout" => {
+                let f = self.alloc_native_fn("clearTimeout");
+                Value::Object(f)
+            }
+            "clearInterval" => {
+                let f = self.alloc_native_fn("clearInterval");
+                Value::Object(f)
+            }
+            "queueMicrotask" => {
+                let f = self.alloc_native_fn("queueMicrotask");
+                Value::Object(f)
+            }
+            "require" => self
+                .require_fn
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
             _ => Value::Undefined,
         }
+    }
+
+    /// 判断值是否为指定名称的原生函数。
+    pub(crate) fn is_native_fn(&self, val: Value, name: &str) -> bool {
+        matches!(
+            val,
+            Value::Object(r)
+                if matches!(
+                    self.heap.get(r.0 as usize),
+                    Some(HeapObject::NativeFn { name: n }) if n == name
+                )
+        )
+    }
+
+    /// 数组回调上下文：`(回调, thisArg)`（thisArg 为第二参数，未传为 undefined）。
+    fn array_cb_ctx(&self, args: &[Value]) -> (Value, Value) {
+        (
+            args.first().copied().unwrap_or(Value::Undefined),
+            args.get(1).copied().unwrap_or(Value::Undefined),
+        )
+    }
+
+    /// 调用数组原型方法的回调：this=thisArg，实参按 JS 规范 `(elem, idx, arr)`。
+    fn invoke_array_cb(
+        &mut self,
+        cb: Value,
+        this_arg: Value,
+        cb_args: &[Value],
+    ) -> Result<Value, VmError> {
+        self.invoke_callable(cb, this_arg, cb_args)
+    }
+
+    /// `node:path` 轻量方法实现（平台分隔符语义；符号参数规范化处理）。
+    fn path_method(&self, method: &str, args: &[Value]) -> String {
+        use std::path::{Path, PathBuf};
+        let parts: Vec<String> = args.iter().map(|v| self.format_value(*v)).collect();
+        match method {
+            "join" => {
+                let parts: Vec<String> = parts
+                    .into_iter()
+                    .filter(|p| !p.is_empty() && *p != "undefined" && *p != "null")
+                    .collect();
+                let mut buf = PathBuf::new();
+                for p in &parts {
+                    buf.push(p);
+                }
+                self.win_leading_slash(&buf.to_string_lossy())
+            }
+            "basename" => {
+                let p = Path::new(&parts[0]);
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                match args.get(1) {
+                    None | Some(Value::Undefined) => name,
+                    // 第二参为扩展名（字符串对象）：剥离（如 ".txt"）
+                    Some(Value::Object(_)) => name
+                        .strip_suffix(&self.format_value(*args.get(1).expect("已确认存在")))
+                        .unwrap_or(&name)
+                        .to_string(),
+                    _ => name,
+                }
+            }
+            "dirname" => Path::new(&parts[0])
+                .parent()
+                .map(|p| self.win_leading_slash(&p.to_string_lossy()))
+                .unwrap_or_default(),
+            "extname" => Path::new(&parts[0])
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default(),
+            _ => {
+                // resolve：当前目录为基座
+                let mut buf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                for p in &parts {
+                    buf.push(p);
+                }
+                self.win_leading_slash(&buf.to_string_lossy())
+            }
+        }
+    }
+
+    /// 路径输出的前导 `/` 转 `\`（对齐 Windows 语义的 Go filepath 输出）。
+    fn win_leading_slash(&self, s: &str) -> String {
+        // Windows 分隔符语义：路径输出统一为 `\`（Go filepath 对齐）
+        s.replace('/', "\\")
+    }
+
+    /// `new URL(href)`：轻量解析并物化属性（protocol/host/hostname/port/pathname/
+    /// search/hash/href/origin），对齐 Go `node:url` 输出。
+    pub(crate) fn url_constructor(&mut self, args: &[Value]) -> Value {
+        let href = match args.first() {
+            Some(v) => self.format_value(*v),
+            None => String::new(),
+        };
+        let mut properties: Vec<(&str, String)> = Vec::new();
+        properties.push(("href", href.clone()));
+
+        let (scheme, rest) = match href.split_once(':') {
+            Some((s, r)) if !r.is_empty() => (format!("{s}:"), r.strip_prefix("//").unwrap_or(r)),
+            _ => ("".to_owned(), href.as_str()),
+        };
+        properties.push(("protocol", scheme.clone()));
+
+        // authority 到首个 / ? #
+        let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let authority = &rest[..authority_end];
+        let tail = &rest[authority_end..];
+        let (pathname, search, hash) = {
+            let q = tail.find('?');
+            let h = tail.find('#');
+            let path_end = q.or(h).unwrap_or(tail.len());
+            let pathname = &tail[..path_end];
+            let search = match q {
+                Some(qi) => {
+                    let se = h.map(|hi| hi.min(tail.len())).unwrap_or(tail.len());
+                    &tail[qi..se]
+                }
+                None => "",
+            };
+            let hash = match h {
+                Some(hi) => &tail[hi..],
+                None => "",
+            };
+            (pathname, search, hash)
+        };
+        properties.push(("pathname", pathname.to_owned()));
+        properties.push(("search", search.to_owned()));
+        properties.push(("hash", hash.to_owned()));
+
+        let userinfo_end = authority.find('@').map(|i| i + 1).unwrap_or(0);
+        let host_port = &authority[userinfo_end..];
+        let (host, port) = match host_port.split_once(':') {
+            Some((h, p)) => (h, p.to_owned()),
+            None => (host_port, String::new()),
+        };
+        properties.push(("hostname", host.to_owned()));
+        properties.push(("port", port.clone()));
+        properties.push((
+            "host",
+            if port.is_empty() {
+                host.to_owned()
+            } else {
+                format!("{host}:{port}")
+            },
+        ));
+        properties.push((
+            "origin",
+            if scheme.is_empty() {
+                String::new()
+            } else if port.is_empty() {
+                format!("{scheme}//{host}")
+            } else {
+                format!("{scheme}//{host}:{port}")
+            },
+        ));
+
+        let obj = self.alloc_ordinary();
+        for (k, v) in properties {
+            let s_ref = self.alloc_string(v);
+            let _ = self.set_property(Value::Object(obj), k, Value::Object(s_ref));
+        }
+        Value::Object(obj)
+    }
+
+    /// 判断值是否为可读流实例。
+    pub(crate) fn is_readable_obj(&self, val: Value) -> bool {
+        matches!(
+            val,
+            Value::Object(r)
+                if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Readable { .. }))
+        )
     }
 
     /// 判断值是否为正则表达式对象。
@@ -337,7 +717,18 @@ impl Vm {
         code: &[Instr],
         constants: &[Constant],
     ) -> Result<Value, VmError> {
-        self.run_with_constants_at(code, constants, 0)
+        // 外部低频入口：借用切片包装为 Rc（内部热路径走 run_with_constants_rc）
+        self.run_with_constants_rc(code, std::rc::Rc::new(constants.to_vec()), 0)
+    }
+
+    /// 内部热路径：常量池以 `Rc` 持有（帧切换零拷贝）。
+    pub(crate) fn run_with_constants_rc(
+        &mut self,
+        code: &[Instr],
+        constants: std::rc::Rc<Vec<Constant>>,
+        start_pc: usize,
+    ) -> Result<Value, VmError> {
+        self.run_with_constants_at(code, constants, start_pc)
     }
 
     /// 携带常量池从 `start_pc` 起执行指令序列（生成器挂起恢复的入口）。
@@ -348,20 +739,28 @@ impl Vm {
     pub(crate) fn run_with_constants_at(
         &mut self,
         code: &[Instr],
-        constants: &[Constant],
+        constants: std::rc::Rc<Vec<Constant>>,
         start_pc: usize,
     ) -> Result<Value, VmError> {
-        self.current_constants = constants.to_vec();
+        self.current_constants = constants;
         let mut pc = start_pc;
         loop {
-            match self.exec_frame(code, constants, pc) {
+            match self.exec_frame(code, pc) {
                 Ok(value) => return Ok(value),
                 Err(VmError::Thrown(exc)) => match self.find_handler_in_frame(exc) {
                     // 本帧接住：从 handler 入口（catch 压入异常 / finally 直跳）续跑
                     Some(next_pc) => pc = next_pc,
                     None => return Err(VmError::Thrown(exc)),
                 },
-                Err(err) => return Err(err),
+                Err(err) => {
+                    eprintln!(
+                        "[vm-err] func={} pc={} stack={} err={err:?}",
+                        self.current_func_idx,
+                        self.last_pc,
+                        self.stack.len()
+                    );
+                    return Err(err);
+                }
             }
         }
     }
@@ -370,16 +769,12 @@ impl Vm {
     ///
     /// 遇到未接住的 `Thrown` 即返回，由 [`Vm::run_with_constants`] 查找 handler
     /// 后重入续跑；嵌套调用（`invoke_function`）在返回前已恢复本帧上下文。
-    fn exec_frame(
-        &mut self,
-        code: &[Instr],
-        constants: &[Constant],
-        start_pc: usize,
-    ) -> Result<Value, VmError> {
+    fn exec_frame(&mut self, code: &[Instr], start_pc: usize) -> Result<Value, VmError> {
         let num_instrs = code.len();
         let mut pc = start_pc;
 
         while pc < num_instrs {
+            self.last_pc = pc;
             let instr = code[pc];
 
             match instr.op {
@@ -393,7 +788,10 @@ impl Vm {
                 Op::PushNegInt => self.stack.push(Value::Number(-(f64::from(instr.operand)))),
                 Op::PushConst => {
                     let idx = instr.operand as usize;
-                    let c = constants.get(idx).ok_or(VmError::LocalOutOfRange)?;
+                    let c = self
+                        .current_constants
+                        .get(idx)
+                        .ok_or(VmError::LocalOutOfRange)?;
                     match c {
                         Constant::Number(n) => self.stack.push(Value::Number(*n)),
                         Constant::String(s) => {
@@ -601,7 +999,10 @@ impl Vm {
                         return Err(VmError::LocalOutOfRange);
                     }
                     self.locals[slot] = val;
-                    if let Some(uv) = self.open_upvalues.get(&slot) {
+                    // 快路径：无打开上值时跳过哈希查找（绝大多数帧）
+                    if !self.open_upvalues.is_empty()
+                        && let Some(uv) = self.open_upvalues.get(&slot)
+                    {
                         *uv.0.borrow_mut() = val;
                     }
                 }
@@ -725,6 +1126,606 @@ impl Vm {
                         };
                         let result = self.drive_generator(gen_ref, Some(injected))?;
                         self.stack.push(result);
+                    } else if matches!(
+                        method_name.as_str(),
+                        "readFileSync" | "writeFileSync" | "existsSync"
+                    ) && self.fs_object.is_some_and(|f| receiver == Value::Object(f))
+                    {
+                        // fs 最小内置（M1）：同步读写文本文件
+                        let path = args
+                            .first()
+                            .map(|v| self.format_value(*v))
+                            .unwrap_or_default();
+                        match method_name.as_str() {
+                            "existsSync" => {
+                                self.stack
+                                    .push(Value::Boolean(std::path::Path::new(&path).exists()));
+                            }
+                            "readFileSync" => match std::fs::read_to_string(&path) {
+                                Ok(content) => {
+                                    let s = self.alloc_string(content);
+                                    self.stack.push(Value::Object(s));
+                                }
+                                Err(e) => {
+                                    let msg = self.alloc_string(format!("fs.readFileSync: {e}"));
+                                    return Err(VmError::Thrown(Value::Object(msg)));
+                                }
+                            },
+                            _ => {
+                                let data = args
+                                    .get(1)
+                                    .map(|v| self.format_value(*v))
+                                    .unwrap_or_default();
+                                match std::fs::write(&path, data) {
+                                    Ok(()) => self.stack.push(Value::Undefined),
+                                    Err(e) => {
+                                        let msg =
+                                            self.alloc_string(format!("fs.writeFileSync: {e}"));
+                                        return Err(VmError::Thrown(Value::Object(msg)));
+                                    }
+                                }
+                            }
+                        }
+                    } else if method_name == "nextTick" && {
+                        let c1 = self
+                            .process_object
+                            .is_some_and(|p| receiver == Value::Object(p));
+                        let c2 = matches!(
+                            receiver,
+                            Value::Object(rr)
+                                if matches!(
+                                    self.heap.get(rr.0 as usize),
+                                    Some(HeapObject::NativeFn { name })
+                                        if name == "nextTick"
+                                )
+                        );
+                        let _ = (c1, c2);
+                        c1 || c2
+                    } {
+                        // process.nextTick(cb)：nextTick 优先微任务队列
+                        let cb = args.first().copied().unwrap_or(Value::Undefined);
+                        self.nexttick_queue.push_back(cb);
+                        self.stack.push(Value::Undefined);
+                    } else if matches!(method_name.as_str(), "then" | "catch")
+                        && matches!(
+                            receiver,
+                            Value::Object(rr)
+                                if matches!(
+                                    self.heap.get(rr.0 as usize),
+                                    Some(HeapObject::Promise { .. })
+                                )
+                        )
+                    {
+                        // promise.then(onF)：登记处理器，返回自身；已完成时立即调度。
+                        // promise.catch(onR)：pending 时登记（reject 简化同 fulfill——
+                        // 本引擎无 reject 语义，fulfilled 完成不触发 catch）
+                        if let Value::Object(rr) = receiver {
+                            let cb = args.first().copied().unwrap_or(Value::Undefined);
+                            let is_pending = matches!(
+                                self.heap.get(rr.0 as usize),
+                                Some(HeapObject::Promise { pending: true, .. })
+                            );
+                            if is_pending {
+                                if method_name == "then" {
+                                    if let Some(HeapObject::Promise { handlers, .. }) =
+                                        self.heap.get_mut(rr.0 as usize)
+                                    {
+                                        handlers.push(cb);
+                                    }
+                                } else if let Some(HeapObject::Promise { rejected, .. }) =
+                                    self.heap.get_mut(rr.0 as usize)
+                                {
+                                    // catch：只在 reject 时调度（fulfill 不触发）
+                                    rejected.push(cb);
+                                }
+                            } else if method_name == "then" {
+                                let value = match self.heap.get(rr.0 as usize) {
+                                    Some(HeapObject::Promise { value, .. }) => *value,
+                                    _ => Value::Undefined,
+                                };
+                                self.microtask_queue
+                                    .push_back(crate::builtins::Job::Call(cb, value));
+                            }
+                        }
+                        self.stack.push(receiver);
+                    } else if method_name == "resolve"
+                        && self
+                            .promise_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Promise.resolve(v)：直接完成
+                        let value = args.first().copied().unwrap_or(Value::Undefined);
+                        let p = self.alloc_fulfilled_promise(value);
+                        self.stack.push(Value::Object(p));
+                    } else if method_name == "withResolvers"
+                        && self
+                            .promise_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Promise.withResolvers()：{ promise, resolve, reject }
+                        let promise = self.alloc_pending_promise();
+                        let resolve = self.alloc_promise_resolver(promise, true);
+                        let reject = self.alloc_promise_resolver(promise, false);
+                        let result = self.alloc_ordinary();
+                        let _ = self.set_property(
+                            Value::Object(result),
+                            "promise",
+                            Value::Object(promise),
+                        );
+                        let _ = self.set_property(
+                            Value::Object(result),
+                            "resolve",
+                            Value::Object(resolve),
+                        );
+                        let _ = self.set_property(
+                            Value::Object(result),
+                            "reject",
+                            Value::Object(reject),
+                        );
+                        self.stack.push(Value::Object(result));
+                    } else if method_name == "fromAsync"
+                        && self
+                            .array_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Array.fromAsync(iterable)：同步数组直接收集；
+                        // 生成器按 next() 同步驱动（async 生成器在语料中同步产值）
+                        let iterable = args.first().copied().unwrap_or(Value::Undefined);
+                        let mut elems: Vec<Value> = Vec::new();
+                        if let Value::Object(it) = iterable {
+                            match self.heap.get(it.0 as usize) {
+                                Some(HeapObject::Array { elements, .. }) => {
+                                    elems.extend(elements.iter().copied());
+                                }
+                                Some(HeapObject::Generator) => {
+                                    let mut done = false;
+                                    let re = it;
+                                    while !done {
+                                        let result = self.drive_generator(re, None)?;
+                                        let (val, is_done) = match result {
+                                            Value::Object(res) => {
+                                                let v =
+                                                    self.get_property(Value::Object(res), "value")?;
+                                                let d =
+                                                    self.get_property(Value::Object(res), "done")?;
+                                                (v, matches!(d, Value::Boolean(true)))
+                                            }
+                                            _ => (Value::Undefined, true),
+                                        };
+                                        if is_done {
+                                            done = true;
+                                        } else {
+                                            elems.push(val);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        let arr = self.alloc_array(elems);
+                        let p = self.alloc_fulfilled_promise(Value::Object(arr));
+                        self.stack.push(Value::Object(p));
+                    } else if method_name == "groupBy"
+                        && self
+                            .object_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Object.groupBy(arr, cb)：分组到普通对象
+                        let cb = args.get(1).copied().unwrap_or(Value::Undefined);
+                        let mut groups: std::collections::HashMap<String, Vec<Value>> =
+                            std::collections::HashMap::new();
+                        let elems: Vec<Value> =
+                            match args.first().copied().unwrap_or(Value::Undefined) {
+                                Value::Object(rr) => match self.heap.get(rr.0 as usize) {
+                                    Some(HeapObject::Array { elements, .. }) => elements.clone(),
+                                    _ => Vec::new(),
+                                },
+                                _ => Vec::new(),
+                            };
+                        for (i, elem) in elems.iter().enumerate() {
+                            let key_val = self.invoke_array_cb(
+                                cb,
+                                Value::Undefined,
+                                &[*elem, Value::Number(i as f64), Value::Undefined],
+                            )?;
+                            let key = self.to_property_key(key_val);
+                            groups.entry(key).or_default().push(*elem);
+                        }
+                        let result = self.alloc_ordinary();
+                        for (key, items) in groups {
+                            let arr = self.alloc_array(items);
+                            let _ =
+                                self.set_property(Value::Object(result), &key, Value::Object(arr));
+                        }
+                        self.stack.push(Value::Object(result));
+                    } else if method_name == "groupBy"
+                        && self.map_ctor.is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Map.groupBy(arr, cb)：分组到 Map（键字符串化）
+                        let cb = args.get(1).copied().unwrap_or(Value::Undefined);
+                        let mut groups: std::collections::HashMap<String, Vec<Value>> =
+                            std::collections::HashMap::new();
+                        let elems: Vec<Value> =
+                            match args.first().copied().unwrap_or(Value::Undefined) {
+                                Value::Object(rr) => match self.heap.get(rr.0 as usize) {
+                                    Some(HeapObject::Array { elements, .. }) => elements.clone(),
+                                    _ => Vec::new(),
+                                },
+                                _ => Vec::new(),
+                            };
+                        for (i, elem) in elems.iter().enumerate() {
+                            let key_val = self.invoke_array_cb(
+                                cb,
+                                Value::Undefined,
+                                &[*elem, Value::Number(i as f64), Value::Undefined],
+                            )?;
+                            let key = self.to_property_key(key_val);
+                            groups.entry(key).or_default().push(*elem);
+                        }
+                        let mut map_entries: Vec<(String, Value)> = Vec::new();
+                        for (k, v) in groups.into_iter() {
+                            let arr = self.alloc_array(v);
+                            map_entries.push((k, Value::Object(arr)));
+                        }
+                        let map = self.alloc_map(map_entries);
+                        self.stack.push(Value::Object(map));
+                    } else if method_name == "get"
+                        && matches!(
+                            receiver,
+                            Value::Object(rr)
+                                if matches!(
+                                    self.heap.get(rr.0 as usize),
+                                    Some(HeapObject::Map { .. })
+                                )
+                        )
+                    {
+                        // map.get(key)
+                        let key = args
+                            .first()
+                            .map(|v| self.to_property_key(*v))
+                            .unwrap_or_default();
+                        let val = if let Value::Object(rr) = receiver {
+                            if let Some(HeapObject::Map { entries }) = self.heap.get(rr.0 as usize)
+                            {
+                                entries.get(&key).copied()
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        self.stack.push(val.unwrap_or(Value::Undefined));
+                    } else if matches!(
+                        method_name.as_str(),
+                        "on" | "once" | "off" | "removeListener" | "emit"
+                    ) && matches!(
+                        receiver,
+                        Value::Object(rr)
+                            if matches!(
+                                self.heap.get(rr.0 as usize),
+                                Some(HeapObject::EventEmitter { .. })
+                            )
+                    ) {
+                        // EventEmitter：on/once 注册监听器，emit 触发，off/removeListener 移除
+                        if let Value::Object(rr) = receiver {
+                            match method_name.as_str() {
+                                "on" | "once" => {
+                                    let name = args
+                                        .first()
+                                        .map(|v| self.to_property_key(*v))
+                                        .unwrap_or_default();
+                                    let cb = args.get(1).copied().unwrap_or(Value::Undefined);
+                                    let once = method_name == "once";
+                                    if let Some(HeapObject::EventEmitter { listeners }) =
+                                        self.heap.get_mut(rr.0 as usize)
+                                    {
+                                        listeners.entry(name).or_default().push((cb, once));
+                                    }
+                                    self.stack.push(receiver);
+                                }
+                                "emit" => {
+                                    let name = args
+                                        .first()
+                                        .map(|v| self.to_property_key(*v))
+                                        .unwrap_or_default();
+                                    // 触发瞬间收集监听器：普通监听器保持并触发，
+                                    // once 的触发前移除（只触发一次）
+                                    let mut all: Vec<Value> = Vec::new();
+                                    if let Some(HeapObject::EventEmitter { listeners }) =
+                                        self.heap.get_mut(rr.0 as usize)
+                                    {
+                                        if let Some(list) = listeners.get_mut(&name) {
+                                            let mut fired = Vec::new();
+                                            let mut keep = Vec::with_capacity(list.len());
+                                            for (cb, once) in std::mem::take(list) {
+                                                if once {
+                                                    fired.push(cb);
+                                                } else {
+                                                    keep.push((cb, once));
+                                                    all.push(cb);
+                                                }
+                                            }
+                                            *list = keep;
+                                            all.extend(fired);
+                                        }
+                                    }
+                                    let emit_args: Vec<Value> =
+                                        args.iter().skip(1).copied().collect();
+                                    for cb in all {
+                                        self.invoke_callable(cb, receiver, &emit_args)?;
+                                    }
+                                    self.stack.push(Value::Boolean(!emit_args.is_empty()));
+                                }
+                                _ => {
+                                    // off / removeListener：移除匹配的监听器
+                                    let name = args
+                                        .first()
+                                        .map(|v| self.to_property_key(*v))
+                                        .unwrap_or_default();
+                                    let cb = args.get(1).copied().unwrap_or(Value::Undefined);
+                                    if let Some(HeapObject::EventEmitter { listeners }) =
+                                        self.heap.get_mut(rr.0 as usize)
+                                    {
+                                        if let Some(list) = listeners.get_mut(&name) {
+                                            list.retain(|(c, _)| *c != cb);
+                                        }
+                                    }
+                                    self.stack.push(receiver);
+                                }
+                            }
+                        }
+                    } else if matches!(method_name.as_str(), "push" | "next")
+                        && self.is_readable_obj(receiver)
+                    {
+                        // 可读流：push 追加数据（null=结束）；next 消费（空读挂起等待）
+                        match method_name.as_str() {
+                            "push" => {
+                                let v = args.first().copied().unwrap_or(Value::Undefined);
+                                let is_end = matches!(v, Value::Null);
+                                let waiting = if let Value::Object(rr) = receiver {
+                                    if let Some(HeapObject::Readable {
+                                        buffer,
+                                        ended,
+                                        waiting,
+                                    }) = self.heap.get_mut(rr.0 as usize)
+                                    {
+                                        if is_end {
+                                            *ended = true;
+                                        } else if waiting.is_none() {
+                                            // 无等待读取者：数据入缓冲；有等待者时
+                                            // 数据直接交给等待的 next（避免双读）
+                                            buffer.push_back(v);
+                                        }
+                                        waiting.take()
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                };
+                                // 有等待中的 promise：兑现为 {value, done} 结果对象
+                                if let Some(wp) = waiting {
+                                    let res_obj = self.alloc_ordinary();
+                                    let done = is_end;
+                                    let val = if done { Value::Undefined } else { v };
+                                    let _ = self.set_property(Value::Object(res_obj), "value", val);
+                                    let _ = self.set_property(
+                                        Value::Object(res_obj),
+                                        "done",
+                                        Value::Boolean(done),
+                                    );
+                                    self.fulfill_promise(wp, Value::Object(res_obj))?;
+                                }
+                                self.stack.push(Value::Boolean(true));
+                            }
+                            "next" => {
+                                // 先取动作：Some(值) / Done / NeedWait(等待 promise)
+                                enum NextAction {
+                                    Data(Value),
+                                    Done,
+                                    NeedWait,
+                                }
+                                // 无条件先建 pending promise（NeedWait 时登记等待；
+                                // Data/Done 时弃用——堆对象无副作用）
+                                let pending_promise = self.alloc_pending_promise();
+                                let action = if let Value::Object(rr) = receiver {
+                                    match self.heap.get_mut(rr.0 as usize) {
+                                        Some(HeapObject::Readable {
+                                            buffer,
+                                            ended,
+                                            waiting,
+                                        }) => {
+                                            if let Some(v) = buffer.pop_front() {
+                                                NextAction::Data(v)
+                                            } else if *ended {
+                                                NextAction::Done
+                                            } else {
+                                                // 空读未结束：登记等待 promise（挂起等待 push）
+                                                *waiting = Some(pending_promise);
+                                                NextAction::NeedWait
+                                            }
+                                        }
+                                        _ => NextAction::Done,
+                                    }
+                                } else {
+                                    NextAction::Done
+                                };
+                                let result = match action {
+                                    NextAction::Data(v) => {
+                                        let res_obj = self.alloc_ordinary();
+                                        let _ =
+                                            self.set_property(Value::Object(res_obj), "value", v);
+                                        let _ = self.set_property(
+                                            Value::Object(res_obj),
+                                            "done",
+                                            Value::Boolean(false),
+                                        );
+                                        Some(res_obj)
+                                    }
+                                    NextAction::Done => {
+                                        let res_obj = self.alloc_ordinary();
+                                        let _ = self.set_property(
+                                            Value::Object(res_obj),
+                                            "value",
+                                            Value::Undefined,
+                                        );
+                                        let _ = self.set_property(
+                                            Value::Object(res_obj),
+                                            "done",
+                                            Value::Boolean(true),
+                                        );
+                                        Some(res_obj)
+                                    }
+                                    NextAction::NeedWait => None, // pending：等待 push 兑现
+                                };
+                                match result {
+                                    Some(obj) => self.stack.push(Value::Object(obj)),
+                                    None => {
+                                        // 空读未结束：next 返回等待 promise 本身
+                                        // （与 waiting 登记同一句柄——push 兑现它来
+                                        // 恢复 async 帧），AWAIT 挂起等待 push
+                                        self.stack.push(Value::Object(pending_promise));
+                                    }
+                                }
+                            }
+                            _ => self.stack.push(Value::Undefined),
+                        }
+                    } else if matches!(method_name.as_str(), "platform" | "homedir" | "tmpdir")
+                        && self.os_module.is_some_and(|m| receiver == Value::Object(m))
+                    {
+                        let result = match method_name.as_str() {
+                            "platform" => if cfg!(windows) { "win32" } else { "linux" }.to_owned(),
+                            "homedir" => std::env::var("USERPROFILE")
+                                .or_else(|_| std::env::var("HOME"))
+                                .unwrap_or_default(),
+                            _ => std::env::var("TEMP")
+                                .or_else(|_| std::env::var("TMPDIR"))
+                                .unwrap_or_else(|_| "/tmp".to_owned()),
+                        };
+                        let r = self.alloc_string(result);
+                        self.stack.push(Value::Object(r));
+                    } else if matches!(
+                        method_name.as_str(),
+                        "join" | "basename" | "dirname" | "extname" | "resolve"
+                    ) && self
+                        .path_module
+                        .is_some_and(|m| receiver == Value::Object(m))
+                    {
+                        // node:path 轻量内置（平台分隔符，对齐 Go `filepath` 语义）
+                        let result = self.path_method(method_name.as_str(), &args);
+                        let r = self.alloc_string(result);
+                        self.stack.push(Value::Object(r));
+                    } else if matches!(method_name.as_str(), "isWellFormed" | "toWellFormed")
+                        && matches!(
+                            receiver,
+                            Value::Object(rr)
+                                if matches!(
+                                    self.heap.get(rr.0 as usize),
+                                    Some(HeapObject::String(_))
+                                )
+                        )
+                    {
+                        // 字符串完整性（Rust String 恒为合法 UTF-8）
+                        if method_name == "isWellFormed" {
+                            self.stack.push(Value::Boolean(true));
+                        } else {
+                            self.stack.push(receiver);
+                        }
+                    } else if matches!(
+                        method_name.as_str(),
+                        "toSorted" | "toReversed" | "toSpliced" | "with"
+                    ) && matches!(
+                        receiver,
+                        Value::Object(rr)
+                            if matches!(self.heap.get(rr.0 as usize), Some(HeapObject::Array { .. }))
+                    ) {
+                        // ES2023 不可变数组方法：返回新数组
+                        let mut elems: Vec<Value> = if let Value::Object(rr) = receiver {
+                            if let Some(HeapObject::Array { elements, .. }) =
+                                self.heap.get(rr.0 as usize)
+                            {
+                                elements.clone()
+                            } else {
+                                Vec::new()
+                            }
+                        } else {
+                            Vec::new()
+                        };
+                        match method_name.as_str() {
+                            "toSorted" => {
+                                elems.sort_by(|a, b| {
+                                    self.format_value(*a).cmp(&self.format_value(*b))
+                                });
+                            }
+                            "toReversed" => elems.reverse(),
+                            "toSpliced" => {
+                                let start = args
+                                    .first()
+                                    .and_then(|v| match v {
+                                        Value::Number(n) => Some(*n as usize),
+                                        _ => None,
+                                    })
+                                    .unwrap_or(0)
+                                    .min(elems.len());
+                                let del = args
+                                    .get(1)
+                                    .and_then(|v| match v {
+                                        Value::Number(n) => Some(*n as usize),
+                                        _ => None,
+                                    })
+                                    .unwrap_or(0)
+                                    .min(elems.len() - start);
+                                elems.splice(start..start + del, args[2..].to_vec());
+                            }
+                            _ => {
+                                // with(idx, val)
+                                let idx = args
+                                    .first()
+                                    .and_then(|v| match v {
+                                        Value::Number(n) => Some(*n as usize),
+                                        _ => None,
+                                    })
+                                    .unwrap_or(0);
+                                let val = args.get(1).copied().unwrap_or(Value::Undefined);
+                                if idx < elems.len() {
+                                    elems[idx] = val;
+                                }
+                            }
+                        }
+                        let new_arr = self.alloc_array(elems);
+                        self.stack.push(Value::Object(new_arr));
+                    } else if method_name == "hasOwn"
+                        && self
+                            .object_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Object.hasOwn(obj, key)：自有属性判定（不沿原型链）
+                        let result = match (
+                            args.first().copied().unwrap_or(Value::Undefined),
+                            args.get(1)
+                                .map(|v| self.to_property_key(*v))
+                                .unwrap_or_default(),
+                        ) {
+                            (Value::Object(rr), key) => match self.heap.get(rr.0 as usize) {
+                                Some(HeapObject::Ordinary { properties, .. }) => {
+                                    properties.contains_key(&key)
+                                }
+                                Some(HeapObject::Array { properties, .. }) => {
+                                    key == "length" || properties.contains_key(&key)
+                                }
+                                _ => false,
+                            },
+                            _ => false,
+                        };
+                        self.stack.push(Value::Boolean(result));
+                    } else if let Some(dispatched) =
+                        crate::builtins::try_dispatch(self, receiver, &method_name, &args)
+                    {
+                        // 内置库注册表模块方法（querystring 等并行开发模块）
+                        match dispatched {
+                            Ok(v) => self.stack.push(v),
+                            Err(e) => return Err(e),
+                        }
                     } else if method_name == "create"
                         && self
                             .object_ctor
@@ -756,7 +1757,7 @@ impl Vm {
                                     }
                                 }
                                 "map" => {
-                                    let cb = args.first().copied().unwrap_or(Value::Undefined);
+                                    let (cb, this_arg) = self.array_cb_ctx(&args);
                                     let elems =
                                         if let Some(HeapObject::Array { elements, .. }) =
                                             self.heap.get(idx)
@@ -766,32 +1767,154 @@ impl Vm {
                                             Vec::new()
                                         };
                                     let mut new_elems = Vec::with_capacity(elems.len());
-                                    if let Value::Object(cb_ref) = cb {
-                                        let (cb_fidx, cb_uvs) = if let Some(HeapObject::Closure {
-                                            func_idx,
-                                            upvalues,
-                                            ..
-                                        }) =
-                                            self.heap.get(cb_ref.0 as usize)
-                                        {
-                                            (Some(*func_idx), upvalues.clone())
-                                        } else {
-                                            (None, Vec::new())
-                                        };
-                                        if let Some(fi) = cb_fidx {
-                                            for (elem_idx, elem) in elems.iter().enumerate() {
-                                                let item_res = self.invoke_function(
-                                                    fi,
-                                                    Value::Undefined,
-                                                    &[*elem, Value::Number(elem_idx as f64)],
-                                                    cb_uvs.clone(),
-                                                )?;
-                                                new_elems.push(item_res);
-                                            }
-                                        }
+                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
+                                    for (elem_idx, elem) in elems.iter().enumerate() {
+                                        let item_res = self.invoke_array_cb(
+                                            cb,
+                                            this_arg,
+                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                                        )?;
+                                        new_elems.push(item_res);
                                     }
                                     let new_arr = self.alloc_array(new_elems);
                                     self.stack.push(Value::Object(new_arr));
+                                }
+                                "filter" => {
+                                    let (cb, this_arg) = self.array_cb_ctx(&args);
+                                    let elems =
+                                        if let Some(HeapObject::Array { elements, .. }) =
+                                            self.heap.get(idx)
+                                        {
+                                            elements.clone()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
+                                    let mut kept = Vec::new();
+                                    for (elem_idx, elem) in elems.iter().enumerate() {
+                                        let keep = self.invoke_array_cb(
+                                            cb,
+                                            this_arg,
+                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                                        )?;
+                                        if to_boolean(keep) {
+                                            kept.push(*elem);
+                                        }
+                                    }
+                                    let new_arr = self.alloc_array(kept);
+                                    self.stack.push(Value::Object(new_arr));
+                                }
+                                "find" => {
+                                    let (cb, this_arg) = self.array_cb_ctx(&args);
+                                    let elems =
+                                        if let Some(HeapObject::Array { elements, .. }) =
+                                            self.heap.get(idx)
+                                        {
+                                            elements.clone()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
+                                    let mut found = Value::Undefined;
+                                    for (elem_idx, elem) in elems.iter().enumerate() {
+                                        let hit = self.invoke_array_cb(
+                                            cb,
+                                            this_arg,
+                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                                        )?;
+                                        if to_boolean(hit) {
+                                            found = *elem;
+                                            break;
+                                        }
+                                    }
+                                    self.stack.push(found);
+                                }
+                                "some" => {
+                                    let (cb, this_arg) = self.array_cb_ctx(&args);
+                                    let elems =
+                                        if let Some(HeapObject::Array { elements, .. }) =
+                                            self.heap.get(idx)
+                                        {
+                                            elements.clone()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
+                                    let mut any = false;
+                                    for (elem_idx, elem) in elems.iter().enumerate() {
+                                        let hit = self.invoke_array_cb(
+                                            cb,
+                                            this_arg,
+                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                                        )?;
+                                        if to_boolean(hit) {
+                                            any = true;
+                                            break;
+                                        }
+                                    }
+                                    self.stack.push(Value::Boolean(any));
+                                }
+                                "forEach" => {
+                                    let (cb, this_arg) = self.array_cb_ctx(&args);
+                                    let elems =
+                                        if let Some(HeapObject::Array { elements, .. }) =
+                                            self.heap.get(idx)
+                                        {
+                                            elements.clone()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
+                                    for (elem_idx, elem) in elems.iter().enumerate() {
+                                        self.invoke_array_cb(
+                                            cb,
+                                            this_arg,
+                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                                        )?;
+                                    }
+                                    self.stack.push(Value::Undefined);
+                                }
+                                "reduce" => {
+                                    let cb = args.first().copied().unwrap_or(Value::Undefined);
+                                    let mut acc = args.get(1).copied().unwrap_or(Value::Undefined);
+                                    let elems =
+                                        if let Some(HeapObject::Array { elements, .. }) =
+                                            self.heap.get(idx)
+                                        {
+                                            elements.clone()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
+                                    for (elem_idx, elem) in elems.iter().enumerate() {
+                                        acc = self.invoke_array_cb(
+                                            cb,
+                                            Value::Undefined,
+                                            &[acc, *elem, Value::Number(elem_idx as f64), arr_obj],
+                                        )?;
+                                    }
+                                    self.stack.push(acc);
+                                }
+                                "reduceRight" => {
+                                    let cb = args.first().copied().unwrap_or(Value::Undefined);
+                                    let mut acc = args.get(1).copied().unwrap_or(Value::Undefined);
+                                    let elems =
+                                        if let Some(HeapObject::Array { elements, .. }) =
+                                            self.heap.get(idx)
+                                        {
+                                            elements.clone()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
+                                    for (elem_idx, elem) in elems.iter().enumerate().rev() {
+                                        acc = self.invoke_array_cb(
+                                            cb,
+                                            Value::Undefined,
+                                            &[acc, *elem, Value::Number(elem_idx as f64), arr_obj],
+                                        )?;
+                                    }
+                                    self.stack.push(acc);
                                 }
                                 "join" => {
                                     let sep = if let Some(sep_val) = args.first() {
@@ -908,24 +2031,81 @@ impl Vm {
                     }
                     args.reverse();
                     let callee = self.pop()?;
-                    if let Value::Object(r) = callee {
-                        let (f_idx, uvs) =
-                            if let Some(HeapObject::Closure {
-                                func_idx, upvalues, ..
-                            }) = self.heap.get(r.0 as usize)
-                            {
-                                (Some(*func_idx), upvalues.clone())
-                            } else if (r.0 as usize) < self.module_functions.len() {
-                                (Some(r.0 as usize), Vec::new())
-                            } else {
-                                (None, Vec::new())
-                            };
-
-                        if let Some(fi) = f_idx {
-                            let ret = self.invoke_function(fi, Value::Undefined, &args, uvs)?;
-                            self.stack.push(ret);
-                        } else {
+                    if self.is_native_fn(callee, "require") {
+                        // require(spec)：CJS 模块加载（缓存 + 循环依赖占位）
+                        let spec = args.first().copied().unwrap_or(Value::Undefined);
+                        let exports = self.call_require(spec)?;
+                        self.stack.push(exports);
+                    } else if let Value::Object(r) = callee {
+                        let callee_ref = r.0 as usize;
+                        if let Some(HeapObject::PromiseResolver { promise, .. }) =
+                            self.heap.get(callee_ref)
+                        {
+                            // resolve(value)/reject：fulfill 目标 promise 并调度处理器
+                            let value = args.first().copied().unwrap_or(Value::Undefined);
+                            self.fulfill_promise(*promise, value)?;
                             self.stack.push(Value::Undefined);
+                        } else if self.is_native_fn(Value::Object(r), "setTimeout")
+                            || self.is_native_fn(Value::Object(r), "setInterval")
+                        {
+                            let delay = args
+                                .get(1)
+                                .and_then(|v| match v {
+                                    Value::Number(n) => Some(*n as u64),
+                                    _ => None,
+                                })
+                                .unwrap_or(0);
+                            let cb = args.first().copied().unwrap_or(Value::Undefined);
+                            let repeating = self.is_native_fn(Value::Object(r), "setInterval");
+                            self.timer_counter += 1;
+                            let id = self.timer_counter;
+                            // 到期时间 = 队尾累计到期 + 延迟（同批注册按时间序）
+                            let last_due = self
+                                .macro_tasks
+                                .back()
+                                .map(|(_, d, _, _, _)| *d)
+                                .unwrap_or(0);
+                            let due = last_due + delay;
+                            self.macro_tasks.push_back((id, due, delay, cb, repeating));
+                            // Node 返回 Timeout/Interval 句柄；简化返回数字 id
+                            // （clear* 接受数字或对象，数字自洽）
+                            self.stack.push(Value::Number(id as f64));
+                        } else if self.is_native_fn(Value::Object(r), "clearTimeout")
+                            || self.is_native_fn(Value::Object(r), "clearInterval")
+                        {
+                            let id = args
+                                .first()
+                                .and_then(|v| match v {
+                                    Value::Number(n) => Some(*n as u64),
+                                    _ => None,
+                                })
+                                .unwrap_or(0);
+                            self.active_timers.insert(id);
+                            self.stack.push(Value::Undefined);
+                        } else if self.is_native_fn(Value::Object(r), "queueMicrotask") {
+                            let cb = args.first().copied().unwrap_or(Value::Undefined);
+                            self.microtask_queue
+                                .push_back(crate::builtins::Job::Call(cb, Value::Undefined));
+                            self.stack.push(Value::Undefined);
+                        } else {
+                            let (f_idx, uvs) =
+                                if let Some(HeapObject::Closure {
+                                    func_idx, upvalues, ..
+                                }) = self.heap.get(callee_ref)
+                                {
+                                    (Some(*func_idx), upvalues.clone())
+                                } else if callee_ref < self.module_functions.len() {
+                                    (Some(callee_ref), Vec::new())
+                                } else {
+                                    (None, Vec::new())
+                                };
+
+                            if let Some(fi) = f_idx {
+                                let ret = self.invoke_function(fi, Value::Undefined, &args, uvs)?;
+                                self.stack.push(ret);
+                            } else {
+                                self.stack.push(Value::Undefined);
+                            }
                         }
                     } else {
                         self.stack.push(Value::Undefined);
@@ -1492,17 +2672,22 @@ impl Vm {
                     return Err(VmError::Yielded(produced));
                 }
                 Op::Await => {
+                    // await 是让出点：Node 语义下先把已排队的微任务跑完
+                    self.drain_microtasks()?;
                     let awaited = self.pop()?;
                     let resolved = match awaited {
                         Value::Object(r) => match self.heap.get(r.0 as usize) {
                             Some(HeapObject::Promise {
-                                fulfilled: true,
+                                pending: false,
                                 value,
+                                ..
                             }) => Some(*value),
-                            // 未完成的 Promise 需要微任务调度（语料外，后续里程碑）
-                            Some(HeapObject::Promise {
-                                fulfilled: false, ..
-                            }) => None,
+                            Some(HeapObject::Promise { pending: true, .. }) => {
+                                // 真异步挂起：记录恢复点并以 Awaited 信号上抛，
+                                // 由 async 驱动层捕获后挂起整帧（M2 事件循环模型）
+                                self.yield_pc = pc + 1;
+                                return Err(VmError::Awaited(r));
+                            }
                             _ => Some(awaited),
                         },
                         _ => Some(awaited),
@@ -1514,7 +2699,7 @@ impl Vm {
                 }
                 Op::GetIterator | Op::GetAsyncIterator => {
                     let val = self.pop()?;
-                    if self.is_generator_obj(val) {
+                    if self.is_generator_obj(val) || self.is_readable_obj(val) {
                         // 生成器对象自身即（async）迭代器
                         self.stack.push(val);
                     } else {

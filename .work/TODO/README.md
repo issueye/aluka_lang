@@ -57,7 +57,7 @@
 |---|---|---|---|
 | **M-1** | 骨架（11 crate、端到端最小链路、模块注册表看板） | — | ✅ 已完成（`c2a2e66`、`23d8866`） |
 | **M0** | ISA 规范化 + verifier + golden 语料 + GC/Value 选型 | F、A1/E | ✅ 已完成（20260904 收口评审通过，见 `.work/evidence/20260904/m0-review.md`） |
-| M1 | aluvm 吃 Go 前端字节码（Tier 0 全指令） | A1（+A2 起步） | 🔵 已预演（Go 前端 fib30.bc × Rust VM 执行正确，见 m0-review §3） |
+| M1 | aluvm 吃 Go 前端字节码（Tier 0 全指令） | A1（+A2 起步） | ✅ 已完成（20260904：CJS 最小集 + fs 内置 + 常量池污染修复 + fib30 性能线达标 388ms≤2×；conformance 实测 0/17 有效通过——9 项 Node 内置依赖归 M2、4 项语义缺口入 backlog，见 `node22-conformance-review.md`） |
 | M2 | alukac 前端 + 全语言 → **终局前提 1** | A1+A2+B | ⬜ |
 | M3 | GC / 数组 / 字符串性能 | A1+B | ⬜（GC 选型已定 ADR-0002，原型代码就绪） |
 | M4 | ISA 发布契约 → **终局前提 2** | F | ⬜ |
