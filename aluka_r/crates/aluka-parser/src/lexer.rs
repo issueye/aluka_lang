@@ -17,6 +17,13 @@ pub enum TokenKind {
     Keyword(String),
     /// 标点与运算符
     Punct(String),
+    /// 模板字符串字面量（静态片段列表与表达式源码列表）
+    TemplateLiteral {
+        /// 静态片段列表
+        quasis: Vec<String>,
+        /// 表达式源码子串列表
+        raw_exprs: Vec<String>,
+    },
     /// 输入结束
     Eof,
 }
@@ -150,8 +157,90 @@ impl<'src> Lexer<'src> {
         let start = self.pos;
         let first = bytes[self.pos];
 
-        // 1. 字符串字面量 ("..." 或 '...' 或 `...`)
-        if first == b'"' || first == b'\'' || first == b'`' {
+        // 1. 模板字符串字面量 (`...`)
+        if first == b'`' {
+            self.pos += 1;
+            let mut quasis = Vec::new();
+            let mut raw_exprs = Vec::new();
+            let mut current_quasi = String::new();
+
+            while self.pos < bytes.len() && bytes[self.pos] != b'`' {
+                if bytes[self.pos] == b'$'
+                    && self.pos + 1 < bytes.len()
+                    && bytes[self.pos + 1] == b'{'
+                {
+                    self.pos += 2;
+                    quasis.push(std::mem::take(&mut current_quasi));
+
+                    let expr_start = self.pos;
+                    let mut brace_depth = 1usize;
+                    while self.pos < bytes.len() && brace_depth > 0 {
+                        let b = bytes[self.pos];
+                        if b == b'{' {
+                            brace_depth += 1;
+                            self.pos += 1;
+                        } else if b == b'}' {
+                            brace_depth -= 1;
+                            if brace_depth == 0 {
+                                break;
+                            }
+                            self.pos += 1;
+                        } else if b == b'"' || b == b'\'' || b == b'`' {
+                            let quote = b;
+                            self.pos += 1;
+                            while self.pos < bytes.len() && bytes[self.pos] != quote {
+                                if bytes[self.pos] == b'\\' && self.pos + 1 < bytes.len() {
+                                    self.pos += 2;
+                                } else {
+                                    self.pos += 1;
+                                }
+                            }
+                            if self.pos < bytes.len() && bytes[self.pos] == quote {
+                                self.pos += 1;
+                            }
+                        } else if b == b'\\' && self.pos + 1 < bytes.len() {
+                            self.pos += 2;
+                        } else {
+                            self.pos += 1;
+                        }
+                    }
+                    let expr_end = self.pos;
+                    if self.pos < bytes.len() && bytes[self.pos] == b'}' {
+                        self.pos += 1;
+                    }
+                    raw_exprs.push(self.src[expr_start..expr_end].trim().to_owned());
+                } else if bytes[self.pos] == b'\\' && self.pos + 1 < bytes.len() {
+                    self.pos += 1;
+                    match bytes[self.pos] {
+                        b'n' => current_quasi.push('\n'),
+                        b't' => current_quasi.push('\t'),
+                        b'r' => current_quasi.push('\r'),
+                        b'\\' => current_quasi.push('\\'),
+                        b'`' => current_quasi.push('`'),
+                        b'$' => current_quasi.push('$'),
+                        other => current_quasi.push(other as char),
+                    }
+                    self.pos += 1;
+                } else {
+                    current_quasi.push(bytes[self.pos] as char);
+                    self.pos += 1;
+                }
+            }
+
+            if self.pos < bytes.len() && bytes[self.pos] == b'`' {
+                self.pos += 1;
+            }
+            quasis.push(current_quasi);
+
+            return Token {
+                kind: TokenKind::TemplateLiteral { quasis, raw_exprs },
+                text: self.src[start..self.pos].to_owned(),
+                start,
+            };
+        }
+
+        // 2. 普通字符串字面量 ("..." 或 '...')
+        if first == b'"' || first == b'\'' {
             let quote = first;
             self.pos += 1;
             let mut s = String::new();
@@ -165,7 +254,6 @@ impl<'src> Lexer<'src> {
                         b'\\' => s.push('\\'),
                         b'"' => s.push('"'),
                         b'\'' => s.push('\''),
-                        b'`' => s.push('`'),
                         other => s.push(other as char),
                     }
                 } else {

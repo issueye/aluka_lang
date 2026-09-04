@@ -227,6 +227,11 @@ pub fn optimize_expr(expr: &mut Expr) {
         Expr::Yield { value: Some(v), .. } => optimize_expr(v),
         Expr::Yield { value: None, .. } => {}
         Expr::Await(arg) => optimize_expr(arg),
+        Expr::TemplateLiteral { exprs, .. } => {
+            for e in exprs {
+                optimize_expr(e);
+            }
+        }
         Expr::Super => {}
         _ => {}
     }

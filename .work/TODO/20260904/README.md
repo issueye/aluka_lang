@@ -87,6 +87,25 @@
 
 ## 3. 达成目标证据
 
+### 待办 86 · 前端三大已知缺陷全面治理（模板字符串、隐式 Super 转发、高级解构）
+**结论**：达成（三大缺陷全面闭环，4 项端到端集成测试全绿，全工作区 200+ 项测试全绿）  
+**证据类型**：AST/Lexer/Parser 语法扩展 + 编译器代码生成 + 默认构造函数合成 + 集成测试  
+- **模板字符串插值（Template Literal Interpolation）**：
+  - AST：新增 `Expr::TemplateLiteral { quasis: Vec<String>, exprs: Vec<Expr> }`；
+  - Lexer：在遇到反引号 `` ` `` 时支持插值切片扫描，遇到 `${` 维护大括号深度提取内部表达式子串，并正确处理字符串与嵌套反引号；
+  - Parser：在 `parse_expr_primary` 中精准解析插值表达式并组装 AST；
+  - Codegen：发射静态文本片段与表达式的 `Op::Add` 链条，在 VM 中自动遵循 ECMAScript 规范触发字符串自动类型转换与拼接；
+- **子类省略 constructor 时隐式 `super(...args)` 转发**：
+  - Compiler：在 `module.rs::compile_class` 中，当 `constructor.is_none()` 且 `has_super == true` 时，自动合成接收不定参数 `...args` 的构造函数，函数体发射 `super(...args)` 并在末尾返回 `this`；
+  - Codegen：在 `Expr::Call` 处理 `callee == Expr::Super` 时支持 spread 参数并由 `Op::ConstructThisArgs` (Opcode 90) 指令转发，父类属性初始化完美闭环；
+- **高级解构模式（形参解构与默认值回退）**：
+  - 形参解构降级（Desugaring）：在 `parse_function_def` 中遇到 `{` 或 `[` 形参时解析解构模式，分配内部合成形参并前置插入解构语句；
+  - 默认值短路回退：在 AST 的 `ObjectPatternProp` 和 `ArrayPatternElem` 中增加 `default_value: Option<Expr>`，在 `compile_bind_pattern` 中通过 `Op::JmpNullishKeep` 指令实现空值（null / undefined）自动回退默认表达式；
+- **测试与门禁验证**：
+  - 新建 `aluka-cli/tests/frontend_features_test.rs`，4 项集成测试全部通过；
+  - 四象限跨语言质量对拍 `four_quadrants_oracle_test` 32 个真实黄金语料 100% 逐字全绿；
+  - 全工作区 200+ 项测试 100% 全绿，`cargo fmt --check` 0 diff，`cargo clippy` 0 warning。
+
 ### 待办 85 · 选项 A【顶层一体化：打通 aluka run 与 aluka-runtime 现代多语言执行门面】
 **结论**：达成（5 / 5 端到端用例全绿通过，全工作区测试 100% 全绿）  
 **证据类型**：运行时门面重构 + 顶层 CLI 入口实现 + 递归提升缺陷修复 + 集成测试  

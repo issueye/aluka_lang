@@ -169,6 +169,13 @@ pub enum Expr {
     JSXElement(Box<JSXElement>),
     /// JSX 片段节点：`<>children</>`
     JSXFragment(JSXFragment),
+    /// 模板字符串字面量：`quasis[0] ${exprs[0]} quasis[1] ...`
+    TemplateLiteral {
+        /// 静态文本片段列表
+        quasis: Vec<String>,
+        /// 插值表达式列表
+        exprs: Vec<Expr>,
+    },
 }
 
 /// 语句。
@@ -384,6 +391,8 @@ pub struct ArrayPatternElem {
     pub name: String,
     /// 是否为 ...rest 收集
     pub is_rest: bool,
+    /// 缺省默认值表达式（可选）
+    pub default_value: Option<Expr>,
 }
 
 /// 对象解构属性项
@@ -393,6 +402,8 @@ pub struct ObjectPatternProp {
     pub key: String,
     /// 绑定目标模式
     pub value: VarPattern,
+    /// 缺省默认值表达式（可选）
+    pub default_value: Option<Expr>,
 }
 
 /// 变量解构模式

@@ -204,6 +204,11 @@ pub fn lower_expr(expr: &mut Expr) {
         Expr::Yield {
             value: Some(val), ..
         } => lower_expr(val),
+        Expr::TemplateLiteral { exprs, .. } => {
+            for a in exprs {
+                lower_expr(a);
+            }
+        }
         _ => {}
     }
 }

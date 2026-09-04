@@ -522,15 +522,27 @@ impl<'src> Parser<'src> {
                     } else {
                         String::new()
                     };
+                    let default_value = if self.match_punct("=") {
+                        Some(self.parse_expr())
+                    } else {
+                        None
+                    };
                     elements.push(ArrayPatternElem {
                         name,
                         is_rest: true,
+                        default_value,
                     });
                     break;
                 } else if let TokenKind::Ident(id) = self.advance().kind {
+                    let default_value = if self.match_punct("=") {
+                        Some(self.parse_expr())
+                    } else {
+                        None
+                    };
                     elements.push(ArrayPatternElem {
                         name: id,
                         is_rest: false,
+                        default_value,
                     });
                 }
                 if !self.match_punct(",") {
@@ -552,7 +564,16 @@ impl<'src> Parser<'src> {
                 } else {
                     VarPattern::Ident(key.clone())
                 };
-                props.push(ObjectPatternProp { key, value });
+                let default_value = if self.match_punct("=") {
+                    Some(self.parse_expr())
+                } else {
+                    None
+                };
+                props.push(ObjectPatternProp {
+                    key,
+                    value,
+                    default_value,
+                });
                 if !self.match_punct(",") {
                     break;
                 }
@@ -601,11 +622,22 @@ impl<'src> Parser<'src> {
         let _ = self.expect_punct("(");
         let mut params = Vec::new();
         let mut is_var_args = false;
+        let mut prologue_stmts = Vec::new();
+
         while !self.check_punct(")") && self.peek().kind != TokenKind::Eof {
             if self.match_punct("...") {
                 is_var_args = true;
             }
-            if let TokenKind::Ident(param_name) = self.advance().kind {
+            if self.check_punct("[") || self.check_punct("{") {
+                let pattern = self.parse_var_pattern();
+                let param_name = format!("__param_{}__", params.len());
+                params.push(param_name.clone());
+                prologue_stmts.push(Stmt::DestructureDecl {
+                    pattern,
+                    init: Expr::Ident(param_name),
+                });
+                self.skip_type_annotation();
+            } else if let TokenKind::Ident(param_name) = self.advance().kind {
                 params.push(param_name);
                 self.skip_type_annotation();
             }
@@ -616,10 +648,14 @@ impl<'src> Parser<'src> {
         let _ = self.expect_punct(")");
         self.skip_type_annotation(); // 函数返回值类型
         let body_stmt = self.parse_stmt();
-        let body = match body_stmt {
+        let mut body = match body_stmt {
             Stmt::Block(stmts) => stmts,
             other => vec![other],
         };
+        if !prologue_stmts.is_empty() {
+            prologue_stmts.append(&mut body);
+            body = prologue_stmts;
+        }
         FunctionDef {
             name,
             params,
@@ -1181,6 +1217,16 @@ impl<'src> Parser<'src> {
             TokenKind::String(s) => {
                 self.advance();
                 Expr::String(s)
+            }
+            TokenKind::TemplateLiteral { quasis, raw_exprs } => {
+                self.advance();
+                let mut exprs = Vec::with_capacity(raw_exprs.len());
+                for raw in raw_exprs {
+                    let mut sub_parser = Parser::new(&raw);
+                    let expr = sub_parser.parse_expr();
+                    exprs.push(expr);
+                }
+                Expr::TemplateLiteral { quasis, exprs }
             }
             TokenKind::Keyword(kw) => {
                 self.advance();
@@ -2030,5 +2076,74 @@ mod tests {
         assert!(matches!(prog.body[4], Stmt::Export(..)));
         assert!(matches!(prog.body[5], Stmt::Export(..)));
         assert!(matches!(prog.body[6], Stmt::Export(..)));
+    }
+
+    #[test]
+    fn parses_template_literal_and_destructuring_features() {
+        let code = r#"
+            let msg = `hello ${name}, sum is ${1 + 2}!`;
+            const { x, y = 10, z: renamed = 20 } = obj;
+            const [a, b = 5, ...rest] = arr;
+            function greet({ name = "guest" }, [prefix = "Hi"]) {
+                return `${prefix} ${name}`;
+            }
+        "#;
+        let prog = parse(code);
+        assert_eq!(prog.body.len(), 4);
+
+        // 1. 模板字符串
+        if let Stmt::VarDecl {
+            init: Some(Expr::TemplateLiteral { quasis, exprs }),
+            ..
+        } = &prog.body[0]
+        {
+            assert_eq!(quasis.len(), 3);
+            assert_eq!(quasis[0], "hello ");
+            assert_eq!(quasis[1], ", sum is ");
+            assert_eq!(quasis[2], "!");
+            assert_eq!(exprs.len(), 2);
+        } else {
+            panic!("期望解析出 TemplateLiteral");
+        }
+
+        // 2. 对象解构与默认值
+        if let Stmt::DestructureDecl {
+            pattern: VarPattern::Object(props),
+            ..
+        } = &prog.body[1]
+        {
+            assert_eq!(props.len(), 3);
+            assert!(props[0].default_value.is_none());
+            assert!(props[1].default_value.is_some());
+            assert_eq!(props[2].key, "z");
+            assert!(props[2].default_value.is_some());
+        } else {
+            panic!("期望解析出对象解构");
+        }
+
+        // 3. 数组解构与默认值
+        if let Stmt::DestructureDecl {
+            pattern: VarPattern::Array(elems),
+            ..
+        } = &prog.body[2]
+        {
+            assert_eq!(elems.len(), 3);
+            assert!(elems[0].default_value.is_none());
+            assert!(elems[1].default_value.is_some());
+            assert!(elems[2].is_rest);
+        } else {
+            panic!("期望解析出数组解构");
+        }
+
+        // 4. 函数形参解构降级
+        if let Stmt::Function(func_def) = &prog.body[3] {
+            assert_eq!(func_def.params.len(), 2);
+            assert_eq!(func_def.params[0], "__param_0__");
+            assert_eq!(func_def.params[1], "__param_1__");
+            assert!(matches!(func_def.body[0], Stmt::DestructureDecl { .. }));
+            assert!(matches!(func_def.body[1], Stmt::DestructureDecl { .. }));
+        } else {
+            panic!("期望解析出形参降级函数");
+        }
     }
 }

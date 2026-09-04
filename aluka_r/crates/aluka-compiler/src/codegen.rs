@@ -68,6 +68,12 @@ fn compile_bind_pattern(pattern: &VarPattern, src_slot: usize, unit: &mut Compil
                     unit.code.push(Instr::new(Op::LoadLocal, src_slot as u32));
                     unit.code.push(Instr::new(Op::PushInt, i as u32));
                     unit.code.push(Instr::new(Op::GetElem, 0));
+                    if let Some(ref def_expr) = elem.default_value {
+                        let jmp_idx = emit_jump(unit, Op::JmpNullishKeep);
+                        compile_expr(def_expr, unit);
+                        let end_idx = unit.code.len();
+                        backpatch_jump(unit, jmp_idx, end_idx);
+                    }
                     unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
                 }
             }
@@ -79,6 +85,12 @@ fn compile_bind_pattern(pattern: &VarPattern, src_slot: usize, unit: &mut Compil
                 unit.code.push(Instr::new(Op::LoadLocal, src_slot as u32));
                 let name_idx = add_constant(unit, Constant::String(prop.key.clone()));
                 unit.code.push(Instr::new(Op::GetProp, name_idx));
+                if let Some(ref def_expr) = prop.default_value {
+                    let jmp_idx = emit_jump(unit, Op::JmpNullishKeep);
+                    compile_expr(def_expr, unit);
+                    let end_idx = unit.code.len();
+                    backpatch_jump(unit, jmp_idx, end_idx);
+                }
                 unit.code.push(Instr::new(Op::StoreLocal, prop_tmp as u32));
                 compile_bind_pattern(&prop.value, prop_tmp, unit);
             }
@@ -715,6 +727,31 @@ fn compile_args_array(args: &[Expr], unit: &mut CompiledUnit) {
     }
 }
 
+fn compile_template_literal(quasis: &[String], exprs: &[Expr], unit: &mut CompiledUnit) {
+    if exprs.is_empty() {
+        let text = quasis.first().cloned().unwrap_or_default();
+        let idx = add_constant(unit, Constant::String(text));
+        unit.code.push(Instr::new(Op::PushConst, idx));
+        return;
+    }
+
+    let first_text = quasis.first().cloned().unwrap_or_default();
+    let idx = add_constant(unit, Constant::String(first_text));
+    unit.code.push(Instr::new(Op::PushConst, idx));
+
+    for (i, expr) in exprs.iter().enumerate() {
+        compile_expr(expr, unit);
+        unit.code.push(Instr::new(Op::Add, 0));
+
+        let quasi_text = quasis.get(i + 1).cloned().unwrap_or_default();
+        if !quasi_text.is_empty() {
+            let q_idx = add_constant(unit, Constant::String(quasi_text));
+            unit.code.push(Instr::new(Op::PushConst, q_idx));
+            unit.code.push(Instr::new(Op::Add, 0));
+        }
+    }
+}
+
 pub(crate) fn add_constant(unit: &mut CompiledUnit, c: Constant) -> u32 {
     if let Some(pos) = unit.constants.iter().position(|x| *x == c) {
         pos as u32
@@ -1080,11 +1117,16 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                 } else {
                     unit.code.push(Instr::new(Op::PushUndefined, 0));
                 }
-                for arg in args {
-                    compile_expr(arg, unit);
+                if !has_spread {
+                    for arg in args {
+                        compile_expr(arg, unit);
+                    }
+                    unit.code
+                        .push(Instr::new(Op::ConstructThis, args.len() as u32));
+                } else {
+                    compile_args_array(args, unit);
+                    unit.code.push(Instr::new(Op::ConstructThisArgs, 0));
                 }
-                unit.code
-                    .push(Instr::new(Op::ConstructThis, args.len() as u32));
             } else if let Expr::Index { obj, index } = callee.as_ref() {
                 // 计算成员方法调用：obj[index](args) -> 保持 this 绑定
                 compile_expr(obj, unit);
@@ -1266,6 +1308,9 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
             crate::jsx::lower_expr(&mut clone);
             compile_expr(&clone, unit);
         }
+        Expr::TemplateLiteral { quasis, exprs } => {
+            compile_template_literal(quasis, exprs, unit);
+        }
     }
 }
 
@@ -1441,6 +1486,9 @@ fn expr_has_closure_capturing(expr: &Expr, target_name: &str) -> bool {
         Expr::Yield { value: Some(v), .. } => expr_has_closure_capturing(v, target_name),
         Expr::Yield { value: None, .. } => false,
         Expr::Await(arg) => expr_has_closure_capturing(arg, target_name),
+        Expr::TemplateLiteral { exprs, .. } => exprs
+            .iter()
+            .any(|e| expr_has_closure_capturing(e, target_name)),
         Expr::Super => false,
         _ => false,
     }

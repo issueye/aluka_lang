@@ -103,6 +103,11 @@ fn collect_ident_uses_in_expr(expr: &Expr, uses: &mut Vec<String>) {
         Expr::Yield { value: Some(v), .. } => collect_ident_uses_in_expr(v, uses),
         Expr::Yield { value: None, .. } => {}
         Expr::Await(arg) => collect_ident_uses_in_expr(arg, uses),
+        Expr::TemplateLiteral { exprs, .. } => {
+            for e in exprs {
+                collect_ident_uses_in_expr(e, uses);
+            }
+        }
         Expr::Super => {}
         _ => {}
     }
@@ -564,6 +569,19 @@ impl ModuleCompiler {
     ) -> usize {
         let ctor_idx = if let Some(ctor_def) = constructor {
             self.compile_method_function(ctor_def, parent_scope, Some(class_id)) as u32
+        } else if has_super {
+            let def = FunctionDef {
+                name: format!("{name}_constructor"),
+                params: vec!["__args__".to_owned()],
+                is_var_args: true,
+                body: vec![Stmt::Expr(Expr::Call {
+                    callee: Box::new(Expr::Super),
+                    args: vec![Expr::Spread(Box::new(Expr::Ident("__args__".to_owned())))],
+                })],
+                is_async: false,
+                is_generator: false,
+            };
+            self.compile_method_function(&def, parent_scope, Some(class_id)) as u32
         } else {
             let def =
                 FunctionDef::new(format!("{name}_constructor"), Vec::new(), false, Vec::new());
