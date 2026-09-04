@@ -8,12 +8,16 @@
 pub enum Expr {
     /// 数值字面量
     Number(f64),
+    /// 大整数字面量
+    BigInt(String),
     /// 布尔字面量
     Boolean(bool),
     /// 空值字面量
     Null,
     /// 未定义字面量
     Undefined,
+    /// this 表达式引用
+    This,
     /// 字符串字面量
     String(String),
     /// 标识符引用
@@ -41,6 +45,15 @@ pub enum Expr {
         /// 赋予的值表达式
         value: Box<Expr>,
     },
+    /// 更新表达式（自增自减）：`x++`, `++x`, `x--`, `--x`
+    Update {
+        /// 运算符："++" 或 "--"
+        op: String,
+        /// 目标表达式
+        target: Box<Expr>,
+        /// 是否为前缀运算
+        prefix: bool,
+    },
     /// 条件三元表达式：`cond ? then_expr : else_expr`
     Conditional {
         /// 条件表达式
@@ -50,10 +63,12 @@ pub enum Expr {
         /// 条件为假表达式
         else_expr: Box<Expr>,
     },
-    /// 对象字面量：`{ key1: val1, key2: val2 }`
-    Object(Vec<(String, Expr)>),
+    /// 对象字面量：`{ key: val, [computed]: val, get x() {}, set x(v) {} }`
+    Object(Vec<ObjectProp>),
     /// 数组字面量：`[elem1, elem2, ...]`
     Array(Vec<Expr>),
+    /// 展开表达式：`...expr`
+    Spread(Box<Expr>),
     /// 属性读取：`obj.prop`
     Member {
         /// 目标对象表达式
@@ -86,6 +101,74 @@ pub enum Expr {
         /// 赋予的新值
         value: Box<Expr>,
     },
+    /// 函数调用：`callee(arg1, arg2, ...)`
+    Call {
+        /// 被调函数表达式
+        callee: Box<Expr>,
+        /// 实参表达式列表
+        args: Vec<Expr>,
+    },
+    /// 方法调用：`receiver.method(arg1, arg2, ...)`
+    MethodCall {
+        /// 接收者对象表达式
+        receiver: Box<Expr>,
+        /// 方法名
+        method: String,
+        /// 实参表达式列表
+        args: Vec<Expr>,
+    },
+    /// 构造表达式：`new callee(arg1, arg2, ...)`
+    New {
+        /// 被调构造函数表达式
+        callee: Box<Expr>,
+        /// 实参表达式列表
+        args: Vec<Expr>,
+    },
+    /// 可选链成员访问：`obj?.prop`
+    OptionalMember {
+        /// 目标对象表达式
+        obj: Box<Expr>,
+        /// 属性名
+        prop: String,
+    },
+    /// 可选链下标访问：`obj?.[index]`
+    OptionalIndex {
+        /// 目标对象表达式
+        obj: Box<Expr>,
+        /// 下标表达式
+        index: Box<Expr>,
+    },
+    /// 可选链调用：`callee?.(args)`
+    OptionalCall {
+        /// 被调函数表达式
+        callee: Box<Expr>,
+        /// 实参表达式列表
+        args: Vec<Expr>,
+    },
+    /// 函数表达式或箭头函数：`function(params) { body }` 或 `(params) => expr`
+    Function(FunctionDef),
+    /// 正则表达式字面量：`/pattern/flags`
+    RegExp {
+        /// 正则表达式模式字符串
+        pattern: String,
+        /// 正则修饰符字符串
+        flags: String,
+    },
+    /// 父类引用：`super`
+    Super,
+    /// Yield 表达式：`yield expr` 或 `yield* expr`
+    Yield {
+        /// yield 参数表达式
+        value: Option<Box<Expr>>,
+        /// 是否为委托 yield*
+        delegate: bool,
+    },
+    /// Await 表达式：`await expr`
+    Await(Box<Expr>),
+    /// JSX 元素节点：`<Tag attr="val">children</Tag>` 或 `<Tag />`
+    JSXElement(Box<JSXElement>),
+    /// JSX 片段节点：`<>children</>`
+    JSXFragment(JSXFragment),
 }
 
 /// 语句。
@@ -99,6 +182,13 @@ pub enum Stmt {
         name: String,
         /// 初始值表达式
         init: Option<Expr>,
+    },
+    /// 解构声明语句：`const [a, b, ...rest] = expr;`
+    DestructureDecl {
+        /// 解构模式
+        pattern: VarPattern,
+        /// 初始化表达式
+        init: Expr,
     },
     /// 代码块：`{ stmts... }`
     Block(Vec<Stmt>),
@@ -118,6 +208,202 @@ pub enum Stmt {
         /// 循环体语句
         body: Box<Stmt>,
     },
+    /// Do-While 循环语句：`do body while (cond)`
+    DoWhile {
+        /// 循环体语句
+        body: Box<Stmt>,
+        /// 循环条件表达式
+        cond: Expr,
+    },
+    /// 函数显式返回语句：`return expr` 或 `return`
+    Return(Option<Expr>),
+    /// For 循环：`for (init; cond; update) body`
+    For {
+        /// 初始化
+        init: Option<Box<Stmt>>,
+        /// 条件
+        cond: Option<Expr>,
+        /// 步进更新
+        update: Option<Expr>,
+        /// 循环体
+        body: Box<Stmt>,
+    },
+    /// For-In 循环：`for (const/let/var k in expr) body`
+    ForIn {
+        /// 解构模式或目标变量
+        pattern: VarPattern,
+        /// 遍历对象
+        right: Expr,
+        /// 循环体
+        body: Box<Stmt>,
+    },
+    /// For-Of 循环：`for [await] (const/let/var v of expr) body`
+    ForOf {
+        /// 是否是 for await 异步迭代循环
+        is_await: bool,
+        /// 解构模式或目标变量
+        pattern: VarPattern,
+        /// 遍历可迭代对象
+        right: Expr,
+        /// 循环体
+        body: Box<Stmt>,
+    },
+    /// Break 语句
+    Break,
+    /// Continue 语句
+    Continue,
+    /// Throw 抛出异常语句：`throw expr`
+    Throw(Expr),
+    /// 异常捕获语句：`try { body } catch (e) { catch_body } finally { finally_body }`
+    Try {
+        /// 保护代码块
+        body: Box<Stmt>,
+        /// Catch 块形参名（可选，ES2019 支持省略）
+        catch_param: Option<String>,
+        /// Catch 处理块（可选）
+        catch_body: Option<Box<Stmt>>,
+        /// Finally 块（可选）
+        finally_body: Option<Box<Stmt>>,
+    },
+    /// 函数声明：`function name(params) { body }`
+    Function(FunctionDef),
+    /// Switch 分支语句：`switch (discriminant) { cases... }`
+    Switch {
+        /// 判别式表达式
+        discriminant: Expr,
+        /// Case / Default 分支列表
+        cases: Vec<SwitchCase>,
+    },
+    /// 类声明：`class Name extends Super { ... }`
+    Class {
+        /// 类名
+        name: String,
+        /// 父类表达式（可选）
+        super_class: Option<Expr>,
+        /// 构造函数定义（可选）
+        constructor: Option<FunctionDef>,
+        /// 类方法列表
+        methods: Vec<ClassMethodDef>,
+    },
+    /// ESM 模块导入语句：`import ... from 'mod';`
+    Import(ImportDecl),
+    /// ESM 模块导出语句：`export ...`
+    Export(ExportDecl),
+}
+
+/// Switch 语句中的分支：`case test: stmts...` 或 `default: stmts...`
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchCase {
+    /// 匹配条件表达式（为 None 时表示 default 分支）
+    pub test: Option<Expr>,
+    /// 分支执行体语句列表
+    pub consequent: Vec<Stmt>,
+}
+
+/// 函数定义结构体
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionDef {
+    /// 函数名称
+    pub name: String,
+    /// 形参列表
+    pub params: Vec<String>,
+    /// 是否为变长/Rest 参数
+    pub is_var_args: bool,
+    /// 函数体语句
+    pub body: Vec<Stmt>,
+    /// 是否为异步函数
+    pub is_async: bool,
+    /// 是否为生成器函数
+    pub is_generator: bool,
+}
+
+impl FunctionDef {
+    /// 创建普通函数定义辅助方法
+    pub fn new(name: String, params: Vec<String>, is_var_args: bool, body: Vec<Stmt>) -> Self {
+        Self {
+            name,
+            params,
+            is_var_args,
+            body,
+            is_async: false,
+            is_generator: false,
+        }
+    }
+}
+
+/// 类成员方法定义
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassMethodDef {
+    /// 方法名称
+    pub name: String,
+    /// 形参列表
+    pub params: Vec<String>,
+    /// 方法体语句
+    pub body: Vec<Stmt>,
+    /// 是否为静态方法
+    pub is_static: bool,
+    /// 方法类型（0=普通方法, 1=Getter, 2=Setter）
+    pub kind: u32,
+}
+
+/// 对象属性键
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropKey {
+    /// 字符串字面或标识符键
+    Literal(String),
+    /// 运行时计算键：`[expr]`
+    Computed(Expr),
+}
+
+/// 对象属性值
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropValue {
+    /// 普通表达式值
+    Expr(Expr),
+    /// Getter 访问器函数
+    Getter(FunctionDef),
+    /// Setter 访问器函数
+    Setter(FunctionDef),
+    /// 对象展开表达式：`...expr`
+    Spread(Expr),
+}
+
+/// 对象属性条目
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectProp {
+    /// 属性键
+    pub key: PropKey,
+    /// 属性值
+    pub value: PropValue,
+}
+
+/// 数组解构项
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrayPatternElem {
+    /// 目标变量名
+    pub name: String,
+    /// 是否为 ...rest 收集
+    pub is_rest: bool,
+}
+
+/// 对象解构属性项
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectPatternProp {
+    /// 属性键名
+    pub key: String,
+    /// 绑定目标模式
+    pub value: VarPattern,
+}
+
+/// 变量解构模式
+#[derive(Debug, Clone, PartialEq)]
+pub enum VarPattern {
+    /// 标识符模式：`name`
+    Ident(String),
+    /// 数组解构：`[a, b, ...rest]`
+    Array(Vec<ArrayPatternElem>),
+    /// 对象解构：`{ a, b: c, d: { e } }`
+    Object(Vec<ObjectPatternProp>),
 }
 
 /// 一个模块或脚本的顶层。
@@ -125,6 +411,140 @@ pub enum Stmt {
 pub struct Program {
     /// 顶层语句序列
     pub body: Vec<Stmt>,
+}
+
+/// JSX 元素完整节点
+#[derive(Debug, Clone, PartialEq)]
+pub struct JSXElement {
+    /// 开标签
+    pub opening: JSXOpeningElement,
+    /// 子节点列表
+    pub children: Vec<JSXChild>,
+}
+
+/// JSX 开标签
+#[derive(Debug, Clone, PartialEq)]
+pub struct JSXOpeningElement {
+    /// 标签名称（普通标签或成员如 UI.Button）
+    pub name: JSXTagName,
+    /// 属性列表
+    pub attributes: Vec<JSXAttribute>,
+    /// 是否为自闭合标签（<tag />）
+    pub self_closing: bool,
+}
+
+/// JSX 标签名称
+#[derive(Debug, Clone, PartialEq)]
+pub enum JSXTagName {
+    /// 标识符或原生标签名（如 div, MyComponent）
+    Ident(String),
+    /// 复合对象成员名（如 UI.Button）
+    Member {
+        /// 目标对象名
+        obj: String,
+        /// 属性名
+        prop: String,
+    },
+}
+
+/// JSX 属性节点
+#[derive(Debug, Clone, PartialEq)]
+pub enum JSXAttribute {
+    /// 命名属性：`key="val"` 或 `key={val}` 或 `key`（布尔真）
+    Named {
+        /// 属性名称
+        name: String,
+        /// 属性值（None 表示布尔 true）
+        value: Option<JSXAttrValue>,
+    },
+    /// 展开属性：`{...props}`
+    Spread(Expr),
+}
+
+/// JSX 属性值
+#[derive(Debug, Clone, PartialEq)]
+pub enum JSXAttrValue {
+    /// 字符串字面量
+    String(String),
+    /// 表达式容器插值
+    Expr(Expr),
+}
+
+/// JSX 片段节点：`<>children</>`
+#[derive(Debug, Clone, PartialEq)]
+pub struct JSXFragment {
+    /// 子节点列表
+    pub children: Vec<JSXChild>,
+}
+
+/// JSX 子节点
+#[derive(Debug, Clone, PartialEq)]
+pub enum JSXChild {
+    /// 嵌套 JSX 元素
+    Element(Box<JSXElement>),
+    /// 嵌套 JSX 片段
+    Fragment(JSXFragment),
+    /// 纯文本文本节点
+    Text(String),
+    /// 大括号表达式容器：`{expr}`
+    Expr(Expr),
+}
+
+/// ESM 导入声明
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportDecl {
+    /// 导入的模块路径
+    pub source: String,
+    /// 导入的符号列表
+    pub specifiers: Vec<ImportSpecifier>,
+}
+
+/// ESM 导入符号项
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportSpecifier {
+    /// 默认导入：`import x from 'mod'`
+    Default(String),
+    /// 命名导入：`import { a as b } from 'mod'`
+    Named {
+        /// 本地符号名
+        local: String,
+        /// 导入的源符号名
+        imported: String,
+    },
+    /// 命名空间整包导入：`import * as ns from 'mod'`
+    Namespace(String),
+}
+
+/// ESM 导出声明
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExportDecl {
+    /// 命名导出：`export const x = 1` 或 `export { a, b as c } [from 'mod']`
+    Named {
+        /// 内嵌声明语句（如 `const x = 1`）
+        decl: Option<Box<Stmt>>,
+        /// 导出符号列表
+        specifiers: Vec<ExportSpecifier>,
+        /// 重导出来源模块路径（可选）
+        source: Option<String>,
+    },
+    /// 默认导出：`export default expr;`
+    Default(Box<Expr>),
+    /// 命名空间全量重导出：`export * from 'mod'` 或 `export * as ns from 'mod'`
+    All {
+        /// 模块源路径
+        source: String,
+        /// 命名空间别名（可选，如 `as ns`）
+        alias: Option<String>,
+    },
+}
+
+/// ESM 导出符号项
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportSpecifier {
+    /// 本地符号名
+    pub local: String,
+    /// 导出符号名
+    pub exported: String,
 }
 
 #[cfg(test)]

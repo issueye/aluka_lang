@@ -92,6 +92,36 @@ impl Value {
     pub fn is_nullish(self) -> bool {
         matches!(self, Value::Undefined | Value::Null)
     }
+
+    /// 是否为堆对象引用。
+    #[must_use]
+    pub fn is_object(self) -> bool {
+        matches!(self, Value::Object(_))
+    }
+
+    /// 是否为数值（整数与浮点共用 `f64`，JS 不区分）。
+    #[must_use]
+    pub fn is_number(self) -> bool {
+        matches!(self, Value::Number(_))
+    }
+
+    /// 是否为布尔。
+    #[must_use]
+    pub fn is_boolean(self) -> bool {
+        matches!(self, Value::Boolean(_))
+    }
+
+    /// 是否为 `undefined`。
+    #[must_use]
+    pub fn is_undefined(self) -> bool {
+        matches!(self, Value::Undefined)
+    }
+
+    /// 是否为 `null`。
+    #[must_use]
+    pub fn is_null(self) -> bool {
+        matches!(self, Value::Null)
+    }
 }
 
 #[cfg(test)]

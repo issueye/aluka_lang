@@ -2,10 +2,28 @@
 //!
 //! 提供语法树遍历生成、跳转回填及函数模板导出。
 
+/// 语法树遍历与指令生成
 pub mod codegen;
+/// 编译期错误类型
 pub mod error;
+/// JSX/TSX 降级转换器
+pub mod jsx;
+/// 操作数栈峰值计算
+pub mod max_stack;
+/// 模块级函数与类模板编译器
+pub mod module;
+/// AST 与指令级优化器
+pub mod opt;
+/// 词法作用域分析与符号管理
 pub mod scope;
+/// 源码单元编译与流水线控制器
+pub mod source_unit;
 
 pub use codegen::{backpatch_jump, compile, emit_jump};
 pub use error::CompileError;
-pub use scope::CompiledUnit;
+pub use jsx::{lower_expr, lower_jsx};
+pub use max_stack::compute_max_stack;
+pub use module::{ModuleCompiler, compile_module};
+pub use opt::{optimize_ast, optimize_jumps};
+pub use scope::{CompiledUnit, ResolvedSymbol, Scope, ScopeKind, ScopeTree};
+pub use source_unit::{compile_source_unit, parse_json_to_expr};

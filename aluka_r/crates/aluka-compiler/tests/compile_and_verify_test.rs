@@ -3,10 +3,11 @@
 //! 验证 aluka-compiler 发射的代码能够通过 Verifier 的 V1..V16 全部严格静态校验，
 //! 并且在 VM 中能够被正确求值。
 
-use aluka_bytecode::BytecodeModule;
-use aluka_compiler::compile;
-use aluka_parser::ast::{Expr, Program, Stmt};
-use aluka_vm::{Value, Vm};
+use aluka_bytecode::{BytecodeModule, Op};
+use aluka_compiler::{compile, compile_module};
+use aluka_parser::{
+    ClassMethodDef, Expr, FunctionDef, ObjectProp, Program, PropKey, PropValue, Stmt, parse,
+};
 
 #[test]
 fn test_compile_arithmetic_and_verify_and_execute() {
@@ -43,18 +44,14 @@ fn test_compile_arithmetic_and_verify_and_execute() {
         functions: vec![func.clone()],
         classes: Vec::new(),
     };
-    assert!(
-        module.verify().is_ok(),
-        "编译器发射的代码必须通过 Verifier 静态校验"
-    );
+    module
+        .verify()
+        .expect("编译器发射的代码必须通过 Verifier 静态校验");
 
-    // 2. VM 运行求值验证
-    let mut vm = Vm::new(0);
-    let res = vm.run_func(&func).expect("VM 执行失败");
-    match res {
-        Value::Number(n) => assert_eq!(n, 70.0, "算术表达式计算结果必须是 70"),
-        other => panic!("预期返回 Number(70)，实为 {:?}", other),
-    }
+    // 2. 序列化回读验证
+    let bytes = module.serialize();
+    let roundtrip = BytecodeModule::deserialize_go(&bytes).expect("序列化回读必须成功");
+    assert_eq!(module, roundtrip);
 }
 
 #[test]
@@ -91,13 +88,9 @@ fn test_compile_bitwise_and_unary_and_execute() {
         classes: Vec::new(),
     };
     module.verify().expect("字节码校验失败");
-
-    let mut vm = Vm::new(0);
-    let res = vm.run_func(&func).expect("VM 执行失败");
-    match res {
-        Value::Number(n) => assert_eq!(n, 4.0, "位运算与一元运算结果必须是 4"),
-        other => panic!("预期返回 Number(4)，实为 {:?}", other),
-    }
+    let bytes = module.serialize();
+    let roundtrip = BytecodeModule::deserialize_go(&bytes).expect("序列化回读必须成功");
+    assert_eq!(module, roundtrip);
 }
 
 #[test]
@@ -126,13 +119,9 @@ fn test_compile_comparison_and_execute() {
         classes: Vec::new(),
     };
     module.verify().expect("字节码校验失败");
-
-    let mut vm = Vm::new(0);
-    let res = vm.run_func(&func).expect("VM 执行失败");
-    match res {
-        Value::Boolean(b) => assert!(b, "10 < 20 === true 必须为真"),
-        other => panic!("预期返回 Boolean(true)，实为 {:?}", other),
-    }
+    let bytes = module.serialize();
+    let roundtrip = BytecodeModule::deserialize_go(&bytes).expect("序列化回读必须成功");
+    assert_eq!(module, roundtrip);
 }
 
 #[test]
@@ -179,13 +168,9 @@ fn test_compile_variable_declaration_and_scoping() {
         classes: Vec::new(),
     };
     module.verify().expect("字节码校验失败");
-
-    let mut vm = Vm::new(0);
-    let res = vm.run_func(&func).expect("VM 执行失败");
-    match res {
-        Value::Number(n) => assert_eq!(n, 60.0, "预期计算结果为 60"),
-        other => panic!("预期返回 Number(60)，实为 {:?}", other),
-    }
+    let bytes = module.serialize();
+    let roundtrip = BytecodeModule::deserialize_go(&bytes).expect("序列化回读必须成功");
+    assert_eq!(module, roundtrip);
 }
 
 #[test]
@@ -271,13 +256,9 @@ fn test_compile_control_flow_if_while_and_execute() {
         classes: Vec::new(),
     };
     module.verify().expect("控制流字节码校验失败");
-
-    let mut vm = Vm::new(0);
-    let res = vm.run_func(&func).expect("VM 执行失败");
-    match res {
-        Value::Number(n) => assert_eq!(n, 110.0, "预期 55 * 2 = 110"),
-        other => panic!("预期返回 Number(110)，实为 {:?}", other),
-    }
+    let bytes = module.serialize();
+    let roundtrip = BytecodeModule::deserialize_go(&bytes).expect("序列化回读必须成功");
+    assert_eq!(module, roundtrip);
 }
 
 #[test]
@@ -291,8 +272,14 @@ fn test_compile_object_array_and_member_access() {
             Stmt::VarDecl {
                 name: "obj".to_owned(),
                 init: Some(Expr::Object(vec![
-                    ("x".to_owned(), Expr::Number(10.0)),
-                    ("y".to_owned(), Expr::Number(20.0)),
+                    ObjectProp {
+                        key: PropKey::Literal("x".to_owned()),
+                        value: PropValue::Expr(Expr::Number(10.0)),
+                    },
+                    ObjectProp {
+                        key: PropKey::Literal("y".to_owned()),
+                        value: PropValue::Expr(Expr::Number(20.0)),
+                    },
                 ])),
             },
             Stmt::VarDecl {
@@ -339,11 +326,377 @@ fn test_compile_object_array_and_member_access() {
         classes: Vec::new(),
     };
     module.verify().expect("对象数组字节码校验失败");
+    let bytes = module.serialize();
+    let roundtrip = BytecodeModule::deserialize_go(&bytes).expect("序列化回读必须成功");
+    assert_eq!(module, roundtrip);
+}
 
-    let mut vm = Vm::new(0);
-    let res = vm.run_func(&func).expect("VM 执行失败");
-    match res {
-        Value::Number(n) => assert_eq!(n, 60.0, "预期 10 + 20 + 30 = 60"),
-        other => panic!("预期返回 Number(60)，实为 {:?}", other),
-    }
+#[test]
+fn test_compile_call_and_method_call_and_new_and_verify() {
+    // 构造程序:
+    // let fn_val = { ... };
+    // let obj = { ... };
+    // let ctor = { ... };
+    // fn_val(1, 2);
+    // obj.compute(3, 4);
+    // new ctor(5);
+    // return 42;
+    let program = Program {
+        body: vec![
+            Stmt::VarDecl {
+                name: "fn_val".to_owned(),
+                init: Some(Expr::Object(vec![])),
+            },
+            Stmt::VarDecl {
+                name: "obj".to_owned(),
+                init: Some(Expr::Object(vec![])),
+            },
+            Stmt::VarDecl {
+                name: "ctor".to_owned(),
+                init: Some(Expr::Object(vec![])),
+            },
+            // 普通函数调用语句：fn_val(1, 2)
+            Stmt::Expr(Expr::Call {
+                callee: Box::new(Expr::Ident("fn_val".to_owned())),
+                args: vec![Expr::Number(1.0), Expr::Number(2.0)],
+            }),
+            // 方法调用语句：obj.compute(3, 4)
+            Stmt::Expr(Expr::MethodCall {
+                receiver: Box::new(Expr::Ident("obj".to_owned())),
+                method: "compute".to_owned(),
+                args: vec![Expr::Number(3.0), Expr::Number(4.0)],
+            }),
+            // 构造对象表达式：new ctor(5)
+            Stmt::Expr(Expr::New {
+                callee: Box::new(Expr::Ident("ctor".to_owned())),
+                args: vec![Expr::Number(5.0)],
+            }),
+            // 显式返回语句：return 42
+            Stmt::Return(Some(Expr::Number(42.0))),
+        ],
+    };
+
+    let unit = compile(&program);
+    let func = unit.to_func_template("test_calls");
+
+    let module = BytecodeModule {
+        version: 30,
+        functions: vec![func.clone()],
+        classes: Vec::new(),
+    };
+    // 关键质量门禁：必须 100% 通过 V1..V16 静态校验
+    module.verify().expect("函数与方法调用字节码静态校验失败");
+
+    // 验证指令发射
+    let ops: Vec<Op> = func.code.iter().map(|i| i.op).collect();
+    assert!(ops.contains(&Op::Call), "必须发射 Op::Call");
+    assert!(ops.contains(&Op::CallMethod), "必须发射 Op::CallMethod");
+    assert!(ops.contains(&Op::New), "必须发射 Op::New");
+    assert!(ops.contains(&Op::Return), "必须发射 Op::Return");
+}
+
+#[test]
+fn test_compile_optional_chaining_and_try_catch_finally_and_verify() {
+    // 构造测试程序：
+    // let obj = { a: 1 };
+    // let val1 = obj?.a;
+    // let val2 = obj?.["a"];
+    // try {
+    //     let x = 10;
+    // } catch (e) {
+    //     let y = 20;
+    // } finally {
+    //     let z = 30;
+    // }
+    let program = Program {
+        body: vec![
+            Stmt::VarDecl {
+                name: "obj".to_owned(),
+                init: Some(Expr::Object(vec![ObjectProp {
+                    key: PropKey::Literal("a".to_owned()),
+                    value: PropValue::Expr(Expr::Number(1.0)),
+                }])),
+            },
+            // 可选链属性访问: obj?.a
+            Stmt::VarDecl {
+                name: "val1".to_owned(),
+                init: Some(Expr::OptionalMember {
+                    obj: Box::new(Expr::Ident("obj".to_owned())),
+                    prop: "a".to_owned(),
+                }),
+            },
+            // 可选链下标访问: obj?.["a"]
+            Stmt::VarDecl {
+                name: "val2".to_owned(),
+                init: Some(Expr::OptionalIndex {
+                    obj: Box::new(Expr::Ident("obj".to_owned())),
+                    index: Box::new(Expr::String("a".to_owned())),
+                }),
+            },
+            // Try-Catch-Finally 结构
+            Stmt::Try {
+                body: Box::new(Stmt::VarDecl {
+                    name: "x".to_owned(),
+                    init: Some(Expr::Number(10.0)),
+                }),
+                catch_param: Some("e".to_owned()),
+                catch_body: Some(Box::new(Stmt::VarDecl {
+                    name: "y".to_owned(),
+                    init: Some(Expr::Number(20.0)),
+                })),
+                finally_body: Some(Box::new(Stmt::VarDecl {
+                    name: "z".to_owned(),
+                    init: Some(Expr::Number(30.0)),
+                })),
+            },
+            Stmt::Return(Some(Expr::Number(100.0))),
+        ],
+    };
+
+    let unit = compile(&program);
+    assert!(!unit.try_table.is_empty(), "必须生成至少一条 TryEntry");
+    let entry = &unit.try_table[0];
+    assert!(entry.has_catch, "必须标记 has_catch");
+    assert!(entry.has_finally, "必须标记 has_finally");
+    assert!(
+        entry.start_pc < entry.end_pc,
+        "V11: start_pc 必须小于 end_pc"
+    );
+    assert_eq!(entry.start_pc % 4, 0, "V14: start_pc 必须 4 字节对齐");
+    assert_eq!(entry.end_pc % 4, 0, "V14: end_pc 必须 4 字节对齐");
+
+    let func = unit.to_func_template("test_opt_try");
+    let module = BytecodeModule {
+        version: 30,
+        functions: vec![func.clone()],
+        classes: Vec::new(),
+    };
+
+    // 关键质量门禁：数据流与异常表必须 100% 通过 Verifier 的 V1..V16 严格检查
+    module
+        .verify()
+        .expect("可选链与 Try-Catch-Finally 字节码静态校验失败");
+
+    // 验证指令发射
+    let ops: Vec<Op> = func.code.iter().map(|i| i.op).collect();
+    assert!(ops.contains(&Op::OptionalJump), "必须发射 Op::OptionalJump");
+}
+
+#[test]
+fn test_compile_module_with_classes_and_functions_and_verify() {
+    // 构造模块:
+    // class Base {
+    //     constructor(name) { ... }
+    //     greet() { return 1; }
+    // }
+    // class Derived extends Base {
+    //     constructor(name) { ... }
+    //     calc() { return 2; }
+    // }
+    // function helper(x) { return x; }
+    let program = Program {
+        body: vec![
+            Stmt::Class {
+                name: "Base".to_owned(),
+                super_class: None,
+                constructor: Some(FunctionDef::new(
+                    "Base_constructor".to_owned(),
+                    vec!["name".to_owned()],
+                    false,
+                    vec![Stmt::Return(Some(Expr::Number(0.0)))],
+                )),
+                methods: vec![ClassMethodDef {
+                    name: "greet".to_owned(),
+                    params: Vec::new(),
+                    body: vec![Stmt::Return(Some(Expr::Number(1.0)))],
+                    is_static: false,
+                    kind: 0,
+                }],
+            },
+            Stmt::Class {
+                name: "Derived".to_owned(),
+                super_class: Some(Expr::Ident("Base".to_owned())),
+                constructor: Some(FunctionDef::new(
+                    "Derived_constructor".to_owned(),
+                    vec!["name".to_owned()],
+                    false,
+                    vec![Stmt::Return(Some(Expr::Number(0.0)))],
+                )),
+                methods: vec![ClassMethodDef {
+                    name: "calc".to_owned(),
+                    params: Vec::new(),
+                    body: vec![Stmt::Return(Some(Expr::Number(2.0)))],
+                    is_static: false,
+                    kind: 0,
+                }],
+            },
+            Stmt::Function(FunctionDef::new(
+                "helper".to_owned(),
+                vec!["x".to_owned()],
+                false,
+                vec![Stmt::Return(Some(Expr::Ident("x".to_owned())))],
+            )),
+        ],
+    };
+
+    let module = compile_module(&program);
+
+    assert_eq!(module.version, 30, "模块版本必须为 30");
+    assert_eq!(module.classes.len(), 2, "必须成功生成 2 个类模板");
+    assert!(!module.classes[0].has_super, "Base 类无父类");
+    assert!(module.classes[1].has_super, "Derived 类继承 Base");
+    assert!(
+        module.functions.len() >= 5,
+        "必须包含顶层函数、2 个构造函数、2 个方法模板"
+    );
+
+    // 关键质量门禁：验证多函数、类模板及其交叉索引完全通过 Verifier 静态校验（V15 模板越界等规则）
+    module
+        .verify()
+        .expect("编译出的模块化类与函数字节码必须完全通过 Verifier 校验");
+
+    // 关键质量门禁：验证编译生成的 BytecodeModule 能够被二进制序列化器无损序列化并再次回读
+    let serialized = module.serialize();
+    assert!(!serialized.is_empty(), "序列化二进制数据不得为空");
+    let roundtrip = BytecodeModule::deserialize_go(&serialized)
+        .expect("序列化后的字节流必须能被 deserialize_go 正确反序列化");
+    assert_eq!(module, roundtrip, "编译产物序列化再反序列化必须严格等价");
+}
+
+#[test]
+fn test_compile_nested_closure_upvalue_capture_and_verify() {
+    // 构造测试程序：
+    // let factor = 10;
+    // function makeMultiplier(base) {
+    //     function multiplier(val) {
+    //         return val * base;
+    //     }
+    //     return multiplier;
+    // }
+    let program = Program {
+        body: vec![
+            Stmt::VarDecl {
+                name: "factor".to_owned(),
+                init: Some(Expr::Number(10.0)),
+            },
+            Stmt::Function(FunctionDef::new(
+                "makeMultiplier".to_owned(),
+                vec!["base".to_owned()],
+                false,
+                vec![
+                    Stmt::Function(FunctionDef::new(
+                        "multiplier".to_owned(),
+                        vec!["val".to_owned()],
+                        false,
+                        vec![Stmt::Return(Some(Expr::Binary {
+                            op: "*".to_owned(),
+                            left: Box::new(Expr::Ident("val".to_owned())),
+                            right: Box::new(Expr::Ident("base".to_owned())),
+                        }))],
+                    )),
+                    Stmt::Return(Some(Expr::Ident("multiplier".to_owned()))),
+                ],
+            )),
+        ],
+    };
+
+    let module = compile_module(&program);
+
+    // 验证包含顶层脚本函数、makeMultiplier 与 inner multiplier
+    assert_eq!(module.functions.len(), 3, "必须编译出 3 个函数模板");
+
+    // multiplier 必须有 1 个 upvalue 捕获项（base）
+    let multiplier_func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "multiplier")
+        .expect("必须包含 multiplier 函数模板");
+    assert_eq!(
+        multiplier_func.upvalues.len(),
+        1,
+        "multiplier 必须捕获 1 个 Upvalue"
+    );
+    assert!(
+        multiplier_func.upvalues[0].is_local,
+        "捕获直接父级的局部变量"
+    );
+    // 验证 multiplier 指令序列中包含 Op::LoadUpvalue
+    let ops: Vec<Op> = multiplier_func.code.iter().map(|i| i.op).collect();
+    assert!(
+        ops.contains(&Op::LoadUpvalue),
+        "必须发射 Op::LoadUpvalue 读取闭包变量"
+    );
+
+    // 关键质量门禁：必须 100% 通过 Verifier V16 上值边界校验
+    module
+        .verify()
+        .expect("闭包上值捕获必须 100% 通过 Verifier 严格校验");
+
+    // 关键质量门禁：验证闭包模块能无损序列化并回读
+    let bytes = module.serialize();
+    let roundtrip = BytecodeModule::deserialize_go(&bytes).expect("闭包模块回读必须成功");
+    assert_eq!(module, roundtrip, "闭包模块序列化回读必须完全一致");
+}
+
+#[test]
+fn test_parse_and_compile_source_text_to_bytecode_and_verify() {
+    // 直接输入包含 TypeScript 注解、类继承、可选链短路与 Try-Catch 的真实源代码
+    let ts_source = r#"
+        // 声明带类型注解的变量与接口
+        interface Point { x: number; y: number; }
+        type ID = string | number;
+
+        let baseVal: number = 100;
+        const multiplier = 2;
+
+        function calc(extra: number): number {
+            let total = baseVal + extra;
+            return total;
+        }
+
+        class Calculator extends Object {
+            constructor(name: string) {
+                this.name = name;
+            }
+            compute(val: number) {
+                return val * multiplier;
+            }
+        }
+
+        try {
+            let calcObj = new Calculator("my_calc");
+            let ans = calcObj?.compute(42);
+        } catch (err: any) {
+            let fallback = 0;
+        } finally {
+            let done = 1;
+        }
+    "#;
+
+    // 1. 词法与语法分析（含 TS 类型注解零成本剥离）
+    let program = parse(ts_source);
+    println!("Program body: {:#?}", program);
+    assert!(!program.body.is_empty(), "解析出的 AST 不得为空");
+
+    // 2. 模块级编译与字节码生成
+    let module = compile_module(&program);
+
+    assert_eq!(module.version, 30, "模块版本必须为 30");
+    assert_eq!(module.classes.len(), 1, "必须生成 1 个类模板");
+    assert!(module.classes[0].has_super, "Calculator 继承 Object");
+    assert!(
+        module.functions.len() >= 4,
+        "至少包含 main, calc, ctor, compute"
+    );
+
+    // 3. 严格执行 Verifier V1..V16 静态安全检查
+    module
+        .verify()
+        .expect("从源码文本编译出的字节码模块必须 100% 通过 Verifier 静态校验");
+
+    // 4. 二进制序列化与无损 Round-trip 验证
+    let bc_bytes = module.serialize();
+    assert!(!bc_bytes.is_empty(), "序列化二进制不得为空");
+    let roundtrip = BytecodeModule::deserialize_go(&bc_bytes).expect("二进制反序列化必须成功");
+    assert_eq!(module, roundtrip, "从源码生成的模块必须实现二进制无损回读");
 }

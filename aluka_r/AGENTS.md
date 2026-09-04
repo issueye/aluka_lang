@@ -46,6 +46,28 @@ Go 版仍是正式版**：这里不做"两边都改、互为备份"的开发。
 
 ---
 
+## 🧊 `aluka-core` 公共 API 冻结声明（T-BE-03 / A1-4，2026-09-04 生效）
+
+`aluka-core` 是引擎地基，B 轨（alukac 前端）、内置库与 M3 的真实 GC 落地都压在它
+上面。为解除后续模块的依赖风险，以下公共 API 形状**自本声明起冻结**：
+
+| 模块 | 冻结项 | 说明 |
+|---|---|---|
+| `value.rs` | `Value`（五变体 Copy 枚举）、`ValueKind`、`kind` / `to_boolean` / `is_nullish` / `is_object` / `is_number` / `is_boolean` / `is_undefined` / `is_null` | 值是 `Copy` 机器字；`Value` **故意不派生 `PartialEq`**（JS 相等语义与结构相等冲突），判等必须走 VM 的 `EQ`/`STRICT_EQ` 语义 |
+| `object.rs` | `ObjectRef`（u32 句柄，`Copy`）、`ObjectClass` | 句柄是堆内下标**不是裸指针**——GC 自管可达性，这是与 Go 版 NaN-box 惨案的根本区别 |
+| `shape.rs` | `Shape`（root/id/len/is_empty/lookup/names/extend）、`ShapeId`、`ShapeTable`（root/shape/transition） | transition 缓存**必须**走 `ShapeTable::transition`（id 进出），禁止直接 `Shape::extend` 造成 shape 爆炸 |
+| `gc.rs` | `Heap`（`allocate(class, slot_count)` / `add_root` / `remove_root` / `collect_garbage` / `collect_garbage_with`）、`RootSet`（push/pop/remove/iter/clear/len）、`GcStats` | 分配、根登记、回收的生命周期调用面；实现体为 M0 占位，M3 按 ADR `docs/adr/0002-aluka-r-gc-selection.md`（分代标记-清除）填充，**签名不再变更** |
+
+**约束**：
+1. 上述 API 只能增不能改——新增方法允许，修改既有签名/语义必须先立 ADR 并全量回归
+   （下游 `aluka-vm`、`aluka-builtins`、未来 `aluka-runtime` 都以当前签名为契约）；
+2. `Heap` 当前是占位实现（只记账不存储，句柄不可解引用）——这是**已知且登记过的**
+   中间态，不是缺陷；禁止在占位上叠加投机功能；
+3. GC 实现细节（分代、记忆集、free-list）不属于冻结面——它们变化时无需通知下游；
+4. 每个冻结项必须保持 Rustdoc 完整（`missing_docs = warn` 的 workspace lint 在守护）。
+
+---
+
 ## 常用命令
 
 在 `aluka_r/` 下执行。工具链基线：`rustc 1.95` / `cargo 1.95`（`rust-version = 1.85`）。

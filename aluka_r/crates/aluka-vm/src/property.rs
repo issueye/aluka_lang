@@ -30,8 +30,10 @@ impl Vm {
             Value::Object(r) => {
                 let idx = r.0 as usize;
                 if idx < self.heap.len() {
-                    if let HeapObject::String(s) = &self.heap[idx] {
-                        return s.clone();
+                    match &self.heap[idx] {
+                        HeapObject::String(s) => return s.clone(),
+                        HeapObject::BigInt(s) => return s.clone(),
+                        _ => {}
                     }
                 }
                 if let Some(aluka_bytecode::Constant::String(s)) = self.current_constants.get(idx) {
@@ -87,14 +89,24 @@ impl Vm {
                         break;
                     }
                 }
-                HeapObject::Array { elements } => {
+                HeapObject::NativeCtor { properties, .. } => {
+                    if let Some(v) = properties.get(key) {
+                        return Ok(*v);
+                    }
+                    break;
+                }
+                HeapObject::Array { elements, proto } => {
                     if key == "length" {
                         return Ok(Value::Number(elements.len() as f64));
                     }
                     if let Ok(i) = key.parse::<usize>() {
                         return Ok(elements.get(i).copied().unwrap_or(Value::Undefined));
                     }
-                    break;
+                    if let Some(parent) = *proto {
+                        cur = Value::Object(parent);
+                    } else {
+                        break;
+                    }
                 }
                 _ => break,
             }
@@ -102,11 +114,20 @@ impl Vm {
         Ok(Value::Undefined)
     }
 
-    /// 设置属性（含数组下标写入与闭包对象属性写入）。
+    /// 设置属性（含数组下标写入、闭包对象属性写入与 Setter 访问器触发）。
     pub fn set_property(&mut self, obj: Value, key: &str, val: Value) -> Result<(), VmError> {
         if let Value::Object(r) = obj {
             let idx = r.0 as usize;
             if idx < self.heap.len() {
+                // Setter 访问器优先：命中则调用（不写数据属性，对齐 JS [[Set]] 语义）
+                let setter = match &self.heap[idx] {
+                    HeapObject::Ordinary { setters, .. } => setters.get(key).copied(),
+                    _ => None,
+                };
+                if let Some(s_idx) = setter {
+                    self.invoke_function(s_idx, obj, &[val], Vec::new())?;
+                    return Ok(());
+                }
                 match &mut self.heap[idx] {
                     HeapObject::Ordinary { properties, .. } => {
                         properties.insert(key.to_owned(), val);
@@ -114,7 +135,10 @@ impl Vm {
                     HeapObject::Closure { properties, .. } => {
                         properties.insert(key.to_owned(), val);
                     }
-                    HeapObject::Array { elements } => {
+                    HeapObject::NativeCtor { properties, .. } => {
+                        properties.insert(key.to_owned(), val);
+                    }
+                    HeapObject::Array { elements, .. } => {
                         if let Ok(i) = key.parse::<usize>() {
                             if i >= elements.len() {
                                 elements.resize(i + 1, Value::Undefined);
@@ -129,6 +153,129 @@ impl Vm {
         Ok(())
     }
 
+    /// 判断属性（自有或沿原型链）是否存在于对象上（`in` 运算符语义）。
+    pub fn has_property(&mut self, obj: Value, key: &str) -> bool {
+        let mut cur = obj;
+        let mut depth = 0;
+        while let Value::Object(r) = cur {
+            if depth > 100 {
+                break;
+            }
+            depth += 1;
+            let idx = r.0 as usize;
+            if idx >= self.heap.len() {
+                break;
+            }
+            match &self.heap[idx] {
+                HeapObject::Ordinary {
+                    properties,
+                    getters,
+                    setters,
+                    proto,
+                } => {
+                    if properties.contains_key(key)
+                        || getters.contains_key(key)
+                        || setters.contains_key(key)
+                    {
+                        return true;
+                    }
+                    cur = match proto {
+                        Some(p) => Value::Object(*p),
+                        None => break,
+                    };
+                }
+                HeapObject::Closure { properties, .. }
+                | HeapObject::NativeCtor { properties, .. } => {
+                    if properties.contains_key(key) {
+                        return true;
+                    }
+                    break;
+                }
+                HeapObject::Array { elements, .. } => {
+                    if key == "length" {
+                        return true;
+                    }
+                    if let Ok(i) = key.parse::<usize>() {
+                        return i < elements.len();
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        false
+    }
+
+    /// 枚举对象自有属性（键 + 值），供 `{ ...src }` 展开使用。
+    ///
+    /// 普通对象取属性字典；数组产出索引键与 `length`。其余类型为空集。
+    pub(crate) fn own_properties(&self, obj: Value) -> Vec<(String, Value)> {
+        if let Value::Object(r) = obj {
+            let idx = r.0 as usize;
+            if idx < self.heap.len() {
+                match &self.heap[idx] {
+                    HeapObject::Ordinary { properties, .. } => {
+                        return properties.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                    }
+                    HeapObject::Array { elements, .. } => {
+                        let mut out = Vec::with_capacity(elements.len() + 1);
+                        for (i, v) in elements.iter().enumerate() {
+                            out.push((i.to_string(), *v));
+                        }
+                        out.push(("length".to_owned(), Value::Number(elements.len() as f64)));
+                        return out;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// `for-in` 键枚举（对齐 Go 版 `EnumerateForInKeys`）。
+    ///
+    /// 沿原型链（≤128 层）收集自有键并去重（先到先得，自有键优先）；
+    /// 字符串产出索引键（按 UTF-16 code unit 计）；原始值为空集。
+    pub(crate) fn enumerate_for_in_keys(&self, val: Value) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut cur = Some(val);
+        for _ in 0..128 {
+            let Some(v) = cur.take() else { break };
+            let Value::Object(r) = v else { break };
+            let idx = r.0 as usize;
+            let Some(h) = self.heap.get(idx) else { break };
+            let (keys, proto) = match h {
+                HeapObject::Ordinary {
+                    properties, proto, ..
+                } => (properties.keys().cloned().collect::<Vec<_>>(), *proto),
+                HeapObject::Array { elements, proto } => {
+                    let ks = (0..elements.len())
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>();
+                    (ks, *proto)
+                }
+                HeapObject::Closure { properties, .. } => {
+                    (properties.keys().cloned().collect::<Vec<_>>(), None)
+                }
+                HeapObject::String(s) => {
+                    // 索引键按 UTF-16 code unit 计（星面字符占 2 个）
+                    let units: usize = s.chars().map(|c| if c > '\u{FFFF}' { 2 } else { 1 }).sum();
+                    let ks = (0..units).map(|i| i.to_string()).collect::<Vec<_>>();
+                    (ks, None)
+                }
+                _ => (Vec::new(), None),
+            };
+            for k in keys {
+                if seen.insert(k.clone()) {
+                    out.push(k);
+                }
+            }
+            cur = proto.map(Value::Object);
+        }
+        out
+    }
+
     /// 读取对象的内部原型 [[Prototype]]。
     pub fn get_prototype(&self, val: Value) -> Option<ObjectRef> {
         if let Value::Object(r) = val {
@@ -137,6 +284,7 @@ impl Vm {
                 match obj {
                     HeapObject::Ordinary { proto, .. } => *proto,
                     HeapObject::Closure { proto, .. } => *proto,
+                    HeapObject::Array { proto, .. } => *proto,
                     _ => None,
                 }
             } else {

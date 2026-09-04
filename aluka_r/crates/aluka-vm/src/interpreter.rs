@@ -1,13 +1,16 @@
 //! 虚拟机核心解释器：执行状态定义与操作码分派循环。
 
+use crate::exception::{Completion, FinallyOutcome, PHASE_TRY, TryExitOutcome, TryHandler};
+use crate::generator::GeneratorState;
 use crate::heap::HeapObject;
 use crate::ops::{eq, strict_eq, to_boolean, to_number};
 use crate::value::{Upvalue, Value};
-use aluka_bytecode::{ClassTemplate, Constant, FuncTemplate, Instr, Op};
+use aluka_bytecode::{ClassTemplate, Constant, FuncTemplate, Instr, Op, TryEntry};
+use aluka_core::ObjectRef;
 use std::collections::HashMap;
 
 /// 执行期可能发生的错误。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VmError {
     /// 操作数栈下溢（Pop 时栈为空）
     StackUnderflow,
@@ -17,6 +20,10 @@ pub enum VmError {
     MissingReturn,
     /// 整数除以零
     DivisionByZero,
+    /// JS 层抛出的异常值（`THROW` 或未捕获时沿调用链传播）
+    Thrown(Value),
+    /// 生成器 `YIELD` 挂起信号（携带产出的值，由生成器驱动层捕获）
+    Yielded(Value),
     /// 遇到了当前里程碑尚未实现的操作码
     UnimplementedOpcode(Op),
 }
@@ -28,6 +35,8 @@ impl std::fmt::Display for VmError {
             Self::LocalOutOfRange => write!(f, "访问的局部变量槽位越界"),
             Self::MissingReturn => write!(f, "指令流在返回前结束"),
             Self::DivisionByZero => write!(f, "除以零错误"),
+            Self::Thrown(_) => write!(f, "未捕获的 JS 异常"),
+            Self::Yielded(_) => write!(f, "生成器挂起信号（不应逃逸到顶层）"),
             Self::UnimplementedOpcode(op) => write!(f, "未实现的操作码: {op:?}"),
         }
     }
@@ -56,13 +65,38 @@ pub struct Vm {
     pub current_upvalues: Vec<Upvalue>,
     /// 当前函数帧活跃的打开上值表（slot -> Upvalue），保证同一 slot 共享同一个 RefCell
     pub open_upvalues: HashMap<usize, Upvalue>,
+    /// 当前函数帧活跃的 try/catch/finally handler 栈（自底向内层递增）
+    pub(crate) try_stack: Vec<TryHandler>,
+    /// 当前函数模板的 Try 表（`TRY_ENTER` 按索引克隆条目入栈）
+    pub(crate) current_try_table: Vec<TryEntry>,
+    /// 全局变量表（`STORE_GLOBAL` 写入、`LOAD_GLOBAL` 优先读取）
+    pub globals: HashMap<String, Value>,
+    /// `Object.prototype` 单例（普通对象默认隐式原型）
+    pub object_prototype: Option<ObjectRef>,
+    /// `Array.prototype` 单例（数组默认隐式原型）
+    pub array_prototype: Option<ObjectRef>,
+    /// `Math` 内置对象单例
+    pub math_object: Option<ObjectRef>,
+    /// `Error` 原生构造器单例
+    pub error_ctor: Option<ObjectRef>,
+    /// `Array` 原生构造器单例
+    pub array_ctor: Option<ObjectRef>,
+    /// `Object` 原生构造器单例
+    pub object_ctor: Option<ObjectRef>,
+    /// 生成器对象注册表（堆句柄索引 → 执行状态）
+    pub(crate) generators: HashMap<u32, GeneratorState>,
+    /// 最近一次 `YIELD` 的恢复点（下一条指令索引）
+    pub(crate) yield_pc: usize,
 }
 
 impl Vm {
     /// 创建虚拟机，预留 `locals` 个局部槽位（初值 `undefined`）。
+    ///
+    /// 同时在堆上预建内置原型与构造器单例（`Object.prototype`、`Array.prototype`、
+    /// `Math`、`Error`/`Array`/`Object` 构造器），后续所有分配自动挂接正确的原型链。
     #[must_use]
     pub fn new(locals: usize) -> Self {
-        Self {
+        let mut vm = Self {
             stack: Vec::new(),
             locals: vec![Value::Undefined; locals],
             stdout_records: Vec::new(),
@@ -72,7 +106,32 @@ impl Vm {
             module_classes: Vec::new(),
             current_upvalues: Vec::new(),
             open_upvalues: HashMap::new(),
-        }
+            try_stack: Vec::new(),
+            current_try_table: Vec::new(),
+            globals: HashMap::new(),
+            object_prototype: None,
+            array_prototype: None,
+            math_object: None,
+            error_ctor: None,
+            array_ctor: None,
+            object_ctor: None,
+            generators: HashMap::new(),
+            yield_pc: 0,
+        };
+        // Object.prototype：原型链顶端（[[Prototype]] 为 null）
+        vm.object_prototype = Some(vm.alloc_ordinary());
+        // Array.prototype：沿原型链挂到 Object.prototype
+        vm.array_prototype = vm
+            .object_prototype
+            .map(|p| vm.alloc_ordinary_with_proto(Some(p)));
+        // Math 内置对象
+        vm.math_object = Some(vm.alloc_ordinary());
+        // 三个原生构造器（`new` 由解释器拦截求值；instanceof 经 prototype 属性判定）
+        let obj_proto = vm.object_prototype;
+        vm.error_ctor = Some(vm.alloc_native_ctor("Error", obj_proto));
+        vm.array_ctor = Some(vm.alloc_native_ctor("Array", vm.array_prototype));
+        vm.object_ctor = Some(vm.alloc_native_ctor("Object", obj_proto));
+        vm
     }
 
     #[inline]
@@ -111,13 +170,21 @@ impl Vm {
                 if idx < self.heap.len() {
                     match &self.heap[idx] {
                         HeapObject::String(s) => s.clone(),
-                        HeapObject::Array { elements } => {
+                        HeapObject::BigInt(s) => s.clone(),
+                        HeapObject::Array { elements, .. } => {
                             let items: Vec<String> =
                                 elements.iter().map(|e| self.format_value(*e)).collect();
                             items.join(",")
                         }
-                        HeapObject::Ordinary { .. } => "[object Object]".to_owned(),
-                        HeapObject::Closure { .. } => "[function Function]".to_owned(),
+                        HeapObject::Ordinary { .. }
+                        | HeapObject::Generator
+                        | HeapObject::Promise { .. } => "[object Object]".to_owned(),
+                        HeapObject::Closure { .. } | HeapObject::NativeCtor { .. } => {
+                            "[function Function]".to_owned()
+                        }
+                        HeapObject::RegExp { pattern, flags } => {
+                            format!("/{pattern}/{flags}")
+                        }
                     }
                 } else if let Some(c) = self.current_constants.get(idx) {
                     match c {
@@ -134,20 +201,183 @@ impl Vm {
         }
     }
 
+    /// console.log 专用格式化（对齐 Go 版 `inspectValue` 的数组输出）。
+    ///
+    /// 数组呈现为 `[ a, b ]`（空数组 `[]`，元素 `, ` 分隔、递归同规则），
+    /// 其余值与 [`Vm::format_value`] 一致。
+    pub fn format_console_value(&self, val: Value) -> String {
+        if let Value::Object(r) = val {
+            if let Some(HeapObject::Array { elements, .. }) = self.heap.get(r.0 as usize) {
+                if elements.is_empty() {
+                    return "[]".to_owned();
+                }
+                let items: Vec<String> = elements
+                    .iter()
+                    .map(|e| self.format_console_value(*e))
+                    .collect();
+                return format!("[ {} ]", items.join(", "));
+            }
+        }
+        self.format_value(val)
+    }
+
+    /// JS `typeof` 语义的字符串化。
+    fn typeof_value(&self, val: Value) -> String {
+        match val {
+            Value::Undefined => "undefined".to_owned(),
+            Value::Null => "object".to_owned(),
+            Value::Boolean(_) => "boolean".to_owned(),
+            Value::Number(_) => "number".to_owned(),
+            Value::Object(r) => match self.heap.get(r.0 as usize) {
+                Some(HeapObject::String(_)) => "string".to_owned(),
+                Some(HeapObject::BigInt(_)) => "bigint".to_owned(),
+                Some(HeapObject::Closure { .. } | HeapObject::NativeCtor { .. }) => {
+                    "function".to_owned()
+                }
+                _ => "object".to_owned(),
+            },
+        }
+    }
+
+    /// `++` / `--` 的 ToNumeric 递增（BigInt 保持 BigInt，对齐 Go 版 `updateNumeric`）。
+    fn update_numeric(&mut self, val: Value, delta: i128) -> Value {
+        if let Value::Object(r) = val {
+            if let Some(HeapObject::BigInt(s)) = self.heap.get(r.0 as usize) {
+                let n: i128 = s.parse().unwrap_or(0);
+                let updated = n + delta;
+                return Value::Object(self.alloc_bigint(updated.to_string()));
+            }
+        }
+        Value::Number(to_number(val) + delta as f64)
+    }
+
+    /// 解析全局名：全局变量表优先，其次内置对象，未知名返回 `undefined`。
+    fn resolve_global(&mut self, name: &str) -> Value {
+        if let Some(v) = self.globals.get(name) {
+            return *v;
+        }
+        match name {
+            "undefined" => Value::Undefined,
+            "Math" => self
+                .math_object
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
+            "Error" => self
+                .error_ctor
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
+            "Array" => self
+                .array_ctor
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
+            "Object" => self
+                .object_ctor
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
+            _ => Value::Undefined,
+        }
+    }
+
+    /// 判断值是否为正则表达式对象。
+    pub(crate) fn is_regexp_obj(&self, val: Value) -> bool {
+        matches!(
+            val,
+            Value::Object(r)
+                if matches!(self.heap.get(r.0 as usize), Some(HeapObject::RegExp { .. }))
+        )
+    }
+
+    /// `RegExp.prototype.exec` 求值：成功返回结果数组元素
+    /// `[全匹配, 组1, …]`（未参与的组为 `undefined`），无匹配返回 `None`。
+    ///
+    /// 语法错误与回溯超限都以 JS 异常值上抛（`VmError::Thrown`）。
+    fn regexp_exec(&mut self, re: Value, subject: &str) -> Result<Option<Vec<Value>>, VmError> {
+        let (pattern, flags) = match re {
+            Value::Object(r) => match self.heap.get(r.0 as usize) {
+                Some(HeapObject::RegExp { pattern, flags }) => (pattern.clone(), flags.clone()),
+                _ => return Err(VmError::LocalOutOfRange),
+            },
+            _ => return Err(VmError::LocalOutOfRange),
+        };
+        let compiled = aluka_regex::Regex::compile(&pattern, &flags).map_err(|e| {
+            let msg = self.alloc_string(e.to_string());
+            VmError::Thrown(Value::Object(msg))
+        })?;
+        let matched = compiled.find(subject).map_err(|e| {
+            let msg = self.alloc_string(e.to_string());
+            VmError::Thrown(Value::Object(msg))
+        })?;
+        let Some(m) = matched else {
+            return Ok(None);
+        };
+        let chars: Vec<char> = subject.chars().collect();
+        let slice = |a: usize, b: usize| -> String { chars[a..b].iter().collect() };
+        let mut elems = vec![Value::Object(self.alloc_string(slice(m.start, m.end)))];
+        for group in &m.groups {
+            let elem = match group {
+                Some((a, b)) => Value::Object(self.alloc_string(slice(*a, *b))),
+                None => Value::Undefined,
+            };
+            elems.push(elem);
+        }
+        Ok(Some(elems))
+    }
+
     /// 执行指令序列，返回 `Return` 或 `ReturnUndef` 携带的值。
     pub fn run(&mut self, code: &[Instr]) -> Result<Value, VmError> {
         self.run_with_constants(code, &[])
     }
 
     /// 携带常量池执行指令序列。
+    ///
+    /// 扮演异常展开边界：本帧无 handler 接住的 [`VmError::Thrown`] 会继续向上
+    /// （调用者帧的 `invoke_function` 调用点）传播，与 Go 版 `jsThrow` 逐帧上抛一致。
     pub fn run_with_constants(
         &mut self,
         code: &[Instr],
         constants: &[Constant],
     ) -> Result<Value, VmError> {
+        self.run_with_constants_at(code, constants, 0)
+    }
+
+    /// 携带常量池从 `start_pc` 起执行指令序列（生成器挂起恢复的入口）。
+    ///
+    /// 扮演异常展开边界：本帧无 handler 接住的 [`VmError::Thrown`] 会继续向上
+    /// （调用者帧的 `invoke_function` 调用点）传播，与 Go 版 `jsThrow` 逐帧上抛一致；
+    /// [`VmError::Yielded`] 直接上抛，由生成器驱动层捕获。
+    pub(crate) fn run_with_constants_at(
+        &mut self,
+        code: &[Instr],
+        constants: &[Constant],
+        start_pc: usize,
+    ) -> Result<Value, VmError> {
         self.current_constants = constants.to_vec();
-        let mut pc = 0;
+        let mut pc = start_pc;
+        loop {
+            match self.exec_frame(code, constants, pc) {
+                Ok(value) => return Ok(value),
+                Err(VmError::Thrown(exc)) => match self.find_handler_in_frame(exc) {
+                    // 本帧接住：从 handler 入口（catch 压入异常 / finally 直跳）续跑
+                    Some(next_pc) => pc = next_pc,
+                    None => return Err(VmError::Thrown(exc)),
+                },
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    /// 从 `start_pc` 起单遍执行当前帧指令流。
+    ///
+    /// 遇到未接住的 `Thrown` 即返回，由 [`Vm::run_with_constants`] 查找 handler
+    /// 后重入续跑；嵌套调用（`invoke_function`）在返回前已恢复本帧上下文。
+    fn exec_frame(
+        &mut self,
+        code: &[Instr],
+        constants: &[Constant],
+        start_pc: usize,
+    ) -> Result<Value, VmError> {
         let num_instrs = code.len();
+        let mut pc = start_pc;
 
         while pc < num_instrs {
             let instr = code[pc];
@@ -171,7 +401,7 @@ impl Vm {
                             self.stack.push(Value::Object(s_ref));
                         }
                         Constant::BigInt(b) => {
-                            let b_ref = self.alloc_string(b.clone());
+                            let b_ref = self.alloc_bigint(b.clone());
                             self.stack.push(Value::Object(b_ref));
                         }
                         Constant::Bool(b) => {
@@ -244,11 +474,13 @@ impl Vm {
                 }
                 Op::Inc => {
                     let top = self.pop()?;
-                    self.stack.push(Value::Number(to_number(top) + 1.0));
+                    let updated = self.update_numeric(top, 1);
+                    self.stack.push(updated);
                 }
                 Op::Dec => {
                     let top = self.pop()?;
-                    self.stack.push(Value::Number(to_number(top) - 1.0));
+                    let updated = self.update_numeric(top, -1);
+                    self.stack.push(updated);
                 }
 
                 // 4. 位运算与逻辑非
@@ -363,7 +595,8 @@ impl Vm {
                 }
                 Op::StoreLocal => {
                     let slot = instr.operand as usize;
-                    let val = self.peek()?;
+                    // ISA 契约：STORE_LOCAL 净栈效果 -1（弹出栈顶写入槽位）
+                    let val = self.pop()?;
                     if slot >= self.locals.len() {
                         return Err(VmError::LocalOutOfRange);
                     }
@@ -373,7 +606,10 @@ impl Vm {
                     }
                 }
                 Op::LoadGlobal => {
-                    self.stack.push(Value::Undefined);
+                    // 操作数是常量池索引，解引用出全局对象名（对齐 Go 版 OpLoadGlobal）
+                    let name = self.get_const_string(instr.operand as usize)?;
+                    let val = self.resolve_global(&name);
+                    self.stack.push(val);
                 }
 
                 // 7. 控制流跳转
@@ -447,11 +683,61 @@ impl Vm {
                     if method_name == "log" {
                         let line = args
                             .iter()
-                            .map(|v| self.format_value(*v))
+                            .map(|v| self.format_console_value(*v))
                             .collect::<Vec<_>>()
                             .join(" ");
                         self.stdout_records.push(line);
                         self.stack.push(Value::Undefined);
+                    } else if method_name == "sqrt"
+                        && self
+                            .math_object
+                            .is_some_and(|m| receiver == Value::Object(m))
+                    {
+                        // Math.sqrt(x)：原生方法（receiver 是 Math 单例）
+                        let n = to_number(args.first().copied().unwrap_or(Value::Undefined));
+                        self.stack.push(Value::Number(n.sqrt()));
+                    } else if matches!(method_name.as_str(), "exec" | "test")
+                        && self.is_regexp_obj(receiver)
+                    {
+                        // RegExp 原型方法：exec 返回结果数组或 null，test 返回布尔
+                        let subject = args
+                            .first()
+                            .map(|v| self.format_value(*v))
+                            .unwrap_or_default();
+                        let result = self.regexp_exec(receiver, &subject)?;
+                        if method_name == "test" {
+                            self.stack.push(Value::Boolean(result.is_some()));
+                        } else {
+                            match result {
+                                Some(m) => {
+                                    let arr = self.alloc_array(m);
+                                    self.stack.push(Value::Object(arr));
+                                }
+                                None => self.stack.push(Value::Null),
+                            }
+                        }
+                    } else if method_name == "next" && self.is_generator_obj(receiver) {
+                        // 生成器迭代协议：gen.next(v) 驱动到下一个 YIELD/结束
+                        let injected = args.first().copied().unwrap_or(Value::Undefined);
+                        let gen_ref = match receiver {
+                            Value::Object(r) => r,
+                            _ => unreachable!("is_generator_obj 已确认 receiver 是对象"),
+                        };
+                        let result = self.drive_generator(gen_ref, Some(injected))?;
+                        self.stack.push(result);
+                    } else if method_name == "create"
+                        && self
+                            .object_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Object.create(proto)：以精确原型分配新对象（null → 无原型）
+                        let proto_val = args.first().copied().unwrap_or(Value::Undefined);
+                        let proto = match proto_val {
+                            Value::Object(p) => Some(p),
+                            _ => None,
+                        };
+                        let obj = self.alloc_ordinary_with_exact_proto(proto);
+                        self.stack.push(Value::Object(obj));
                     } else if let Value::Object(r) = receiver {
                         let idx = r.0 as usize;
                         if idx < self.heap.len()
@@ -459,7 +745,7 @@ impl Vm {
                         {
                             match method_name.as_str() {
                                 "push" => {
-                                    if let Some(HeapObject::Array { elements }) =
+                                    if let Some(HeapObject::Array { elements, .. }) =
                                         self.heap.get_mut(idx)
                                     {
                                         elements.extend(args);
@@ -471,13 +757,14 @@ impl Vm {
                                 }
                                 "map" => {
                                     let cb = args.first().copied().unwrap_or(Value::Undefined);
-                                    let elems = if let Some(HeapObject::Array { elements }) =
-                                        self.heap.get(idx)
-                                    {
-                                        elements.clone()
-                                    } else {
-                                        Vec::new()
-                                    };
+                                    let elems =
+                                        if let Some(HeapObject::Array { elements, .. }) =
+                                            self.heap.get(idx)
+                                        {
+                                            elements.clone()
+                                        } else {
+                                            Vec::new()
+                                        };
                                     let mut new_elems = Vec::with_capacity(elems.len());
                                     if let Value::Object(cb_ref) = cb {
                                         let (cb_fidx, cb_uvs) = if let Some(HeapObject::Closure {
@@ -513,7 +800,7 @@ impl Vm {
                                         ",".to_owned()
                                     };
                                     let parts: Vec<String> =
-                                        if let Some(HeapObject::Array { elements }) =
+                                        if let Some(HeapObject::Array { elements, .. }) =
                                             self.heap.get(idx)
                                         {
                                             elements.iter().map(|e| self.format_value(*e)).collect()
@@ -525,13 +812,14 @@ impl Vm {
                                     self.stack.push(Value::Object(s_ref));
                                 }
                                 "slice" => {
-                                    let elems = if let Some(HeapObject::Array { elements }) =
-                                        self.heap.get(idx)
-                                    {
-                                        elements.clone()
-                                    } else {
-                                        Vec::new()
-                                    };
+                                    let elems =
+                                        if let Some(HeapObject::Array { elements, .. }) =
+                                            self.heap.get(idx)
+                                        {
+                                            elements.clone()
+                                        } else {
+                                            Vec::new()
+                                        };
                                     let len = elems.len() as i64;
                                     let start_raw = match args.first() {
                                         Some(Value::Number(n)) => *n as i64,
@@ -559,6 +847,26 @@ impl Vm {
                                     };
                                     let new_arr = self.alloc_array(sliced);
                                     self.stack.push(Value::Object(new_arr));
+                                }
+                                "sort" => {
+                                    // 无比较器排序：元素字符串化后按字典序原地排序（JS 默认语义）
+                                    let mut elems =
+                                        if let Some(HeapObject::Array { elements, .. }) =
+                                            self.heap.get(idx)
+                                        {
+                                            elements.clone()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                    elems.sort_by(|a, b| {
+                                        self.format_value(*a).cmp(&self.format_value(*b))
+                                    });
+                                    if let Some(HeapObject::Array { elements, .. }) =
+                                        self.heap.get_mut(idx)
+                                    {
+                                        *elements = elems;
+                                    }
+                                    self.stack.push(receiver);
                                 }
                                 _ => self.stack.push(Value::Undefined),
                             }
@@ -705,12 +1013,12 @@ impl Vm {
                     self.stack.push(val);
                 }
                 Op::StoreUpvalue => {
+                    // ISA 契约：STORE_UPVALUE 净栈效果 -1（弹出栈顶写入上值）
                     let val = self.pop()?;
                     let uv_idx = instr.operand as usize;
                     if let Some(uv) = self.current_upvalues.get(uv_idx) {
                         *uv.0.borrow_mut() = val;
                     }
-                    self.stack.push(val);
                 }
                 Op::CloseUpvalues => {
                     let from_slot = instr.operand as usize;
@@ -749,7 +1057,7 @@ impl Vm {
                     let val = self.pop()?;
                     let arr_val = self.peek()?;
                     if let Value::Object(r) = arr_val {
-                        if let Some(HeapObject::Array { elements }) =
+                        if let Some(HeapObject::Array { elements, .. }) =
                             self.heap.get_mut(r.0 as usize)
                         {
                             elements.push(val);
@@ -760,7 +1068,7 @@ impl Vm {
                     let spread_val = self.pop()?;
                     let target_arr = self.peek()?;
                     let to_append: Vec<Value> = if let Value::Object(s_ref) = spread_val {
-                        if let Some(HeapObject::Array { elements }) =
+                        if let Some(HeapObject::Array { elements, .. }) =
                             self.heap.get(s_ref.0 as usize)
                         {
                             elements.clone()
@@ -771,7 +1079,7 @@ impl Vm {
                         Vec::new()
                     };
                     if let Value::Object(t_ref) = target_arr {
-                        if let Some(HeapObject::Array { elements }) =
+                        if let Some(HeapObject::Array { elements, .. }) =
                             self.heap.get_mut(t_ref.0 as usize)
                         {
                             elements.extend(to_append);
@@ -945,13 +1253,24 @@ impl Vm {
                     self.stack.push(Value::Boolean(true));
                 }
 
-                // 12. 返回指令
+                // 12. 返回指令（return 穿越带 finally 的区域时先挂起、跑完 finally 再返回）
                 Op::Return => {
-                    return self.pop();
+                    let val = self.pop()?;
+                    match self.exit_try(Completion::Return(val)) {
+                        TryExitOutcome::Continue(next_pc) => {
+                            pc = next_pc;
+                            continue;
+                        }
+                        TryExitOutcome::Return(v) => return Ok(v),
+                    }
                 }
-                Op::ReturnUndef => {
-                    return Ok(Value::Undefined);
-                }
+                Op::ReturnUndef => match self.exit_try(Completion::Return(Value::Undefined)) {
+                    TryExitOutcome::Continue(next_pc) => {
+                        pc = next_pc;
+                        continue;
+                    }
+                    TryExitOutcome::Return(v) => return Ok(v),
+                },
 
                 // 13. ES6 类与面向对象指令
                 Op::MakeClass => {
@@ -966,38 +1285,8 @@ impl Vm {
                     }
                     args.reverse();
                     let callee = self.pop()?;
-                    let proto_ref = match self.get_property(callee, "prototype") {
-                        Ok(Value::Object(p)) => Some(p),
-                        _ => None,
-                    };
-                    let instance_ref = self.alloc_ordinary_with_proto(proto_ref);
-                    let instance_val = Value::Object(instance_ref);
-
-                    if let Value::Object(c_ref) = callee {
-                        let (f_idx, uvs) =
-                            if let Some(HeapObject::Closure {
-                                func_idx, upvalues, ..
-                            }) = self.heap.get(c_ref.0 as usize)
-                            {
-                                (Some(*func_idx), upvalues.clone())
-                            } else if (c_ref.0 as usize) < self.module_functions.len() {
-                                (Some(c_ref.0 as usize), Vec::new())
-                            } else {
-                                (None, Vec::new())
-                            };
-                        if let Some(fi) = f_idx {
-                            let res = self.invoke_function(fi, instance_val, &args, uvs)?;
-                            if matches!(res, Value::Object(_)) {
-                                self.stack.push(res);
-                            } else {
-                                self.stack.push(instance_val);
-                            }
-                        } else {
-                            self.stack.push(instance_val);
-                        }
-                    } else {
-                        self.stack.push(instance_val);
-                    }
+                    let res = self.do_construct(callee, &args)?;
+                    self.stack.push(res);
                 }
                 Op::ConstructThis => {
                     let num_args = instr.operand as usize;
@@ -1007,28 +1296,8 @@ impl Vm {
                     }
                     args.reverse();
                     let callee = self.pop()?;
-                    let this_val = *self.locals.first().unwrap_or(&Value::Undefined);
-                    if let Value::Object(c_ref) = callee {
-                        let (f_idx, uvs) =
-                            if let Some(HeapObject::Closure {
-                                func_idx, upvalues, ..
-                            }) = self.heap.get(c_ref.0 as usize)
-                            {
-                                (Some(*func_idx), upvalues.clone())
-                            } else if (c_ref.0 as usize) < self.module_functions.len() {
-                                (Some(c_ref.0 as usize), Vec::new())
-                            } else {
-                                (None, Vec::new())
-                            };
-                        if let Some(fi) = f_idx {
-                            let res = self.invoke_function(fi, this_val, &args, uvs)?;
-                            self.stack.push(res);
-                        } else {
-                            self.stack.push(this_val);
-                        }
-                    } else {
-                        self.stack.push(this_val);
-                    }
+                    let res = self.do_construct_this(callee, &args)?;
+                    self.stack.push(res);
                 }
                 Op::CallThis => {
                     let num_args = instr.operand as usize;
@@ -1077,31 +1346,199 @@ impl Vm {
                     self.stack.push(Value::Boolean(res));
                 }
 
+                // 14. 异常与 try 语义（状态机移植自 Go 版 vm_exception.go）
+                Op::TryEnter => {
+                    let try_idx = instr.operand as usize;
+                    let entry = self
+                        .current_try_table
+                        .get(try_idx)
+                        .copied()
+                        .ok_or(VmError::LocalOutOfRange)?;
+                    self.try_stack.push(TryHandler {
+                        try_idx,
+                        entry,
+                        exc: None,
+                        phase: PHASE_TRY,
+                        completion: None,
+                    });
+                }
+                Op::TryExit => {
+                    self.handle_try_exit(instr.operand as usize);
+                }
+                Op::TryExitFinally => match self.handle_try_exit_finally(instr.operand as usize) {
+                    FinallyOutcome::Continue => {}
+                    FinallyOutcome::ContinueAt(next_pc) => {
+                        pc = next_pc;
+                        continue;
+                    }
+                    FinallyOutcome::Rethrow(exc) => return Err(VmError::Thrown(exc)),
+                    FinallyOutcome::Return(val) => return Ok(val),
+                },
+                Op::TryExitJmp => {
+                    // break/continue 位于 try 区域内：跳转穿出区域前先运行 finally
+                    let target = compute_jump_target(pc, instr.operand);
+                    match self.exit_try(Completion::Jump(target)) {
+                        TryExitOutcome::Continue(next_pc) => {
+                            pc = next_pc;
+                            continue;
+                        }
+                        // 不可达：Jump 完成动作永远解析为跳转而非 return
+                        TryExitOutcome::Return(_) => return Ok(Value::Undefined),
+                    }
+                }
+                Op::Throw => {
+                    let exc = self.pop()?;
+                    return Err(VmError::Thrown(exc));
+                }
+
+                // 15. 全局赋值与一元运算符
+                Op::StoreGlobal => {
+                    // 不带声明符的全局赋值写入全局变量表（对齐 Go 版 globalObj.Set）
+                    let name = self.get_const_string(instr.operand as usize)?;
+                    let val = self.pop()?;
+                    self.globals.insert(name, val);
+                }
+                Op::In => {
+                    let r = self.pop()?;
+                    let l = self.pop()?;
+                    let key = self.to_property_key(l);
+                    let res = self.has_property(r, &key);
+                    self.stack.push(Value::Boolean(res));
+                }
+                Op::Typeof => {
+                    let v = self.pop()?;
+                    let s = self.typeof_value(v);
+                    let r = self.alloc_string(s);
+                    self.stack.push(Value::Object(r));
+                }
+                Op::TypeofGlobal => {
+                    let name = self.get_const_string(instr.operand as usize)?;
+                    let v = self.resolve_global(&name);
+                    let s = self.typeof_value(v);
+                    let r = self.alloc_string(s);
+                    self.stack.push(Value::Object(r));
+                }
+
+                // 16. 展开调用家族（f(...args) / obj.m(...args) / new X(...args) / super(...args)）
+                Op::CallArgs => {
+                    // 栈序 ... callee argsArray
+                    let args_arr = self.pop()?;
+                    let callee = self.pop()?;
+                    let args = self.to_array_values(args_arr);
+                    let ret = self.invoke_callable(callee, Value::Undefined, &args)?;
+                    self.stack.push(ret);
+                }
+                Op::CallWithThisArgs => {
+                    // 栈序 ... callee this argsArray
+                    let args_arr = self.pop()?;
+                    let this_val = self.pop()?;
+                    let callee = self.pop()?;
+                    let args = self.to_array_values(args_arr);
+                    let ret = self.invoke_callable(callee, this_val, &args)?;
+                    self.stack.push(ret);
+                }
+                Op::CallMethodArgs => {
+                    // 栈序 ... receiver argsArray；操作数 = 方法名常量索引
+                    let name = self.get_const_string(instr.operand as usize)?;
+                    let args_arr = self.pop()?;
+                    let receiver = self.pop()?;
+                    let args = self.to_array_values(args_arr);
+                    let method = self.get_property(receiver, &name)?;
+                    let ret = self.invoke_callable(method, receiver, &args)?;
+                    self.stack.push(ret);
+                }
+                Op::NewArgs => {
+                    // 栈序 ... callee argsArray
+                    let args_arr = self.pop()?;
+                    let callee = self.pop()?;
+                    let args = self.to_array_values(args_arr);
+                    let res = self.do_construct(callee, &args)?;
+                    self.stack.push(res);
+                }
+                Op::ConstructThisArgs => {
+                    // super(...args)：参数表在栈顶，this 取当前帧 locals[0]
+                    let args_arr = self.pop()?;
+                    let callee = self.pop()?;
+                    let args = self.to_array_values(args_arr);
+                    let res = self.do_construct_this(callee, &args)?;
+                    self.stack.push(res);
+                }
+                Op::SpreadObject => {
+                    // { ...src }：把 src 自有属性逐个写入栈顶 dst（dst 不弹出）
+                    let src = self.pop()?;
+                    let dst = self.peek()?;
+                    for (k, v) in self.own_properties(src) {
+                        self.set_property(dst, &k, v)?;
+                    }
+                }
+                Op::EnumKeys => {
+                    // for-in 头部：快照原型链可枚举键为字符串数组（对齐 Go OpEnumKeys）
+                    let src = self.pop()?;
+                    let keys = self.enumerate_for_in_keys(src);
+                    let key_refs: Vec<Value> = keys
+                        .into_iter()
+                        .map(|k| Value::Object(self.alloc_string(k)))
+                        .collect();
+                    let arr = self.alloc_array(key_refs);
+                    self.stack.push(Value::Object(arr));
+                }
+
+                // 17. 生成器 / async 协程
+                Op::Yield => {
+                    // 挂起生成器帧：记录恢复点并以 Yielded 信号上抛（携带产出值）；
+                    // 恢复时注入值压栈，成为 yield 表达式的求值结果
+                    let produced = self.pop()?;
+                    self.yield_pc = pc + 1;
+                    return Err(VmError::Yielded(produced));
+                }
+                Op::Await => {
+                    let awaited = self.pop()?;
+                    let resolved = match awaited {
+                        Value::Object(r) => match self.heap.get(r.0 as usize) {
+                            Some(HeapObject::Promise {
+                                fulfilled: true,
+                                value,
+                            }) => Some(*value),
+                            // 未完成的 Promise 需要微任务调度（语料外，后续里程碑）
+                            Some(HeapObject::Promise {
+                                fulfilled: false, ..
+                            }) => None,
+                            _ => Some(awaited),
+                        },
+                        _ => Some(awaited),
+                    };
+                    match resolved {
+                        Some(v) => self.stack.push(v),
+                        None => return Err(VmError::UnimplementedOpcode(instr.op)),
+                    }
+                }
+                Op::GetIterator | Op::GetAsyncIterator => {
+                    let val = self.pop()?;
+                    if self.is_generator_obj(val) {
+                        // 生成器对象自身即（async）迭代器
+                        self.stack.push(val);
+                    } else {
+                        let msg = self.alloc_string("TypeError: value is not iterable".to_owned());
+                        return Err(VmError::Thrown(Value::Object(msg)));
+                    }
+                }
+                Op::MakeRegexp => {
+                    // 正则字面量：弹 flags + pattern，构造 RegExp 对象（对齐 Go OpMakeRegexp）
+                    let flags_val = self.pop()?;
+                    let pattern_val = self.pop()?;
+                    let regexp = HeapObject::RegExp {
+                        pattern: self.format_value(pattern_val),
+                        flags: self.to_property_key(flags_val),
+                    };
+                    let idx = self.heap.len() as u32;
+                    self.heap.push(regexp);
+                    self.stack.push(Value::Object(ObjectRef(idx)));
+                }
+
                 // 其它高级对象与协程操作码（后续阶段扩展）
-                Op::CallWithThisArgs
-                | Op::CallArgs
-                | Op::CallMethodArgs
-                | Op::NewArgs
-                | Op::SpreadObject
-                | Op::Typeof
-                | Op::TypeofGlobal
-                | Op::TryEnter
-                | Op::TryExit
-                | Op::TryExitFinally
-                | Op::TryExitJmp
-                | Op::Throw
-                | Op::In
-                | Op::ForInNext
-                | Op::CallThisArgs
-                | Op::ConstructThisArgs
-                | Op::GetIterator
-                | Op::Yield
-                | Op::GetAsyncIterator
-                | Op::Await
-                | Op::MakeRegexp
-                | Op::StoreGlobal
-                | Op::EnumKeys
-                | Op::End => return Err(VmError::UnimplementedOpcode(instr.op)),
+                Op::ForInNext | Op::CallThisArgs | Op::End => {
+                    return Err(VmError::UnimplementedOpcode(instr.op));
+                }
             }
             pc += 1;
         }

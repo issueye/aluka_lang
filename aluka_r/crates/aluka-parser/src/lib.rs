@@ -6,6 +6,19 @@
 
 pub mod ast;
 pub mod lexer;
+pub mod parser;
+pub mod source_unit;
 
-pub use ast::{Expr, Program, Stmt};
+pub use ast::{
+    ArrayPatternElem, ClassMethodDef, ExportDecl, ExportSpecifier, Expr, FunctionDef, ImportDecl,
+    ImportSpecifier, JSXAttrValue, JSXAttribute, JSXChild, JSXElement, JSXFragment,
+    JSXOpeningElement, JSXTagName, ObjectProp, Program, PropKey, PropValue, Stmt, VarPattern,
+};
 pub use lexer::{Lexer, Token, TokenKind};
+pub use parser::{Parser, parse};
+pub use source_unit::{
+    LanguageRegistry, ModuleKind, STAGE_BYTECODE_COMPILED, STAGE_BYTECODE_OPTIMIZED,
+    STAGE_ESM_LOWERED, STAGE_MINIFIED, STAGE_PARSED, STAGE_SHAKEN, STAGE_TYPE_STRIPPED,
+    STAGE_WRAPPED, SourceKind, SourceUnit, SourceUnitError, TransformStage, detect_source_kind,
+    parse_file_unit, parse_source_unit,
+};

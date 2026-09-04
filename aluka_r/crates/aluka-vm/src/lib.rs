@@ -4,6 +4,8 @@
 
 pub mod call;
 pub mod class;
+pub mod exception;
+pub mod generator;
 pub mod heap;
 pub mod interpreter;
 pub mod ops;

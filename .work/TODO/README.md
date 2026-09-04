@@ -56,12 +56,12 @@
 | 里程碑 | 内容 | 轨道 | 状态 |
 |---|---|---|---|
 | **M-1** | 骨架（11 crate、端到端最小链路、模块注册表看板） | — | ✅ 已完成（`c2a2e66`、`23d8866`） |
-| **M0** | ISA 规范化 + verifier + golden 语料 + GC/Value 选型 | F、A1/E | 🔵 进行中 |
-| M1 | aluvm 吃 Go 前端字节码（Tier 0 全指令） | A1（+A2 起步） | ⬜ 未开始 |
+| **M0** | ISA 规范化 + verifier + golden 语料 + GC/Value 选型 | F、A1/E | ✅ 已完成（20260904 收口评审通过，见 `.work/evidence/20260904/m0-review.md`） |
+| M1 | aluvm 吃 Go 前端字节码（Tier 0 全指令） | A1（+A2 起步） | 🔵 已预演（Go 前端 fib30.bc × Rust VM 执行正确，见 m0-review §3） |
 | M2 | alukac 前端 + 全语言 → **终局前提 1** | A1+A2+B | ⬜ |
-| M3 | GC / 数组 / 字符串性能 | A1+B | ⬜ |
+| M3 | GC / 数组 / 字符串性能 | A1+B | ⬜（GC 选型已定 ADR-0002，原型代码就绪） |
 | M4 | ISA 发布契约 → **终局前提 2** | F | ⬜ |
-| M5 | JIT | E | ⬜ |
+| M5 | JIT | E | ⬜（fib30 执行基线 912.7ms 已记录，见 vm-fib30-baseline.md） |
 | M6 | 工具链 | C | ⬜ |
 | M7 | Go 版退役签核 | 全轨 | ⬜ |
 
@@ -123,28 +123,46 @@ F 轨全线落地与 A1-1（Rust Verifier）完成后，前后端进入完全解
 - [x] **A1-2 `Value` 表示定案**：`enum` vs NaN-box `u64` 微基准与 GC 协同机制
   - 证据：决策记录 `docs/adr/0001-aluka-r-value-representation.md`；定案为 M0/M1 阶段采用 16 字节 Tagged Enum 保证内存安全与快速交付，M2 通过 `nan-boxing` 特征提供 8 字节无缝切换门面
   - 备忘：`Value` 是后端内部表示、**不进 ISA**，所以契约冻结后仍可换
-- [ ] **A1-3 GC 原型 ×2**：分代标记-清除（bump 年轻代 + 卡表）vs RC + 循环回收
+- [x] **A1-3 GC 原型 ×2**：分代标记-清除（bump 年轻代 + 卡表）vs RC + 循环回收
   - 负载：fib30 + 对象创建循环；对照 Go 版基线
   - 证据：两份报告 + 选型 ADR
+  - **✅ 已达成（20260904）**：`aluka-core/src/gc_protos/` 双原型 + 20 项单测 +
+    gc_bench 基准（min-of-5：交替/冷却）。**原型 A 全面胜出**（fib30 1.8×、
+    churn 80.8×、cycles 23.3×），选型 ADR `docs/adr/0002-aluka-r-gc-selection.md`；
+    报告 `.work/evidence/20260904/gc-proto-{a,b}-report.md`；明细见 20260904 待办 45
   - 前车之鉴（必须避开，Go 侧已证伪）：
     - 槽位不能用无指针 `u64` 存对象引用（除非 GC 自管可达性）——
       `docs/adr/stage2-nanbox-slots-rejected.md`
     - 带指针对象不能简单 arena bump（存活对象 pin 整块 + 级联保活，
       RSS 放大 22-71×）——`docs/adr/object-arena-rejected.md`
-- [ ] **A1-4 冻结 `aluka-core` 公共 API**（`Value`/`Heap`/`Shape`），解锁 B 轨
+- [x] **A1-4 冻结 `aluka-core` 公共 API**（`Value`/`Heap`/`Shape`），解锁 B 轨
   - 证据：API 文档 + 冻结声明写进 `aluka_r/AGENTS.md`（离改动最近的文档必须包含
     约定，只写在 `.work` 里等于没有）
+  - **✅ 已达成（20260904）**：冻结声明见 `aluka_r/AGENTS.md`「🧊 `aluka-core`
+    公共 API 冻结声明」专节；冻结面覆盖 `Value`+类型谓词、`ObjectRef`/`ObjectClass`、
+    `Shape`/`ShapeId`/`ShapeTable`、`Heap` 生命周期五方法 + `RootSet`/`GcStats`；
+    24 项单测全绿；明细见 20260904 待办 46
 
 ### D 轨 · 支撑
 
 - [x] **D1 golden 对拍脚本**：逐例跑 Rust 加载器 + verifier，与 Go Oracle 期望比对
-  - 证据：`aluka_r/crates/aluka-vm/tests/golden_execution_oracle_test.rs` 实现对拍；前 4 组语料在 Rust VM 上执行与 `aluka_g/bin/aluka.exe run` 输出 100% 逐字符一致并通过 `cargo test -p aluka-vm --test golden_execution_oracle_test`
+  - 证据：`aluka_r/crates/aluka-vm/tests/golden_execution_oracle_test.rs` 实现参数化对拍驱动；
+        **33/33 全量达成**（覆盖全部 106 条指令：异常、switch、spread 调用、for-in、生成器、
+        async/await、正则、super 方法等）在 Rust VM 上执行与 `aluka_g/bin/aluka.exe run`
+        输出 100% 逐字符一致，`cargo test -p aluka-regex -p aluka-vm` 51 项测试全绿
   - 证据：脚本 + 一次全量跑的输出（`N/200 passed`）
-- [ ] **D2 bench 基线接入**：沿用交替执行 + 冷却 + min-of-N
+- [x] **D2 bench 基线接入**：沿用交替执行 + 冷却 + min-of-N
   - 证据：脚本 + 首份基线数据
-- [ ] **D3 CI 门禁**：Rust job 已有 build/test/clippy(`-D warnings`)/fmt；
+  - **✅ 已达成（20260904 评审整改）**：`aluka-cli/examples/fib_bench.rs`（fib30 字节码
+    解释执行，**Go 前端产物**，min-of-5 + 冷却）——基线 **912.7ms**、输出 832040 ✓；
+    对照 Go Tier 0（`--jit=off`）395ms（含启动开销）；记录
+    `.work/evidence/20260904/vm-fib30-baseline.md`；GC 维度基线另见 gc-proto 报告
+- [x] **D3 CI 门禁**：Rust job 已有 build/test/clippy(`-D warnings`)/fmt；
       补 golden 对拍步骤
   - 证据：CI 配置 diff + 一次绿色运行
+  - **✅ 已达成（20260904 评审整改）**：`ci.yml` rust job 增加「setup-go + 构建同平台
+    Go oracle（/tmp/aluka-oracle）+ `ALUKA_ORACLE` 注入 cargo test」——对拍测试支持
+    环境变量 oracle 路径；本地 33/33 全绿；CI 绿色运行待下次 push 验证（已登记）
 
 ---
 

@@ -370,11 +370,28 @@ jobs:
       - name: Set up Rust
         run: rustup component add clippy rustfmt
 
+      # D3 golden 对拍（aluka-vm golden_execution_oracle_test）：ubuntu 无仓库内
+      # 的 Windows 预编译 oracle，先用 Go 构建同平台 oracle 并经 ALUKA_ORACLE 注入。
+      - name: Set up Go (for golden corpus oracle)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+          cache-dependency-path: aluka_g/go.sum
+
+      - name: Build Go oracle
+        working-directory: aluka_g
+        env:
+          CGO_ENABLED: "0"
+        run: go build -o /tmp/aluka-oracle ./cmd/aluka
+
       - name: Cargo build
         run: cargo build --all-targets
 
-      - name: Cargo test
+      - name: Cargo test (incl. golden differential vs Go oracle)
         run: cargo test
+        env:
+          ALUKA_ORACLE: /tmp/aluka-oracle
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings

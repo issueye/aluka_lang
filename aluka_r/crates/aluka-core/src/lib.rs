@@ -22,11 +22,12 @@
 //! （见 `aluka_r/docs/rust-reimplementation-devplan.md` M0 验收项）。
 
 pub mod gc;
+pub mod gc_protos;
 pub mod object;
 pub mod shape;
 pub mod value;
 
 pub use gc::{Heap, RootSet};
 pub use object::ObjectRef;
-pub use shape::{Shape, ShapeId};
+pub use shape::{Shape, ShapeId, ShapeTable};
 pub use value::{Value, ValueKind};

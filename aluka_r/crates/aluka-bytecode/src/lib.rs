@@ -11,6 +11,7 @@
 
 pub mod op;
 pub mod serialize;
+pub mod serializer;
 pub mod verifier;
 
 pub use op::{Instr, Op, OperandKind, StackEffect};

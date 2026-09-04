@@ -375,6 +375,11 @@ impl std::fmt::Display for VerifyError {
 impl std::error::Error for VerifyError {}
 
 impl BytecodeModule {
+    /// 从 `ALUKABC1`（Version 30）标准二进制反序列化为字节码模块。
+    pub fn deserialize(data: &[u8]) -> Result<Self, VerifyError> {
+        Self::deserialize_go(data)
+    }
+
     /// 从 Go 编译器产出的 `ALUKABC1`（Version 30）二进制直接反序列化并解析。
     pub fn deserialize_go(data: &[u8]) -> Result<Self, VerifyError> {
         if data.len() < 20 {

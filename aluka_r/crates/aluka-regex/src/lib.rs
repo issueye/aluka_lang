@@ -32,6 +32,11 @@ impl std::fmt::Display for RegexError {
 
 impl std::error::Error for RegexError {}
 
+mod engine;
+mod parser;
+
+pub use engine::{MatchResult, Regex};
+
 /// 一次成功匹配的位置，索引以 UTF-16 code unit 计。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Match {

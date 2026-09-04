@@ -68,8 +68,8 @@ impl Shape {
 
     /// 派生"在本 shape 上追加 `name`"的新 shape。
     ///
-    /// 调用方负责 transition 缓存（同一 (shape, name) 应复用同一子 shape），
-    /// 否则会退化成每个对象独占 shape、IC 全部失效。
+    /// 一般不直接调用：transition 缓存由 [`ShapeTable`] 统一管理（同一
+    /// (shape, name) 复用同一子 shape），直接派生会让对象独占 shape、IC 全部失效。
     #[must_use]
     pub fn extend(&self, id: ShapeId, name: &str) -> Self {
         let mut names = self.names.clone();
@@ -77,6 +77,69 @@ impl Shape {
         index.insert(name.to_owned(), names.len());
         names.push(name.to_owned());
         Self { id, names, index }
+    }
+}
+
+/// Shape 的 transition 树缓存：`(父 ShapeId, 属性名) -> 子 Shape` 的共享表。
+///
+/// [`Shape::extend`] 本身是无状态的派生；本表负责复用派生结果——同一
+/// (shape, name) 只产生一个子 shape，保证结构相同的对象收敛到同一
+/// [`ShapeId`]（内联缓存命中的前提）。id 单调分配，树随程序运行增长。
+#[derive(Debug)]
+pub struct ShapeTable {
+    next_id: u32,
+    root: Shape,
+    transitions: HashMap<(ShapeId, String), Shape>,
+}
+
+impl Default for ShapeTable {
+    /// 等价于 [`ShapeTable::new`]（clippy::new_without_default 配对要求）。
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ShapeTable {
+    /// 创建只含根 shape 的表。
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            next_id: 1,
+            root: Shape::root(ShapeId(0)),
+            transitions: HashMap::new(),
+        }
+    }
+
+    /// 根 shape（所有对象的初始布局）。
+    #[must_use]
+    pub fn root(&self) -> &Shape {
+        &self.root
+    }
+
+    /// 按 id 查询 shape（供属性 lookup 与调试）。
+    #[must_use]
+    pub fn shape(&self, id: ShapeId) -> Option<&Shape> {
+        if id == self.root.id() {
+            return Some(&self.root);
+        }
+        self.transitions.values().find(|s| s.id() == id)
+    }
+
+    /// 在 `from` shape 上追加 `name`，返回子 shape 的 id：命中缓存则复用，
+    /// 否则派生并登记。调用方只持有 id（IC 比较与槽位查询均够用）。
+    pub fn transition(&mut self, from: ShapeId, name: &str) -> ShapeId {
+        let key = (from, name.to_owned());
+        if let Some(existing) = self.transitions.get(&key) {
+            return existing.id();
+        }
+        let Some(parent) = self.shape(from) else {
+            return from; // 未知 shape：原样返回（调用方契约违反，不 panic）
+        };
+        let child = parent.extend(ShapeId(self.next_id), name);
+        self.next_id += 1;
+        let child_id = child.id();
+        self.transitions.insert(key, child);
+        child_id
     }
 }
 
@@ -106,5 +169,39 @@ mod tests {
         // 派生不改动父 shape：共享前缀的对象仍能命中祖先。
         assert_eq!(with_a.len(), 1);
         assert_eq!(root.len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod shape_table_tests {
+    use super::*;
+
+    #[test]
+    fn same_transition_reuses_child_shape() {
+        let mut table = ShapeTable::new();
+        let root_id = table.root().id();
+
+        let first = table.transition(root_id, "x");
+        let second = table.transition(root_id, "x");
+        assert_eq!(first, second, "同一 (shape, name) 必须复用同一子 shape");
+
+        let other = table.transition(root_id, "y");
+        assert_ne!(first, other);
+    }
+
+    #[test]
+    fn chained_transitions_form_a_tree() {
+        let mut table = ShapeTable::new();
+        let root_id = table.root().id();
+        let with_a = table.transition(root_id, "a");
+        let with_ab = table.transition(with_a, "b");
+
+        let ab = table.shape(with_ab).expect("id 应可查询");
+        assert_eq!(ab.lookup("a"), Some(0));
+        assert_eq!(ab.lookup("b"), Some(1));
+        // 同一派生请求幂等
+        assert_eq!(with_ab, table.transition(with_a, "b"));
+        // 根 shape 本身也可查询
+        assert!(table.shape(root_id).is_some());
     }
 }
