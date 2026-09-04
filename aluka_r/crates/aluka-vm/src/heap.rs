@@ -54,20 +54,22 @@ pub enum HeapObject {
     Generator,
     /// Promise 对象（微任务队列基建后支持 then 回调调度）
     Promise {
-        /// 是否已完成（fulfilled）
+        /// 是否已完成（fulfilled 或 rejected）
         pending: bool,
-        /// 完成值（pending 时为 undefined）
+        /// 完成值（pending 时为 undefined；rejected 时为拒绝原因）
         value: Value,
+        /// 是否以拒绝完成（`pending == false` 时有效）
+        is_rejected: bool,
         /// 已登记的回调（`.then` 的 fulfilled 处理器，fulfill 时进微任务队列）
         handlers: Vec<Value>,
         /// `.catch` 的 rejected 处理器（reject 时调度；fulfill 不触发）
         rejected: Vec<Value>,
     },
-    /// Promise 的 resolve/reject 函数（捕获目标 promise，调用即 fulfill）
+    /// Promise 的 resolve/reject 函数（捕获目标 promise，调用即按标志 fulfill/reject）
     PromiseResolver {
         /// 被解析的目标 promise 句柄
         promise: ObjectRef,
-        /// `true` = resolve，`false` = reject（reject 简化同 resolve）
+        /// `true` = resolve（fulfill），`false` = reject
         resolve: bool,
     },
     /// EventEmitter 实例（Node `node:events`；事件名 → 监听器列表）
@@ -213,6 +215,20 @@ impl Vm {
         self.heap.push(HeapObject::Promise {
             pending: false,
             value,
+            is_rejected: false,
+            handlers: Vec::new(),
+            rejected: Vec::new(),
+        });
+        ObjectRef(idx)
+    }
+
+    /// 在堆上分配已拒绝（rejected）的 Promise 对象，返回句柄。
+    pub fn alloc_rejected_promise(&mut self, reason: Value) -> ObjectRef {
+        let idx = self.heap.len() as u32;
+        self.heap.push(HeapObject::Promise {
+            pending: false,
+            value: reason,
+            is_rejected: true,
             handlers: Vec::new(),
             rejected: Vec::new(),
         });
@@ -225,6 +241,7 @@ impl Vm {
         self.heap.push(HeapObject::Promise {
             pending: true,
             value: Value::Undefined,
+            is_rejected: false,
             handlers: Vec::new(),
             rejected: Vec::new(),
         });

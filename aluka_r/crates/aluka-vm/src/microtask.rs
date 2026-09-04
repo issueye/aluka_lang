@@ -16,8 +16,10 @@ use aluka_core::ObjectRef;
 pub(crate) enum Job {
     /// 调用回调（this=undefined，实参 [arg]）
     Call(Value, Value),
-    /// 恢复挂起的 async 帧
+    /// 恢复挂起的 async 帧（await 的 promise 已兑现）
     ResumeFrame(PendingResume),
+    /// 恢复挂起的 async 帧（await 的 promise 已拒绝：进帧即抛，命中帧内 try/catch）
+    ResumeFrameRejected(PendingResume),
 }
 
 /// 挂起 async 帧的恢复登记。
@@ -36,8 +38,16 @@ pub(crate) struct PendingResume {
 impl Vm {
     /// 恢复挂起的 async 帧：换入帧上下文，从挂起 pc 继续执行至完成/再挂起。
     ///
+    /// `rejected` 为 `true` 时表示 await 的 promise 已拒绝：不注入兑现值，而是
+    /// 在帧内查找 try/catch——命中则从 handler 入口续跑（catch 绑定拒绝原因）；
+    /// 未命中则本 async 函数的 promise 级联拒绝（JS 语义）。
+    ///
     /// 完成时兑现该 async 函数的 promise（若被 await 则级联恢复调用者帧）。
-    fn resume_async_frame(&mut self, frame: crate::builtins::PendingResume) -> Result<(), VmError> {
+    fn resume_async_frame(
+        &mut self,
+        frame: crate::builtins::PendingResume,
+        rejected: bool,
+    ) -> Result<(), VmError> {
         let caller = crate::generator::CallerFrame::save(self);
         let base = self.stack.len();
         let (code, constants, try_table) = {
@@ -67,11 +77,25 @@ impl Vm {
             Some(HeapObject::Promise { value, .. }) => *value,
             _ => Value::Undefined,
         };
-        self.stack.push(resumed_value);
         self.current_try_table = try_table;
         self.current_func_idx = frame.func_idx as i64;
 
-        let outcome = self.run_with_constants_rc(&code, constants, pc);
+        // 拒绝恢复：不压兑现值，先在帧内找 handler（find_handler_in_frame 会把
+        // 拒绝原因压栈供 catch 参数绑定）；帧内无 handler 则级联拒绝本 promise。
+        let entry_pc = if rejected {
+            match self.find_handler_in_frame(resumed_value) {
+                Some(catch_pc) => catch_pc,
+                None => {
+                    caller.restore(self);
+                    return self.reject_promise(frame.promise, resumed_value);
+                }
+            }
+        } else {
+            self.stack.push(resumed_value);
+            pc
+        };
+
+        let outcome = self.run_with_constants_rc(&code, constants, entry_pc);
 
         // 收割 async 帧（与 drive_generator 相同的收割/恢复模式）
         let gen_stack = self.stack.split_off(base);
@@ -105,6 +129,12 @@ impl Vm {
                     },
                 );
             }
+            Err(VmError::Thrown(exc)) => {
+                // async 函数体内未捕获异常：其 promise 以该异常拒绝（JS 语义，
+                // 不向顶层传播——拒绝沿 .catch/await 链继续传递；caller 已在
+                // 上方收割时恢复，无需再次还原）
+                return self.reject_promise(frame.promise, exc);
+            }
             Err(err) => {
                 return Err(err);
             }
@@ -127,7 +157,10 @@ impl Vm {
                     self.invoke_callable(cb, Value::Undefined, &[arg])?;
                 }
                 Job::ResumeFrame(resume) => {
-                    self.resume_async_frame(resume)?;
+                    self.resume_async_frame(resume, false)?;
+                }
+                Job::ResumeFrameRejected(resume) => {
+                    self.resume_async_frame(resume, true)?;
                 }
             }
         }
@@ -172,7 +205,9 @@ impl Vm {
         Ok(ran_timer || pumped)
     }
 
-    /// Promise fulfill：设定值与处理器，把全部处理器调度进微任务队列。
+    /// Promise 兑现：设定值与处理器，把全部处理器调度进微任务队列。
+    ///
+    /// 已定型的 promise（fulfilled/rejected）再次 resolve/reject 为 no-op（JS 语义）。
     pub(crate) fn fulfill_promise(
         &mut self,
         promise: aluka_core::ObjectRef,
@@ -182,13 +217,18 @@ impl Vm {
             let Some(HeapObject::Promise {
                 pending,
                 value: slot,
+                is_rejected,
                 handlers,
                 ..
             }) = self.heap.get_mut(promise.index())
             else {
                 return Ok(());
             };
+            if !*pending {
+                return Ok(());
+            }
             *pending = false;
+            *is_rejected = false;
             *slot = value;
             std::mem::take(handlers)
         };
@@ -200,6 +240,44 @@ impl Vm {
         if let Some(resume) = self.promise_resumes.remove(&promise.0) {
             self.microtask_queue
                 .push_back(crate::builtins::Job::ResumeFrame(resume));
+        }
+        Ok(())
+    }
+
+    /// Promise 拒绝：设定拒绝原因，把全部 onRejected 处理器调度进微任务队列；
+    /// 挂起的 async 帧等待本 promise 则以「进帧即抛」恢复（rejection 语义）。
+    /// 已定型的 promise 再次 reject/resolve 为 no-op（JS 语义）。
+    pub(crate) fn reject_promise(
+        &mut self,
+        promise: aluka_core::ObjectRef,
+        value: Value,
+    ) -> Result<(), VmError> {
+        let handlers = {
+            let Some(HeapObject::Promise {
+                pending,
+                value: slot,
+                is_rejected,
+                rejected,
+                ..
+            }) = self.heap.get_mut(promise.index())
+            else {
+                return Ok(());
+            };
+            if !*pending {
+                return Ok(());
+            }
+            *pending = false;
+            *is_rejected = true;
+            *slot = value;
+            std::mem::take(rejected)
+        };
+        for handler in handlers {
+            self.microtask_queue
+                .push_back(crate::builtins::Job::Call(handler, value));
+        }
+        if let Some(resume) = self.promise_resumes.remove(&promise.0) {
+            self.microtask_queue
+                .push_back(crate::builtins::Job::ResumeFrameRejected(resume));
         }
         Ok(())
     }

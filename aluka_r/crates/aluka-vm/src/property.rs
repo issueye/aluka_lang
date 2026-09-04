@@ -60,6 +60,49 @@ impl Vm {
         if key == "nextTick" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
             return Ok(Value::Object(self.alloc_native_fn("nextTick")));
         }
+        // 闭包函数：`name` / `length` 读模板元数据（Go 前端编译产物携带函数名）
+        if let Value::Object(r) = obj {
+            let fn_meta = match self.heap.get(r.0 as usize) {
+                Some(HeapObject::Closure { func_idx, .. }) => self
+                    .module_functions
+                    .get(*func_idx)
+                    .map(|t| (t.name.clone(), t.num_params)),
+                _ => None,
+            };
+            if let Some((name, num_params)) = fn_meta {
+                if key == "name" {
+                    return Ok(Value::Object(self.alloc_string(name)));
+                }
+                if key == "length" {
+                    return Ok(Value::Number(num_params as f64));
+                }
+            }
+        }
+        // 字符串接收者：`length` 与数字下标访问（原型方法由 CALL_METHOD 链求值）
+        if let Value::Object(r) = obj {
+            let str_len = match self.heap.get(r.0 as usize) {
+                Some(HeapObject::String(text)) => Some(text.chars().count()),
+                _ => None,
+            };
+            if let Some(len) = str_len {
+                if key == "length" {
+                    return Ok(Value::Number(len as f64));
+                }
+                if let Ok(i) = key.parse::<usize>() {
+                    if i < len {
+                        if let Some(HeapObject::String(text)) = self.heap.get(r.0 as usize) {
+                            let ch = text
+                                .chars()
+                                .nth(i)
+                                .map(|c| c.to_string())
+                                .unwrap_or_default();
+                            return Ok(Value::Object(self.alloc_string(ch)));
+                        }
+                    }
+                    return Ok(Value::Undefined);
+                }
+            }
+        }
         let mut cur = obj;
         let mut depth = 0;
         while let Value::Object(r) = cur {

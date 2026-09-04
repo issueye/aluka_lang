@@ -480,6 +480,23 @@ impl Vm {
                 let f = self.alloc_native_fn("queueMicrotask");
                 Value::Object(f)
             }
+            "String" => {
+                let f = self.alloc_native_fn("String");
+                Value::Object(f)
+            }
+            "Symbol" => {
+                let f = self.alloc_native_fn("Symbol");
+                Value::Object(f)
+            }
+            "JSON" => {
+                // JSON 全局对象：stringify（parse 未实现，不注册以免误报可调用）
+                let obj = self.alloc_ordinary();
+                let _ = self.set_property(Value::Object(obj), "_isJSON", Value::Boolean(true));
+                let stringify = self.alloc_native_fn("JSON.stringify");
+                let _ =
+                    self.set_property(Value::Object(obj), "stringify", Value::Object(stringify));
+                Value::Object(obj)
+            }
             "require" => self
                 .require_fn
                 .map(Value::Object)
@@ -658,6 +675,24 @@ impl Vm {
             val,
             Value::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Readable { .. }))
+        )
+    }
+
+    /// 判断值是否为数组对象。
+    pub(crate) fn is_array_value(&self, val: Value) -> bool {
+        matches!(
+            val,
+            Value::Object(r)
+                if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Array { .. }))
+        )
+    }
+
+    /// 判断值是否为堆字符串对象。
+    pub(crate) fn is_string_value(&self, val: Value) -> bool {
+        matches!(
+            val,
+            Value::Object(r)
+                if matches!(self.heap.get(r.0 as usize), Some(HeapObject::String(_)))
         )
     }
 
@@ -1133,6 +1168,80 @@ impl Vm {
                         };
                         let result = self.drive_generator(gen_ref, Some(injected))?;
                         self.stack.push(result);
+                    } else if method_name == "next" && self.is_array_iterator(receiver) {
+                        // 数组迭代协议（for...of）：产出 { value, done } 结果对象
+                        let iter_ref = match receiver {
+                            Value::Object(r) => r,
+                            _ => unreachable!("is_array_iterator 已确认 receiver 是对象"),
+                        };
+                        let result = self.array_iterator_next(iter_ref)?;
+                        self.stack.push(result);
+                    } else if self.is_string_value(receiver) {
+                        // 字符串原型方法：trim/indexOf/slice 等在链上直接求值
+                        let text = match &receiver {
+                            Value::Object(r) => match self.heap.get(r.0 as usize) {
+                                Some(HeapObject::String(t)) => t.clone(),
+                                _ => String::new(),
+                            },
+                            _ => String::new(),
+                        };
+                        match self.call_string_method(&method_name, &args, &text) {
+                            Some(Ok(v)) => self.stack.push(v),
+                            Some(Err(e)) => return Err(e),
+                            None => {
+                                let msg = self.alloc_string(format!(
+                                    "TypeError: {}.{} is not a function",
+                                    text, method_name
+                                ));
+                                return Err(VmError::Thrown(Value::Object(msg)));
+                            }
+                        }
+                    } else if method_name == "isArray"
+                        && self
+                            .array_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Array.isArray(v)
+                        let is_arr = args
+                            .first()
+                            .copied()
+                            .map(|v| self.is_array_value(v))
+                            .unwrap_or(false);
+                        self.stack.push(Value::Boolean(is_arr));
+                    } else if method_name == "keys"
+                        && self
+                            .object_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Object.keys(obj)：自有可枚举键（数组为下标键；
+                        // 字典序输出保证确定性）
+                        let mut keys: Vec<String> = match args.first() {
+                            Some(Value::Object(r)) => match self.heap.get(r.0 as usize) {
+                                Some(HeapObject::Ordinary { properties, .. }) => {
+                                    properties.keys().cloned().collect()
+                                }
+                                Some(HeapObject::Array { elements, .. }) => {
+                                    (0..elements.len()).map(|i| i.to_string()).collect()
+                                }
+                                _ => Vec::new(),
+                            },
+                            _ => Vec::new(),
+                        };
+                        keys.sort();
+                        let elems: Vec<Value> = keys
+                            .into_iter()
+                            .map(|k| {
+                                let s = self.alloc_string(k);
+                                Value::Object(s)
+                            })
+                            .collect();
+                        let arr = self.alloc_array(elems);
+                        self.stack.push(Value::Object(arr));
+                    } else if method_name == "stringify" && self.is_json_object(receiver) {
+                        // JSON.stringify(value)（成员调用形态）
+                        let v = args.first().copied().unwrap_or(Value::Undefined);
+                        let out = self.json_stringify(v)?;
+                        self.stack.push(out);
                     } else if matches!(
                         method_name.as_str(),
                         "readFileSync" | "writeFileSync" | "existsSync"
@@ -1208,30 +1317,53 @@ impl Vm {
                         // 本引擎无 reject 语义，fulfilled 完成不触发 catch）
                         if let Value::Object(rr) = receiver {
                             let cb = args.first().copied().unwrap_or(Value::Undefined);
-                            let is_pending = matches!(
-                                self.heap.get(rr.0 as usize),
-                                Some(HeapObject::Promise { pending: true, .. })
-                            );
-                            if is_pending {
-                                if method_name == "then" {
-                                    if let Some(HeapObject::Promise { handlers, .. }) =
-                                        self.heap.get_mut(rr.0 as usize)
+                            // then(onF, onR) 的第二参数：rejected 处理器
+                            let on_rejected = if method_name == "then" {
+                                args.get(1).copied().unwrap_or(Value::Undefined)
+                            } else {
+                                Value::Undefined
+                            };
+                            let state = match self.heap.get(rr.0 as usize) {
+                                Some(HeapObject::Promise {
+                                    pending,
+                                    value,
+                                    is_rejected,
+                                    ..
+                                }) => Some((*pending, *value, *is_rejected)),
+                                _ => None,
+                            };
+                            if let Some((pending, value, is_rejected)) = state {
+                                if pending {
+                                    if let Some(HeapObject::Promise {
+                                        handlers, rejected, ..
+                                    }) = self.heap.get_mut(rr.0 as usize)
                                     {
-                                        handlers.push(cb);
+                                        if method_name == "then" {
+                                            handlers.push(cb);
+                                            if !matches!(on_rejected, Value::Undefined) {
+                                                rejected.push(on_rejected);
+                                            }
+                                        } else {
+                                            // catch：只在 reject 时调度（fulfill 不触发）
+                                            rejected.push(cb);
+                                        }
                                     }
-                                } else if let Some(HeapObject::Promise { rejected, .. }) =
-                                    self.heap.get_mut(rr.0 as usize)
-                                {
-                                    // catch：只在 reject 时调度（fulfill 不触发）
-                                    rejected.push(cb);
+                                } else if is_rejected {
+                                    // 已拒绝：then 的 onR / catch 的 cb 立即调度
+                                    let handler = if method_name == "catch" {
+                                        cb
+                                    } else {
+                                        on_rejected
+                                    };
+                                    if !matches!(handler, Value::Undefined) {
+                                        self.microtask_queue
+                                            .push_back(crate::builtins::Job::Call(handler, value));
+                                    }
+                                } else if method_name == "then" {
+                                    // 已兑现：onF 立即调度
+                                    self.microtask_queue
+                                        .push_back(crate::builtins::Job::Call(cb, value));
                                 }
-                            } else if method_name == "then" {
-                                let value = match self.heap.get(rr.0 as usize) {
-                                    Some(HeapObject::Promise { value, .. }) => *value,
-                                    _ => Value::Undefined,
-                                };
-                                self.microtask_queue
-                                    .push_back(crate::builtins::Job::Call(cb, value));
                             }
                         }
                         self.stack.push(receiver);
@@ -1243,6 +1375,15 @@ impl Vm {
                         // Promise.resolve(v)：直接完成
                         let value = args.first().copied().unwrap_or(Value::Undefined);
                         let p = self.alloc_fulfilled_promise(value);
+                        self.stack.push(Value::Object(p));
+                    } else if method_name == "reject"
+                        && self
+                            .promise_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Promise.reject(reason)：直接拒绝
+                        let reason = args.first().copied().unwrap_or(Value::Undefined);
+                        let p = self.alloc_rejected_promise(reason);
                         self.stack.push(Value::Object(p));
                     } else if method_name == "withResolvers"
                         && self
@@ -2043,14 +2184,47 @@ impl Vm {
                         let spec = args.first().copied().unwrap_or(Value::Undefined);
                         let exports = self.call_require(spec)?;
                         self.stack.push(exports);
+                    } else if self.is_native_fn(callee, "String") {
+                        // String(value)：全局字符串转换
+                        let v = args.first().copied().unwrap_or(Value::Undefined);
+                        let s = self.alloc_string(self.format_value(v));
+                        self.stack.push(Value::Object(s));
+                    } else if self.is_native_fn(callee, "JSON.stringify") {
+                        let v = args.first().copied().unwrap_or(Value::Undefined);
+                        let out = self.json_stringify(v)?;
+                        self.stack.push(out);
+                    } else if self.is_native_fn(callee, "Symbol") {
+                        // Symbol(description)：无 Symbol 值类型，以描述对象近似
+                        // （typeof 为 "object"；描述访问经 description 属性）
+                        let obj = self.alloc_ordinary();
+                        if let Some(v) = args.first() {
+                            if !matches!(v, Value::Undefined) {
+                                let d = self.alloc_string(self.format_value(*v));
+                                let _ = self.set_property(
+                                    Value::Object(obj),
+                                    "description",
+                                    Value::Object(d),
+                                );
+                            }
+                        }
+                        self.stack.push(Value::Object(obj));
                     } else if let Value::Object(r) = callee {
                         let callee_ref = r.0 as usize;
-                        if let Some(HeapObject::PromiseResolver { promise, .. }) =
-                            self.heap.get(callee_ref)
-                        {
-                            // resolve(value)/reject：fulfill 目标 promise 并调度处理器
+                        let resolver = match self.heap.get(callee_ref) {
+                            Some(HeapObject::PromiseResolver { promise, resolve }) => {
+                                Some((*promise, *resolve))
+                            }
+                            _ => None,
+                        };
+                        if let Some((promise, resolve)) = resolver {
+                            // resolve(value)/reject(reason)：按解析器标志兑现/拒绝
+                            // 目标 promise 并调度处理器
                             let value = args.first().copied().unwrap_or(Value::Undefined);
-                            self.fulfill_promise(*promise, value)?;
+                            if resolve {
+                                self.fulfill_promise(promise, value)?;
+                            } else {
+                                self.reject_promise(promise, value)?;
+                            }
                             self.stack.push(Value::Undefined);
                         } else if self.is_native_fn(Value::Object(r), "setTimeout")
                             || self.is_native_fn(Value::Object(r), "setInterval")
@@ -2652,8 +2826,16 @@ impl Vm {
                             Some(HeapObject::Promise {
                                 pending: false,
                                 value,
+                                is_rejected,
                                 ..
-                            }) => Some(*value),
+                            }) => {
+                                if *is_rejected {
+                                    // await 已拒绝的 promise：以拒绝原因在当前帧抛出
+                                    // （帧内 try/catch 经正常异常路径接住）
+                                    return Err(VmError::Thrown(*value));
+                                }
+                                Some(*value)
+                            }
                             Some(HeapObject::Promise { pending: true, .. }) => {
                                 // 真异步挂起：记录恢复点并以 Awaited 信号上抛，
                                 // 由 async 驱动层捕获后挂起整帧（M2 事件循环模型）
@@ -2674,6 +2856,14 @@ impl Vm {
                     if self.is_generator_obj(val) || self.is_readable_obj(val) {
                         // 生成器对象自身即（async）迭代器
                         self.stack.push(val);
+                    } else if self.is_array_value(val) {
+                        // 数组：物化下标迭代器（`for...of` / `for await...of` 共用）
+                        if let Value::Object(arr) = val {
+                            let it = self.alloc_array_iterator(arr);
+                            self.stack.push(it);
+                        } else {
+                            self.stack.push(val);
+                        }
                     } else {
                         let msg = self.alloc_string("TypeError: value is not iterable".to_owned());
                         return Err(VmError::Thrown(Value::Object(msg)));

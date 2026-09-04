@@ -5,14 +5,12 @@
 //!   Network/NetworkResources，空实现）；
 //! - `Session`：EventEmitter 实例；`connect` / `disconnect` /
 //!   `connectToMainThread` 空实现；`post(method[, params])` 返回 Promise——
-//!   Go 以 `reject(err 字符串)` 结算；本引擎 Promise 无 reject 语义，照
-//!   fs_promises 通路以该字符串结算（见文件尾「已知偏离」）；
+//!   Go 以 `reject(err 字符串)` 结算；`post` 使用 reject 解析器
+//!   （`resolve: false`），随引擎 rejection 语义落地为真实拒绝；
 //! - Node 22 中该模块仅导出 Session 类 + 同 inspector 的管理 API。
 //!
-//! 已知偏离（引擎能力边界，非语义裁量）：本 VM 的 Promise 只有 fulfill 通路
-//! （`microtask.fulfill_promise`），不存在 rejection 分支，`post()` 的
-//! Promise 以错误字符串 fulfill 结算。Go 侧 `await post()` 走 catch 分支、
-//! Rust 侧走正常恢复——探针以 try/catch 包裹 await 时两侧输出一致。
+//! 注：早期版本引擎只有 fulfill 通路，`post()` 曾以错误字符串 fulfill 结算；
+//! 引擎补齐 rejection 后该偏离已消除（`await post()` 在两侧均走 catch 分支）。
 
 use crate::builtins::{
     BuiltinHandler, BuiltinRegistry, ModuleDef, register_handler, set_module_prop,

@@ -13,7 +13,8 @@
 //! 其余记录类型（CNAME/MX/NS/PTR/SRV/TXT 等）std 不提供递归解析，按 Go
 //! oracle 对确定性输入（localhost）的实测输出形态返回空数组/空对象。
 //!
-//! 已知限制：本引擎 Promise 无 reject 语义，Go 中 reject ENOTFOUND 的路径
+//! 实现说明：ENOTFOUND 路径已随引擎 rejection 语义落地改为真实 Promise 拒绝
+//! （原注「本引擎无 reject 语义」已过时；lookup/lookupService 走 reject 解析器）
 //! 以错误对象兑现（探针只覆盖成功路径）。
 //!
 //! 异步时序：解析同步完成后经 [`DNS_PENDING`] 队列由 `activate_event_source
@@ -403,7 +404,7 @@ fn promises_lookup(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     let hostname = vm.format_value(arg);
     let (promise, resolver) = alloc_resolver(vm);
-    let result = match lookup_host_addrs(&hostname) {
+    match lookup_host_addrs(&hostname) {
         Some(addrs) if !addrs.is_empty() => {
             let o = vm.alloc_ordinary();
             let s_alloc0 = vm.alloc_string(addrs[0].clone());
@@ -413,11 +414,15 @@ fn promises_lookup(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 "family",
                 Value::Number(ip_family(&addrs[0])),
             );
-            Value::Object(o)
+            enqueue_dns(vm, resolver, vec![Value::Object(o)]);
         }
-        _ => make_dns_error(vm, "ENOTFOUND", &hostname),
-    };
-    enqueue_dns(vm, resolver, vec![result]);
+        _ => {
+            // ENOTFOUND：Promise 拒绝（Go 语义；引擎已支持 rejection）
+            let reject = vm.alloc_promise_resolver(promise, false);
+            let err = make_dns_error(vm, "ENOTFOUND", &hostname);
+            enqueue_dns(vm, Value::Object(reject), vec![err]);
+        }
+    }
     Ok(Value::Object(promise))
 }
 
@@ -430,18 +435,20 @@ fn promises_lookup_service(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
     let address = vm.format_value(address_arg);
     let port = vm.format_value(port_arg);
     let (promise, resolver) = alloc_resolver(vm);
-    let result = if address.parse::<IpAddr>().is_ok() {
+    if address.parse::<IpAddr>().is_ok() {
         // 反向 PTR 记录 std 不可得：hostname 置空串（服务名映射与 Go 一致）。
         let o = vm.alloc_ordinary();
         let s_alloc0 = vm.alloc_string(String::new());
         let _ = vm.set_property(Value::Object(o), "hostname", Value::Object(s_alloc0));
         let s_alloc0 = vm.alloc_string(port_service_name(&port));
         let _ = vm.set_property(Value::Object(o), "service", Value::Object(s_alloc0));
-        Value::Object(o)
+        enqueue_dns(vm, resolver, vec![Value::Object(o)]);
     } else {
-        make_dns_error(vm, "ENOTFOUND", &address)
-    };
-    enqueue_dns(vm, resolver, vec![result]);
+        // ENOTFOUND：Promise 拒绝（Go 语义；引擎已支持 rejection）
+        let reject = vm.alloc_promise_resolver(promise, false);
+        let err = make_dns_error(vm, "ENOTFOUND", &address);
+        enqueue_dns(vm, Value::Object(reject), vec![err]);
+    }
     Ok(Value::Object(promise))
 }
 

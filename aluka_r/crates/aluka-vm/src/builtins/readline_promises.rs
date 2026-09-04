@@ -10,13 +10,14 @@
 //!   的 Promise）/ `rollback` / `clearLine` / `clearScreenDown` / `cursorTo` /
 //!   `moveCursor`（no-op）。
 //!
-//! 已知限制：Rust VM 的 Promise 机制暂无 rejection 状态，`'error'` 路径以兑现
-//! 错误文本近似（Go 观测的拒绝语义无法逐字呈现，见汇报）。
+//! 实现说明：`'error'` 路径已随引擎 rejection 语义落地改为真实 Promise 拒绝
+//! （原注「暂无 rejection 状态、以兑现近似」已过时）。
 
 use crate::builtins::events::create_emitter_instance;
 use crate::builtins::{
     BuiltinRegistry, ModuleDef, current_receiver, register_handler, set_module_prop,
 };
+use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
@@ -376,8 +377,8 @@ fn stream_on_end(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     settle_all(vm, to_settle)
 }
 
-/// `'error'` 事件：以错误文本近似兑现全部等待者（Rust Promise 机制暂无
-/// rejection 状态，见模块头说明）。
+/// `'error'` 事件：以错误文本**拒绝**全部等待者（引擎已支持 rejection，
+/// 对齐 Go 的 reject(err) 语义）。
 fn stream_on_error(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
     let Value::Object(r) = receiver else {
@@ -387,17 +388,25 @@ fn stream_on_error(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .first()
         .map(|v| vm.format_value(*v))
         .unwrap_or_else(|| "readline error".to_owned());
-    let to_settle: Vec<(ObjectRef, String)> = with_map(&CHANNELS, |m| {
+    let to_reject: Vec<ObjectRef> = with_map(&CHANNELS, |m| {
         let Some(ch) = m.get_mut(&r.0) else {
             return Vec::new();
         };
         let mut done = Vec::new();
         while let Some(w) = ch.waiters.pop() {
-            done.push((w.resolver, msg.clone()));
+            done.push(w.resolver);
         }
         done
     });
-    settle_all(vm, to_settle)
+    for resolver in to_reject {
+        let promise = match vm.heap.get(resolver.0 as usize) {
+            Some(HeapObject::PromiseResolver { promise, .. }) => *promise,
+            _ => continue,
+        };
+        let err_val = Value::Object(vm.alloc_string(msg.clone()));
+        vm.reject_promise(promise, err_val)?;
+    }
+    Ok(Value::Undefined)
 }
 
 /// 批量兑现等待者：兑现器入微任务队列（对齐 Go 的任务边界——当前同步执行

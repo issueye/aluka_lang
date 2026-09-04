@@ -29,15 +29,24 @@ impl Vm {
         args: &[Value],
     ) -> Result<Value, VmError> {
         if let Value::Object(r) = callee {
-            if let Some(HeapObject::PromiseResolver { promise, .. }) = self.heap.get(r.0 as usize) {
-                let p = *promise;
+            let resolver = match self.heap.get(r.0 as usize) {
+                Some(HeapObject::PromiseResolver { promise, resolve }) => {
+                    Some((*promise, *resolve))
+                }
+                _ => None,
+            };
+            if let Some((promise, resolve)) = resolver {
                 let val = match args.first() {
                     Some(v) if !matches!(v, Value::Undefined) => *v,
                     _ => {
                         crate::builtins::timers::take_resolver_val(r.0).unwrap_or(Value::Undefined)
                     }
                 };
-                self.fulfill_promise(p, val)?;
+                if resolve {
+                    self.fulfill_promise(promise, val)?;
+                } else {
+                    self.reject_promise(promise, val)?;
+                }
                 return Ok(Value::Undefined);
             }
             if let Some(HeapObject::NativeFn { name }) = self.heap.get(r.0 as usize).cloned() {
@@ -72,6 +81,29 @@ impl Vm {
                             Some(v) => self.format_value(*v),
                         };
                         return Ok(Value::Object(self.alloc_error_instance(&message)));
+                    }
+                    "Promise" => {
+                        // new Promise(executor)：创建 pending promise，以
+                        // (resolve, reject) 解析器对调用执行器；执行器同步抛错
+                        // 则该 promise 以异常拒绝（JS 语义）
+                        let promise = self.alloc_pending_promise();
+                        let resolve = self.alloc_promise_resolver(promise, true);
+                        let reject = self.alloc_promise_resolver(promise, false);
+                        let executor = args.first().copied().unwrap_or(Value::Undefined);
+                        let (f_idx, uvs) = self.resolve_callable(executor);
+                        let call_ret = match f_idx {
+                            Some(fi) => self.invoke_function(
+                                fi,
+                                Value::Undefined,
+                                &[Value::Object(resolve), Value::Object(reject)],
+                                uvs,
+                            ),
+                            None => Ok(Value::Undefined),
+                        };
+                        if let Err(VmError::Thrown(exc)) = call_ret {
+                            self.reject_promise(promise, exc)?;
+                        }
+                        return Ok(Value::Object(promise));
                     }
                     "Array" => return Ok(Value::Object(self.alloc_array(Vec::new()))),
                     "Object" => return Ok(Value::Object(self.alloc_ordinary())),
