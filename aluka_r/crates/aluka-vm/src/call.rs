@@ -364,13 +364,23 @@ impl Vm {
             }
         }
         // 顶层收口：事件循环——微任务（nextTick/Promise）与宏任务（定时器）
-        // 交替排空直到两者皆空（宏任务兑现 Promise 会追加微任务/恢复挂起帧）
+        // 交替排空直到两者皆空（宏任务兑现 Promise 会追加微任务/恢复挂起帧；
+        // 活跃内置库事件源在宏任务排空末尾泵询，有进展则继续循环）
+        let loop_started = std::time::Instant::now();
         loop {
             self.drain_microtasks()?;
-            if self.macro_tasks.is_empty() {
+            if self.macro_tasks.is_empty() && !self.has_active_event_sources() {
                 break;
             }
-            self.drain_macro_tasks()?;
+            let progressed = self.drain_macro_tasks()?;
+            if self.macro_tasks.is_empty() && !progressed {
+                // 事件源活跃但本轮无进展：稍候再泵（泵实现内部可阻塞等待）；
+                // 超时保护防止事件永不达成时挂死
+                if loop_started.elapsed() > std::time::Duration::from_secs(120) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
         }
         Ok(ret)
     }

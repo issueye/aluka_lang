@@ -29,7 +29,7 @@ pub const MODULE: ModuleDef = ModuleDef {
 
 /// `util.types` 子模块（与主模块共享 build 期创建的 types 对象）。
 pub const TYPES_MODULE: ModuleDef = ModuleDef {
-    name: "util.types",
+    name: "util/types",
     build: build_types,
 };
 
@@ -57,10 +57,10 @@ fn build_types(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef,
         let msg = vm.alloc_string("util.types: types 属性缺失".to_owned());
         return Err(VmError::Thrown(Value::Object(msg)));
     };
-    register_handler(registry, "util.types", "isArray", is_array);
-    register_handler(registry, "util.types", "isString", is_string);
-    register_handler(registry, "util.types", "isNumber", is_number);
-    register_handler(registry, "util.types", "isObject", is_object);
+    register_handler(registry, "util/types", "isArray", is_array);
+    register_handler(registry, "util/types", "isString", is_string);
+    register_handler(registry, "util/types", "isNumber", is_number);
+    register_handler(registry, "util/types", "isObject", is_object);
     Ok(types)
 }
 

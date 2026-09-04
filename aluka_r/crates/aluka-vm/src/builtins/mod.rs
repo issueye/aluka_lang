@@ -14,22 +14,55 @@
 
 pub mod assert;
 pub mod assert_strict;
+pub mod async_hooks;
 pub mod buffer;
+pub mod child_process;
+pub mod cluster;
 pub mod constants;
+pub mod crypto;
+pub mod dgram;
+pub mod diagnostics_channel;
+pub mod dns;
+pub mod dns_promises;
+pub mod domain;
 pub mod events;
 pub mod fs;
 pub mod fs_promises;
+pub mod http;
+pub mod http2;
+pub mod https;
+pub mod inspector;
+pub mod inspector_promises;
+pub mod markdown;
+pub mod module;
+pub mod net;
 pub mod os;
 pub mod path_posix;
 pub mod path_win32;
 pub mod perf_hooks;
+pub mod punycode;
 pub mod querystring;
+pub mod readline;
+pub mod readline_promises;
+pub mod repl;
+pub mod require_aliases;
+pub mod sqlite;
 pub mod stream;
+pub mod stream_web;
 pub mod string_decoder;
 pub mod sys;
+pub mod test;
+pub mod test_reporters;
 pub mod timers;
+pub mod tls;
+pub mod trace_events;
+pub mod tty;
 pub mod util;
 pub mod v8;
+pub mod vm;
+pub mod wasi;
+pub mod worker_threads;
+pub mod zlib;
 
 pub(crate) use crate::microtask::{Job, PendingResume};
 
@@ -42,6 +75,61 @@ use std::collections::HashMap;
 
 thread_local! {
     static CURRENT_RECEIVER: RefCell<Value> = const { RefCell::new(Value::Undefined) };
+}
+
+/// 内置库事件源泵签名：轮询一次 I/O 事件源（socket / 子进程 / 线程消息等），
+/// 返回 `Ok(true)` 表示本轮有进展（派发了回调 / 产生了事件），事件循环据此
+/// 决定是否继续泵询。
+pub type EventSourcePump = fn(&mut Vm) -> Result<bool, VmError>;
+
+impl Vm {
+    /// 注册并激活内置库事件源（随 `Vm` 实例生命周期，不跨运行泄漏）；
+    /// 同名重复注册幂等（更新泵函数并保持活跃）。
+    pub fn activate_event_source(&mut self, name: &'static str, pump: EventSourcePump) {
+        if let Some(entry) = self.event_sources.iter_mut().find(|(n, _)| *n == name) {
+            entry.1 = pump;
+        } else {
+            self.event_sources.push((name, pump));
+        }
+    }
+
+    /// 注销事件源：如 `server.close()` 后调用，事件循环不再为其泵询。
+    pub fn deactivate_event_source(&mut self, name: &str) {
+        self.event_sources.retain(|(n, _)| *n != name);
+    }
+
+    /// 是否存在活跃事件源（顶层事件循环据此决定是否继续泵询）。
+    #[must_use]
+    pub fn has_active_event_sources(&self) -> bool {
+        !self.event_sources.is_empty()
+    }
+
+    /// 泵一轮全部活跃事件源；返回是否有任一源报告进展。
+    pub(crate) fn pump_event_sources(&mut self) -> Result<bool, VmError> {
+        let pumps: Vec<EventSourcePump> =
+            self.event_sources.iter().map(|(_, pump)| *pump).collect();
+        let mut progressed = false;
+        for pump in pumps {
+            if pump(self)? {
+                progressed = true;
+            }
+        }
+        Ok(progressed)
+    }
+}
+
+/// 读取实例对象上的 `_builtinNs` 命名空间标记（堆字符串），用于通用实例分派：
+/// 内置库的动态实例（如 `crypto` 的 Hash 实例）把 `_builtinNs` 设为
+/// `"crypto:hash"` 之类的命名空间串，`CALL_METHOD` 即按 `"{ns}.{method}"`
+/// 查分派表，无需修改 [`try_dispatch`]。
+fn builtin_ns(vm: &Vm, properties: &HashMap<String, Value>) -> Option<String> {
+    match properties.get("_builtinNs")? {
+        Value::Object(s) => match vm.heap.get(s.index()) {
+            Some(HeapObject::String(text)) => Some(text.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// 设置当前分派调用的接收者（this）。
@@ -109,6 +197,43 @@ macro_rules! builtin_modules {
             crate::builtins::stream::MODULE,
             crate::builtins::stream::PROMISES_MODULE,
             crate::builtins::stream::CONSUMERS_MODULE,
+            crate::builtins::zlib::MODULE,
+            crate::builtins::stream_web::MODULE,
+            crate::builtins::crypto::MODULE,
+            crate::builtins::child_process::MODULE,
+            crate::builtins::worker_threads::MODULE,
+            crate::builtins::cluster::MODULE,
+            crate::builtins::vm::MODULE,
+            crate::builtins::module::MODULE,
+            crate::builtins::module::MODULE_CLASS,
+            crate::builtins::trace_events::MODULE,
+            crate::builtins::readline::MODULE,
+            crate::builtins::readline_promises::MODULE,
+            crate::builtins::repl::MODULE,
+            crate::builtins::tty::MODULE,
+            crate::builtins::sqlite::MODULE,
+            crate::builtins::punycode::MODULE,
+            crate::builtins::wasi::MODULE,
+            crate::builtins::test::MODULE,
+            crate::builtins::test_reporters::MODULE,
+            crate::builtins::markdown::MODULE,
+            crate::builtins::markdown::ALUKA_MODULE,
+            crate::builtins::diagnostics_channel::MODULE,
+            crate::builtins::async_hooks::MODULE,
+            crate::builtins::inspector::MODULE,
+            crate::builtins::inspector_promises::MODULE,
+            crate::builtins::domain::MODULE,
+            crate::builtins::http::MODULE,
+            crate::builtins::https::MODULE,
+            crate::builtins::http2::MODULE,
+            crate::builtins::net::MODULE,
+            crate::builtins::dns::MODULE,
+            crate::builtins::dns_promises::MODULE,
+            crate::builtins::dgram::MODULE,
+            crate::builtins::tls::MODULE,
+            crate::builtins::require_aliases::PROCESS_MODULE,
+            crate::builtins::require_aliases::CONSOLE_MODULE,
+            crate::builtins::require_aliases::URL_MODULE,
         ]
     };
 }
@@ -227,7 +352,9 @@ pub fn try_dispatch(
                     }) => p_props.contains_key("_isStream"),
                     _ => false,
                 });
-            if properties.contains_key("_isBuffer") {
+            if let Some(ns) = builtin_ns(vm, properties) {
+                format!("{ns}.{method}")
+            } else if properties.contains_key("_isBuffer") {
                 format!("buffer:instance.{method}")
             } else if is_ee {
                 format!("events:instance.{method}")

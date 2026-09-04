@@ -136,11 +136,14 @@ impl Vm {
 
     /// 排空宏任务（`setTimeout`/`setInterval`）：按**到期时间**升序执行
     /// （同批注册的定时器按注册顺序，周期任务到期后重排 `due += delay`）。
-    /// 已 clear 的句柄跳过。
-    pub(crate) fn drain_macro_tasks(&mut self) -> Result<(), VmError> {
+    /// 已 clear 的句柄跳过。末尾泵一轮内置库事件源（net/http/child_process
+    /// 等注册的 I/O 泵），返回「本轮是否执行了定时器或事件泵有进展」——
+    /// 顶层事件循环据此决定是否继续交替排空。
+    pub(crate) fn drain_macro_tasks(&mut self) -> Result<bool, VmError> {
         // 收集全部任务，反复取「到期最早」的执行（用例规模小，线性扫描足够）
         let mut tasks: Vec<(u64, u64, u64, Value, bool)> = self.macro_tasks.drain(..).collect();
         let mut now = 0u64;
+        let mut ran_timer = false;
         loop {
             let mut best: Option<(usize, u64)> = None;
             for (i, (_, due, _, _, _)) in tasks.iter().enumerate() {
@@ -158,11 +161,15 @@ impl Vm {
                 continue;
             }
             self.invoke_callable(cb, Value::Undefined, &[])?;
+            ran_timer = true;
             if repeating && !self.active_timers.contains(&id) {
                 tasks.push((id, due + delay_ms, delay_ms, cb, true));
             }
         }
-        Ok(())
+        // 内置库事件源泵：宏任务排空后轮询 I/O 事件源，有进展则告知调用方
+        // 继续交替排空（事件回调可能追加微任务 / 宏任务）。
+        let pumped = self.pump_event_sources()?;
+        Ok(ran_timer || pumped)
     }
 
     /// Promise fulfill：设定值与处理器，把全部处理器调度进微任务队列。

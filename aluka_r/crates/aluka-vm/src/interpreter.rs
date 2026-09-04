@@ -130,6 +130,8 @@ pub struct Vm {
     pub events_module: Option<ObjectRef>,
     /// 内置库注册表（querystring/constants 等并行开发模块的分派表）
     pub(crate) builtin_registry: crate::builtins::BuiltinRegistry,
+    /// 内置库活跃事件源表（net/http/child_process 等 I/O 泵；随 Vm 生命周期）
+    pub(crate) event_sources: Vec<(&'static str, crate::builtins::EventSourcePump)>,
     /// 挂起 async 帧的恢复登记：promise 句柄索引 → 恢复帧
     pub(crate) promise_resumes: HashMap<u32, crate::builtins::PendingResume>,
     /// 生成器对象注册表（堆句柄索引 → 执行状态）
@@ -183,6 +185,7 @@ impl Vm {
             stream_module: None,
             events_module: None,
             builtin_registry: std::default::Default::default(),
+            event_sources: Vec::new(),
             promise_resumes: HashMap::new(),
             module_exports: HashMap::new(),
             base_dir: None,

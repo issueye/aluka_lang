@@ -101,6 +101,21 @@ pub fn create_buffer_instance(vm: &mut Vm, data: Vec<u8>) -> ObjectRef {
     obj
 }
 
+/// 用新字节内容**原地覆盖**既有 Buffer 实例（长度不变；供 `randomFillSync`
+/// 等「填充进既有缓冲」的内置库使用，保证 `toString`/索引读到新值）。
+pub fn overwrite_buffer_instance(vm: &mut Vm, obj: ObjectRef, data: &[u8]) -> bool {
+    // 仅认真实 Buffer 实例
+    let known = get_buffer(obj.0).is_some();
+    if !known {
+        return false;
+    }
+    store_buffer(obj.0, data.to_vec());
+    for (i, b) in data.iter().enumerate() {
+        let _ = vm.set_property(Value::Object(obj), &i.to_string(), Value::Number(*b as f64));
+    }
+    true
+}
+
 /// `require("buffer")` / `require("node:buffer")` 主模块。
 pub const MODULE: ModuleDef = ModuleDef {
     name: "buffer",

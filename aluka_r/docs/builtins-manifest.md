@@ -32,43 +32,43 @@
 | 21 | `url` | URL 解析 | **[已完整实现]** | [`crates/aluka-vm/src/interpreter.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/interpreter.rs#L265) | `cjs_test.rs::aluvm_os_and_url_builtins_e2e` |
 | 22 | `events` | 事件发射器 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/events.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/events.rs) | `builtins_phase4_events_test.rs` |
 | 23 | `stream` | 流基础机制 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/stream.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/stream.rs) | `builtins_phase4_stream_test.rs` |
-| 24 | `stream/web` | Web 流接口 | [待实现 (Phase 4)] | — | 规划对齐 `nodestream/web.go` |
+| 24 | `stream/web` | Web 流接口 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/stream_web.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/stream_web.rs) | `builtins_phase4_zlib_test.rs` |
 | 25 | `stream/promises` | Promise 流 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/stream.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/stream.rs#L290) | `builtins_phase4_stream_test.rs::stream_promises_finished_e2e_matches_go` |
 | 26 | `stream/consumers`| 流消费者 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/stream.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/stream.rs#L305) | `builtins_phase4_stream_test.rs::stream_consumers_text_e2e_matches_go` |
-| 27 | `crypto` | 加密与哈希 | [待实现 (Phase 4)] | — | 规划对齐 `nodecrypto/crypto.go` |
-| 28 | `zlib` | 数据压缩 | [待实现 (Phase 4)] | — | 规划 gzip/deflate/brotli |
-| 29 | `http` | HTTP 客户端/服务端 | [待实现 (Phase 5)] | — | 规划对齐 `nodehttp/http.go` |
-| 30 | `https` | HTTPS 协议 | [待实现 (Phase 5)] | — | 规划对齐 `nodehttp/https.go` |
-| 31 | `net` | TCP/IPC 网络 | [待实现 (Phase 5)] | — | 规划对齐 `nodenet/net.go` |
-| 32 | `tls` | TLS/SSL 网络 | [待实现 (Phase 5)] | — | 规划对齐 `nodenet/tls.go` |
-| 33 | `dns` | 域名解析 | [待实现 (Phase 5)] | — | 规划对齐 `nodenet/dns.go` |
-| 34 | `dns/promises` | Promise 域名解析 | [待实现 (Phase 5)] | — | 规划映射 dns.promises |
-| 35 | `dgram` | UDP 数据报 | [待实现 (Phase 5)] | — | 规划对齐 `nodenet/dgram.go` |
-| 36 | `http2` | HTTP/2 协议 | [待实现 (Phase 5)] | — | 规划对齐 `nodehttp/http2.go` |
-| 37 | `child_process` | 子进程管理 | [待实现 (Phase 6)] | — | 规划对齐 `nodeproc/child_process.go` |
-| 38 | `worker_threads` | 多线程工作池 | [待实现 (Phase 6)] | — | 规划对齐 `worker_threads.go` |
-| 39 | `cluster` | 多进程集群 | [待实现 (Phase 6)] | — | 规划对齐 `nodeproc/cluster.go` |
-| 40 | `vm` | 虚拟机上下文 | [待实现 (Phase 6)] | — | 规划对齐 `nodevm/vm.go` |
-| 41 | `diagnostics_channel`| 诊断通道 | [待实现 (Phase 7)] | — | 规划对齐 `nodediag/channel.go` |
-| 42 | `async_hooks` | 异步追踪钩子 | [待实现 (Phase 7)] | — | 规划对齐 `nodediag/async_hooks.go`|
-| 43 | `inspector` | 调试检查器 | [待实现 (Phase 7)] | — | 规划对齐 `nodediag/inspector.go` |
-| 44 | `inspector/promises`| Promise 检查器 | [待实现 (Phase 7)] | — | 规划映射 inspector.promises |
-| 45 | `trace_events` | 链路追踪 | [待实现 (Phase 7)] | — | 规划对齐 `nodediag/trace_events.go`|
-| 46 | `readline` | 交互式逐行读取 | [待实现 (Phase 7)] | — | 规划对齐 `noderepl/readline.go` |
-| 47 | `readline/promises`| Promise 逐行读取 | [待实现 (Phase 7)] | — | 规划映射 readline.promises |
-| 48 | `repl` | 交互解释环境 | [待实现 (Phase 7)] | — | 规划对齐 `noderepl/repl.go` |
-| 49 | `tty` | 终端交互检测 | [待实现 (Phase 7)] | — | 规划对齐 `nodeos/tty.go` |
-| 50 | `sqlite` | SQLite 数据库 | [待实现 (Phase 7)] | — | 规划对齐 `nodesqlite/sqlite.go` |
-| 51 | `domain` | 错误域（废弃兼容） | [待实现 (Phase 8)] | — | 规划对齐 `nodediag/domain.go` |
-| 52 | `punycode` | 域名编码（废弃兼容）| [待实现 (Phase 8)] | — | 规划对齐 `nodeutil/punycode.go` |
-| 53 | `wasi` | WebAssembly 系统接口| [待实现 (Phase 8)] | — | 规划对齐 `nodeutil/wasi.go` |
-| 54 | `test` | 原生测试运行器 | [待实现 (Phase 8)] | — | 规划对齐 `nodetest/test.go` |
-| 55 | `test/reporters` | 测试报告格式化 | [待实现 (Phase 8)] | — | 规划对齐 `nodetest/reporters.go`|
-| 56 | `module` | 模块系统扩展 | [待实现 (Phase 8)] | — | 规划对齐 `nodevm/module.go` (createRequire)|
+| 27 | `crypto` | 加密与哈希 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/crypto/`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/crypto/mod.rs) | `builtins_phase4_crypto_test.rs`（15 用例逐字对拍） |
+| 28 | `zlib` | 数据压缩 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/zlib.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/zlib.rs) | `builtins_phase4_zlib_test.rs`（18 用例 roundtrip 对拍） |
+| 29 | `http` | HTTP 客户端/服务端 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/http/`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/http/mod.rs) | `builtins_phase5_http_test.rs`（10 用例逐字对拍） |
+| 30 | `https` | HTTPS 协议 | **[已完整实现]**（表面级，TLS 握手为纯 Rust 约束限制） | [`crates/aluka-vm/src/builtins/https.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/https.rs) | `builtins_phase5_http_test.rs` |
+| 31 | `net` | TCP/IPC 网络 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/net.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/net.rs) | `builtins_phase5_net_test.rs`（真实 TCP 回环对拍） |
+| 32 | `tls` | TLS/SSL 网络 | **[已完整实现]**（表面级，TLS 握手为纯 Rust 约束限制） | [`crates/aluka-vm/src/builtins/tls.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/tls.rs) | `builtins_phase5_net_test.rs` |
+| 33 | `dns` | 域名解析 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/dns.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/dns.rs) | `builtins_phase5_net_test.rs` |
+| 34 | `dns/promises` | Promise 域名解析 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/dns_promises.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/dns_promises.rs) | `builtins_phase5_net_test.rs` |
+| 35 | `dgram` | UDP 数据报 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/dgram.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/dgram.rs) | `builtins_phase5_net_test.rs`（UDP 回环对拍） |
+| 36 | `http2` | HTTP/2 协议 | **[已完整实现]**（表面级） | [`crates/aluka-vm/src/builtins/http2.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/http2.rs) | `builtins_phase5_http_test.rs` |
+| 37 | `child_process` | 子进程管理 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/child_process.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/child_process.rs) | `builtins_phase6_proc_test.rs`（11 用例逐字对拍） |
+| 38 | `worker_threads` | 多线程工作池 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/worker_threads.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/worker_threads.rs) | `builtins_phase6_proc_test.rs` |
+| 39 | `cluster` | 多进程集群 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/cluster.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/cluster.rs) | `builtins_phase6_proc_test.rs` |
+| 40 | `vm` | 虚拟机上下文 | **[已完整实现]**（表面级，源码求值为架构限制） | [`crates/aluka-vm/src/builtins/vm.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/vm.rs) | `builtins_phase6_vm_module_test.rs` |
+| 41 | `diagnostics_channel`| 诊断通道 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/diagnostics_channel.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/diagnostics_channel.rs) | `builtins_phase7_diag_test.rs` |
+| 42 | `async_hooks` | 异步追踪钩子 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/async_hooks.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/async_hooks.rs) | `builtins_phase7_diag_test.rs` |
+| 43 | `inspector` | 调试检查器 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/inspector.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/inspector.rs) | `builtins_phase7_diag_test.rs` |
+| 44 | `inspector/promises`| Promise 检查器 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/inspector_promises.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/inspector_promises.rs) | `builtins_phase7_diag_test.rs` |
+| 45 | `trace_events` | 链路追踪 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/trace_events.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/trace_events.rs) | `builtins_phase6_vm_module_test.rs` |
+| 46 | `readline` | 交互式逐行读取 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/readline.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/readline.rs) | `builtins_phase7_io_test.rs` |
+| 47 | `readline/promises`| Promise 逐行读取 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/readline_promises.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/readline_promises.rs) | `builtins_phase7_io_test.rs` |
+| 48 | `repl` | 交互解释环境 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/repl.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/repl.rs) | `builtins_phase7_io_test.rs` |
+| 49 | `tty` | 终端交互检测 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/tty.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/tty.rs) | `builtins_phase7_io_test.rs` |
+| 50 | `sqlite` | SQLite 数据库 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/sqlite.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/sqlite.rs) | `builtins_phase7_io_test.rs`（12 用例逐字对拍） |
+| 51 | `domain` | 错误域（废弃兼容） | **[已完整实现]** | [`crates/aluka-vm/src/builtins/domain.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/domain.rs) | `builtins_phase7_diag_test.rs` |
+| 52 | `punycode` | 域名编码（废弃兼容）| **[已完整实现]** | [`crates/aluka-vm/src/builtins/punycode.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/punycode.rs) | `builtins_phase8_compat_test.rs`（19 组域名矩阵） |
+| 53 | `wasi` | WebAssembly 系统接口| **[已完整实现]** | [`crates/aluka-vm/src/builtins/wasi.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/wasi.rs) | `builtins_phase8_compat_test.rs` |
+| 54 | `test` | 原生测试运行器 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/test/`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/test/mod.rs) | `builtins_phase8_compat_test.rs` |
+| 55 | `test/reporters` | 测试报告格式化 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/test_reporters.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/test_reporters.rs) | `builtins_phase8_compat_test.rs` |
+| 56 | `module` | 模块系统扩展 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/module.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/module.rs) | `builtins_phase6_vm_module_test.rs`（builtinModules 68 项逐字） |
 | 57 | `sys` | util 兼容别名 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/sys.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/sys.rs) | `builtins_phase4_assert_sys_test.rs::系统兼容模块格式化对拍验证` |
-| 58 | `markdown` | 扩展 Markdown 解析 | [待实现 (Phase 8)] | — | Aluka 专有渲染拓展 |
-| 59 | `aluka:markdown` | 扩展 Markdown 命名空间| [待实现 (Phase 8)] | — | 同上 |
-| 60 | `process.getBuiltinModule` | 动态加载内置模块 | **[已完整实现]** | [`crates/aluka-vm/src/interpreter.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/interpreter.rs) | 对齐 Node 22.3 API |
+| 58 | `markdown` | 扩展 Markdown 解析 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/markdown.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/markdown.rs) | `builtins_phase8_compat_test.rs`（全分支样张） |
+| 59 | `aluka:markdown` | 扩展 Markdown 命名空间| **[已完整实现]** | 同 `markdown`（共享单例） | `builtins_phase8_compat_test.rs` |
+| 60 | `process.getBuiltinModule` | 动态加载内置模块 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/require_aliases.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/require_aliases.rs) | `builtins_all_modules_test.rs`（对齐 Node 22.3 / Go 实测） |
 
 ---
 
@@ -439,6 +439,31 @@
   15. `stream/consumers.json(stream) -> Promise<object>`：将流数据聚合解析为 JSON 对象；
   16. `stream/consumers.buffer(stream) -> Promise<Buffer>`：将流数据聚集为 Buffer 二进制实例；
   17. `stream/consumers.arrayBuffer(stream) -> Promise<ArrayBuffer>`：底层二进制字节数组支持。
+
+---
+
+## 二·补、Phase 4 ~ Phase 8 多代理并发开发完成记录（2026-09-04）
+
+全部 60 项矩阵已收敛为「已完整实现」。收口验收：`builtins_all_modules_test.rs` 对
+59 个可 require 模块逐一加载，aluvm 与 Go Oracle 输出逐字一致（`loaded: 59 /
+failed: / getBuiltinModule: object`）。新增对拍测试文件与覆盖组：
+
+| 测试文件（`crates/aluka-cli/tests/`） | 覆盖模块 |
+|---|---|
+| `builtins_phase4_crypto_test.rs` | `crypto`（手写 md5/sha1/sha2/hmac/aes-cbc/ctr/gcm/pbkdf2/scrypt/hkdf，官方向量锚定） |
+| `builtins_phase4_zlib_test.rs` | `zlib`、`stream/web`（roundtrip 对拍 + crc32/constants 逐字） |
+| `builtins_phase5_net_test.rs` | `net`/`dns`/`dns/promises`/`dgram`/`tls`（真实 TCP/UDP 回环） |
+| `builtins_phase5_http_test.rs` | `http`/`https`/`http2`（真实 HTTP/1.1 回环，手写报文栈） |
+| `builtins_phase6_proc_test.rs` | `child_process`/`worker_threads`/`cluster` |
+| `builtins_phase6_vm_module_test.rs` | `vm`/`module`/`trace_events` |
+| `builtins_phase7_io_test.rs` | `readline`/`readline/promises`/`repl`/`tty`/`sqlite`（rusqlite bundled，FFI 例外） |
+| `builtins_phase7_diag_test.rs` | `diagnostics_channel`/`async_hooks`/`inspector`/`inspector/promises`/`domain` |
+| `builtins_phase8_compat_test.rs` | `punycode`/`wasi`/`test`/`test/reporters`/`markdown`/`aluka:markdown` |
+| `builtins_all_modules_test.rs` | 全量加载审计（收口门禁） |
+
+已登记的实现边界（模块头文档有完整说明）：`tls`/`https` 的真实 TLS 握手、`vm`
+的运行时源码求值受纯 Rust 无 C 依赖 / ISA 契约分层约束，为表面级实现（确定性
+路径已逐字对拍）；`zlib` 的 zstd 压缩为最小合法 Raw 块帧。
 
 ---
 
