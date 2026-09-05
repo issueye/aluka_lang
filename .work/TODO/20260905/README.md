@@ -69,6 +69,34 @@
 - 复审记录：各里程碑提交前逐一验证探针双引擎一致 + 全量门禁；分支
   feat/engine-tiers 合并回 feat/rust-skeleton（快进）后重跑门禁。
 
+
+
+---
+
+## 会话 3：M4 推进（ISA 发布契约）
+
+### 目标（可判定完成态）
+
+1. `.aluc`/`.alua` 格式发布（ALUKACC1 容器 + 调试段 + 剥离选项），aluvm
+   魔数自动嗅探，alukac `--format`/`--strip-debug`。
+2. eval/new Function、Function.prototype.toString、兼容窗口与 ISA 版本
+   递增权限的策略 ADR 落盘。
+3. **验收核心**：玩具 Lisp 前端（新 crate `alisp`，只依赖 aluka-bytecode
+   公共 API）产出 `.aluc`，aluvm 跑通——全程零改后端（git 证明：DSL 提交
+   不触碰 aluka-vm）。
+
+### 待办清单
+
+| # | 待办 | 状态 |
+|---|------|------|
+| M4-1 | .aluc/.alua 规范文档 + aluka-bytecode 序列化/反序列化 + strip | [ ] |
+| M4-2 | aluvm 嗅探 + alukac --format/--strip-debug | [ ] |
+| M4-3 | 拆二进制现状确认与登记 | [ ] |
+| M4-4 | 策略 ADR（eval/toString/兼容窗口/版本权限） | [ ] |
+| M4-5 | alisp crate（sexp 解析 + ISA 代码生成 + .aluc 输出） | [ ] |
+| M4-6 | 验收 e2e + 后端零改证明 + 全量门禁 | [ ] |
+| M4-7 | 提交 + 合并主线 + 推送 | [ ] |
+
 ## 3. 达成证据
 
 - 产物证据：`aluka_r/AGENTS.md` 新增「工作流硬约束」节（开工先登记 / 复审后才许

@@ -12,6 +12,7 @@ members = [
     "crates/aluka-webapi",
     "crates/aluka-runtime",
     "crates/aluka-cli",
+    "crates/alisp",
 ]
 
 [workspace.package]
