@@ -23,6 +23,16 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // 同 aluvm：解释执行放专用大栈线程，避免 JS 深递归触发原生栈溢出。
+    std::thread::Builder::new()
+        .stack_size(512 * 1024 * 1024)
+        .spawn(real_main)
+        .expect("spawn vm thread")
+        .join()
+        .unwrap_or(ExitCode::FAILURE)
+}
+
+fn real_main() -> ExitCode {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = match parse_args(&raw_args) {
         Ok(c) => c,

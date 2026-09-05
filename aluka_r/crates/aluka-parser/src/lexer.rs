@@ -222,8 +222,10 @@ impl<'src> Lexer<'src> {
                     }
                     self.pos += 1;
                 } else {
-                    current_quasi.push(bytes[self.pos] as char);
-                    self.pos += 1;
+                    // 多字节 UTF-8：按整字符入 quasi，按字符宽度推进
+                    let ch = self.src[self.pos..].chars().next().unwrap_or('�');
+                    current_quasi.push(ch);
+                    self.pos += ch.len_utf8();
                 }
             }
 
@@ -257,7 +259,11 @@ impl<'src> Lexer<'src> {
                         other => s.push(other as char),
                     }
                 } else {
-                    s.push(bytes[self.pos] as char);
+                    // 多字节 UTF-8：按整字符入串，按字符宽度推进（跳过共享步进）
+                    let ch = self.src[self.pos..].chars().next().unwrap_or('�');
+                    s.push(ch);
+                    self.pos += ch.len_utf8();
+                    continue;
                 }
                 self.pos += 1;
             }

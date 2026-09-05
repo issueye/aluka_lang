@@ -170,6 +170,23 @@ impl Vm {
                 | crate::builtins::Job::ResumeFrameRejected(r) => {
                     self.push_resume_roots(out, r);
                 }
+                crate::builtins::Job::Reaction {
+                    cb,
+                    arg,
+                    resolver,
+                    reject_resolver,
+                    ..
+                } => {
+                    out.push(*cb);
+                    out.push(*arg);
+                    out.push(*resolver);
+                    out.push(*reject_resolver);
+                }
+                crate::builtins::Job::ResolveLater { resolver, arg }
+                | crate::builtins::Job::RejectLater { resolver, arg } => {
+                    out.push(*resolver);
+                    out.push(*arg);
+                }
             }
         }
         // 宏任务（定时器回调）
@@ -380,6 +397,7 @@ impl Vm {
 /// **新增持有 `Value` 的静态必须在此登记 provider**（漏登记 = 悬垂）。
 fn static_roots(out: &mut GcRoots) {
     crate::builtins::promise::combiner_roots(out);
+    crate::builtins::promise::reaction_roots(out);
     crate::builtins::timers::resolver_roots(out);
     crate::symbol::registry_roots(out);
 }

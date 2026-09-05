@@ -20,6 +20,25 @@ pub(crate) enum Job {
     ResumeFrame(PendingResume),
     /// 恢复挂起的 async 帧（await 的 promise 已拒绝：进帧即抛，命中帧内 try/catch）
     ResumeFrameRejected(PendingResume),
+    /// then/finally 反应：回调定型值/原因，结果采纳进新 promise
+    /// （`is_finally`：回调结果被忽略，原值/原因透传）。
+    Reaction {
+        cb: Value,
+        arg: Value,
+        resolver: Value,
+        reject_resolver: Value,
+        is_finally: bool,
+    },
+    /// 透传第二跳：先排空当轮，再入队解析器调用（对齐 Go oracle 透传时序——
+    /// 已定型 promise 的缺失回调透传比常规反应晚一个微任务）
+    ResolveLater {
+        resolver: Value,
+        arg: Value,
+    },
+    RejectLater {
+        resolver: Value,
+        arg: Value,
+    },
 }
 
 /// 挂起 async 帧的恢复登记。
@@ -162,7 +181,79 @@ impl Vm {
                 Job::ResumeFrameRejected(resume) => {
                     self.resume_async_frame(resume, true)?;
                 }
+                Job::Reaction {
+                    cb,
+                    arg,
+                    resolver,
+                    reject_resolver,
+                    is_finally,
+                } => {
+                    match self.invoke_callable(cb, Value::Undefined, &[arg]) {
+                        Err(VmError::Thrown(exc)) => {
+                            // 回调抛错：新 promise 以异常拒绝
+                            self.microtask_queue
+                                .push_back(Job::Call(reject_resolver, exc));
+                        }
+                        Ok(ret) => {
+                            if is_finally {
+                                // finally：忽略回调返回值，原定型值透传
+                                self.microtask_queue.push_back(Job::Call(resolver, arg));
+                            } else {
+                                self.adopt_and_resolve(ret, resolver, reject_resolver)?;
+                            }
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+                Job::ResolveLater { resolver, arg } => {
+                    self.microtask_queue.push_back(Job::Call(resolver, arg));
+                }
+                Job::RejectLater { resolver, arg } => {
+                    self.microtask_queue.push_back(Job::Call(resolver, arg));
+                }
             }
+        }
+        Ok(())
+    }
+
+    /// then 回调返回值的采纳（JS Promise AdoptState）：返回 pending promise
+    /// 则挂接新 promise 的解析器对随其定型；否则直接以返回值兑现/拒绝。
+    fn adopt_and_resolve(
+        &mut self,
+        ret: Value,
+        resolver: Value,
+        reject_resolver: Value,
+    ) -> Result<(), VmError> {
+        let adopted = match ret {
+            Value::Object(r) => match self.heap.get(r.0 as usize) {
+                Some(HeapObject::Promise {
+                    pending,
+                    value,
+                    is_rejected,
+                    ..
+                }) => {
+                    if *pending {
+                        // 挂接：ret 兑现 → resolver(即兑现 P2)；ret 拒绝 → reject_resolver
+                        if let Some(HeapObject::Promise {
+                            handlers, rejected, ..
+                        }) = self.heap.get_mut(r.0 as usize)
+                        {
+                            handlers.push(resolver);
+                            rejected.push(reject_resolver);
+                        }
+                        None
+                    } else if *is_rejected {
+                        Some((reject_resolver, *value))
+                    } else {
+                        Some((resolver, *value))
+                    }
+                }
+                _ => Some((resolver, ret)),
+            },
+            other => Some((resolver, other)),
+        };
+        if let Some((resolver, value)) = adopted {
+            self.microtask_queue.push_back(Job::Call(resolver, value));
         }
         Ok(())
     }
@@ -241,6 +332,21 @@ impl Vm {
             self.microtask_queue
                 .push_back(crate::builtins::Job::ResumeFrame(resume));
         }
+        // then 反应排空：onF 派发 / 缺失则兑现透传
+        for reaction in crate::builtins::promise::take_reactions(promise.0) {
+            if !matches!(reaction.on_f, Value::Undefined) {
+                self.microtask_queue.push_back(Job::Reaction {
+                    cb: reaction.on_f,
+                    arg: value,
+                    resolver: reaction.resolver,
+                    reject_resolver: reaction.reject_resolver,
+                    is_finally: false,
+                });
+            } else {
+                self.microtask_queue
+                    .push_back(Job::Call(reaction.resolver, value));
+            }
+        }
         // 组合器（all/race/allSettled）推进：元素定型出口
         crate::builtins::promise::on_settled(self, promise, value, false)?;
         Ok(())
@@ -280,6 +386,21 @@ impl Vm {
         if let Some(resume) = self.promise_resumes.remove(&promise.0) {
             self.microtask_queue
                 .push_back(crate::builtins::Job::ResumeFrameRejected(resume));
+        }
+        // then 反应排空：onR 派发 / 缺失则拒绝透传
+        for reaction in crate::builtins::promise::take_reactions(promise.0) {
+            if !matches!(reaction.on_r, Value::Undefined) {
+                self.microtask_queue.push_back(Job::Reaction {
+                    cb: reaction.on_r,
+                    arg: value,
+                    resolver: reaction.resolver,
+                    reject_resolver: reaction.reject_resolver,
+                    is_finally: false,
+                });
+            } else {
+                self.microtask_queue
+                    .push_back(Job::Call(reaction.reject_resolver, value));
+            }
         }
         // 组合器推进（All 首个拒绝 / Race 拒绝胜出 / AllSettled 记槽）
         crate::builtins::promise::on_settled(self, promise, value, true)?;

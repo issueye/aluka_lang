@@ -279,6 +279,304 @@ impl Vm {
     }
 }
 
+impl Vm {
+    /// `JSON.parse(text)`：递归下降解析器，错误消息复刻 Go `encoding/json`
+    /// 实测形态（`SyntaxError` + Go rune 引号字符），与 oracle 对拍一致。
+    pub(crate) fn json_parse(&mut self, args: &[Value]) -> Result<Value, VmError> {
+        let src = match args.first() {
+            Some(v) => self.format_value(*v),
+            None => String::new(),
+        };
+        let mut p = JsonParser {
+            b: src.as_bytes(),
+            s: &src,
+            pos: 0,
+        };
+        p.skip_ws();
+        let value = match p.parse_value(self) {
+            Ok(v) => v,
+            Err(msg) => return Err(self.syntax_error(&msg)),
+        };
+        p.skip_ws();
+        if p.pos < p.b.len() {
+            return Err(self.syntax_error(&format!(
+                "invalid character {} after top-level value",
+                quote_rune(p.b[p.pos])
+            )));
+        }
+        Ok(value)
+    }
+
+    /// 构造 `name === "SyntaxError"` 的错误实例并包装为 Thrown。
+    fn syntax_error(&mut self, msg: &str) -> VmError {
+        let err = self.alloc_error_instance(msg);
+        let name = self.alloc_string("SyntaxError".to_owned());
+        let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+        VmError::Thrown(Value::Object(err))
+    }
+}
+
+/// Go rune 字面量形态：普通字符 `'b'`，控制字符用转义序列。
+fn quote_rune(b: u8) -> String {
+    match b {
+        0x0a => "'\\n'".to_owned(),
+        0x0d => "'\\r'".to_owned(),
+        0x09 => "'\\t'".to_owned(),
+        _ => format!("'{}'", b as char),
+    }
+}
+
+struct JsonParser<'a> {
+    b: &'a [u8],
+    s: &'a str,
+    pos: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn skip_ws(&mut self) {
+        while self.pos < self.b.len() && matches!(self.b[self.pos], b' ' | b'\t' | b'\n' | b'\r') {
+            self.pos += 1;
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.b.get(self.pos).copied()
+    }
+
+    fn parse_value(&mut self, vm: &mut Vm) -> Result<Value, String> {
+        self.skip_ws();
+        let Some(c) = self.peek() else {
+            return Err("unexpected end of JSON input".to_owned());
+        };
+        match c {
+            b'{' => self.parse_object(vm),
+            b'[' => self.parse_array(vm),
+            b'"' => self
+                .parse_string()
+                .map(|s| Value::Object(vm.alloc_string(s))),
+            b't' => self.parse_literal("true", b"rue", Value::Boolean(true)),
+            b'f' => self.parse_literal("false", b"alse", Value::Boolean(false)),
+            b'n' => self.parse_literal("null", b"ull", Value::Null),
+            b'-' | b'0'..=b'9' => self.parse_number(),
+            _ => Err(format!(
+                "invalid character {} looking for beginning of value",
+                quote_rune(c)
+            )),
+        }
+    }
+
+    fn parse_literal(&mut self, word: &str, rest: &[u8], value: Value) -> Result<Value, String> {
+        // 首字符已消费；逐字符校验余下部分（Go 逐字符报错形态）
+        for (i, expected) in rest.iter().enumerate() {
+            let at = self.pos + 1 + i;
+            match self.b.get(at) {
+                None => return Err("unexpected end of JSON input".to_owned()),
+                Some(&got) if got != *expected => {
+                    return Err(format!(
+                        "invalid character {} in literal {}",
+                        quote_rune(got),
+                        word
+                    ));
+                }
+                _ => {}
+            }
+        }
+        self.pos += 1 + rest.len();
+        Ok(value)
+    }
+
+    fn parse_number(&mut self) -> Result<Value, String> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        match self.peek() {
+            Some(b'0') => self.pos += 1,
+            Some(c) if c.is_ascii_digit() => {
+                while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    self.pos += 1;
+                }
+            }
+            Some(c) => {
+                return Err(format!(
+                    "invalid character {} in numeric literal",
+                    quote_rune(c)
+                ));
+            }
+            None => return Err("unexpected end of JSON input".to_owned()),
+        }
+        if self.peek() == Some(b'.') {
+            self.pos += 1;
+            if !self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                return Err(match self.peek() {
+                    Some(c) => format!("invalid character {} in numeric literal", quote_rune(c)),
+                    None => "unexpected end of JSON input".to_owned(),
+                });
+            }
+            while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                self.pos += 1;
+            }
+        }
+        if matches!(self.peek(), Some(b'e') | Some(b'E')) {
+            self.pos += 1;
+            if matches!(self.peek(), Some(b'+') | Some(b'-')) {
+                self.pos += 1;
+            }
+            if !self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                return Err(match self.peek() {
+                    Some(c) => format!("invalid character {} in numeric literal", quote_rune(c)),
+                    None => "unexpected end of JSON input".to_owned(),
+                });
+            }
+            while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                self.pos += 1;
+            }
+        }
+        let text = &self.s[start..self.pos];
+        text.parse::<f64>()
+            .map(Value::Number)
+            .map_err(|_| "unexpected end of JSON input".to_owned())
+    }
+
+    fn parse_string(&mut self) -> Result<String, String> {
+        self.pos += 1; // 开引号
+        let mut out = String::new();
+        while let Some(c) = self.peek() {
+            match c {
+                b'"' => {
+                    self.pos += 1;
+                    return Ok(out);
+                }
+                0x5c => {
+                    self.pos += 1;
+                    let Some(esc) = self.peek() else {
+                        return Err("unexpected end of JSON input".to_owned());
+                    };
+                    self.pos += 1;
+                    match esc {
+                        0x22 => out.push('"'),
+                        0x5c => out.push('\\'),
+                        0x2f => out.push('/'),
+                        0x08 => out.push('\u{8}'),
+                        0x0c => out.push('\u{c}'),
+                        b'n' => out.push('\n'),
+                        b'r' => out.push('\r'),
+                        b't' => out.push('\t'),
+                        b'u' => {
+                            if self.pos + 4 > self.b.len() {
+                                return Err("unexpected end of JSON input".to_owned());
+                            }
+                            let hex = &self.s[self.pos..self.pos + 4];
+                            let cp = u32::from_str_radix(hex, 16)
+                                .map_err(|_| "invalid Unicode escape".to_owned())?;
+                            self.pos += 4;
+                            out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
+                        }
+                        other => {
+                            return Err(format!(
+                                "invalid character {} in string escape code",
+                                quote_rune(other)
+                            ));
+                        }
+                    }
+                }
+                c if c < 0x20 => {
+                    return Err(format!(
+                        "invalid character {} in string literal",
+                        quote_rune(c)
+                    ));
+                }
+                _ => {
+                    let ch = self.s[self.pos..].chars().next().unwrap_or('\u{FFFD}');
+                    out.push(ch);
+                    self.pos += ch.len_utf8();
+                }
+            }
+        }
+        Err("unexpected end of JSON input".to_owned())
+    }
+
+    fn parse_array(&mut self, vm: &mut Vm) -> Result<Value, String> {
+        self.pos += 1; // '['
+        let mut elements = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(b']') {
+            self.pos += 1;
+            return Ok(Value::Object(vm.alloc_array(elements)));
+        }
+        loop {
+            let v = self.parse_value(vm)?;
+            elements.push(v);
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b']') => {
+                    self.pos += 1;
+                    return Ok(Value::Object(vm.alloc_array(elements)));
+                }
+                Some(c) => {
+                    return Err(format!(
+                        "invalid character {} after array element",
+                        quote_rune(c)
+                    ));
+                }
+                None => return Err("unexpected end of JSON input".to_owned()),
+            }
+        }
+    }
+
+    fn parse_object(&mut self, vm: &mut Vm) -> Result<Value, String> {
+        self.pos += 1; // '{'
+        let obj = vm.alloc_ordinary();
+        self.skip_ws();
+        if self.peek() == Some(b'}') {
+            self.pos += 1;
+            return Ok(Value::Object(obj));
+        }
+        loop {
+            self.skip_ws();
+            let Some(key) = self.peek() else {
+                return Err("unexpected end of JSON input".to_owned());
+            };
+            if key != 0x22 {
+                return Err(format!(
+                    "invalid character {} looking for beginning of object key string",
+                    quote_rune(key)
+                ));
+            }
+            let key = self.parse_string()?;
+            self.skip_ws();
+            match self.peek() {
+                Some(b':') => self.pos += 1,
+                Some(c) => {
+                    return Err(format!(
+                        "invalid character {} after object key",
+                        quote_rune(c)
+                    ));
+                }
+                None => return Err("unexpected end of JSON input".to_owned()),
+            }
+            let value = self.parse_value(vm)?;
+            let _ = vm.set_property(Value::Object(obj), &key, value);
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b'}') => {
+                    self.pos += 1;
+                    return Ok(Value::Object(obj));
+                }
+                Some(c) => {
+                    return Err(format!(
+                        "invalid character {} after object key:value pair",
+                        quote_rune(c)
+                    ));
+                }
+                None => return Err("unexpected end of JSON input".to_owned()),
+            }
+        }
+    }
+}
+
 /// JSON 字符串引号包裹与转义（对齐 `JSON.stringify` 的字符串形态）。
 fn json_quote(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);

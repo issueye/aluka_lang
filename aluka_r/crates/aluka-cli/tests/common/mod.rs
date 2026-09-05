@@ -21,6 +21,43 @@ pub fn aluvm_exe() -> PathBuf {
     Path::new(env!("CARGO_BIN_EXE_aluvm")).to_path_buf()
 }
 
+/// Rust 前端编译器（alukac 编译路径专项测试用——e2e 主路径经 Go 前端编译，
+/// 覆盖不到 Rust lexer/序列化器的行为）。
+#[allow(dead_code)]
+pub fn alukac_exe() -> PathBuf {
+    Path::new(env!("CARGO_BIN_EXE_alukac")).to_path_buf()
+}
+
+/// alukac 编译 → aluvm 执行：返回 trim 后 stdout（Rust 全链路，不经 Go 前端）。
+#[allow(dead_code)]
+pub fn rust_pipeline_run(work: &Path, entry: &str) -> String {
+    let src = work.join(entry);
+    let bc = work.join(format!("{}.bc", entry.strip_suffix(".js").unwrap_or(entry)));
+    let out = Command::new(alukac_exe())
+        .arg(&src)
+        .arg("-o")
+        .arg(&bc)
+        .output()
+        .expect("alukac 编译失败");
+    assert!(
+        out.status.success(),
+        "alukac 编译 {entry} 失败: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let run = Command::new(aluvm_exe())
+        .arg("run")
+        .arg(&bc)
+        .current_dir(work)
+        .output()
+        .expect("aluvm 运行失败");
+    assert!(
+        run.status.success(),
+        "aluvm 执行失败: {:?}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    String::from_utf8_lossy(&run.stdout).trim().to_string()
+}
+
 pub fn go_oracle() -> PathBuf {
     if let Ok(p) = std::env::var("ALUKA_ORACLE") {
         return PathBuf::from(p);

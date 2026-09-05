@@ -462,3 +462,132 @@ fn gc_stress_heavy_allocation_matches_go() {
         )
     );
 }
+
+/// 深递归：大栈线程下 fib(25)/fib(30) 与 Go 一致（原 1MB 主线程栈 fib(20) 溢出）。
+#[test]
+fn deep_recursion_fib_matches_go() {
+    let out = run_probe(
+        "deep_recursion",
+        concat!(
+            "function fib(n) {\n",
+            "    if (n < 2) { return n; }\n",
+            "    return fib(n - 1) + fib(n - 2);\n",
+            "}\n",
+            "console.log(\"fib25:\", fib(25));\n",
+            "console.log(\"fib30:\", fib(30));\n",
+        ),
+    );
+    assert_eq!(out, "fib25: 75025\nfib30: 832040");
+}
+
+/// Rust 全链路（alukac 编译 → aluvm 执行）：非 ASCII 字面量不再 mojibake，
+/// 模板串插值/多字节字符正确（对照 Go oracle 同源码输出）。
+#[test]
+fn rust_frontend_cjk_literals_match_go() {
+    let work = std::env::temp_dir().join(format!("rust_frontend_cjk_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let js = concat!(
+        "console.log(\"中文测试\");\n",
+        "console.log(\"日本語テスト\");\n",
+        "console.log(\"中文\".length);\n",
+        "console.log(\"混合abc中文字符\".slice(2, 4));\n",
+        "let name = \"世界\";\n",
+        "console.log(`你好, ${name}!`);\n",
+    );
+    std::fs::write(work.join("cjk.js"), js).unwrap();
+    let rust_out = common::rust_pipeline_run(&work, "cjk.js");
+    let go_out = common::go_run(&common::go_oracle(), &work.join("cjk.js"));
+    assert_eq!(rust_out, go_out, "Rust 前端全链路输出必须与 Go oracle 一致");
+    assert_eq!(rust_out, "中文测试\n日本語テスト\n2\nab\n你好, 世界!");
+}
+
+/// JSON.parse：嵌套结构、数字（负数/小数/指数）、字符串转义、错误消息
+/// （Go encoding/json 风格 SyntaxError）。
+#[test]
+fn json_parse_matches_go() {
+    let out = run_probe(
+        "json_parse",
+        concat!(
+            "var o = JSON.parse('{\"a\":1,\"b\":[true,false,null],\"c\":{\"d\":\"str\"}}');\n",
+            "console.log(\"a:\", o.a, \"b0:\", o.b[0], \"b2:\", o.b[2], \"cd:\", o.c.d);\n",
+            "console.log(\"neg:\", JSON.parse(\"-12.5e2\"));\n",
+            "console.log(\"ws:\", JSON.parse(\"  [ 1 , 2 ]  \")[1]);\n",
+            "console.log(\"esc:\", JSON.parse('\"a\\\\\"b\"'));\n",
+            "try { JSON.parse(\"{bad}\"); } catch (e) { console.log(\"e1:\", e.name, e.message); }\n",
+            "try { JSON.parse(''); } catch (e) { console.log(\"e2:\", e.message); }\n",
+        ),
+    );
+    assert_eq!(
+        out,
+        concat!(
+            "a: 1 b0: true b2: null cd: str\n",
+            "neg: -1250\n",
+            "ws: 2\n",
+            "esc: a\"b\n",
+            "e1: SyntaxError invalid character 'b' looking for beginning of object key string\n",
+            "e2: unexpected end of JSON input",
+        )
+    );
+}
+
+/// 自定义可迭代对象：Symbol.iterator 属性接入 for...of 协议。
+#[test]
+fn custom_iterable_for_of_matches_go() {
+    let out = run_probe(
+        "custom_iterable",
+        concat!(
+            "var bag = {};\n",
+            "bag[Symbol.iterator] = function() {\n",
+            "    let i = 0;\n",
+            "    let self = {\n",
+            "        next: function() {\n",
+            "            i = i + 1;\n",
+            "            if (i <= 3) { return { value: i * 10, done: false }; }\n",
+            "            return { value: undefined, done: true };\n",
+            "        }\n",
+            "    };\n",
+            "    return self;\n",
+            "};\n",
+            "let sum = 0;\n",
+            "for (let x of bag) { sum = sum + x; }\n",
+            "console.log(\"sum:\", sum);\n",
+            "let items = [];\n",
+            "for (let y of bag) { items.push(y); }\n",
+            "console.log(\"items:\", items.join(\",\"));\n",
+        ),
+    );
+    assert_eq!(out, "sum: 60\nitems: 10,20,30");
+}
+
+/// promise.then 链式语义：返回值采纳（含 promise 采纳）、回调抛错拒绝、
+/// 拒绝透传、finally 透传、微任务时序与 Go 逐字一致。
+#[test]
+fn then_chaining_semantics_match_go() {
+    let out = run_probe(
+        "then_chaining",
+        concat!(
+            "Promise.resolve(1).then(function(v) { return v + 1; })\n",
+            "  .then(function(v) { console.log(\"chain:\", v); });\n",
+            "Promise.resolve(\"x\").then(function() { throw new Error(\"cb-throw\"); })\n",
+            "  .catch(function(e) { console.log(\"caught:\", e.message); });\n",
+            "Promise.reject(new Error(\"pass\")).then(function(v) { console.log(\"NOT REACHED\"); })\n",
+            "  .catch(function(e) { console.log(\"pass-through:\", e.message); });\n",
+            "Promise.resolve(\"fv\").finally(function() { console.log(\"fin-ran\"); })\n",
+            "  .then(function(v) { console.log(\"fin-value:\", v); });\n",
+            "Promise.resolve(2).then(function(v) { return Promise.resolve(v * 10); })\n",
+            "  .then(function(v) { console.log(\"adopt:\", v); });\n",
+        ),
+    );
+    assert_eq!(
+        out,
+        concat!(
+            "fin-ran\n",
+            "chain: 2\n",
+            "caught: cb-throw\n",
+            "pass-through: pass\n",
+            "fin-value: fv\n",
+            "adopt: 20",
+        )
+    );
+}

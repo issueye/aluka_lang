@@ -497,12 +497,14 @@ impl Vm {
                 Value::Object(f)
             }
             "JSON" => {
-                // JSON 全局对象：stringify（parse 未实现，不注册以免误报可调用）
+                // JSON 全局对象：stringify + parse
                 let obj = self.alloc_ordinary();
                 let _ = self.set_property(Value::Object(obj), "_isJSON", Value::Boolean(true));
                 let stringify = self.alloc_native_fn("JSON.stringify");
                 let _ =
                     self.set_property(Value::Object(obj), "stringify", Value::Object(stringify));
+                let parse = self.alloc_native_fn("JSON.parse");
+                let _ = self.set_property(Value::Object(obj), "parse", Value::Object(parse));
                 Value::Object(obj)
             }
             "require" => self
@@ -1293,6 +1295,10 @@ impl Vm {
                         let v = args.first().copied().unwrap_or(Value::Undefined);
                         let out = self.json_stringify(v)?;
                         self.stack.push(out);
+                    } else if method_name == "parse" && self.is_json_object(receiver) {
+                        // JSON.parse(text)（成员调用形态）
+                        let out = self.json_parse(&args)?;
+                        self.stack.push(out);
                     } else if matches!(
                         method_name.as_str(),
                         "readFileSync" | "writeFileSync" | "existsSync"
@@ -1353,7 +1359,7 @@ impl Vm {
                         let cb = args.first().copied().unwrap_or(Value::Undefined);
                         self.nexttick_queue.push_back(cb);
                         self.stack.push(Value::Undefined);
-                    } else if method_name == "finally"
+                    } else if matches!(method_name.as_str(), "then" | "catch" | "finally")
                         && matches!(
                             receiver,
                             Value::Object(rr)
@@ -1363,12 +1369,106 @@ impl Vm {
                                 )
                         )
                     {
-                        // promise.finally(cb)：cb 定型后运行（不收参），值/原因透传
+                        // then(onF, onR) / catch(onR) / finally(cb)：创建新 promise P2，
+                        // 登记反应（pending）或立即调度（已定型）——回调返回值采纳进
+                        // P2，回调抛错拒绝 P2，finally 透传原定型值
                         let cb = args.first().copied().unwrap_or(Value::Undefined);
+                        let on_rejected = if method_name == "then" {
+                            args.get(1).copied().unwrap_or(Value::Undefined)
+                        } else {
+                            Value::Undefined
+                        };
                         if let Value::Object(rr) = receiver {
-                            self.promise_finally(rr, cb)?;
+                            let p2 = self.alloc_pending_promise();
+                            let res2 = self.alloc_promise_resolver(p2, true);
+                            let rej2 = self.alloc_promise_resolver(p2, false);
+                            let (on_f, on_r) = match method_name.as_str() {
+                                "then" => (cb, on_rejected),
+                                "catch" => (Value::Undefined, cb),
+                                _ => (cb, cb),
+                            };
+                            let is_finally = method_name == "finally";
+                            let state = match self.heap.get(rr.0 as usize) {
+                                Some(HeapObject::Promise {
+                                    pending,
+                                    value,
+                                    is_rejected,
+                                    ..
+                                }) => Some((*pending, *value, *is_rejected)),
+                                _ => None,
+                            };
+                            match state {
+                                Some((true, _, _)) => {
+                                    // pending：登记反应，定型时经 take_reactions 派发
+                                    crate::builtins::promise::push_reaction(
+                                        rr.0,
+                                        crate::builtins::promise::Reaction {
+                                            on_f,
+                                            on_r,
+                                            resolver: Value::Object(res2),
+                                            reject_resolver: Value::Object(rej2),
+                                        },
+                                    );
+                                }
+                                Some((false, value, is_rejected)) => {
+                                    // 已定型：立即调度反应
+                                    if is_finally {
+                                        self.microtask_queue.push_back(
+                                            crate::builtins::Job::Reaction {
+                                                cb,
+                                                arg: value,
+                                                resolver: Value::Object(res2),
+                                                reject_resolver: Value::Object(rej2),
+                                                is_finally: true,
+                                            },
+                                        );
+                                    } else if is_rejected {
+                                        if !matches!(on_r, Value::Undefined) {
+                                            self.microtask_queue.push_back(
+                                                crate::builtins::Job::Reaction {
+                                                    cb: on_r,
+                                                    arg: value,
+                                                    resolver: Value::Object(res2),
+                                                    reject_resolver: Value::Object(rej2),
+                                                    is_finally: false,
+                                                },
+                                            );
+                                        } else {
+                                            // 拒绝透传（onR 缺失）：两跳任务对齐 Go
+                                            // oracle 的透传时序
+                                            self.microtask_queue.push_back(
+                                                crate::builtins::Job::RejectLater {
+                                                    resolver: Value::Object(rej2),
+                                                    arg: value,
+                                                },
+                                            );
+                                        }
+                                    } else if !matches!(on_f, Value::Undefined) {
+                                        self.microtask_queue.push_back(
+                                            crate::builtins::Job::Reaction {
+                                                cb: on_f,
+                                                arg: value,
+                                                resolver: Value::Object(res2),
+                                                reject_resolver: Value::Object(rej2),
+                                                is_finally: false,
+                                            },
+                                        );
+                                    } else {
+                                        // 兑现透传：两跳（与拒绝透传对称）
+                                        self.microtask_queue.push_back(
+                                            crate::builtins::Job::ResolveLater {
+                                                resolver: Value::Object(res2),
+                                                arg: value,
+                                            },
+                                        );
+                                    }
+                                }
+                                None => {}
+                            }
+                            self.stack.push(Value::Object(p2));
+                        } else {
+                            self.stack.push(receiver);
                         }
-                        self.stack.push(receiver);
                     } else if matches!(method_name.as_str(), "then" | "catch")
                         && matches!(
                             receiver,
@@ -2273,6 +2373,9 @@ impl Vm {
                         let v = args.first().copied().unwrap_or(Value::Undefined);
                         let out = self.json_stringify(v)?;
                         self.stack.push(out);
+                    } else if self.is_native_fn(callee, "JSON.parse") {
+                        let out = self.json_parse(&args)?;
+                        self.stack.push(out);
                     } else if self.is_native_fn(callee, "Symbol") {
                         // Symbol([description])：唯一符号原语
                         let sym = self.symbol_create(&args);
@@ -2934,8 +3037,31 @@ impl Vm {
                             self.stack.push(val);
                         }
                     } else {
-                        let msg = self.alloc_string("TypeError: value is not iterable".to_owned());
-                        return Err(VmError::Thrown(Value::Object(msg)));
+                        // 自定义可迭代：读 Symbol.iterator 属性并调用取得迭代器
+                        // （JS 协议：iterable[Symbol.iterator]() -> iterator）
+                        let iter_sym = self.well_known_symbol("iterator");
+                        let iter_ref = match iter_sym {
+                            Value::Object(r) => r,
+                            _ => unreachable!("well_known_symbol 返回符号对象"),
+                        };
+                        let key = crate::symbol::mangled_key(iter_ref);
+                        let method = self.get_property(val, &key)?;
+                        let is_closure = matches!(
+                            method,
+                            Value::Object(r)
+                                if matches!(
+                                    self.heap.get(r.0 as usize),
+                                    Some(HeapObject::Closure { .. })
+                                )
+                        );
+                        if is_closure {
+                            let it = self.invoke_callable(method, val, &[])?;
+                            self.stack.push(it);
+                        } else {
+                            let msg =
+                                self.alloc_string("TypeError: value is not iterable".to_owned());
+                            return Err(VmError::Thrown(Value::Object(msg)));
+                        }
                     }
                 }
                 Op::MakeRegexp => {

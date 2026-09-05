@@ -288,42 +288,7 @@ pub(crate) fn on_settled(
     Ok(())
 }
 
-impl Vm {
-    /// `.finally(cb)`：cb 在定型后运行（不收参），兑现值/拒绝原因透传。
-    /// pending 时把 cb 同时登记进 fulfilled 与 rejected 处理器。
-    pub(crate) fn promise_finally(
-        &mut self,
-        receiver: ObjectRef,
-        cb: Value,
-    ) -> Result<(), VmError> {
-        let state = match self.heap.get(receiver.0 as usize) {
-            Some(HeapObject::Promise {
-                pending,
-                value,
-                is_rejected,
-                ..
-            }) => Some((*pending, *value, *is_rejected)),
-            _ => None,
-        };
-        match state {
-            Some((true, _, _)) => {
-                if let Some(HeapObject::Promise {
-                    handlers, rejected, ..
-                }) = self.heap.get_mut(receiver.0 as usize)
-                {
-                    handlers.push(cb);
-                    rejected.push(cb);
-                }
-            }
-            Some((false, value, _)) => {
-                self.microtask_queue
-                    .push_back(crate::builtins::Job::Call(cb, value));
-            }
-            None => {}
-        }
-        Ok(())
-    }
-}
+impl Vm {}
 
 /// GC root provider：组合器状态表持有的全部值与解析器。
 pub(crate) fn combiner_roots(out: &mut crate::gc::GcRoots) {
@@ -345,5 +310,51 @@ fn el_handle(el: Value) -> u32 {
     match el {
         Value::Object(r) => r.0,
         _ => u32::MAX,
+    }
+}
+
+/// then/catch/finally 反应：cb 对 + 新 promise 的解析器对。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Reaction {
+    /// onFulfilled / onRejected / finally 回调
+    pub(crate) on_f: Value,
+    pub(crate) on_r: Value,
+    /// 新 promise 的 resolve / reject 解析器
+    pub(crate) resolver: Value,
+    pub(crate) reject_resolver: Value,
+}
+
+/// then 反应表：promise 句柄 → 待派发反应（pending 期登记，定型时排空）。
+pub(crate) static THEN_REACTIONS: LazyLock<Mutex<HashMap<u32, Vec<Reaction>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 登记一条反应。
+pub(crate) fn push_reaction(target: u32, reaction: Reaction) {
+    THEN_REACTIONS
+        .lock()
+        .unwrap()
+        .entry(target)
+        .or_default()
+        .push(reaction);
+}
+
+/// 排空 promise 的全部反应（定型时调用），返回反应列表。
+pub(crate) fn take_reactions(target: u32) -> Vec<Reaction> {
+    THEN_REACTIONS
+        .lock()
+        .unwrap()
+        .remove(&target)
+        .unwrap_or_default()
+}
+
+/// GC root provider：反应表持有的回调与解析器。
+pub(crate) fn reaction_roots(out: &mut crate::gc::GcRoots) {
+    for reactions in THEN_REACTIONS.lock().unwrap().values() {
+        for r in reactions {
+            out.push(r.on_f);
+            out.push(r.on_r);
+            out.push(r.resolver);
+            out.push(r.reject_resolver);
+        }
     }
 }

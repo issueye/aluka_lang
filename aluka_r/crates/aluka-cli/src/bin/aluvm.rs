@@ -20,6 +20,17 @@ enum SubCommand {
 }
 
 fn main() -> ExitCode {
+    // JS 递归深度受解释器原生栈约束：主线程默认栈（Windows 1MB）在 fib(20)
+    // 即溢出。改在专用大栈线程执行（虚拟内存按需提交，预留不等于占用）。
+    std::thread::Builder::new()
+        .stack_size(512 * 1024 * 1024)
+        .spawn(real_main)
+        .expect("spawn vm thread")
+        .join()
+        .unwrap_or(ExitCode::FAILURE)
+}
+
+fn real_main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = match parse_args(&args) {
         Ok(cmd) => cmd,
