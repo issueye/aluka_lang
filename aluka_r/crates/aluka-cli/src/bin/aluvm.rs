@@ -108,8 +108,9 @@ fn run_bc(input: &std::path::Path, cli_args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let module = match BytecodeModule::deserialize_go(&data) {
-        Ok(module) => module,
+    // M4：按魔数嗅探 ALUKACC1（发布容器）或 ALUKABC1（Go 互通格式）
+    let (module, payload_range) = match BytecodeModule::load_any_container(&data) {
+        Ok(pair) => pair,
         Err(err) => {
             eprintln!("错误: 反序列化 {} 失败: {err}", input.display());
             return ExitCode::FAILURE;
@@ -124,7 +125,7 @@ fn run_bc(input: &std::path::Path, cli_args: &[String]) -> ExitCode {
     inject_process_argv(&mut vm, input, cli_args);
     vm.setup_cjs(input); // CJS 模块上下文（require/exports/循环依赖）
     // 函数扩展标量头（arguments 槽位等）
-    if let Err(err) = vm.load_module(&data, &module) {
+    if let Err(err) = vm.load_module(&data[payload_range], &module) {
         eprintln!("错误: functions 标量头不完整: {err}");
         return ExitCode::FAILURE;
     }

@@ -19,6 +19,10 @@ enum SubCommand {
         input: PathBuf,
         output: Option<PathBuf>,
         optimize: bool,
+        /// 产出格式：alukabc1（默认，Go 互通）或 aluc（发布容器）
+        format: String,
+        /// 剥离调试段（仅 aluc 格式生效）
+        strip_debug: bool,
     },
     Disasm {
         input: PathBuf,
@@ -51,7 +55,9 @@ fn main() -> ExitCode {
             input,
             output,
             optimize,
-        } => run_compile(&input, output.as_deref(), optimize),
+            format,
+            strip_debug,
+        } => run_compile(&input, output.as_deref(), optimize, &format, strip_debug),
         SubCommand::Disasm { input } => run_disasm(&input),
     }
 }
@@ -117,6 +123,8 @@ fn parse_args(args: &[String]) -> Result<SubCommand, String> {
 fn parse_compile_flags(input_path: &str, flags: &[String]) -> Result<SubCommand, String> {
     let mut output = None;
     let mut optimize = true;
+    let mut format: Option<String> = None;
+    let mut strip_debug = false;
     let mut idx = 0;
 
     while idx < flags.len() {
@@ -131,6 +139,16 @@ fn parse_compile_flags(input_path: &str, flags: &[String]) -> Result<SubCommand,
             "--no-opt" => {
                 optimize = false;
             }
+            "--format" => {
+                idx += 1;
+                if idx >= flags.len() {
+                    return Err("--format 选项后缺少格式（alukabc1 | aluc）".to_owned());
+                }
+                format = Some(flags[idx].clone());
+            }
+            "--strip-debug" => {
+                strip_debug = true;
+            }
             other => {
                 return Err(format!("compile 命令无法识别的参数: {other}"));
             }
@@ -142,11 +160,19 @@ fn parse_compile_flags(input_path: &str, flags: &[String]) -> Result<SubCommand,
         input: PathBuf::from(input_path),
         output,
         optimize,
+        format: format.unwrap_or_else(|| "alukabc1".to_owned()),
+        strip_debug,
     })
 }
 
 /// 执行源文件编译并输出 .bc
-fn run_compile(input: &Path, output: Option<&Path>, optimize: bool) -> ExitCode {
+fn run_compile(
+    input: &Path,
+    output: Option<&Path>,
+    optimize: bool,
+    format: &str,
+    strip_debug: bool,
+) -> ExitCode {
     let path_str = input.to_string_lossy();
     let mut unit = match LanguageRegistry::global().parse_file(&path_str, ModuleKind::Script) {
         Ok(u) => u,
@@ -182,8 +208,15 @@ fn run_compile(input: &Path, output: Option<&Path>, optimize: bool) -> ExitCode 
         return ExitCode::FAILURE;
     }
 
-    // 5. 序列化为二进制
-    let bytes = module.serialize();
+    // 5. 序列化：alukabc1（Go 互通，默认）或 aluc（M4 发布容器）
+    let bytes = match format {
+        "aluc" => module.serialize_aluc(strip_debug),
+        "alukabc1" => module.serialize(),
+        other => {
+            eprintln!("错误: 未知格式 \"{other}\"（可选 alukabc1 | aluc）");
+            return ExitCode::FAILURE;
+        }
+    };
 
     // 6. 写出到目标文件
     let target_path = match output {
