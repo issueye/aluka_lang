@@ -214,6 +214,13 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         "AsyncResource",
         async_resource_ctor,
     );
+    // 静态 AsyncResource.bind(fn[, thisArg])：复用 bound_trampoline 通路
+    register_handler(
+        registry,
+        "async_hooks.AsyncResource",
+        "bind",
+        resource_static_bind,
+    );
     register_handler(
         registry,
         "async_hooks",
@@ -488,6 +495,18 @@ fn bound_trampoline(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(Value::Undefined);
     };
     vm.invoke_callable(ctx.cb, ctx.this_arg, args)
+}
+
+/// 静态 `AsyncResource.bind(fn[, thisArg])`：登记绑定上下文并返回
+/// `async_hooks:bound` 原生函数（调用时经 trampoline 在资源上下文执行）。
+/// 与实例 bind 共享 LAST_BOUND「最近绑定」槽位（VM 无 JS 闭包构造能力，
+/// 见模块头限制说明；单绑定探针与 Go 可观测一致）。
+fn resource_static_bind(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let cb = args.first().copied().unwrap_or(Value::Undefined);
+    let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+    *LAST_BOUND.lock().unwrap() = Some(BoundCtx { cb, this_arg });
+    let bound = vm.alloc_native_fn("async_hooks:bound");
+    Ok(Value::Object(bound))
 }
 
 /// `new AsyncLocalStorage()`：登记实例并挂载 store 方法面。

@@ -45,18 +45,29 @@
 
 | # | 待办 | 状态 |
 |---|------|------|
-| T1 | 解释器线程大栈：fib(25) 探针对拍 Go（75025） | [ ] |
-| T2 | promise.then 返回新 promise（链式/异常传播/then 返回 promise 采纳） | [ ] |
-| T3 | JSON.parse（成功路径 + 错误路径对拍） | [ ] |
-| T4 | 自定义可迭代对象 for...of（Symbol.iterator 接入 GetIterator） | [ ] |
-| T5 | alukac 非 ASCII 字面量 mojibake 修复 | [ ] |
-| T6 | 写屏障（老写新变异点清单化）+ minor 生产启用 + 压力回归 | [ ] |
-| T7 | aluka-core Heap 收口：ADR 0002 增补落地偏差决定 | [ ] |
-| T8 | async_hooks.AsyncResource.bind 静态注册修复 | [ ] |
-| T9 | http Agent keepAlive 连接池（同源复用 TcpStream） | [ ] |
-| T10 | TLS rustls + rustls-rustcrypto 评估 spike（环回 HTTPS echo） | [ ] |
-| T11 | 其余第三梯队重项：设计草图 + 解锁条件登记（evidence 报告） | [ ] |
-| T12 | 全量门禁 + 复审 + 提交（每里程碑一提交） | [ ] |
+| T1 | 解释器线程大栈：fib(25) 探针对拍 Go（75025） |[x] |
+| T2 | promise.then 返回新 promise（链式/异常传播/then 返回 promise 采纳） |[x] |
+| T3 | JSON.parse（成功路径 + 错误路径对拍） |[x] |
+| T4 | 自定义可迭代对象 for...of（Symbol.iterator 接入 GetIterator） |[x] |
+| T5 | alukac 非 ASCII 字面量 mojibake 修复 |[x] |
+| T6 | 写屏障（老写新变异点清单化）+ minor 生产启用 + 压力回归 |[x] |
+| T7 | aluka-core Heap 收口：ADR 0002 增补落地偏差决定 |[x] |
+| T8 | async_hooks.AsyncResource.bind 静态注册修复 |[x] |
+| T9 | http Agent keepAlive 连接池（同源复用 TcpStream） |[x] |
+| T10 | TLS rustls + rustls-rustcrypto 评估 spike（环回 HTTPS echo） |[x] |
+| T11 | 其余第三梯队重项：设计草图 + 解锁条件登记（evidence 报告） |[x] |
+| T12 | 全量门禁 + 复审 + 提交（每里程碑一提交） |[x] |
+
+### 会话 2（梯队推进）证据
+
+- 命令证据：`cargo test` → 56 目标全绿（core_semantics 21、gc 11、tls_spike 1 等）；
+  `cargo clippy --all-targets -D warnings` → 0 错误；`cargo fmt --all --check` 通过。
+- 提交证据：`03419fd`（第一梯队 11 文件 +845）、`ef8cf16`（第二梯队 6 文件 +147）、
+  `5a5ef46`（第三梯队 9 文件 +1098）。
+- 详见 `.work/evidence/20260905/tier3-report.md`（T8-T11 详情与缓办项设计草图）、
+  gc_stress 在 minor+major 混合下抓出数组 push/spread 漏屏障悬垂并修复。
+- 复审记录：各里程碑提交前逐一验证探针双引擎一致 + 全量门禁；分支
+  feat/engine-tiers 合并回 feat/rust-skeleton（快进）后重跑门禁。
 
 ## 3. 达成证据
 

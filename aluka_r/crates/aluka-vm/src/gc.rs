@@ -318,7 +318,13 @@ impl Vm {
         // 记忆集：老年代对象的年轻引用是次级根；仍指向年轻的重新登记
         let remembered = std::mem::take(&mut self.gc.remembered);
         for old_idx in remembered {
-            if self.gc.is_free.get(old_idx as usize).copied().unwrap_or(true) {
+            if self
+                .gc
+                .is_free
+                .get(old_idx as usize)
+                .copied()
+                .unwrap_or(true)
+            {
                 continue;
             }
             let mut young_targets: Vec<u32> = Vec::new();
@@ -391,7 +397,12 @@ impl Vm {
         let young_target = match val {
             Value::Object(r) => {
                 !self.gc.is_free.get(r.0 as usize).copied().unwrap_or(true)
-                    && self.gc.ages.get(r.0 as usize).copied().unwrap_or(PROMOTE_AGE)
+                    && self
+                        .gc
+                        .ages
+                        .get(r.0 as usize)
+                        .copied()
+                        .unwrap_or(PROMOTE_AGE)
                         < PROMOTE_AGE
             }
             _ => false,

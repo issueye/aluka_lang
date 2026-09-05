@@ -17,6 +17,10 @@ pub mod ops;
 pub mod prims;
 pub mod property;
 pub mod symbol;
+
+// TLS spike（T10 评估，仅测试编译）
+#[cfg(test)]
+mod tls_spike;
 pub mod value;
 
 pub use heap::HeapObject;

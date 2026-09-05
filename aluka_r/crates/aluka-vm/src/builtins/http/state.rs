@@ -149,6 +149,39 @@ static PENDING_EVENTS: Mutex<Vec<(Value, &'static str)>> = Mutex::new(Vec::new()
 /// 待发射 `'timeout'` 的请求对象队列（宏任务标记函数消费）。
 static TIMEOUT_TARGETS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
+/// Agent keepAlive 连接池：origin("host:port") → 空闲 TCP 流（上限 4/origin，
+/// 对齐 Node globalAgent keepAlive 默认语义；复用失败自动丢弃）。
+pub(crate) static CONN_POOL: Mutex<Option<HashMap<String, Vec<std::net::TcpStream>>>> =
+    Mutex::new(None);
+
+/// 连接池单 origin 上限。
+const POOL_CAP: usize = 4;
+
+/// 从连接池取一条到 `origin` 的存活流（`peek` 探活：WouldBlock=存活，
+/// Ok(0)=对端已关闭）。
+pub(crate) fn pool_take(origin: &str) -> Option<std::net::TcpStream> {
+    let mut guard = CONN_POOL.lock().unwrap();
+    let pool = guard.get_or_insert_with(HashMap::new);
+    while let Some(stream) = pool.get_mut(origin).and_then(|v| v.pop()) {
+        let mut probe = [0u8; 1];
+        match stream.peek(&mut probe) {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Some(stream),
+            _ => continue, // 对端已关或出错：丢弃继续取
+        }
+    }
+    None
+}
+
+/// 归还一条流到连接池（超上限则丢弃）。
+pub(crate) fn pool_put(origin: &str, stream: std::net::TcpStream) {
+    let mut guard = CONN_POOL.lock().unwrap();
+    let pool = guard.get_or_insert_with(HashMap::new);
+    let slot = pool.entry(origin.to_owned()).or_default();
+    if slot.len() < POOL_CAP {
+        slot.push(stream);
+    }
+}
+
 /// 入队一条待发射事件。
 pub(crate) fn push_pending_event(target: Value, event: &'static str) {
     PENDING_EVENTS.lock().unwrap().push((target, event));

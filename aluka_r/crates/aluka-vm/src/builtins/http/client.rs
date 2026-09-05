@@ -492,14 +492,21 @@ pub(crate) fn pump_clients(vm: &mut Vm) -> Result<bool, VmError> {
                         continue;
                     }
                     let addr = format!("{}:{}", c.host, c.port);
-                    let attempt = addr
-                        .to_socket_addrs()
-                        .ok()
-                        .and_then(|mut it| it.next())
-                        .and_then(|a| {
-                            TcpStream::connect_timeout(&a, std::time::Duration::from_millis(100))
+                    // Agent keepAlive：优先复用池内存活连接，未命中才新建
+                    let attempt = match super::state::pool_take(&addr) {
+                        Some(stream) => Some(stream),
+                        None => addr
+                            .to_socket_addrs()
+                            .ok()
+                            .and_then(|mut it| it.next())
+                            .and_then(|a| {
+                                TcpStream::connect_timeout(
+                                    &a,
+                                    std::time::Duration::from_millis(100),
+                                )
                                 .ok()
-                        });
+                            }),
+                    };
                     match attempt {
                         Some(stream) => {
                             let _ = stream.set_nonblocking(true);
@@ -569,7 +576,11 @@ pub(crate) fn pump_clients(vm: &mut Vm) -> Result<bool, VmError> {
                     {
                         let callback = c.callback;
                         c.stage = Stage::Done;
-                        c.stream = None;
+                        // keepAlive：完整响应归还连接池（非 keep-alive 响应会被
+                        // 对端关闭，pool_take 探活自动淘汰）
+                        if let Some(stream) = c.stream.take() {
+                            super::state::pool_put(&format!("{}:{}", c.host, c.port), stream);
+                        }
                         deliveries.push(Delivery::Response(callback, head, body));
                     } else if c.eof && c.read_buf.is_empty() {
                         // 连接被对端关闭且无响应：socket hang up

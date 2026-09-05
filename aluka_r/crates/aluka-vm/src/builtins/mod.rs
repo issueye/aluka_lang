@@ -336,8 +336,17 @@ pub fn try_dispatch(
         return None;
     };
     let key = match &vm.heap[r.index()] {
-        // 形态一：GET_PROP 后调用（receiver 是 NativeFn "模块.方法"）
-        HeapObject::NativeFn { name } if name.contains('.') => name.clone(),
+        // 形态一：GET_PROP 后调用（receiver 是 NativeFn "模块.方法"）。
+        // 优先尝试「名.方法」键（构造器静态方法，如 AsyncResource.bind），
+        // 未命中回退原名（保持 console.log 等既有分派）。
+        HeapObject::NativeFn { name } if name.contains('.') => {
+            let with_method = format!("{name}.{method}");
+            if vm.builtin_registry.dispatch.contains_key(&with_method) {
+                with_method
+            } else {
+                name.clone()
+            }
+        }
         // 形态二：模块单例直调（receiver 是模块对象或类构造器）
         HeapObject::Ordinary {
             properties, proto, ..

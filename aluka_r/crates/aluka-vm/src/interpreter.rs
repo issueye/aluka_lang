@@ -1877,7 +1877,10 @@ impl Vm {
                                                 // 空读未结束：登记等待 promise（挂起等待 push）
                                                 *waiting = Some(pending_promise);
                                                 if let Value::Object(rr2) = receiver {
-                                                    self.gc_write_barrier(rr2, Value::Object(pending_promise));
+                                                    self.gc_write_barrier(
+                                                        rr2,
+                                                        Value::Object(pending_promise),
+                                                    );
                                                 }
                                                 NextAction::NeedWait
                                             }
