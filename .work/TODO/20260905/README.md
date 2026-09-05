@@ -89,13 +89,13 @@
 
 | # | 待办 | 状态 |
 |---|------|------|
-| M4-1 | .aluc/.alua 规范文档 + aluka-bytecode 序列化/反序列化 + strip | [ ] |
-| M4-2 | aluvm 嗅探 + alukac --format/--strip-debug | [ ] |
-| M4-3 | 拆二进制现状确认与登记 | [ ] |
-| M4-4 | 策略 ADR（eval/toString/兼容窗口/版本权限） | [ ] |
-| M4-5 | alisp crate（sexp 解析 + ISA 代码生成 + .aluc 输出） | [ ] |
-| M4-6 | 验收 e2e + 后端零改证明 + 全量门禁 | [ ] |
-| M4-7 | 提交 + 合并主线 + 推送 | [ ] |
+| M4-1 | .aluc/.alua 规范文档 + aluka-bytecode 序列化/反序列化 + strip |[x] |
+| M4-2 | aluvm 嗅探 + alukac --format/--strip-debug |[x] |
+| M4-3 | 拆二进制现状确认与登记 |[x] |
+| M4-4 | 策略 ADR（eval/toString/兼容窗口/版本权限） |[x] |
+| M4-5 | alisp crate（sexp 解析 + ISA 代码生成 + .aluc 输出） |[x] |
+| M4-6 | 验收 e2e + 后端零改证明 + 全量门禁 |[x] |
+| M4-7 | 提交 + 合并主线 + 推送 |[x] |
 
 ## 3. 达成证据
 
@@ -122,3 +122,14 @@
 ## 6. 明日入口
 
 - 递归栈溢出修复（已登记遗留，最优先）；minor GC 写屏障变异点审计。
+
+### 会话 3（M4）证据
+
+- 命令证据：`cargo test` → 59 目标全绿；clippy -D warnings 0 错误；fmt 通过。
+- 提交证据：`84a80e6` 契约（6 文件 +437：spec/aluc.rs/aluvm 嗅探/alukac 选项/
+  ADR 0003）、`31a42d6` alisp 前端（7 文件 +894，**后端 crate 触碰计数 0**）。
+- 验收：demo.lisp → alisp 产 .aluc → aluvm 输出 5/120/hello lisp/42；
+  contract_e2e 3 用例 + aluc 容器 4 单测。
+- 复审记录：alisp 提交 diff --name-only 过滤后端 crate 计 0（零改后端证明）；
+  合并主线后全量门禁重跑绿。
+
