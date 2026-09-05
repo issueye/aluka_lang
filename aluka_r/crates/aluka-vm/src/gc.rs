@@ -20,8 +20,8 @@
 //!
 //! # 当前形态（对 ADR 的收敛偏差，已记录）
 //!
-//! 现运行 **major 全堆标记-清除**（完整追踪，无需写屏障）。minor 回收与
-//! 记忆集机制已就位（[`Vm::collect_minor_gc`]）但默认禁用：写屏障需覆盖
+//! minor（年轻代，4k 分配阈值）+ major（全堆，20k 阈值）双触发，写屏障minor 回收与
+//! 覆盖全部「老写新」变异点，记忆集作为 minor 次级根。
 //! 全部「老对象写入年轻引用」的变异点（set_property/数组元素/Map/事件表/
 //! upvalue 写入…），变异点审计完成前启用有悬垂风险——见总 TODO M3 条目。
 //! age 计数与晋升逻辑已实现，major 存活对象直接晋升。
@@ -53,6 +53,9 @@ pub(crate) const PROMOTE_AGE: u8 = 2;
 /// 触发 major 回收的分配次数阈值。
 const MAJOR_TRIGGER: u32 = 20_000;
 
+/// 触发 minor 回收的分配次数阈值（年轻代高频回收）。
+const MINOR_TRIGGER: u32 = 4_000;
+
 /// GC 侧表与统计。
 #[derive(Debug, Default)]
 pub(crate) struct GcState {
@@ -64,8 +67,12 @@ pub(crate) struct GcState {
     pub(crate) young_free: Vec<u32>,
     /// 老年代空闲槽位
     pub(crate) old_free: Vec<u32>,
-    /// 自上次回收以来的分配次数（触发用）
-    pub(crate) allocs_since_gc: u32,
+    /// 记忆集：写入过年轻引用的老年代对象（写屏障登记，minor 次级根）
+    pub(crate) remembered: Vec<u32>,
+    /// 自上次 minor 回收以来的分配次数（minor 触发用）
+    pub(crate) allocs_since_minor: u32,
+    /// 自上次 major 回收以来的分配次数（major 触发用）
+    pub(crate) allocs_since_major: u32,
     /// 累计分配对象数
     pub(crate) allocated: u64,
     /// 累计回收对象数
@@ -74,16 +81,18 @@ pub(crate) struct GcState {
     pub(crate) major_collections: u64,
     /// minor 回收次数
     pub(crate) minor_collections: u64,
-    /// minor 回收是否启用（写屏障变异点审计完成前置 false）
-    pub(crate) minor_enabled: bool,
 }
 
 impl GcState {
-    /// 分配记账；返回是否达到触发阈值。
-    pub(crate) fn on_alloc(&mut self) -> bool {
+    /// 分配记账；返回 (达到 minor 阈值, 达到 major 阈值)。
+    pub(crate) fn on_alloc(&mut self) -> (bool, bool) {
         self.allocated += 1;
-        self.allocs_since_gc += 1;
-        self.allocs_since_gc >= MAJOR_TRIGGER
+        self.allocs_since_minor += 1;
+        self.allocs_since_major += 1;
+        (
+            self.allocs_since_minor >= MINOR_TRIGGER,
+            self.allocs_since_major >= MAJOR_TRIGGER,
+        )
     }
 }
 
@@ -287,7 +296,8 @@ impl Vm {
         }
         self.gc.major_collections += 1;
         self.gc.reclaimed += reclaimed;
-        self.gc.allocs_since_gc = 0;
+        self.gc.allocs_since_major = 0;
+        self.gc.allocs_since_minor = 0;
         reclaimed
     }
 
@@ -303,6 +313,41 @@ impl Vm {
         for root in roots.iter() {
             if let Value::Object(r) = root {
                 self.mark_young(r.0, &mut marked);
+            }
+        }
+        // 记忆集：老年代对象的年轻引用是次级根；仍指向年轻的重新登记
+        let remembered = std::mem::take(&mut self.gc.remembered);
+        for old_idx in remembered {
+            if self.gc.is_free.get(old_idx as usize).copied().unwrap_or(true) {
+                continue;
+            }
+            let mut young_targets: Vec<u32> = Vec::new();
+            if let Some(obj) = self.heap.get(old_idx as usize) {
+                obj.trace_refs(|t| {
+                    if !self.gc.is_free.get(t as usize).copied().unwrap_or(true)
+                        && self.gc.ages.get(t as usize).copied().unwrap_or(PROMOTE_AGE)
+                            < PROMOTE_AGE
+                    {
+                        young_targets.push(t);
+                    }
+                });
+            }
+            for t in young_targets {
+                self.mark_young(t, &mut marked);
+            }
+            if let Some(obj) = self.heap.get(old_idx as usize) {
+                let mut still = false;
+                obj.trace_refs(|t| {
+                    if !self.gc.is_free.get(t as usize).copied().unwrap_or(true)
+                        && self.gc.ages.get(t as usize).copied().unwrap_or(PROMOTE_AGE)
+                            < PROMOTE_AGE
+                    {
+                        still = true;
+                    }
+                });
+                if still {
+                    self.gc.remembered.push(old_idx);
+                }
             }
         }
         let mut reclaimed = 0u64;
@@ -329,15 +374,31 @@ impl Vm {
         }
         self.gc.minor_collections += 1;
         self.gc.reclaimed += reclaimed;
-        self.gc.allocs_since_gc = 0;
+        self.gc.allocs_since_minor = 0;
         reclaimed
     }
 
     /// minor 回收开关（测试用；生产路径保持 major-only）。
     /// minor 机制当前仅测试路径使用（生产 major-only，见模块文档偏差记录）。
     #[allow(dead_code)]
-    pub(crate) fn gc_set_minor_enabled(&mut self, on: bool) {
-        self.gc.minor_enabled = on;
+    /// 写屏障：老年代容器写入年轻代引用时记入记忆集（minor 回收的次级根）。
+    /// **全部「老写新」变异点必须调用**（set_property / Map.set / 事件监听 /
+    /// Readable 缓冲 / Promise 处理器 adoption），漏调用 = minor 悬垂。
+    pub(crate) fn gc_write_barrier(&mut self, container: ObjectRef, val: Value) {
+        if !self.gc_is_old(container) {
+            return;
+        }
+        let young_target = match val {
+            Value::Object(r) => {
+                !self.gc.is_free.get(r.0 as usize).copied().unwrap_or(true)
+                    && self.gc.ages.get(r.0 as usize).copied().unwrap_or(PROMOTE_AGE)
+                        < PROMOTE_AGE
+            }
+            _ => false,
+        };
+        if young_target && !self.gc.remembered.contains(&container.0) {
+            self.gc.remembered.push(container.0);
+        }
     }
 
     /// 强制执行一次 major 回收（测试与手动触发入口）。
@@ -516,22 +577,20 @@ mod tests {
         assert_eq!(again, sym, "回收后注册表幂等仍成立");
     }
 
-    /// minor 回收：年轻垃圾回收、老年代豁免、存活晋升（机制验证；生产默认
-    /// major-only，见模块文档偏差记录）。
+    /// minor 回收：年轻垃圾回收、老年代豁免、存活年龄增长。
     #[test]
     fn minor_collects_young_only_and_promotes() {
         let mut vm = Vm::new(0);
-        // old 对象：先经一次 major 晋升
+        vm.force_gc(); // 预热
+        // 老对象：经 major 晋升
         let old = vm.alloc_ordinary();
         vm.globals.insert("o".to_owned(), Value::Object(old));
         vm.force_gc();
         assert!(vm.gc_is_old(old));
-        // 年轻垃圾 + 年轻存活
         let young_dead = vm.alloc_ordinary();
         let young_keep = vm.alloc_ordinary();
         vm.globals
             .insert("yk".to_owned(), Value::Object(young_keep));
-        vm.gc_set_minor_enabled(true);
         vm.collect_minor_gc();
         assert!(vm.gc.is_free[young_dead.0 as usize], "年轻垃圾应回收");
         assert!(!vm.gc.is_free[young_keep.0 as usize], "年轻存活应保留");
@@ -540,5 +599,25 @@ mod tests {
             vm.gc_age(young_keep).is_some_and(|a| a >= 1),
             "存活年龄应增长"
         );
+    }
+
+    /// 写屏障：老年代对象写入年轻引用后，minor 不回收该年轻对象（记忆集
+    /// 次级根），且老对象重新登记。
+    #[test]
+    fn write_barrier_protects_old_to_young() {
+        let mut vm = Vm::new(0);
+        vm.force_gc(); // 预热
+        let old = vm.alloc_ordinary();
+        vm.globals.insert("o".to_owned(), Value::Object(old));
+        vm.force_gc(); // old 晋升
+        assert!(vm.gc_is_old(old));
+        let young = vm.alloc_ordinary();
+        let tag = vm.alloc_string("v".to_owned());
+        let _ = vm.set_property(Value::Object(old), "t", Value::Object(tag));
+        let _ = vm.set_property(Value::Object(old), "y", Value::Object(young));
+        assert!(vm.gc.remembered.contains(&old.0), "写屏障应登记老容器");
+        vm.collect_minor_gc();
+        assert!(!vm.gc.is_free[young.0 as usize], "记忆集必须保住老→新引用");
+        assert!(vm.gc.remembered.contains(&old.0), "仍指向年轻应重新登记");
     }
 }

@@ -118,9 +118,11 @@ impl Vm {
     /// 分配漏斗：安装堆对象（复用 GC 空闲槽位或追加），记账并按阈值触发回收。
     /// 全部堆分配必须经此入口（GC 触发点唯一性不变量）。
     pub(crate) fn push_object(&mut self, obj: HeapObject) -> ObjectRef {
-        let trigger = self.gc.on_alloc();
-        if trigger {
+        let (minor_hit, major_hit) = self.gc.on_alloc();
+        if major_hit {
             self.collect_major_gc();
+        } else if minor_hit {
+            self.collect_minor_gc();
         }
         if let Some(idx) = self.gc.young_free.pop().or_else(|| self.gc.old_free.pop()) {
             self.heap[idx as usize] = obj;

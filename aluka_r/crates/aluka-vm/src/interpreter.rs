@@ -1748,6 +1748,7 @@ impl Vm {
                                         self.heap.get_mut(rr.0 as usize)
                                     {
                                         listeners.entry(name).or_default().push((cb, once));
+                                        self.gc_write_barrier(rr, cb);
                                     }
                                     self.stack.push(receiver);
                                 }
@@ -1823,6 +1824,7 @@ impl Vm {
                                             // 无等待读取者：数据入缓冲；有等待者时
                                             // 数据直接交给等待的 next（避免双读）
                                             buffer.push_back(v);
+                                            // 写屏障在 get_mut 借用结束后执行（下方）
                                         }
                                         waiting.take()
                                     } else {
@@ -1831,6 +1833,10 @@ impl Vm {
                                 } else {
                                     None
                                 };
+                                // 写屏障：老可读流缓冲/等待槽写入新值
+                                if let Value::Object(rr2) = receiver {
+                                    self.gc_write_barrier(rr2, v);
+                                }
                                 // 有等待中的 promise：兑现为 {value, done} 结果对象
                                 if let Some(wp) = waiting {
                                     let res_obj = self.alloc_ordinary();
@@ -1870,6 +1876,9 @@ impl Vm {
                                             } else {
                                                 // 空读未结束：登记等待 promise（挂起等待 push）
                                                 *waiting = Some(pending_promise);
+                                                if let Value::Object(rr2) = receiver {
+                                                    self.gc_write_barrier(rr2, Value::Object(pending_promise));
+                                                }
                                                 NextAction::NeedWait
                                             }
                                         }
@@ -2074,6 +2083,9 @@ impl Vm {
                         {
                             match method_name.as_str() {
                                 "push" => {
+                                    for a in &args {
+                                        self.gc_write_barrier(r, *a);
+                                    }
                                     if let Some(HeapObject::Array { elements, .. }) =
                                         self.heap.get_mut(idx)
                                     {
@@ -2560,6 +2572,7 @@ impl Vm {
                         {
                             elements.push(val);
                         }
+                        self.gc_write_barrier(r, val);
                     }
                 }
                 Op::ArraySpread => {
@@ -2577,6 +2590,10 @@ impl Vm {
                         Vec::new()
                     };
                     if let Value::Object(t_ref) = target_arr {
+                        // 写屏障：老数组展开追加年轻元素（borrow 前先屏障）
+                        for a in &to_append {
+                            self.gc_write_barrier(t_ref, *a);
+                        }
                         if let Some(HeapObject::Array { elements, .. }) =
                             self.heap.get_mut(t_ref.0 as usize)
                         {

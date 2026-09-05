@@ -241,6 +241,9 @@ impl Vm {
                             handlers.push(resolver);
                             rejected.push(reject_resolver);
                         }
+                        // 写屏障：老 promise 挂接年轻解析器（adoption）
+                        self.gc_write_barrier(r, resolver);
+                        self.gc_write_barrier(r, reject_resolver);
                         None
                     } else if *is_rejected {
                         Some((reject_resolver, *value))

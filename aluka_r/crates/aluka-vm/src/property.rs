@@ -222,6 +222,8 @@ impl Vm {
                     }
                     _ => {}
                 }
+                // 写屏障：老容器写入年轻引用 → 记忆集（minor GC 次级根）
+                self.gc_write_barrier(r, val);
             }
         }
         Ok(())

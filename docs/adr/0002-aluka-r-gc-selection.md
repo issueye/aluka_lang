@@ -57,3 +57,26 @@
 3. `HeapObject` 增加 `age: u8`；`set_property` 路径加写屏障；
 4. 以 `gc_bench` 同款负载回归，并与 Go 版 `aluka.exe` 的 fib30 基线对拍
    （性能类任务必须带方法学，总 TODO §1）。
+
+---
+
+## 落地偏差收口（M3 实施记录，2026-09-05）
+
+落地过程中形成两项与「落地计划」的差异，经评审**接受并固化**：
+
+1. **回收器宿主从 `aluka-core::Heap` 改为 `aluka-vm` 内部**。
+   原因：VM 的运行时 `Value` 与 `HeapObject` 是自有类型（core 的 `Value`
+   为另一套冻结表示），而 ISA 契约禁止 core 反向依赖 VM。core 的
+   `Heap`/`RootSet`/`GcStats` 冻结 API **保持原状**（签名不变），定位调整为
+   「未来槽位模型堆的接口占位」；现行生产回收器（分代标记-清除、句柄=
+   slab 下标、侧表 age/free-list、写屏障记忆集）全部落在
+   `aluka-vm/src/gc.rs`，算法与本文档原型 A 一致。
+2. **age 以侧表实现，不改 `HeapObject` 枚举**。15+ 变体逐个加字段的侵入面
+   远大于平行侧表，语义等价（`Free` 占位变体已加入枚举，清扫保槽位）。
+
+生产触发形态：minor（4k 分配阈值，只清年轻代，记忆集覆盖老写新）+
+major（20k 阈值，全堆清扫+存活晋升）。写屏障变异点清单（7 处）：
+`set_property`（Ordinary/Closure/NativeCtor/Array 元素与属性）、
+数组方法 `push`、`Op::ArrayPush`、`Op::ArraySpread`、`Map` 创建后无变异点、
+堆 `EventEmitter` 监听注册、`Readable` 缓冲/等待槽、Promise adoption
+挂接。上游无 C 依赖约束不变。
