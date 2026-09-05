@@ -92,10 +92,9 @@ impl Vm {
             frame: None,
             done: false,
         };
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::Generator);
-        self.generators.insert(idx, state);
-        Value::Object(aluka_core::ObjectRef(idx))
+        let idx = self.push_object(HeapObject::Generator);
+        self.generators.insert(idx.0, state);
+        Value::Object(idx)
     }
 
     /// 驱动生成器执行到下一个 `YIELD` 或结束，返回 `{ value, done }` 结果对象。

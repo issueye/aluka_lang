@@ -325,6 +325,21 @@ impl Vm {
     }
 }
 
+/// GC root provider：组合器状态表持有的全部值与解析器。
+pub(crate) fn combiner_roots(out: &mut crate::gc::GcRoots) {
+    let map = COMBINERS.lock().unwrap();
+    for state in map.values() {
+        if state.done {
+            continue;
+        }
+        out.push(state.resolver);
+        out.push(state.reject_resolver);
+        for (v, _) in state.results.iter().flatten() {
+            out.push(*v);
+        }
+    }
+}
+
 /// 元素 promise 的 Value → 堆句柄（供监听表键控）。
 fn el_handle(el: Value) -> u32 {
     match el {

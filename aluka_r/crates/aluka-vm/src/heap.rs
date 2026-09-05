@@ -110,21 +110,38 @@ pub enum HeapObject {
         /// 等待数据的 promise 句柄（next 空读时登记，push 时兑现）
         waiting: Option<ObjectRef>,
     },
+    /// GC 清扫后的空闲占位（槽位保留、句柄稳定；分配时复用）
+    Free,
 }
 
 impl Vm {
+    /// 分配漏斗：安装堆对象（复用 GC 空闲槽位或追加），记账并按阈值触发回收。
+    /// 全部堆分配必须经此入口（GC 触发点唯一性不变量）。
+    pub(crate) fn push_object(&mut self, obj: HeapObject) -> ObjectRef {
+        let trigger = self.gc.on_alloc();
+        if trigger {
+            self.collect_major_gc();
+        }
+        if let Some(idx) = self.gc.young_free.pop().or_else(|| self.gc.old_free.pop()) {
+            self.heap[idx as usize] = obj;
+            self.gc.ages[idx as usize] = 0;
+            self.gc.is_free[idx as usize] = false;
+            return ObjectRef(idx);
+        }
+        self.heap.push(obj);
+        self.gc.ages.push(0);
+        self.gc.is_free.push(false);
+        ObjectRef((self.heap.len() - 1) as u32)
+    }
+
     /// 在堆上分配字符串对象，返回句柄。
     pub fn alloc_string(&mut self, s: String) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::String(s));
-        ObjectRef(idx)
+        self.push_object(HeapObject::String(s))
     }
 
     /// 在堆上分配 BigInt 对象（十进制字符串表示），返回句柄。
     pub fn alloc_bigint(&mut self, s: String) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::BigInt(s));
-        ObjectRef(idx)
+        self.push_object(HeapObject::BigInt(s))
     }
 
     /// 在堆上分配普通对象（带可选隐式原型），返回句柄。
@@ -138,14 +155,12 @@ impl Vm {
     /// 在堆上分配普通对象，隐式原型精确指定（不做单例回退，
     /// 供 `Object.create(null)` 等需要无原型对象的场景）。
     pub fn alloc_ordinary_with_exact_proto(&mut self, proto: Option<ObjectRef>) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::Ordinary {
+        self.push_object(HeapObject::Ordinary {
             properties: HashMap::new(),
             getters: HashMap::new(),
             setters: HashMap::new(),
             proto,
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配无原型普通对象，返回句柄。
@@ -158,13 +173,11 @@ impl Vm {
     /// 全局 `Array.prototype` 单例已初始化时自动挂为隐式原型
     /// （`[] instanceof Array` 语义）。
     pub fn alloc_array(&mut self, elements: Vec<Value>) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::Array {
+        self.push_object(HeapObject::Array {
             elements,
             properties: HashMap::new(),
             proto: self.array_prototype,
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配闭包对象，返回句柄。
@@ -178,14 +191,12 @@ impl Vm {
         let default_proto = self.alloc_ordinary();
         let mut properties = HashMap::new();
         properties.insert("prototype".to_owned(), Value::Object(default_proto));
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::Closure {
+        self.push_object(HeapObject::Closure {
             func_idx,
             upvalues,
             properties,
             proto: None,
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配无上值的闭包对象，返回句柄。
@@ -199,90 +210,74 @@ impl Vm {
         if let Some(p) = prototype {
             properties.insert("prototype".to_owned(), Value::Object(p));
         }
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::NativeCtor {
+        self.push_object(HeapObject::NativeCtor {
             name: name.to_owned(),
             properties,
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配原生函数对象，返回句柄。
     pub fn alloc_native_fn(&mut self, name: &str) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::NativeFn {
+        self.push_object(HeapObject::NativeFn {
             name: name.to_owned(),
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配已完成（fulfilled）的 Promise 对象，返回句柄。
     pub fn alloc_fulfilled_promise(&mut self, value: Value) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::Promise {
+        self.push_object(HeapObject::Promise {
             pending: false,
             value,
             is_rejected: false,
             handlers: Vec::new(),
             rejected: Vec::new(),
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配已拒绝（rejected）的 Promise 对象，返回句柄。
     pub fn alloc_rejected_promise(&mut self, reason: Value) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::Promise {
+        self.push_object(HeapObject::Promise {
             pending: false,
             value: reason,
             is_rejected: true,
             handlers: Vec::new(),
             rejected: Vec::new(),
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配未完成（pending）的 Promise 对象，返回句柄。
     pub fn alloc_pending_promise(&mut self) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::Promise {
+        self.push_object(HeapObject::Promise {
             pending: true,
             value: Value::Undefined,
             is_rejected: false,
             handlers: Vec::new(),
             rejected: Vec::new(),
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配 Symbol 原语对象，返回句柄。
     pub fn alloc_symbol(&mut self, sym_id: u64, description: String) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::Symbol {
+        self.push_object(HeapObject::Symbol {
             sym_id,
             description,
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配 EventEmitter 实例，返回句柄。
     pub fn alloc_emitter(&mut self) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::EventEmitter {
+        self.push_object(HeapObject::EventEmitter {
             listeners: std::collections::HashMap::new(),
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配可读流实例，返回句柄。
     pub fn alloc_readable(&mut self) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::Readable {
+        self.push_object(HeapObject::Readable {
             buffer: std::collections::VecDeque::new(),
             ended: false,
             waiting: None,
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配 Promise 解析器（resolve/reject 函数对象），返回句柄。
@@ -295,11 +290,9 @@ impl Vm {
 
     /// 在堆上分配 Map 对象，返回句柄。
     pub fn alloc_map(&mut self, entries: Vec<(String, Value)>) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::Map {
+        self.push_object(HeapObject::Map {
             entries: entries.into_iter().collect(),
-        });
-        ObjectRef(idx)
+        })
     }
 
     /// 在堆上分配 Error 实例（`message` / `name` 为自有属性），返回句柄。
@@ -309,13 +302,122 @@ impl Vm {
         let mut properties = HashMap::new();
         properties.insert("message".to_owned(), Value::Object(message_ref));
         properties.insert("name".to_owned(), Value::Object(name_ref));
-        let idx = self.heap.len() as u32;
-        self.heap.push(HeapObject::Ordinary {
+        self.push_object(HeapObject::Ordinary {
             properties,
             getters: HashMap::new(),
             setters: HashMap::new(),
             proto: self.object_prototype,
-        });
-        ObjectRef(idx)
+        })
+    }
+}
+
+impl HeapObject {
+    /// 遍历对象持有的全部堆引用（GC 标记用；叶子对象为空集）。
+    pub fn trace_refs(&self, mut f: impl FnMut(u32)) {
+        match self {
+            HeapObject::Ordinary {
+                properties, proto, ..
+            }
+            | HeapObject::Array {
+                elements: _,
+                properties,
+                proto,
+            } => {
+                for v in properties.values() {
+                    if let Value::Object(r) = v {
+                        f(r.0);
+                    }
+                }
+                if let Some(p) = proto {
+                    f(p.0);
+                }
+                if let HeapObject::Array { elements, .. } = self {
+                    for v in elements {
+                        if let Value::Object(r) = v {
+                            f(r.0);
+                        }
+                    }
+                }
+            }
+            HeapObject::Closure {
+                upvalues,
+                properties,
+                proto,
+                ..
+            } => {
+                for uv in upvalues {
+                    if let Value::Object(r) = *uv.0.borrow() {
+                        f(r.0);
+                    }
+                }
+                for v in properties.values() {
+                    if let Value::Object(r) = v {
+                        f(r.0);
+                    }
+                }
+                if let Some(p) = proto {
+                    f(p.0);
+                }
+            }
+            HeapObject::NativeCtor { properties, .. } => {
+                for v in properties.values() {
+                    if let Value::Object(r) = v {
+                        f(r.0);
+                    }
+                }
+            }
+            HeapObject::Promise {
+                value,
+                handlers,
+                rejected,
+                ..
+            } => {
+                if let Value::Object(r) = value {
+                    f(r.0);
+                }
+                for h in handlers.iter().chain(rejected.iter()) {
+                    if let Value::Object(r) = h {
+                        f(r.0);
+                    }
+                }
+            }
+            HeapObject::PromiseResolver { promise, .. } => f(promise.0),
+            HeapObject::EventEmitter { listeners } => {
+                for entries in listeners.values() {
+                    for (v, _) in entries {
+                        if let Value::Object(r) = v {
+                            f(r.0);
+                        }
+                    }
+                }
+            }
+            HeapObject::Map { entries } => {
+                for v in entries.values() {
+                    if let Value::Object(r) = v {
+                        f(r.0);
+                    }
+                }
+            }
+            HeapObject::Readable {
+                buffer, waiting, ..
+            } => {
+                for v in buffer {
+                    if let Value::Object(r) = v {
+                        f(r.0);
+                    }
+                }
+                if let Some(w) = waiting {
+                    f(w.0);
+                }
+            }
+            // 叶子对象：无堆引用
+            HeapObject::String(_)
+            | HeapObject::BigInt(_)
+            | HeapObject::Symbol { .. }
+            | HeapObject::RegExp { .. }
+            | HeapObject::NativeFn { .. }
+            | HeapObject::Generator
+            | HeapObject::Free => {}
+        }
     }
 }

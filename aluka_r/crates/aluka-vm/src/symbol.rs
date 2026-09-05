@@ -73,6 +73,19 @@ pub(crate) fn is_symbol_key(key: &str) -> bool {
     key.starts_with(SYMBOL_KEY_PREFIX)
 }
 
+/// GC root provider：符号注册表持有的句柄（for 注册表 / 反查键 / 知名符号）。
+pub(crate) fn registry_roots(out: &mut crate::gc::GcRoots) {
+    for r in FOR_REGISTRY.lock().unwrap().values() {
+        out.push(Value::Object(*r));
+    }
+    for h in FOR_BY_HANDLE.lock().unwrap().keys() {
+        out.push(Value::Object(ObjectRef(*h)));
+    }
+    for r in WELL_KNOWN.lock().unwrap().values() {
+        out.push(Value::Object(*r));
+    }
+}
+
 impl Vm {
     /// 判断值是否为符号。
     pub(crate) fn is_symbol(&self, val: Value) -> bool {

@@ -315,6 +315,11 @@ impl BuiltinRegistry {
     pub fn is_module_object(&self, val: Value) -> bool {
         matches!(val, Value::Object(r) if self.modules.values().any(|m| *m == r))
     }
+
+    /// 全部模块单例句柄（GC 根源登记用）。
+    pub fn module_handles(&self) -> impl Iterator<Item = ObjectRef> + '_ {
+        self.modules.values().copied()
+    }
 }
 
 /// 统一分派入口：`receiver` 是注册表模块单例且 `模块名.方法名` 命中时调用。

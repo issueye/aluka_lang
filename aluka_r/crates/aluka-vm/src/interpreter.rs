@@ -132,6 +132,8 @@ pub struct Vm {
     pub(crate) builtin_registry: crate::builtins::BuiltinRegistry,
     /// 内置库活跃事件源表（net/http/child_process 等 I/O 泵；随 Vm 生命周期）
     pub(crate) event_sources: Vec<(&'static str, crate::builtins::EventSourcePump)>,
+    /// GC 侧表（年龄/free-list/统计；ADR 0002 分代标记-清除）
+    pub(crate) gc: crate::gc::GcState,
     /// 挂起 async 帧的恢复登记：promise 句柄索引 → 恢复帧
     pub(crate) promise_resumes: HashMap<u32, crate::builtins::PendingResume>,
     /// 生成器对象注册表（堆句柄索引 → 执行状态）
@@ -186,6 +188,7 @@ impl Vm {
             events_module: None,
             builtin_registry: std::default::Default::default(),
             event_sources: Vec::new(),
+            gc: crate::gc::GcState::default(),
             promise_resumes: HashMap::new(),
             module_exports: HashMap::new(),
             base_dir: None,
@@ -351,6 +354,7 @@ impl Vm {
                         HeapObject::RegExp { pattern, flags } => {
                             format!("/{pattern}/{flags}")
                         }
+                        HeapObject::Free => String::new(),
                     }
                 } else if let Some(c) = self.current_constants.get(idx) {
                     match c {
@@ -2942,9 +2946,8 @@ impl Vm {
                         pattern: self.format_value(pattern_val),
                         flags: self.to_property_key(flags_val),
                     };
-                    let idx = self.heap.len() as u32;
-                    self.heap.push(regexp);
-                    self.stack.push(Value::Object(ObjectRef(idx)));
+                    let idx = self.push_object(regexp);
+                    self.stack.push(Value::Object(idx));
                 }
 
                 // 其它高级对象与协程操作码（后续阶段扩展）

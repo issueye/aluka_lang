@@ -6,6 +6,7 @@ pub mod builtins;
 pub mod call;
 pub mod class;
 pub mod exception;
+pub mod gc;
 pub mod generator;
 pub mod heap;
 pub mod interpreter;

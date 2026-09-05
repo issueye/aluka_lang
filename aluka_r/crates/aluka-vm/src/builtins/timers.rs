@@ -13,6 +13,16 @@ use std::sync::Mutex;
 
 static RESOLVER_VALS: Mutex<Option<HashMap<u32, Value>>> = Mutex::new(None);
 
+/// GC root provider：解析器预存兑现值（timers/promises 延迟兑现载体）。
+pub(crate) fn resolver_roots(out: &mut crate::gc::GcRoots) {
+    let guard = RESOLVER_VALS.lock().unwrap();
+    if let Some(map) = guard.as_ref() {
+        for v in map.values() {
+            out.push(*v);
+        }
+    }
+}
+
 /// 暂存 PromiseResolver 对应的预设兑现值。
 pub fn set_resolver_val(id: u32, val: Value) {
     let mut guard = RESOLVER_VALS.lock().unwrap();

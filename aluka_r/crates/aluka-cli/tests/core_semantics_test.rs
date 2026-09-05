@@ -387,3 +387,78 @@ fn symbol_well_known_match_go() {
         )
     );
 }
+
+/// GC 压力：40 万+ 分配触发多轮 major 回收，存活数据跨回收保持正确
+/// （临时对象树、循环结构、闭包捕获、注册符号）。输出与 Go 逐字一致。
+#[test]
+fn gc_stress_heavy_allocation_matches_go() {
+    let out = run_probe(
+        "gc_stress",
+        concat!(
+            "let keep = [];
+",
+            "for (let i = 0; i < 50; i++) {
+",
+            "    let tmp = [];
+",
+            "    for (let j = 0; j < 2000; j++) {
+",
+            "        tmp.push({ a: j, b: \"s\" + j, c: [j, j + 1] });
+",
+            "    }
+",
+            "    keep.push(tmp[0].a + \"|\" + tmp[1999].b);
+",
+            "}
+",
+            "console.log(\"keep:\", keep.length, keep[0], keep[49]);
+",
+            "for (let i = 0; i < 30000; i++) {
+",
+            "    let x = { v: i };
+",
+            "    let y = { p: x };
+",
+            "    x.p = y;
+",
+            "}
+",
+            "console.log(\"cycles done\");
+",
+            "let fns = [];
+",
+            "for (let i = 0; i < 5000; i++) {
+",
+            "    let s = Symbol(\"s\" + i);
+",
+            "    let o = {};
+",
+            "    o[s] = i;
+",
+            "    fns.push(function() { return i; });
+",
+            "}
+",
+            "console.log(\"fns:\", fns.length, fns[0](), fns[4999]());
+",
+            "let reg1 = Symbol.for(\"gck\");
+",
+            "let reg2 = Symbol.for(\"gck\");
+",
+            "console.log(\"reg:\", reg1 === reg2);
+",
+        ),
+    );
+    assert_eq!(
+        out,
+        concat!(
+            "keep: 50 0|s1999 0|s1999
+",
+            "cycles done
+",
+            "fns: 5000 0 4999
+",
+            "reg: true",
+        )
+    );
+}
