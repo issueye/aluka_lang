@@ -73,6 +73,31 @@
 
 ---
 
+
+
+---
+
+## 会话 4：M5 推进（JIT，子集先行策略）
+
+### 目标（可判定完成态）
+
+1. 新 crate `aluka-jit`：字节码算术子集 → Cranelift 纯 Rust 后端 →
+   机器码执行；ADR 0005 固化子集先行与覆盖矩阵分期。
+2. jitdiff：生成式差分 ≥3000 例（解释器 vs JIT 零失配）。
+3. 性能基线：热循环 JIT vs 解释器 vs node（方法学：交替+冷却+min-of-5），
+   propAccess/callOverhead 对拍表登记（子集外部分记入矩阵后续）。
+
+### 待办清单
+
+| # | 待办 | 状态 |
+|---|------|------|
+| M5-1 | ADR 0005 策略 + aluka-jit crate 骨架（Cranelift 依赖） |[x] |
+| M5-2 | 子集编译器：算术/局部/比较/if/循环 → Cranelift IR → 执行 |[x] |
+| M5-3 | Quick IR：JIT 前常量折叠 peephole |[x] |
+| M5-4 | jitdiff 生成式差分 ≥3000 例零失配 |[x] |
+| M5-5 | 性能基线（JIT vs 解释器 vs node,方法学）+ 对拍表 |[x] |
+| M5-6 | 全量门禁 + 提交 + 合并主线推送 |[x] |
+
 ## 会话 3：M4 推进（ISA 发布契约）
 
 ### 目标（可判定完成态）
@@ -122,6 +147,17 @@
 ## 6. 明日入口
 
 - 递归栈溢出修复（已登记遗留，最优先）；minor GC 写屏障变异点审计。
+
+### 会话 4（M5）证据
+
+- 命令证据：`cargo test` → 64 目标全绿（含 jitdiff 3200 例、minimal 4、
+  peephole 5、jitbench 1）；clippy -D warnings 0 错误；fmt 通过。
+- **jitdiff**：3200 例生成式差分，解释器 vs JIT f64 **逐位相等**，0 失配。
+- **性能基线**（交替+冷却 50ms+min-of-5，hot_loop 20 万轮，结果逐位一致）：
+  解释器 14.02ms / JIT 0.34ms（**41.6× 加速**）/ node 预热 0.095ms。
+- **如实登记未达成项**：propAccess/callOverhead ≤ node 5× 属 J2（PIC+调用
+  约定）范围，J1 子集不含属性访问与调用，对拍表记现状与路径（见
+  `.work/evidence/20260905/m5-report.md`）；JIT 尚未挂进解释器热点触发。
 
 ### 会话 3（M4）证据
 
